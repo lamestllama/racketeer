@@ -1,0 +1,77 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Racket",
+  "scopeName": "source.racket",
+  "patterns": [
+    {
+      "include": "#blockComment"
+    },
+    {
+      "name": "comment.line.semicolon.racket",
+      "begin": ";",
+      "end": "$"
+    },
+    {
+      "name": "meta.directive.racket",
+      "match": "^\\s*#(?:lang|reader)\\s+\\S+"
+    },
+    {
+      "name": "constant.character.racket",
+      "match": "#\\\\(?:[a-zA-Z][a-zA-Z0-9]*|u[0-9a-fA-F]{4}|U[0-9a-fA-F]{8}|.)"
+    },
+    {
+      "include": "#string"
+    },
+    {
+      "name": "constant.language.racket",
+      "match": "(?<![^\\s()\\[\\]{}])#(?:true|false|t|f)(?=[\\s()\\[\\]{}]|$)"
+    },
+    {
+      "name": "constant.numeric.racket",
+      "match": "(?<![^\\s()\\[\\]{}])[+-]?(?:#(?:[eibodx]))?(?:\\d+(?:[./]\\d+)?(?:[eE][+-]?\\d+)?|(?:inf|nan)\\.0)(?=[\\s()\\[\\]{}]|$)"
+    },
+    {
+      "name": "keyword.control.racket",
+      "match": "(?<=[(\\[])\\s*(?:define(?:-syntax(?:-rule)?|-values|-syntaxes)?|lambda|λ|let(?:\\*|rec)?(?:-values)?|if|cond|case|else|when|unless|begin0?|set!|and|or|for(?:\\*|/list|/fold|/vector|/hash|/first|/sum)?|match|require|provide|module\\+?|struct|parameterize|with-handlers|call/cc|quote|quasiquote|unquote)(?=[\\s()\\[\\]{}]|$)"
+    },
+    {
+      "name": "support.function.racket",
+      "match": "(?<![^\\s()\\[\\]{}])(?:quotient/remainder|call\\-with\\-values|number\\->string|string\\->number|string\\-append|string\\-length|vector\\-set!|procedure\\?|vector\\-ref|displayln|hash\\-set!|negative\\?|positive\\?|read\\-line|remainder|boolean\\?|for\\-each|hash\\-ref|hash\\-set|integer\\?|quotient|set\\-box!|display|newline|number\\?|reverse|string\\?|symbol\\?|writeln|andmap|append|equal\\?|filter|format|length|printf|values|vector|apply|caddr|error|foldl|foldr|list\\*|list\\?|null\\?|ormap|pair\\?|raise|unbox|write|zero\\?|add1|caar|cadr|cdar|cddr|cons|eqv\\?|hash|list|read|sub1|void|abs|box|car|cdr|eq\\?|map|max|min|not|<=|>=|\\*|\\+|\\-|/|<|=|>)(?=[\\s()\\[\\]{};]|$)"
+    },
+    {
+      "name": "constant.other.keyword.racket",
+      "match": "#:([^\\s()\\[\\]{}\";]+)"
+    },
+    {
+      "name": "punctuation.definition.reader.racket",
+      "match": "#;|#?[\\x27`]|#?,@?"
+    },
+    {
+      "name": "punctuation.section.parens.racket",
+      "match": "[()\\[\\]{}]"
+    }
+  ],
+  "repository": {
+    "blockComment": {
+      "name": "comment.block.racket",
+      "begin": "#\\|",
+      "end": "\\|#",
+      "patterns": [
+        {
+          "include": "#blockComment"
+        }
+      ]
+    },
+    "string": {
+      "name": "string.quoted.double.racket",
+      "begin": "(?:#(?:rx|px)?#?)?\"",
+      "end": "\"",
+      "patterns": [
+        {
+          "name": "constant.character.escape.racket",
+          "match": "\\\\."
+        }
+      ]
+    }
+  }
+}

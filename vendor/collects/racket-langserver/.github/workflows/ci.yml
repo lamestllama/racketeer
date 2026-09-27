@@ -1,0 +1,118 @@
+on: [push, pull_request]
+name: CI
+jobs:
+  build:
+    name: "Build on Racket '${{ matrix.racket-version }}' (${{ matrix.racket-variant }})"
+    runs-on: ubuntu-latest
+    continue-on-error: ${{ matrix.experimental || false }}
+    strategy:
+      fail-fast: false
+      matrix:
+        racket-version: ["7.6", "8.0", "8.8", "8.17", "8.18", "9.0", "9.1", "9.2"]
+        racket-variant: ["CS"]
+        exclude:
+          - racket-version: "7.6"
+            racket-variant: "CS"
+        include:
+          - racket-version: "7.6"
+            racket-variant: "BC"
+          - racket-version: "8.0"
+            racket-variant: "BC"
+          - racket-version: "8.17"
+            racket-variant: "BC"
+    steps:
+      - uses: actions/checkout@v3.1.0
+      - uses: Bogdanp/setup-racket@v1.14
+        with:
+          architecture: x64
+          distribution: full
+          variant: ${{ matrix.racket-variant }}
+          version: ${{ matrix.racket-version }}
+      - name: Installing racket-langserver and its dependencies
+        run: raco pkg install --auto --name racket-langserver
+      - name: Checking the package dependency of racket-langserver
+        run: raco setup -j "$(getconf _NPROCESSORS_ONLN)" --check-pkg-deps --pkgs racket-langserver
+      - name: Testing racket-langserver
+        run: raco test -j "$(getconf _NPROCESSORS_ONLN)" -c racket-langserver/tests
+
+  resyntax:
+    name: "Resyntax integration on Racket '${{ matrix.racket-version }}' (${{ matrix.racket-variant }})"
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        racket-version: ["stable"]
+        racket-variant: ["CS"]
+    steps:
+      - uses: actions/checkout@v3.1.0
+      - uses: Bogdanp/setup-racket@v1.14
+        with:
+          architecture: x64
+          distribution: full
+          variant: ${{ matrix.racket-variant }}
+          version: ${{ matrix.racket-version }}
+      - name: Installing racket-langserver and its dependencies
+        run: raco pkg install --no-docs --auto --name racket-langserver
+      - name: Install Resyntax
+        run: raco pkg install --no-docs --auto resyntax
+      - name: Running resyntax tests
+        run: raco test tests/textDocument/resyntax/
+
+  fmt:
+    name: "fmt integration on stable Racket"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3.1.0
+      - uses: Bogdanp/setup-racket@v1.14
+        with:
+          architecture: x64
+          distribution: full
+          variant: CS
+          version: stable
+      - name: Installing racket-langserver and its dependencies
+        run: raco pkg install --no-docs --auto --name racket-langserver
+      - name: Installing fmt
+        run: raco pkg install --no-docs --auto fmt
+      - name: Running fmt integration test
+        run: raco test tests/lib/fmt-formatter-integration-test.rkt
+
+  tooltip-languages:
+    name: "Nanopass and Pie integration"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3.1.0
+      - uses: Bogdanp/setup-racket@v1.14
+        with:
+          architecture: x64
+          distribution: full
+          variant: CS
+          version: stable
+      - name: Installing racket-langserver and its dependencies
+        run: raco pkg install --no-docs --auto --name racket-langserver
+      - name: Installing nanopass and pie
+        run: raco pkg install --no-docs --auto --skip-installed nanopass pie
+      - name: Running nanopass and pie integration tests
+        run: raco test tests/lib/tooltip-language-integration-test.rkt
+
+  formatting:
+    name: "Code formatting check"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3.1.0
+      - uses: Bogdanp/setup-racket@v1.14
+        with:
+          architecture: x64
+          distribution: full
+          variant: CS
+          version: stable
+      - name: Installing racket-fixw
+        run: raco pkg install --auto fixw
+      - name: Checking code formatting
+        run: |
+          raco fixw --ensure-newline-eof .
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "Code is not properly formatted. Please run 'raco fixw .' locally and commit the changes."
+            exit 1
+          else
+            echo "Code is properly formatted."
+          fi

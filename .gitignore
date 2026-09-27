@@ -1,0 +1,12 @@
+compiled/
+__pycache__/
+dist/
+vscode/runtime/
+vscode/node_modules/
+vscode/out/
+vscode/language-server/
+.test-output/
+vscode/LICENSE
+vscode/LICENSE-APACHE
+vscode/LICENSE-MIT
+vscode/COPYRIGHT

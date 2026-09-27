@@ -1,0 +1,7 @@
+*~
+*.bak
+*.code-workspace
+compiled/
+/debug.log
+/debug.out.rkt
+doc/

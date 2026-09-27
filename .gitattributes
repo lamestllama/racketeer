@@ -1,0 +1,8 @@
+* text=auto eol=lf
+*.png binary
+*.zip binary
+*.vsix binary
+# Unified diffs represent empty context lines with a leading space.
+*.patch -whitespace
+# Preserve the upstream permission notice byte for byte, including its final blank line.
+vscode/images/RACKET-LICENSE-MIT.txt whitespace=-blank-at-eof

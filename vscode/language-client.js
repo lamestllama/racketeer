@@ -1,0 +1,183 @@
+'use strict';
+const vscode = require('vscode');
+const { LanguageClient, State, CloseAction } = require('vscode-languageclient/node');
+const { createLanguageProcess } = require('./language-process');
+
+const languageIds = ['racket', 'rhombus'];
+const isLanguageDocument = document => languageIds.includes(document?.languageId);
+// The server's formatter selection is shared by both languages. Its default
+// S-expression formatter is unsafe for indentation-sensitive shrubbery. Keep
+// Rhombus on the declarative indentation rules until a reader-aware formatter
+// has been validated; this also guards range and on-type formatting requests.
+const racketFormattingOnly = (document, ...args) => document.languageId === 'rhombus'
+  ? [] : args.pop()(document, ...args);
+
+function registerLanguageTools(context, debugSources) {
+  const output = vscode.window.createOutputChannel('Racket Language Server');
+  const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 10);
+  status.command = 'racketdap.showLanguageServerOutput';
+  let client;
+  let watcher;
+  let stateListener;
+  let server;
+  let scheduled = 0;
+  let pending = Promise.resolve();
+  let disposed = false;
+
+  function showStatus(text, detail) {
+    status.text = text;
+    status.tooltip = detail;
+    if (isLanguageDocument(vscode.window.activeTextEditor?.document)) status.show();
+    else status.hide();
+  }
+
+  async function stopClient() {
+    debugSources.setLanguageClient(undefined);
+    watcher?.dispose();
+    watcher = undefined;
+    stateListener?.dispose();
+    stateListener = undefined;
+    if (client) {
+      const previous = client;
+      client = undefined;
+      server = undefined;
+      await previous.dispose();
+    }
+  }
+
+  async function restart() {
+    await stopClient();
+    if (disposed || !vscode.workspace.isTrusted) return;
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    const config = vscode.workspace.getConfiguration('racketdap', folder?.uri);
+    if (!config.get('languageServer.enabled', true)) {
+      showStatus('Racket: LSP off', 'Enable racketdap.languageServer.enabled for editor language tools.');
+      return;
+    }
+    // Both extensions would otherwise register the same completion, formatting,
+    // and diagnostic providers. Leave the existing client under user control.
+    if (vscode.extensions.getExtension('evzen-wybitul.magic-racket') &&
+        vscode.workspace.getConfiguration('magicRacket').get('languageServer.enabled', true)) {
+      output.appendLine('Magic Racket is enabled. Disable it to use this extension’s bundled language server.');
+      showStatus('Racket: external LSP', 'Magic Racket is enabled. Disable it and reload to use the bundled language server.');
+      return;
+    }
+    const installed = config.get('languageServer.source', 'bundled') === 'installed';
+    const configuredTimeout = config.get('languageServer.startupTimeoutSeconds', 180);
+    const startupTimeoutSeconds = Number.isInteger(configuredTimeout) && configuredTimeout >= 1 && configuredTimeout <= 3600
+      ? configuredTimeout : 180;
+    watcher = vscode.workspace.createFileSystemWatcher('**/*.{rkt,rktl,rktd,rhm}');
+    function reportFailure(error, advice = 'Check racketdap.racketExecutable.') {
+      output.appendLine(String(error.stack || error));
+      output.appendLine(advice);
+      showStatus('$(warning) Racket', 'Language server failed. Click for details. Debugging and file commands remain available.');
+      void vscode.window.showErrorMessage(
+        `Racket language server could not start: ${error.message} ${advice}`,
+        'Show Output').then(action => { if (action) output.show(); });
+    }
+    const process = createLanguageProcess(config.get('racketExecutable', 'racket'),
+      installed ? ['-l', 'racket-langserver'] : [context.asAbsolutePath('language-server.rkt')],
+      { cwd: folder?.uri.fsPath }, {
+        timeout: startupTimeoutSeconds * 1000,
+        onTimeout: error => reportFailure(error,
+          'Cold startup or a busy machine may need more time. Increase racketdap.languageServer.startupTimeoutSeconds, then run Racket: Restart Language Server.')
+      });
+    server = process;
+    class OwnedLanguageClient extends LanguageClient {
+      stop(timeout) {
+        // The SDK also invokes stop after initialization fails. There is no
+        // running LSP connection to shut down in that state; our process and
+        // transports can still be released through their own lifecycle.
+        this.stopping ||= (async () => {
+          try { if (this.isRunning()) await super.stop(timeout); }
+          finally {
+            await process.dispose();
+            this.diagnostics?.dispose();
+          }
+        })().finally(() => { this.stopping = undefined; });
+        return this.stopping;
+      }
+    }
+    let defaultErrorHandler;
+    const next = new OwnedLanguageClient('racketDevelopment', 'Racket Language Server', () => process.start(), {
+      // The upstream server resolves documents as filesystem paths. Save new
+      // documents before requesting semantic analysis.
+      documentSelector: languageIds.map(language => ({ language, scheme: 'file' })),
+      middleware: {
+        provideDocumentFormattingEdits: racketFormattingOnly,
+        provideDocumentRangeFormattingEdits: racketFormattingOnly,
+        provideDocumentRangesFormattingEdits: racketFormattingOnly,
+        provideOnTypeFormattingEdits: racketFormattingOnly
+      },
+      outputChannel: output,
+      initializationFailedHandler(error) {
+        if (!process.cancelled && !disposed) reportFailure(error);
+        return false;
+      },
+      errorHandler: {
+        error: (...args) => defaultErrorHandler.error(...args),
+        closed: () => process.cancelled || disposed
+          ? { action: CloseAction.DoNotRestart, handled: true }
+          : defaultErrorHandler.closed()
+      },
+      synchronize: {
+        configurationSection: 'racket-langserver',
+        fileEvents: watcher
+      }
+    });
+    defaultErrorHandler = next.createDefaultErrorHandler();
+    client = next;
+    stateListener = next.onDidChangeState(event => {
+      if (client !== next) return;
+      if (event.newState === State.Running) {
+        process.ready();
+        showStatus('Racket: ready', `${installed ? 'Installed' : 'Bundled'} racket-langserver for Racket and Rhombus. Rhombus requires rhombus-lib in the selected Racket installation.`);
+      }
+      if (event.newState === State.Stopped) showStatus('Racket: LSP stopped', 'Run Racket: Restart Language Server. See output for details.');
+    });
+    showStatus('$(sync~spin) Racket', 'Starting Racket language tools. Loading source packages can take longer on the first run or a busy machine.');
+    try {
+      await next.start();
+      if (!process.cancelled && !disposed && next.isRunning()) debugSources.setLanguageClient(next);
+    } catch (error) {
+      if (!process.cancelled && !disposed) reportFailure(error);
+    }
+  }
+
+  function scheduleRestart() {
+    server?.cancelStart();
+    scheduled++;
+    const request = pending.then(restart);
+    // Keep the queue usable after failure and handle background requests;
+    // command callers still receive the original request's rejection.
+    pending = request.catch(error => output.appendLine(String(error.stack || error)))
+      .finally(() => { scheduled--; });
+    return request;
+  }
+
+  context.subscriptions.push(output, status,
+    vscode.commands.registerCommand('racketdap.restartLanguageServer', scheduleRestart),
+    vscode.commands.registerCommand('racketdap.showLanguageServerOutput', () => output.show()),
+    vscode.workspace.onDidOpenTextDocument(document => {
+      if (isLanguageDocument(document) && !client && !scheduled) void scheduleRestart();
+    }),
+    vscode.window.onDidChangeActiveTextEditor(() => showStatus(status.text, status.tooltip)),
+    vscode.workspace.onDidChangeConfiguration(event => {
+      if (event.affectsConfiguration('racketdap.racketExecutable') ||
+          event.affectsConfiguration('racketdap.languageServer') ||
+          event.affectsConfiguration('magicRacket.languageServer.enabled')) void scheduleRestart();
+    })
+  );
+  if (vscode.workspace.textDocuments.some(isLanguageDocument)) void scheduleRestart();
+  return {
+    whenReady: () => pending,
+    async dispose() {
+      disposed = true;
+      server?.cancelStart();
+      await pending.catch(() => {});
+      await stopClient();
+    }
+  };
+}
+
+module.exports = { registerLanguageTools };

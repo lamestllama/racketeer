@@ -1,0 +1,32 @@
+[
+  {
+    "name": "racket-langserver",
+    "url": "https://codeload.github.com/jeapostrophe/racket-langserver/zip/17e1b24d91163402470370bbe956ecb944521f88",
+    "sha256": "25f8c8235521c53c1bf1fc7503a17f2f68e8f62212246070407f5f5a2b7c3798",
+    "prefix": "racket-langserver-17e1b24d91163402470370bbe956ecb944521f88"
+  },
+  {
+    "name": "fixw",
+    "url": "https://codeload.github.com/6cdh/racket-fixw/zip/036d0f2cd2d6e061f5acf0835662f194509f2a46",
+    "sha256": "b1e77dce2717e9c4a8b2a368d141ae1d0747fb1fce7f58fd4f97ac0302443fb9",
+    "prefix": "racket-fixw-036d0f2cd2d6e061f5acf0835662f194509f2a46"
+  },
+  {
+    "name": "html-parsing",
+    "url": "https://www.neilvandyke.org/racket/html-parsing--11-0.zip",
+    "sha256": "c4379d3ec4e54de9fd2c48fb6b772e07bb66afe80f7195b8b7a0535626fd8aef",
+    "prefix": "html-parsing"
+  },
+  {
+    "name": "mcfly",
+    "url": "https://www.neilvandyke.org/racket/mcfly--2-2.zip",
+    "sha256": "f703868f28ed3ba18057c3e68ea3b42140fb3261a4b7ebfcf0e27c3769cf4878",
+    "prefix": "mcfly"
+  },
+  {
+    "name": "overeasy",
+    "url": "https://www.neilvandyke.org/racket/overeasy--4-3.zip",
+    "sha256": "f838c8c16bf6cf96cd552db8a91a0b4ce5270ddd896cbe9734adf07ce5ad379c",
+    "prefix": "overeasy"
+  }
+]

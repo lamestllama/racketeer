@@ -1,0 +1,8 @@
+#lang rhombus
+
+// Install rhombus-lib for the Racket executable selected in Racketeer.
+fun square(x):
+  x * x
+
+def answer = square(7)
+println(answer)

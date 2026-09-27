@@ -1,0 +1,24 @@
+#lang info
+(define collection "racket-langserver")
+(define scribblings '(("scribblings/racket-langserver.scrbl")))
+(define deps '("base"
+               "compatibility-lib"
+               "data-lib"
+               "srfi-lib"
+               ;; Newer packages need only to depend on drracket-tool-text-lib.
+               ;; However, we still refer to drracket-tool-lib because it is split
+               ;; into the text- variant starting from Racket 8.4.
+               "drracket-tool-lib"
+               "syntax-color-lib"
+               "sandbox-lib" ;; running macro expansion with time limits
+               "scribble-lib" ;; for blueboxes (scribble/blueboxes)
+               "racket-index" ;; for cross references (setup/xref)
+               "html-parsing" ;; for parsing documentation text
+               "fixw" ;; formatter
+               ))
+(define build-deps '("rackunit-lib"
+                     "racket-doc"
+                     "profile-flame-graph"))
+(define pkg-desc "Language Server Protocol implementation for Racket.")
+(define version "1.0")
+

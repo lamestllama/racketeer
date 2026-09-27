@@ -1,0 +1,15 @@
+Racketeer
+Copyright (c) 2026 Eric Parsonage
+
+Racketeer's original source code, examples, tests, and documentation are
+available under either of the following licences, at your option:
+
+  * Apache License, Version 2.0 (LICENSE-APACHE)
+  * MIT License (LICENSE-MIT)
+
+SPDX-License-Identifier: Apache-2.0 OR MIT
+
+This licence choice does not replace the licences of bundled third-party
+components. Their original copyright and licence notices remain applicable.
+See vendor/README.md in the source tree, language-server/README.md in the
+extension, and out/THIRD_PARTY_NOTICES.txt for bundled JavaScript dependencies.

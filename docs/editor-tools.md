@@ -1,0 +1,89 @@
+# Macro expansion and Rhombus editing
+
+## Macro stepper
+
+**Racket: Open Line or Selection in Macro Stepper** opens the selected Racket
+forms, or the current line when there is no selection, in Racket's macro-stepper
+window. The shortcut is **Alt+Shift+Enter**. Select complete forms when an
+expression spans several lines.
+
+Fragments expand in a fresh Racket namespace. They do not inherit bindings from
+an active debugger, REPL, or the surrounding file. To inspect a macro defined or
+imported by the file, use **Racket: Open File in Macro Stepper**. That command
+expands the whole module with its own language, imports, and macro definitions.
+Both commands use the current editor buffer, including unsaved changes.
+Selected top-level definitions are expanded without being installed for later
+selected forms. Use a self-contained `let-syntax` expression or the whole-file
+command when one form depends on a macro definition in another.
+
+The stepper shows expansion, not runtime evaluation. Expanding a module does not
+run its ordinary body, `main`, or `test` submodules. Compile-time code can execute
+as part of expansion, just as it does during normal compilation. Workspace trust
+therefore applies.
+
+The window comes from the public `macro-debugger/stepper` library in the full
+Racket installation. Racketeer supplies the editor commands and process
+integration; it does not reimplement or claim authorship of that library.
+A graphical desktop is required. Expansion and startup errors are reported in
+the command's terminal. Close the macro-stepper window to finish, or close its
+**Racket Macro Stepper** terminal to cancel expansion. Each command owns a
+separate process; closing one leaves other steppers running. The commands do not
+save the buffer.
+
+Try [the macro example](../examples/macro-stepper.rkt). Use the whole-file
+command to see its local macro expand, or select a complete expression using
+standard Racket forms for the fragment command.
+
+## Rhombus
+
+Files ending in `.rhm` use the Rhombus language mode. Basic highlighting,
+comments, brackets, and indentation work without starting a language server.
+Saved files also use Racketeer's bundled language server for semantic editing.
+The same `racketdap.racketExecutable` setting selects the language environment.
+
+The Rhombus language must be installed in that environment. Use **Racket:
+Install Package** with `rhombus`, or run `raco pkg install rhombus` for the
+selected Racket installation. Racketeer does not install it automatically.
+The smaller `rhombus-lib` package supplies the language without its documentation.
+Missing language packages are reported by the language server; basic syntax
+highlighting remains available.
+
+Automatic document, selection, and on-type formatting are not enabled for
+Rhombus. The bundled default formatter handles Racket S-expressions; applying it
+to indentation-sensitive shrubbery could change the program. Rhombus uses its
+own basic indentation rules while semantic editing remains available.
+
+The lexical grammar covers ordinary tokens, nested block comments, quoted
+forms, embedded Racket atoms, and common at-notation text forms. It is not a
+complete shrubbery parser: `#//` is highlighted as a group-comment marker without
+calculating the indentation-dependent extent, custom at-text delimiters cover
+`{…}`, `|{…}|`, and `|<<{…}>>|`, and emoji identifiers use common Unicode ranges.
+Language-server analysis uses the installed language's reader.
+
+Try [the Rhombus example](../examples/rhombus/demo.rhm). This feature provides
+editing support. It does not establish Rhombus debugger, Debug REPL, or Test
+Explorer compatibility.
+
+## Independent implementation
+
+The behavioral specifications and acceptance criteria use public language and
+API documentation. The new integration, grammar, and regression tests were
+written independently by implementers who had not inspected the compared
+editor implementation. Third-party libraries remain identified dependencies
+with their existing attribution. The [clean-room policy](quality.md) applies.
+
+Specification references:
+
+- [Racket macro debugger public API](https://docs.racket-lang.org/macro-debugger/index.html)
+- [Rhombus notation](https://docs.racket-lang.org/rhombus-guide/Notation.html)
+- [Shrubbery notation](https://docs.racket-lang.org/shrubbery/)
+- [Rhombus reference](https://docs.racket-lang.org/rhombus-reference/)
+- [VS Code language configuration](https://code.visualstudio.com/api/language-extensions/language-configuration-guide)
+- [VS Code syntax highlighting](https://code.visualstudio.com/api/language-extensions/syntax-highlight-guide)
+
+The installed-extension harness exercises the actual packaged commands and
+language registration. Its explicit `--rhombus` mode provisions a pinned
+language runtime into a private test environment for semantic checks. The
+ordinary mode retains a fresh addon directory without additional language
+packages. See [testing](../tests/README.md) and [CI](ci.md) for commands and
+retained evidence.

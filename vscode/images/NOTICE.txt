@@ -1,0 +1,19 @@
+Racket logo
+
+This is the Racket project's logo, distributed as an upstream asset. It is
+not original Racketeer artwork and is not covered by Racketeer's original-code
+copyright notice.
+
+Source repository: https://github.com/racket/racket-lang-org
+Revision: f6f5e09cde7c46e6271e01b02fe162c7095a4e31
+Source file: www/img/racket-logo.svg
+Source SHA256: 47d43193aa44d41a51e528c68f1e454fa4eba1793d3211cc4df46211eefacdc7
+
+The upstream repository offers the Apache-2.0 or MIT licence. This copy uses
+the MIT option. The upstream licence declaration and MIT permission text are
+included in RACKET-UPSTREAM-LICENSE.txt and RACKET-LICENSE-MIT.txt.
+
+racket.png is a 256 by 256 pixel rendering of the unmodified SVG. To reproduce:
+  rsvg-convert --keep-aspect-ratio --width 256 --height 256 racket-logo.svg -o racket.png
+
+Racketeer is independently maintained by Eric Parsonage.

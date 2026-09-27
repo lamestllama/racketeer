@@ -1,0 +1,32 @@
+{
+  "schema": 1,
+  "description": "Source-only runtime fixture for explicitly requested installed-editor Rhombus acceptance. No package is included in the VSIX.",
+  "metadataCatalog": "https://pkgs.racket-lang.org",
+  "distributionDependencies": ["base", "compiler-lib", "parser-tools-lib", "syntax-color-lib"],
+  "packages": [
+    {
+      "name": "pretty-expressive-lib",
+      "source": "https://github.com/sorawee/pretty-expressive.git?path=pretty-expressive-lib#27e7be8016b38252a19f3620bc37539100b02503",
+      "checksum": "27e7be8016b38252a19f3620bc37539100b02503",
+      "dependencies": ["base"]
+    },
+    {
+      "name": "shrubbery-lib",
+      "source": "https://github.com/racket/rhombus.git?path=shrubbery-lib#796055f913730b241f30af4ab739b8bbf8f072f1",
+      "checksum": "796055f913730b241f30af4ab739b8bbf8f072f1",
+      "dependencies": ["base", "syntax-color-lib", "parser-tools-lib"]
+    },
+    {
+      "name": "enforest-lib",
+      "source": "https://github.com/racket/rhombus.git?path=enforest-lib#796055f913730b241f30af4ab739b8bbf8f072f1",
+      "checksum": "796055f913730b241f30af4ab739b8bbf8f072f1",
+      "dependencies": ["base", "shrubbery-lib"]
+    },
+    {
+      "name": "rhombus-lib",
+      "source": "https://github.com/racket/rhombus.git?path=rhombus-lib#796055f913730b241f30af4ab739b8bbf8f072f1",
+      "checksum": "796055f913730b241f30af4ab739b8bbf8f072f1",
+      "dependencies": ["base", "compiler-lib", "pretty-expressive-lib", "shrubbery-lib", "enforest-lib", "syntax-color-lib", "parser-tools-lib"]
+    }
+  ]
+}

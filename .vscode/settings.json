@@ -1,0 +1,4 @@
+{
+  "racketdap.testing.include": "{tests/*.rkt,experiments/lexical-eval.rkt}",
+  "racketdap.testing.sourceRoots": ["tests", "experiments"]
+}

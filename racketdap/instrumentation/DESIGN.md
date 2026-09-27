@@ -1,0 +1,160 @@
+# Runtime-expression instrumentation: current unified API
+
+This component instruments expanded Racket expressions and exposes execution
+events, live lexical bindings, and expression results to the debugger.
+
+## Expansion and execution
+
+instrument-module accepts a fully expanded runtime expression, source path,
+fresh site-ID allocator, and one event callback (or #f), plus optional live
+module context, snapshot module bindings, and initial tail-position flag.
+It does not expand source, read files, or select modules. The loader owns those
+operations and must preserve one ordinary set of expansion effects.
+
+Runtime forms are recognized by binding identity. Arbitrary rename-in/prefix-in
+aliases are supported, and familiar printed names do not override their actual
+bindings. Input binding identifiers retain their syntax scopes. Literal values,
+identifier reads, variable-reference construction, and function construction
+have no stop sites. Descriptors retain original source coordinates and expanded
+expression data; duplicated macro occurrences receive independent site IDs.
+
+Non-tail expressions allocate an evaluation identity and preserve all returned
+values through a completion continuation. Tail wrappers retain the original
+expression or supplied skip values in tail position and have no completion
+event. A with-continuation-mark body is tail relative to its marked continuation,
+including when the entire mark expression is non-tail. Its tail paths have no
+separate completion wrapper: same-key user marks must replace each other on that
+continuation. The enclosing non-tail mark expression still supplies its normal
+completion event and return token. Activation identities associate source frames
+with function invocations;
+continuation marks hold live frames and enclosing expression identities.
+Inspecting the innermost frame per activation yields bounded tail-frame depth
+and restores the appropriate identities during continuation re-entry.
+
+There is one before callback delivery and, when available, one after delivery
+per dynamic expression evaluation. Consumer breakpoint filtering and stepping
+decisions happen inside that one callback. Each delivery has a fresh optional
+action box. stop-skip! selects actual values at entry; stop-replace-results!
+selects actual values at completion and immediately changes stop-results.
+Repeated actions update the pending list. Empty lists preserve zero values;
+objects are forwarded without copying. Re-entered completions create fresh
+stops and decisions. Callback return values do not replace program results.
+
+## Frames and binding operations
+
+Source-visible lexical bindings have live getter/setter closures over the real
+program cells. Inner scopes shadow outer names; generated macro bindings do not
+hide source-authored identifiers merely because their printed names coincide.
+The ordinary-expansion hook's introduction scope is removed only for the
+syntax-original? source-classification check.
+
+stop-binding-value reads a single symbol/string binding without evaluating user
+syntax. It checks lexical getters first, then source module aliases and ordinary
+namespace mappings. Direct namespace reads reject syntax-only bindings without
+invoking macro or set!-transformer bodies. Real top-level variables are recognized
+through identifier-binding's top-level-symbol? option. Uninitialized variables
+produce (unavailable 'uninitialized); absent and syntax-only names raise errors.
+Strings are treated as literal binding names, never parsed as expressions.
+
+stop-evaluate evaluates an expression through lexical set!-transformers and
+module rename aliases in the executing frame's namespace. It retains dynamic
+parameters and arbitrary returned value counts, suppresses recursive debugger
+callbacks, and runs behind a continuation barrier.
+
+stop-set-binding! is the only assignment API. Its optional #:scope accepts
+'visible (default) or 'lexical. Target resolution and scope validation happen
+before evaluating the replacement. A lexical miss raises immediately, without
+namespace lookup or replacement evaluation. Lexical targets use their captured
+setters. Visible module targets use a hygienically bound core set! expression
+through the existing frame evaluator, retaining native constant and imported
+binding restrictions even when user code has a binding named set!. Assignment
+returns the selected binding's resulting value. stop-locals remains lexical-only.
+
+Every stop inspection, evaluation, or action validates the executing thread,
+callback lifetime, and selected frame index. dynamic-wind expires a stop when
+its callback exits; callback/evaluator continuation barriers prevent a captured
+continuation from re-entering an expired stop.
+
+## Source phase metadata
+
+site-phases supplies the available expression event phases from the site's
+tail-position flag. site-boundary-position validates the requested phase and
+returns the positive one-based source position for before, or the last included
+character position for after. Missing position/span data and zero-width
+completion spans return #f as applicable. A tail site's after phase is rejected.
+The site record's constructor and field order are unchanged. Breakpoints and
+location requests can use these helpers without duplicating boundary arithmetic.
+
+## Module contexts and loader contract
+
+Ship instrument.rkt and runtime.rkt together. Attach both module instances into
+each target namespace and establish the runtime dependency for instrumented
+program modules. A plain-file namespace likewise requires the runtime before
+evaluating generated expressions.
+
+For complete module binding visibility:
+- Create a root with make-module-binding-context.
+- Use module-binding-context-child! with the parent, child name, and inheritance
+  flag. All fragments of one module+ use the same context; inherited-language
+  children use a live parent link.
+- Feed expanded define-values/define-syntaxes declarations to
+  record-module-bindings! before their initializers.
+- Pass the context via instrument-module's #:module-context keyword.
+
+The live catalog includes later declarations and later module+ fragments.
+Runtime initializers automatically register the owning module namespace,
+separately per namespace registry and only at phase zero. Inherited parents
+with only transformer definitions are located through the actual runtime
+module ancestry. Actual expander binding symbols resolve renamed names without
+guessing from printed suffixes. Source constants and imported variables retain
+their ordinary assignment protections. Snapshot #:module-bindings support
+remains available but does not supply complete live-fragment visibility.
+
+The context-to-registry and registry-to-namespace maps use ephemeron associations.
+Namespaces retain their registry and instrumented module context constants, so
+ordinary weak-key maps would keep completed targets alive through their values.
+An externally live target retains its binding registrations; the maps alone do
+not retain a target after its execution and consumer references are gone.
+
+The loader's own module/declaration/compile-time selection must respect binding
+identity. The runtime also suppresses callback delivery from any instantiation
+outside phase zero.
+
+## Exceptions and approximate pause
+
+call-with-exception-stop receives a raised value, captures its exception marks
+(or current marks for values without them), and synchronously delivers an
+exception stop when source frames exist. Results contain the exact raised
+value in a one-element list. Break exceptions are excluded. The helper returns
+the raised value unchanged and installs no program exception handler.
+
+call-with-pause-stop receives a break before the loader unwinds the executing
+program. It delivers kind 'pause from captured source marks, with no results
+or expression token. stop-approximate? reports true. The callback runs with
+breaks disabled, recursive callbacks suppressed, and a continuation barrier.
+The helper returns the identical break; the loader classifies intentional
+Pause requests and invokes its resume continuation after the helper returns.
+No-frame/no-callback/hang-up/termination cases pass through without a pause
+callback. Skip/result replacement reject exception and pause stops.
+
+## Validation
+
+The native consumer suites execute source through the public loader. They cover
+live lexical and module bindings, evaluation and mutation, continuation re-entry,
+tail recursion, multiple values, event actions, thread ownership, expired stops,
+language expansion, and loader isolation. instrumentation-lifetime.rkt compares
+nested user continuation marks with ordinary execution, exercises marked skip,
+replacement and step-out behavior, and checks target collection using weak
+references while preserving binding access for live targets.
+
+Run from the repository root:
+
+```sh
+raco test tests/instrumentation-lifetime.rkt tests/headless.rkt tests/stepping.rkt tests/parity-languages.rkt tests/loader-isolation.rkt
+node --test --test-concurrency=1 tests/annotator-conformance.test.js tests/debugger-parity.test.js
+```
+
+The Node suites exercise the shipped DAP consumer, including source locations,
+module fragments, binding identity, result edits, and asynchronous pause.
+
+The production artifact list remains only instrument.rkt and runtime.rkt.

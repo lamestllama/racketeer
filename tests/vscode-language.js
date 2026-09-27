@@ -1,0 +1,129 @@
+'use strict';
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const vscode = require('vscode');
+const { semanticTokens } = require('./vscode-highlighting');
+
+async function until(check, description, timeout = 30000) {
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    const result = await check();
+    if (result) return result;
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  throw new Error(`Timed out: ${description}`);
+}
+
+exports.run = async (extension, workspace) => {
+  const directory = path.join(workspace.uri.fsPath, 'development checks');
+  fs.mkdirSync(directory, { recursive: true });
+  const program = path.join(directory, 'language "λ".rkt');
+  const marker = name => path.join(directory, `${name}.txt`);
+  const write = (name, expression) => `(call-with-output-file ${JSON.stringify(marker(name))} #:exists 'truncate (lambda (out) (display ${expression} out)))`;
+  for (const name of ['run', 'test', 'repl', 'selection']) fs.rmSync(marker(name), { force: true });
+  const source = [
+    '#lang racket/base',
+    '(provide square)',
+    '(define (square x)',
+    '(* x x))',
+    '(define result (square 7))',
+    '(define unused-list (list 1 2))',
+    `(module+ main ${write('run', 'result')})`,
+    `(module+ test (require rackunit) (check-equal? result 49) ${write('test', 'result')})`,
+    `;; ${write('selection', '(square 9)')}`,
+    '(define-values (answer remainder) (values 49 0))',
+    '; (values 1 2)',
+    '(define text "(values 1 2)")', ''
+  ].join('\n');
+  fs.writeFileSync(program, source);
+  const document = await vscode.workspace.openTextDocument(program);
+  const editor = await vscode.window.showTextDocument(document);
+  await extension.exports.languageServerReady();
+  const call = new vscode.Position(4, 18);
+  const definitions = await until(async () => {
+    const result = await vscode.commands.executeCommand('vscode.executeDefinitionProvider', document.uri, call);
+    return result?.length && result;
+  }, 'bundled language server definition');
+  const definition = definitions[0];
+  assert.equal((definition.targetUri || definition.uri).fsPath, program);
+  assert.equal((definition.targetSelectionRange || definition.range).start.line, 2);
+  const references = await vscode.commands.executeCommand('vscode.executeReferenceProvider', document.uri, call);
+  assert.ok(references.some(reference => reference.range.start.line === 4));
+  const hover = await vscode.commands.executeCommand('vscode.executeHoverProvider', document.uri, new vscode.Position(5, 22));
+  assert.ok(hover.some(item => item.contents.length), 'Hover includes documentation for list');
+  const valuesPosition = new vscode.Position(9, document.lineAt(9).text.indexOf('(values') + 2);
+  const valuesHover = await vscode.commands.executeCommand('vscode.executeHoverProvider', document.uri, valuesPosition);
+  assert.ok(valuesHover.some(item => item.contents.some(content => /values/.test(content.value || content))),
+    'Bundled language server documents the values procedure');
+  await until(async () => (await semanticTokens(document)).some(token => token.text === 'values' && token.type === 'function'),
+    'language server highlights values as a function');
+  const syntax = await vscode.commands.executeCommand('_workbench.captureSyntaxTokens', document.uri);
+  assert.ok(syntax.some(token => token.c === 'values' && token.t.includes('support.function.racket')),
+    'values has built-in procedure syntax coloring before semantic analysis');
+  assert.ok(syntax.some(token => token.c.includes('(values 1 2)') && token.t.includes('comment')));
+  assert.ok(syntax.some(token => token.c.includes('(values 1 2)') && token.t.includes('string')));
+  const completion = await vscode.commands.executeCommand('vscode.executeCompletionItemProvider', document.uri, call);
+  assert.ok(completion.items.some(item => (typeof item.label === 'string' ? item.label : item.label.label) === 'square'), 'Completion includes the local function');
+  const rename = await vscode.commands.executeCommand('vscode.executeDocumentRenameProvider', document.uri, call, 'squared');
+  assert.ok(rename.get(document.uri).length >= 3, 'Rename updates definition, provide, and call');
+  const formatting = await vscode.commands.executeCommand('vscode.executeFormatDocumentProvider', document.uri, { tabSize: 2, insertSpaces: true });
+  assert.ok(formatting.length, 'Bundled fixw returns formatting edits');
+  const formatEdit = new vscode.WorkspaceEdit();
+  formatEdit.set(document.uri, formatting);
+  assert.equal(await vscode.workspace.applyEdit(formatEdit), true);
+  assert.match(document.getText(), /\n  \(\* x x\)\)/);
+  // Restore the fixture, then make and repair an unsaved error. This checks
+  // incremental synchronization and diagnostics in both directions.
+  async function replace(text) {
+    const edit = new vscode.WorkspaceEdit();
+    edit.replace(document.uri, new vscode.Range(document.positionAt(0), document.positionAt(document.getText().length)), text);
+    assert.equal(await vscode.workspace.applyEdit(edit), true);
+  }
+  await replace(source + '\nunknown-racket-name\n');
+  await until(() => vscode.languages.getDiagnostics(document.uri).some(diagnostic => /unknown-racket-name/.test(diagnostic.message)), 'diagnostic after unsaved edit');
+  await replace(source);
+  await until(() => !vscode.languages.getDiagnostics(document.uri).some(diagnostic => /unknown-racket-name/.test(diagnostic.message)), 'diagnostic cleared after repair');
+  await document.save();
+
+  for (const name of ['run']) {
+    const ended = [];
+    const listener = vscode.tasks.onDidEndTaskProcess(event => ended.push(event));
+    try {
+      const execution = await vscode.commands.executeCommand(`racketdap.${name}File`);
+      assert.ok(execution, `${name} command starts a task`);
+      const result = await until(() => ended.find(event => event.execution === execution), `${name} task exits`);
+      assert.equal(result.exitCode, 0);
+      assert.equal(fs.readFileSync(marker(name), 'utf8'), '49');
+    } finally { listener.dispose(); }
+  }
+  assert.deepEqual(await vscode.commands.executeCommand('racketdap.testFile'),
+    { passed: 1, failed: 0, errored: 0, skipped: 0 });
+  assert.equal(fs.readFileSync(marker('test'), 'utf8'), '49');
+  const standalone = await vscode.commands.executeCommand('racketdap.startRepl');
+  assert.ok(standalone);
+  const terminal = await vscode.commands.executeCommand('racketdap.loadFile');
+  assert.equal(terminal, standalone, 'Load file reuses the workspace REPL');
+  terminal.sendText(write('repl', '(square 8)'));
+  await until(() => fs.existsSync(marker('repl')) && fs.readFileSync(marker('repl'), 'utf8') === '64', 'REPL loads file with quoted Unicode path');
+  editor.selection = new vscode.Selection(8, 3, 8, document.lineAt(8).text.length);
+  assert.equal(await vscode.commands.executeCommand('racketdap.sendSelection'), terminal);
+  await until(() => fs.existsSync(marker('selection')) && fs.readFileSync(marker('selection'), 'utf8') === '81', 'selected expression evaluated in module REPL');
+  terminal.dispose();
+
+  await vscode.workspace.getConfiguration('racketdap').update('languageServer.enabled', false, vscode.ConfigurationTarget.Workspace);
+  await extension.exports.languageServerReady();
+  assert.equal((await vscode.commands.executeCommand('vscode.executeDefinitionProvider', document.uri, call)).length, 0);
+  await vscode.workspace.getConfiguration('racketdap').update('languageServer.enabled', true, vscode.ConfigurationTarget.Workspace);
+  await extension.exports.languageServerReady();
+  await until(async () => (await vscode.commands.executeCommand('vscode.executeDefinitionProvider', document.uri, call))?.length, 'language server re-enabled');
+  await vscode.commands.executeCommand('racketdap.restartLanguageServer');
+  await until(async () => (await vscode.commands.executeCommand('vscode.executeDefinitionProvider', document.uri, call))?.length, 'language server restarted');
+
+  return [process.env.RACKETDAP_TEST_RHOMBUS === '1'
+    ? 'bundled language server with isolated Rhombus runtime addon'
+    : 'bundled language server with empty Racket addon directory', 'definition', 'references', 'hover documentation',
+    'values documentation', 'values semantic function highlighting', 'built-in syntax highlighting preserves strings and comments',
+    'completion', 'rename', 'formatting', 'unsaved diagnostics and repair', 'run task', 'Test Explorer file run',
+    'REPL', 'load quoted Unicode file in REPL', 'evaluate selection', 'disable/enable language server', 'restart language server'];
+};

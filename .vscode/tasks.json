@@ -1,0 +1,66 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Racket: Package extension",
+      "type": "process",
+      "command": "node",
+      "args": ["scripts/package-extension.js"],
+      "options": {"cwd": "${workspaceFolder}"},
+      "group": "build",
+      "problemMatcher": []
+    },
+    {
+      "label": "Racket: Check adapter protocol and extension logic",
+      "type": "process",
+      "command": "node",
+      "args": ["scripts/test-headless.js"],
+      "options": {"cwd": "${workspaceFolder}"},
+      "group": "test",
+      "problemMatcher": []
+    },
+    {
+      "label": "Racket: Check GUI callbacks (Linux)",
+      "type": "process",
+      "command": "python3",
+      "args": ["scripts/test-gui.py", "--xvfb", "${input:xvfbExecutable}"],
+      "options": {"cwd": "${workspaceFolder}"},
+      "group": "test",
+      "problemMatcher": []
+    },
+    {
+      "label": "Racket: Check installed extension (Linux)",
+      "type": "process",
+      "command": "python3",
+      "args": ["scripts/test-vscode.py", "--code", "${input:codeExecutable}", "--xvfb", "${input:xvfbExecutable}"],
+      "options": {"cwd": "${workspaceFolder}"},
+      "dependsOn": "Racket: Package extension",
+      "group": "test",
+      "problemMatcher": []
+    },
+    {
+      "label": "Racket: Check Rhombus editing (Linux)",
+      "type": "process",
+      "command": "python3",
+      "args": ["scripts/test-vscode.py", "--rhombus", "--code", "${input:codeExecutable}", "--xvfb", "${input:xvfbExecutable}"],
+      "options": {"cwd": "${workspaceFolder}"},
+      "dependsOn": "Racket: Package extension",
+      "group": "test",
+      "problemMatcher": []
+    },
+    {
+      "label": "Racket: Test ourselves through Test Explorer (Linux)",
+      "type": "process",
+      "command": "python3",
+      "args": ["scripts/test-vscode.py", "--dogfood", "--code", "${input:codeExecutable}", "--xvfb", "${input:xvfbExecutable}"],
+      "options": {"cwd": "${workspaceFolder}"},
+      "dependsOn": "Racket: Package extension",
+      "group": {"kind": "test", "isDefault": true},
+      "problemMatcher": []
+    }
+  ],
+  "inputs": [
+    {"id": "codeExecutable", "type": "promptString", "description": "VS Code executable", "default": "code"},
+    {"id": "xvfbExecutable", "type": "promptString", "description": "Xvfb executable", "default": "Xvfb"}
+  ]
+}

@@ -1,0 +1,642 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Rhombus",
+  "scopeName": "source.rhombus",
+  "comment": "Original Racketeer grammar from https://docs.racket-lang.org/shrubbery/token-parsing.html and https://docs.racket-lang.org/shrubbery/at-parsing.html. Lexical highlighting, not a shrubbery parser. Group-comment markers are colored; their indentation-sensitive extent is left to semantic analysis. Custom at-text delimiters support {, |{, and |<<{. Unicode emoji coverage follows common ranges, not a complete Unicode sequence database.",
+  "patterns": [
+    {
+      "include": "#main"
+    }
+  ],
+  "repository": {
+    "blockComment": {
+      "name": "comment.block.rhombus",
+      "begin": "/\\*",
+      "end": "\\*/",
+      "patterns": [
+        {
+          "include": "#blockComment"
+        }
+      ]
+    },
+    "comments": {
+      "patterns": [
+        {
+          "include": "#blockComment"
+        },
+        {
+          "name": "comment.line.group-marker.rhombus",
+          "match": "#//"
+        },
+        {
+          "name": "comment.line.double-slash.rhombus",
+          "begin": "//",
+          "end": "$",
+          "patterns": []
+        },
+        {
+          "name": "comment.line.shebang.rhombus",
+          "begin": "^#!",
+          "end": "(?<!\\\\)$",
+          "patterns": []
+        }
+      ]
+    },
+    "string": {
+      "name": "string.quoted.double.rhombus",
+      "begin": "\"",
+      "end": "\"|$",
+      "patterns": [
+        {
+          "name": "constant.character.escape.rhombus",
+          "match": "\\\\(?:u[0-9a-fA-F]{1,4}|U[0-9a-fA-F]{1,6})"
+        },
+        {
+          "name": "constant.character.escape.rhombus",
+          "match": "\\\\(?:[abtnvfre\"\\x27\\\\]|[0-7]{1,3}|x[0-9a-fA-F]{1,2})"
+        },
+        {
+          "name": "invalid.illegal.escape.rhombus",
+          "match": "\\\\."
+        }
+      ]
+    },
+    "bytestring": {
+      "name": "string.quoted.double.byte.rhombus",
+      "begin": "#\"",
+      "end": "\"|$",
+      "patterns": [
+        {
+          "name": "constant.character.escape.rhombus",
+          "match": "\\\\(?:[abtnvfre\"\\x27\\\\]|[0-7]{1,3}|x[0-9a-fA-F]{1,2})"
+        },
+        {
+          "name": "invalid.illegal.escape.rhombus",
+          "match": "\\\\."
+        }
+      ]
+    },
+    "quote": {
+      "name": "meta.quoted.rhombus",
+      "begin": "'",
+      "end": "'",
+      "patterns": [
+        {
+          "include": "#main"
+        }
+      ],
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.quote.begin.rhombus"
+        }
+      },
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.quote.end.rhombus"
+        }
+      }
+    },
+    "nestedQuote": {
+      "name": "meta.quoted.rhombus",
+      "begin": "'«",
+      "end": "»'",
+      "patterns": [
+        {
+          "include": "#main"
+        }
+      ],
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.quote.begin.rhombus"
+        }
+      },
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.quote.end.rhombus"
+        }
+      }
+    },
+    "parens": {
+      "name": "meta.group.parens.rhombus",
+      "begin": "\\(",
+      "end": "\\)",
+      "patterns": [
+        {
+          "include": "#main"
+        }
+      ],
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.section.parens.begin.rhombus"
+        }
+      },
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.section.parens.end.rhombus"
+        }
+      }
+    },
+    "brackets": {
+      "name": "meta.group.brackets.rhombus",
+      "begin": "\\[",
+      "end": "\\]",
+      "patterns": [
+        {
+          "include": "#main"
+        }
+      ]
+    },
+    "braces": {
+      "name": "meta.group.braces.rhombus",
+      "begin": "\\{",
+      "end": "\\}",
+      "patterns": [
+        {
+          "include": "#main"
+        }
+      ]
+    },
+    "guillemets": {
+      "name": "meta.group.guillemets.rhombus",
+      "begin": "«",
+      "end": "»",
+      "patterns": [
+        {
+          "include": "#main"
+        }
+      ]
+    },
+    "sexpression": {
+      "name": "meta.sexpression.rhombus",
+      "begin": "(~)?#\\{",
+      "end": "\\}",
+      "patterns": [
+        {
+          "include": "source.racket"
+        }
+      ],
+      "contentName": "meta.embedded.inline.racket",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.section.embedded.begin.rhombus"
+        }
+      },
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.section.embedded.end.rhombus"
+        }
+      }
+    },
+    "atTextLiteral": {
+      "name": "meta.text.nested.rhombus",
+      "begin": "\\{",
+      "end": "\\}",
+      "patterns": [
+        {
+          "include": "#atTextLiteral"
+        },
+        {
+          "include": "#atTextEscape"
+        }
+      ]
+    },
+    "atTextComment": {
+      "name": "comment.block.at.rhombus",
+      "begin": "@//\\{",
+      "end": "\\}",
+      "patterns": [
+        {
+          "name": "comment.block.at.nested.rhombus",
+          "begin": "\\{",
+          "end": "\\}",
+          "patterns": [
+            {
+              "include": "#atTextLiteral"
+            }
+          ]
+        }
+      ]
+    },
+    "atText": {
+      "name": "string.unquoted.at.rhombus",
+      "begin": "\\{",
+      "end": "\\}",
+      "patterns": [
+        {
+          "include": "#atTextComment"
+        },
+        {
+          "name": "comment.line.at.rhombus",
+          "begin": "@//",
+          "end": "$",
+          "patterns": []
+        },
+        {
+          "include": "#atTextEscape"
+        },
+        {
+          "include": "#atTextLiteral"
+        }
+      ],
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.string.begin.rhombus"
+        }
+      },
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.string.end.rhombus"
+        }
+      }
+    },
+    "atTextEscape": {
+      "patterns": [
+        {
+          "name": "meta.at-expression.rhombus",
+          "begin": "(@)((?:(?:[\\p{L}_]|(?:[0-9#*]\\x{FE0F}?\\x{20E3}|[\\x{1F1E6}-\\x{1F1FF}]{2}|[\\x{1F300}-\\x{1FAFF}\\x{2600}-\\x{27BF}](?:\\x{FE0F}|[\\x{1F3FB}-\\x{1F3FF}])?(?:\\x{200D}[\\x{1F300}-\\x{1FAFF}\\x{2600}-\\x{27BF}](?:\\x{FE0F}|[\\x{1F3FB}-\\x{1F3FF}])?)*))(?:[\\p{L}\\p{N}_]|(?:[0-9#*]\\x{FE0F}?\\x{20E3}|[\\x{1F1E6}-\\x{1F1FF}]{2}|[\\x{1F300}-\\x{1FAFF}\\x{2600}-\\x{27BF}](?:\\x{FE0F}|[\\x{1F3FB}-\\x{1F3FF}])?(?:\\x{200D}[\\x{1F300}-\\x{1FAFF}\\x{2600}-\\x{27BF}](?:\\x{FE0F}|[\\x{1F3FB}-\\x{1F3FF}])?)*))*(?:\\.(?:[\\p{L}_]|(?:[0-9#*]\\x{FE0F}?\\x{20E3}|[\\x{1F1E6}-\\x{1F1FF}]{2}|[\\x{1F300}-\\x{1FAFF}\\x{2600}-\\x{27BF}](?:\\x{FE0F}|[\\x{1F3FB}-\\x{1F3FF}])?(?:\\x{200D}[\\x{1F300}-\\x{1FAFF}\\x{2600}-\\x{27BF}](?:\\x{FE0F}|[\\x{1F3FB}-\\x{1F3FF}])?)*))(?:[\\p{L}\\p{N}_]|(?:[0-9#*]\\x{FE0F}?\\x{20E3}|[\\x{1F1E6}-\\x{1F1FF}]{2}|[\\x{1F300}-\\x{1FAFF}\\x{2600}-\\x{27BF}](?:\\x{FE0F}|[\\x{1F3FB}-\\x{1F3FF}])?(?:\\x{200D}[\\x{1F300}-\\x{1FAFF}\\x{2600}-\\x{27BF}](?:\\x{FE0F}|[\\x{1F3FB}-\\x{1F3FF}])?)*))*)*)?)(?=\\(|\\{|\\|(?:<<)?\\{)",
+          "end": "(?!\\G)(?!\\(|\\{|\\|(?:<<)?\\{)",
+          "patterns": [
+            {
+              "include": "#parens"
+            },
+            {
+              "include": "#atAngleText"
+            },
+            {
+              "include": "#atBarText"
+            },
+            {
+              "include": "#atText"
+            }
+          ],
+          "beginCaptures": {
+            "1": {
+              "name": "punctuation.definition.at.rhombus"
+            },
+            "2": {
+              "name": "entity.name.function.rhombus"
+            }
+          }
+        },
+        {
+          "name": "meta.at-expression.rhombus",
+          "match": "@(?:[\\p{L}_]|(?:[0-9#*]\\x{FE0F}?\\x{20E3}|[\\x{1F1E6}-\\x{1F1FF}]{2}|[\\x{1F300}-\\x{1FAFF}\\x{2600}-\\x{27BF}](?:\\x{FE0F}|[\\x{1F3FB}-\\x{1F3FF}])?(?:\\x{200D}[\\x{1F300}-\\x{1FAFF}\\x{2600}-\\x{27BF}](?:\\x{FE0F}|[\\x{1F3FB}-\\x{1F3FF}])?)*))(?:[\\p{L}\\p{N}_]|(?:[0-9#*]\\x{FE0F}?\\x{20E3}|[\\x{1F1E6}-\\x{1F1FF}]{2}|[\\x{1F300}-\\x{1FAFF}\\x{2600}-\\x{27BF}](?:\\x{FE0F}|[\\x{1F3FB}-\\x{1F3FF}])?(?:\\x{200D}[\\x{1F300}-\\x{1FAFF}\\x{2600}-\\x{27BF}](?:\\x{FE0F}|[\\x{1F3FB}-\\x{1F3FF}])?)*))*(?:\\.(?:[\\p{L}_]|(?:[0-9#*]\\x{FE0F}?\\x{20E3}|[\\x{1F1E6}-\\x{1F1FF}]{2}|[\\x{1F300}-\\x{1FAFF}\\x{2600}-\\x{27BF}](?:\\x{FE0F}|[\\x{1F3FB}-\\x{1F3FF}])?(?:\\x{200D}[\\x{1F300}-\\x{1FAFF}\\x{2600}-\\x{27BF}](?:\\x{FE0F}|[\\x{1F3FB}-\\x{1F3FF}])?)*))(?:[\\p{L}\\p{N}_]|(?:[0-9#*]\\x{FE0F}?\\x{20E3}|[\\x{1F1E6}-\\x{1F1FF}]{2}|[\\x{1F300}-\\x{1FAFF}\\x{2600}-\\x{27BF}](?:\\x{FE0F}|[\\x{1F3FB}-\\x{1F3FF}])?(?:\\x{200D}[\\x{1F300}-\\x{1FAFF}\\x{2600}-\\x{27BF}](?:\\x{FE0F}|[\\x{1F3FB}-\\x{1F3FF}])?)*))*)*"
+        },
+        {
+          "name": "meta.at-expression.rhombus",
+          "begin": "@(?=#?\"|#(?:true|false|void)|[0-9])",
+          "end": "(?!\\G)",
+          "patterns": [
+            {
+              "include": "#bytestring"
+            },
+            {
+              "include": "#string"
+            },
+            {
+              "name": "constant.language.rhombus",
+              "match": "#(?:true|false|void)(?![\\p{L}\\p{N}_])"
+            },
+            {
+              "name": "constant.numeric.rhombus",
+              "match": "(?<![\\p{L}\\p{N}_])(?:(?<![\\p{L}\\p{N}_.\\)\\]\\}])[+-])?(?:0x[0-9a-fA-F](?:_?[0-9a-fA-F])*|0o[0-7](?:_?[0-7])*|0b[01](?:_?[01])*|[0-9](?:_?[0-9])*/[0-9](?:_?[0-9])*|[0-9](?:_?[0-9])*\\.(?!(?:(?![()\\[\\]{}\\x27«»\";,#\\\\_@]|//|/\\*)[\\p{P}\\p{S}]))(?:[0-9](?:_?[0-9])*)?(?:[eE][+-]?[0-9](?:_?[0-9])*)?|\\.[0-9](?:_?[0-9])*(?:[eE][+-]?[0-9](?:_?[0-9])*)?|[0-9](?:_?[0-9])*[eE][+-]?[0-9](?:_?[0-9])*|[0-9](?:_?[0-9])*)(?![\\p{L}\\p{N}_])"
+            }
+          ]
+        }
+      ]
+    },
+    "atBarTextLiteral": {
+      "name": "meta.text.nested.rhombus",
+      "begin": "\\|\\{",
+      "end": "\\}\\|",
+      "patterns": [
+        {
+          "include": "#atBarTextLiteral"
+        },
+        {
+          "include": "#atBarTextEscape"
+        }
+      ]
+    },
+    "atBarTextComment": {
+      "name": "comment.block.at.rhombus",
+      "begin": "\\|@//\\|\\{",
+      "end": "\\}\\|",
+      "patterns": [
+        {
+          "name": "comment.block.at.nested.rhombus",
+          "begin": "\\|\\{",
+          "end": "\\}\\|",
+          "patterns": [
+            {
+              "include": "#atBarTextLiteral"
+            }
+          ]
+        }
+      ]
+    },
+    "atBarText": {
+      "name": "string.unquoted.at.rhombus",
+      "begin": "\\|\\{",
+      "end": "\\}\\|",
+      "patterns": [
+        {
+          "include": "#atBarTextComment"
+        },
+        {
+          "name": "comment.line.at.rhombus",
+          "begin": "\\|@//",
+          "end": "$",
+          "patterns": []
+        },
+        {
+          "include": "#atBarTextEscape"
+        },
+        {
+          "include": "#atBarTextLiteral"
+        }
+      ],
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.string.begin.rhombus"
+        }
+      },
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.string.end.rhombus"
+        }
+      }
+    },
+    "atBarTextEscape": {
+      "patterns": [
+        {
+          "name": "meta.at-expression.rhombus",
+          "begin": "(\\|@)((?:(?:[\\p{L}_]|(?:[0-9#*]\\x{FE0F}?\\x{20E3}|[\\x{1F1E6}-\\x{1F1FF}]{2}|[\\x{1F300}-\\x{1FAFF}\\x{2600}-\\x{27BF}](?:\\x{FE0F}|[\\x{1F3FB}-\\x{1F3FF}])?(?:\\x{200D}[\\x{1F300}-\\x{1FAFF}\\x{2600}-\\x{27BF}](?:\\x{FE0F}|[\\x{1F3FB}-\\x{1F3FF}])?)*))(?:[\\p{L}\\p{N}_]|(?:[0-9#*]\\x{FE0F}?\\x{20E3}|[\\x{1F1E6}-\\x{1F1FF}]{2}|[\\x{1F300}-\\x{1FAFF}\\x{2600}-\\x{27BF}](?:\\x{FE0F}|[\\x{1F3FB}-\\x{1F3FF}])?(?:\\x{200D}[\\x{1F300}-\\x{1FAFF}\\x{2600}-\\x{27BF}](?:\\x{FE0F}|[\\x{1F3FB}-\\x{1F3FF}])?)*))*(?:\\.(?:[\\p{L}_]|(?:[0-9#*]\\x{FE0F}?\\x{20E3}|[\\x{1F1E6}-\\x{1F1FF}]{2}|[\\x{1F300}-\\x{1FAFF}\\x{2600}-\\x{27BF}](?:\\x{FE0F}|[\\x{1F3FB}-\\x{1F3FF}])?(?:\\x{200D}[\\x{1F300}-\\x{1FAFF}\\x{2600}-\\x{27BF}](?:\\x{FE0F}|[\\x{1F3FB}-\\x{1F3FF}])?)*))(?:[\\p{L}\\p{N}_]|(?:[0-9#*]\\x{FE0F}?\\x{20E3}|[\\x{1F1E6}-\\x{1F1FF}]{2}|[\\x{1F300}-\\x{1FAFF}\\x{2600}-\\x{27BF}](?:\\x{FE0F}|[\\x{1F3FB}-\\x{1F3FF}])?(?:\\x{200D}[\\x{1F300}-\\x{1FAFF}\\x{2600}-\\x{27BF}](?:\\x{FE0F}|[\\x{1F3FB}-\\x{1F3FF}])?)*))*)*)?)(?=\\(|\\{|\\|(?:<<)?\\{)",
+          "end": "(?!\\G)(?!\\(|\\{|\\|(?:<<)?\\{)",
+          "patterns": [
+            {
+              "include": "#parens"
+            },
+            {
+              "include": "#atAngleText"
+            },
+            {
+              "include": "#atBarText"
+            },
+            {
+              "include": "#atText"
+            }
+          ],
+          "beginCaptures": {
+            "1": {
+              "name": "punctuation.definition.at.rhombus"
+            },
+            "2": {
+              "name": "entity.name.function.rhombus"
+            }
+          }
+        },
+        {
+          "name": "meta.at-expression.rhombus",
+          "match": "\\|@(?:[\\p{L}_]|(?:[0-9#*]\\x{FE0F}?\\x{20E3}|[\\x{1F1E6}-\\x{1F1FF}]{2}|[\\x{1F300}-\\x{1FAFF}\\x{2600}-\\x{27BF}](?:\\x{FE0F}|[\\x{1F3FB}-\\x{1F3FF}])?(?:\\x{200D}[\\x{1F300}-\\x{1FAFF}\\x{2600}-\\x{27BF}](?:\\x{FE0F}|[\\x{1F3FB}-\\x{1F3FF}])?)*))(?:[\\p{L}\\p{N}_]|(?:[0-9#*]\\x{FE0F}?\\x{20E3}|[\\x{1F1E6}-\\x{1F1FF}]{2}|[\\x{1F300}-\\x{1FAFF}\\x{2600}-\\x{27BF}](?:\\x{FE0F}|[\\x{1F3FB}-\\x{1F3FF}])?(?:\\x{200D}[\\x{1F300}-\\x{1FAFF}\\x{2600}-\\x{27BF}](?:\\x{FE0F}|[\\x{1F3FB}-\\x{1F3FF}])?)*))*(?:\\.(?:[\\p{L}_]|(?:[0-9#*]\\x{FE0F}?\\x{20E3}|[\\x{1F1E6}-\\x{1F1FF}]{2}|[\\x{1F300}-\\x{1FAFF}\\x{2600}-\\x{27BF}](?:\\x{FE0F}|[\\x{1F3FB}-\\x{1F3FF}])?(?:\\x{200D}[\\x{1F300}-\\x{1FAFF}\\x{2600}-\\x{27BF}](?:\\x{FE0F}|[\\x{1F3FB}-\\x{1F3FF}])?)*))(?:[\\p{L}\\p{N}_]|(?:[0-9#*]\\x{FE0F}?\\x{20E3}|[\\x{1F1E6}-\\x{1F1FF}]{2}|[\\x{1F300}-\\x{1FAFF}\\x{2600}-\\x{27BF}](?:\\x{FE0F}|[\\x{1F3FB}-\\x{1F3FF}])?(?:\\x{200D}[\\x{1F300}-\\x{1FAFF}\\x{2600}-\\x{27BF}](?:\\x{FE0F}|[\\x{1F3FB}-\\x{1F3FF}])?)*))*)*"
+        },
+        {
+          "name": "meta.at-expression.rhombus",
+          "begin": "\\|@(?=#?\"|#(?:true|false|void)|[0-9])",
+          "end": "(?!\\G)",
+          "patterns": [
+            {
+              "include": "#bytestring"
+            },
+            {
+              "include": "#string"
+            },
+            {
+              "name": "constant.language.rhombus",
+              "match": "#(?:true|false|void)(?![\\p{L}\\p{N}_])"
+            },
+            {
+              "name": "constant.numeric.rhombus",
+              "match": "(?<![\\p{L}\\p{N}_])(?:(?<![\\p{L}\\p{N}_.\\)\\]\\}])[+-])?(?:0x[0-9a-fA-F](?:_?[0-9a-fA-F])*|0o[0-7](?:_?[0-7])*|0b[01](?:_?[01])*|[0-9](?:_?[0-9])*/[0-9](?:_?[0-9])*|[0-9](?:_?[0-9])*\\.(?!(?:(?![()\\[\\]{}\\x27«»\";,#\\\\_@]|//|/\\*)[\\p{P}\\p{S}]))(?:[0-9](?:_?[0-9])*)?(?:[eE][+-]?[0-9](?:_?[0-9])*)?|\\.[0-9](?:_?[0-9])*(?:[eE][+-]?[0-9](?:_?[0-9])*)?|[0-9](?:_?[0-9])*[eE][+-]?[0-9](?:_?[0-9])*|[0-9](?:_?[0-9])*)(?![\\p{L}\\p{N}_])"
+            }
+          ]
+        }
+      ]
+    },
+    "atAngleTextLiteral": {
+      "name": "meta.text.nested.rhombus",
+      "begin": "\\|<<\\{",
+      "end": "\\}>>\\|",
+      "patterns": [
+        {
+          "include": "#atAngleTextLiteral"
+        },
+        {
+          "include": "#atAngleTextEscape"
+        }
+      ]
+    },
+    "atAngleTextComment": {
+      "name": "comment.block.at.rhombus",
+      "begin": "\\|<<@//\\|<<\\{",
+      "end": "\\}>>\\|",
+      "patterns": [
+        {
+          "name": "comment.block.at.nested.rhombus",
+          "begin": "\\|<<\\{",
+          "end": "\\}>>\\|",
+          "patterns": [
+            {
+              "include": "#atAngleTextLiteral"
+            }
+          ]
+        }
+      ]
+    },
+    "atAngleText": {
+      "name": "string.unquoted.at.rhombus",
+      "begin": "\\|<<\\{",
+      "end": "\\}>>\\|",
+      "patterns": [
+        {
+          "include": "#atAngleTextComment"
+        },
+        {
+          "name": "comment.line.at.rhombus",
+          "begin": "\\|<<@//",
+          "end": "$",
+          "patterns": []
+        },
+        {
+          "include": "#atAngleTextEscape"
+        },
+        {
+          "include": "#atAngleTextLiteral"
+        }
+      ],
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.string.begin.rhombus"
+        }
+      },
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.string.end.rhombus"
+        }
+      }
+    },
+    "atAngleTextEscape": {
+      "patterns": [
+        {
+          "name": "meta.at-expression.rhombus",
+          "begin": "(\\|<<@)((?:(?:[\\p{L}_]|(?:[0-9#*]\\x{FE0F}?\\x{20E3}|[\\x{1F1E6}-\\x{1F1FF}]{2}|[\\x{1F300}-\\x{1FAFF}\\x{2600}-\\x{27BF}](?:\\x{FE0F}|[\\x{1F3FB}-\\x{1F3FF}])?(?:\\x{200D}[\\x{1F300}-\\x{1FAFF}\\x{2600}-\\x{27BF}](?:\\x{FE0F}|[\\x{1F3FB}-\\x{1F3FF}])?)*))(?:[\\p{L}\\p{N}_]|(?:[0-9#*]\\x{FE0F}?\\x{20E3}|[\\x{1F1E6}-\\x{1F1FF}]{2}|[\\x{1F300}-\\x{1FAFF}\\x{2600}-\\x{27BF}](?:\\x{FE0F}|[\\x{1F3FB}-\\x{1F3FF}])?(?:\\x{200D}[\\x{1F300}-\\x{1FAFF}\\x{2600}-\\x{27BF}](?:\\x{FE0F}|[\\x{1F3FB}-\\x{1F3FF}])?)*))*(?:\\.(?:[\\p{L}_]|(?:[0-9#*]\\x{FE0F}?\\x{20E3}|[\\x{1F1E6}-\\x{1F1FF}]{2}|[\\x{1F300}-\\x{1FAFF}\\x{2600}-\\x{27BF}](?:\\x{FE0F}|[\\x{1F3FB}-\\x{1F3FF}])?(?:\\x{200D}[\\x{1F300}-\\x{1FAFF}\\x{2600}-\\x{27BF}](?:\\x{FE0F}|[\\x{1F3FB}-\\x{1F3FF}])?)*))(?:[\\p{L}\\p{N}_]|(?:[0-9#*]\\x{FE0F}?\\x{20E3}|[\\x{1F1E6}-\\x{1F1FF}]{2}|[\\x{1F300}-\\x{1FAFF}\\x{2600}-\\x{27BF}](?:\\x{FE0F}|[\\x{1F3FB}-\\x{1F3FF}])?(?:\\x{200D}[\\x{1F300}-\\x{1FAFF}\\x{2600}-\\x{27BF}](?:\\x{FE0F}|[\\x{1F3FB}-\\x{1F3FF}])?)*))*)*)?)(?=\\(|\\{|\\|(?:<<)?\\{)",
+          "end": "(?!\\G)(?!\\(|\\{|\\|(?:<<)?\\{)",
+          "patterns": [
+            {
+              "include": "#parens"
+            },
+            {
+              "include": "#atAngleText"
+            },
+            {
+              "include": "#atBarText"
+            },
+            {
+              "include": "#atText"
+            }
+          ],
+          "beginCaptures": {
+            "1": {
+              "name": "punctuation.definition.at.rhombus"
+            },
+            "2": {
+              "name": "entity.name.function.rhombus"
+            }
+          }
+        },
+        {
+          "name": "meta.at-expression.rhombus",
+          "match": "\\|<<@(?:[\\p{L}_]|(?:[0-9#*]\\x{FE0F}?\\x{20E3}|[\\x{1F1E6}-\\x{1F1FF}]{2}|[\\x{1F300}-\\x{1FAFF}\\x{2600}-\\x{27BF}](?:\\x{FE0F}|[\\x{1F3FB}-\\x{1F3FF}])?(?:\\x{200D}[\\x{1F300}-\\x{1FAFF}\\x{2600}-\\x{27BF}](?:\\x{FE0F}|[\\x{1F3FB}-\\x{1F3FF}])?)*))(?:[\\p{L}\\p{N}_]|(?:[0-9#*]\\x{FE0F}?\\x{20E3}|[\\x{1F1E6}-\\x{1F1FF}]{2}|[\\x{1F300}-\\x{1FAFF}\\x{2600}-\\x{27BF}](?:\\x{FE0F}|[\\x{1F3FB}-\\x{1F3FF}])?(?:\\x{200D}[\\x{1F300}-\\x{1FAFF}\\x{2600}-\\x{27BF}](?:\\x{FE0F}|[\\x{1F3FB}-\\x{1F3FF}])?)*))*(?:\\.(?:[\\p{L}_]|(?:[0-9#*]\\x{FE0F}?\\x{20E3}|[\\x{1F1E6}-\\x{1F1FF}]{2}|[\\x{1F300}-\\x{1FAFF}\\x{2600}-\\x{27BF}](?:\\x{FE0F}|[\\x{1F3FB}-\\x{1F3FF}])?(?:\\x{200D}[\\x{1F300}-\\x{1FAFF}\\x{2600}-\\x{27BF}](?:\\x{FE0F}|[\\x{1F3FB}-\\x{1F3FF}])?)*))(?:[\\p{L}\\p{N}_]|(?:[0-9#*]\\x{FE0F}?\\x{20E3}|[\\x{1F1E6}-\\x{1F1FF}]{2}|[\\x{1F300}-\\x{1FAFF}\\x{2600}-\\x{27BF}](?:\\x{FE0F}|[\\x{1F3FB}-\\x{1F3FF}])?(?:\\x{200D}[\\x{1F300}-\\x{1FAFF}\\x{2600}-\\x{27BF}](?:\\x{FE0F}|[\\x{1F3FB}-\\x{1F3FF}])?)*))*)*"
+        },
+        {
+          "name": "meta.at-expression.rhombus",
+          "begin": "\\|<<@(?=#?\"|#(?:true|false|void)|[0-9])",
+          "end": "(?!\\G)",
+          "patterns": [
+            {
+              "include": "#bytestring"
+            },
+            {
+              "include": "#string"
+            },
+            {
+              "name": "constant.language.rhombus",
+              "match": "#(?:true|false|void)(?![\\p{L}\\p{N}_])"
+            },
+            {
+              "name": "constant.numeric.rhombus",
+              "match": "(?<![\\p{L}\\p{N}_])(?:(?<![\\p{L}\\p{N}_.\\)\\]\\}])[+-])?(?:0x[0-9a-fA-F](?:_?[0-9a-fA-F])*|0o[0-7](?:_?[0-7])*|0b[01](?:_?[01])*|[0-9](?:_?[0-9])*/[0-9](?:_?[0-9])*|[0-9](?:_?[0-9])*\\.(?!(?:(?![()\\[\\]{}\\x27«»\";,#\\\\_@]|//|/\\*)[\\p{P}\\p{S}]))(?:[0-9](?:_?[0-9])*)?(?:[eE][+-]?[0-9](?:_?[0-9])*)?|\\.[0-9](?:_?[0-9])*(?:[eE][+-]?[0-9](?:_?[0-9])*)?|[0-9](?:_?[0-9])*[eE][+-]?[0-9](?:_?[0-9])*|[0-9](?:_?[0-9])*)(?![\\p{L}\\p{N}_])"
+            }
+          ]
+        }
+      ]
+    },
+    "main": {
+      "patterns": [
+        {
+          "include": "#comments"
+        },
+        {
+          "name": "meta.directive.rhombus",
+          "match": "^#lang\\s+[^\\s]+"
+        },
+        {
+          "include": "#bytestring"
+        },
+        {
+          "include": "#string"
+        },
+        {
+          "include": "#sexpression"
+        },
+        {
+          "include": "#atTextEscape"
+        },
+        {
+          "name": "constant.language.boolean.rhombus",
+          "match": "#(?:true|false)(?![\\p{L}\\p{N}_])"
+        },
+        {
+          "name": "constant.language.void.rhombus",
+          "match": "#void(?![\\p{L}\\p{N}_])"
+        },
+        {
+          "name": "constant.numeric.rhombus",
+          "match": "#(?:inf|neginf|nan)(?![\\p{L}\\p{N}_])"
+        },
+        {
+          "name": "constant.other.keyword.rhombus",
+          "match": "~(?:[\\p{L}_]|(?:[0-9#*]\\x{FE0F}?\\x{20E3}|[\\x{1F1E6}-\\x{1F1FF}]{2}|[\\x{1F300}-\\x{1FAFF}\\x{2600}-\\x{27BF}](?:\\x{FE0F}|[\\x{1F3FB}-\\x{1F3FF}])?(?:\\x{200D}[\\x{1F300}-\\x{1FAFF}\\x{2600}-\\x{27BF}](?:\\x{FE0F}|[\\x{1F3FB}-\\x{1F3FF}])?)*))(?:[\\p{L}\\p{N}_]|(?:[0-9#*]\\x{FE0F}?\\x{20E3}|[\\x{1F1E6}-\\x{1F1FF}]{2}|[\\x{1F300}-\\x{1FAFF}\\x{2600}-\\x{27BF}](?:\\x{FE0F}|[\\x{1F3FB}-\\x{1F3FF}])?(?:\\x{200D}[\\x{1F300}-\\x{1FAFF}\\x{2600}-\\x{27BF}](?:\\x{FE0F}|[\\x{1F3FB}-\\x{1F3FF}])?)*))*"
+        },
+        {
+          "name": "variable.other.rhombus",
+          "match": "#%(?:[\\p{L}_]|(?:[0-9#*]\\x{FE0F}?\\x{20E3}|[\\x{1F1E6}-\\x{1F1FF}]{2}|[\\x{1F300}-\\x{1FAFF}\\x{2600}-\\x{27BF}](?:\\x{FE0F}|[\\x{1F3FB}-\\x{1F3FF}])?(?:\\x{200D}[\\x{1F300}-\\x{1FAFF}\\x{2600}-\\x{27BF}](?:\\x{FE0F}|[\\x{1F3FB}-\\x{1F3FF}])?)*))(?:[\\p{L}\\p{N}_]|(?:[0-9#*]\\x{FE0F}?\\x{20E3}|[\\x{1F1E6}-\\x{1F1FF}]{2}|[\\x{1F300}-\\x{1FAFF}\\x{2600}-\\x{27BF}](?:\\x{FE0F}|[\\x{1F3FB}-\\x{1F3FF}])?(?:\\x{200D}[\\x{1F300}-\\x{1FAFF}\\x{2600}-\\x{27BF}](?:\\x{FE0F}|[\\x{1F3FB}-\\x{1F3FF}])?)*))*"
+        },
+        {
+          "name": "keyword.control.rhombus",
+          "match": "(?<![\\p{L}\\p{N}_])(?:def|fun|if|else|cond|match|when|unless|block|let|var|values|import|export|module|namespace|class|interface|veneer|enum|for|each|break|continue|return|try|catch|finally|throw|macro|expr|bind|annot|operator|where|extends|implements|method|field|property|constructor|override|private|public)(?![\\p{L}\\p{N}_])"
+        },
+        {
+          "name": "variable.other.rhombus",
+          "match": "(?:[\\p{L}_]|(?:[0-9#*]\\x{FE0F}?\\x{20E3}|[\\x{1F1E6}-\\x{1F1FF}]{2}|[\\x{1F300}-\\x{1FAFF}\\x{2600}-\\x{27BF}](?:\\x{FE0F}|[\\x{1F3FB}-\\x{1F3FF}])?(?:\\x{200D}[\\x{1F300}-\\x{1FAFF}\\x{2600}-\\x{27BF}](?:\\x{FE0F}|[\\x{1F3FB}-\\x{1F3FF}])?)*))(?:[\\p{L}\\p{N}_]|(?:[0-9#*]\\x{FE0F}?\\x{20E3}|[\\x{1F1E6}-\\x{1F1FF}]{2}|[\\x{1F300}-\\x{1FAFF}\\x{2600}-\\x{27BF}](?:\\x{FE0F}|[\\x{1F3FB}-\\x{1F3FF}])?(?:\\x{200D}[\\x{1F300}-\\x{1FAFF}\\x{2600}-\\x{27BF}](?:\\x{FE0F}|[\\x{1F3FB}-\\x{1F3FF}])?)*))*"
+        },
+        {
+          "name": "constant.numeric.rhombus",
+          "match": "(?<![\\p{L}\\p{N}_])(?:(?<![\\p{L}\\p{N}_.\\)\\]\\}])[+-])?(?:0x[0-9a-fA-F](?:_?[0-9a-fA-F])*|0o[0-7](?:_?[0-7])*|0b[01](?:_?[01])*|[0-9](?:_?[0-9])*/[0-9](?:_?[0-9])*|[0-9](?:_?[0-9])*\\.(?!(?:(?![()\\[\\]{}\\x27«»\";,#\\\\_@]|//|/\\*)[\\p{P}\\p{S}]))(?:[0-9](?:_?[0-9])*)?(?:[eE][+-]?[0-9](?:_?[0-9])*)?|\\.[0-9](?:_?[0-9])*(?:[eE][+-]?[0-9](?:_?[0-9])*)?|[0-9](?:_?[0-9])*[eE][+-]?[0-9](?:_?[0-9])*|[0-9](?:_?[0-9])*)(?![\\p{L}\\p{N}_])"
+        },
+        {
+          "name": "keyword.operator.rhombus",
+          "match": "#[\\x27,;:|]"
+        },
+        {
+          "include": "#nestedQuote"
+        },
+        {
+          "include": "#quote"
+        },
+        {
+          "include": "#parens"
+        },
+        {
+          "include": "#brackets"
+        },
+        {
+          "include": "#braces"
+        },
+        {
+          "include": "#guillemets"
+        },
+        {
+          "name": "punctuation.separator.rhombus",
+          "match": "[;,]"
+        },
+        {
+          "name": "punctuation.separator.block.rhombus",
+          "match": "[:|](?!(?:(?![()\\[\\]{}\\x27«»\";,#\\\\_@]|//|/\\*)[\\p{P}\\p{S}]))"
+        },
+        {
+          "name": "punctuation.separator.continuation.rhombus",
+          "match": "\\\\"
+        },
+        {
+          "name": "keyword.operator.rhombus",
+          "match": "(?:#[\\x27,;:|]|:{2,}|(?:(?![()\\[\\]{}\\x27«»\";,#\\\\_@]|//|/\\*)[\\p{P}\\p{S}])*(?:(?!:|[()\\[\\]{}\\x27«»\";,#\\\\_@]|//|/\\*)[\\p{P}\\p{S}]))"
+        },
+        {
+          "name": "punctuation.definition.at.rhombus",
+          "match": "@"
+        }
+      ]
+    }
+  }
+}

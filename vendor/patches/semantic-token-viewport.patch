@@ -1,0 +1,36 @@
+diff --git a/doclib/doc.rkt b/doclib/doc.rkt
+index 4dd6e89..142051d 100644
+--- a/doclib/doc.rkt
++++ b/doclib/doc.rkt
+@@ -486,8 +486,8 @@
+ ;; has line number 0 and character position 0.
+ (define/contract (doc-range-tokens doc range)
+   (-> Doc? Range? (listof SemanticToken?))
+-  (define pos-start (doc-pos->abs-pos doc (Range-start range)))
+-  (define pos-end (doc-pos->abs-pos doc (Range-end range)))
++  (define pos-start (clamped-abs-pos doc (Range-start range)))
++  (define pos-end (clamped-abs-pos doc (Range-end range)))
+   (split-semantic-tokens-by-line
+     doc
+     (filter (λ (token)
+diff --git a/tests/lib/doc-test.rkt b/tests/lib/doc-test.rkt
+index 20cc57d..e2c9482 100644
+--- a/tests/lib/doc-test.rkt
++++ b/tests/lib/doc-test.rkt
+@@ -18,6 +18,16 @@
+            drracket/check-syntax
+            data/interval-map)
+ 
++  (test-case
++    "Semantic token viewport ranges can extend past the end of the document"
++    (define text "#; (ignored)")
++    (define d (make-doc "file:///viewport.rkt" text))
++    (define bounded (doc-range-tokens d (Range (Pos 0 0) (Pos 0 (string-length text)))))
++    (check-not-equal? bounded '())
++    (check-equal? (doc-range-tokens d (Range (Pos 0 0) (Pos 3 0))) bounded)
++    (check-equal? (doc-range-tokens d (Range (Pos 0 0) (Pos 0 100))) bounded)
++    (check-equal? (doc-range-tokens d (Range (Pos 3 0) (Pos 4 0))) '()))
++
+   (test-case
+     "Document creation and basic accessors"
+     (define d (make-doc "file:///test.rkt" "hello world"))

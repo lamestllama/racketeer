@@ -1,0 +1,370 @@
+#lang racket/base
+;; Interface and protocol-facing data types.
+;;
+;; Placement rule:
+;; - Put JSON-serializable structs here when they are part of LSP request/response
+;;   payloads or otherwise cross protocol boundaries.
+;; - Put shared interface structs here when they are consumed across module
+;;   boundaries (for example formatting options and semantic-token metadata).
+;; - JSON payload structs are expected to be encoded with `->jsexpr`.
+;;
+;; Internal-only runtime/domain structs belong in `internal-types.rkt`.
+(require racket/class
+         racket/contract
+         racket/match
+         "json-util.rkt")
+
+(provide (struct-out CharRange)
+         (json-type-out Pos)
+         (json-type-out Range)
+         char-range-intersect?
+         (json-type-out TextEdit)
+         (json-type-out WorkspaceEdit)
+         (json-type-out CodeAction)
+         (json-type-out DiagnosticSeverity)
+         (json-type-out ErrorCode)
+         (json-type-out Diagnostic)
+         (json-type-out Location)
+         (json-type-out DocumentHighlight)
+         (json-type-out SymbolKind)
+         (json-type-out SymbolInformation)
+         (json-type-out DocumentSymbol)
+         (json-type-out Hover)
+         (json-type-out SignatureInformation)
+         (json-type-out SignatureHelp)
+         (json-type-out CompletionItem)
+         (json-type-out CompletionList)
+         (json-type-out ContentChangeEvent-Incremental)
+         (json-type-out ContentChangeEvent-Full)
+         (json-type-out ContentChangeEvent)
+         (json-type-out DocIdentifier)
+         (json-type-out DocItem)
+         (json-type-out InlayHintKind)
+         (json-type-out InlayHint)
+         (json-type-out ConfigurationItem)
+         (json-type-out ConfigurationParams)
+         (json-type-out Resyntax-Settings)
+         (json-type-out Document-Formatter)
+         (json-type-out Indentation-Formatter)
+         (json-type-out Fmt-Settings)
+         (json-type-out Formatting-Configuration)
+         (json-type-out Langserver-Settings)
+         (json-type-out Langserver-Settings-Update)
+         (json-type-out FileRename)
+         (json-type-out RenameFilesParams)
+         (json-type-out WorkspaceFolder)
+         (json-type-out WorkspaceFoldersChangeEvent)
+         (json-type-out DidChangeWorkspaceFoldersParams)
+         (json-type-out FileChangeType)
+         (json-type-out FileEvent)
+         (json-type-out DidChangeWatchedFilesParams)
+         (json-type-out FormattingOptions)
+         (struct-out LexerEntry)
+         (json-type-out SemanticTokenType)
+         (json-type-out SemanticTokenModifier)
+         (struct-out SemanticToken)
+         *semantic-token-types*
+         *semantic-token-modifiers*
+         abs-pos->Pos
+         (json-type-out Resyntax-Result))
+
+(define-json-struct Pos
+  [line exact-nonnegative-integer?]
+  [char exact-nonnegative-integer? #:json character])
+
+(define-json-struct Range
+  [start Pos]
+  [end Pos])
+
+(define/contract (char-range-intersect? left-start left-end right-start right-end)
+  (-> exact-nonnegative-integer?
+      exact-nonnegative-integer?
+      exact-nonnegative-integer?
+      exact-nonnegative-integer?
+      boolean?)
+  (and (< left-start right-end)
+       (< right-start left-end)))
+
+(define-json-struct TextEdit
+  [range Range]
+  [newText string?])
+
+(define-json-struct WorkspaceEdit
+  [changes (hashof symbol? (listof TextEdit))])
+
+(define-json-enum DiagnosticSeverity
+  [Error 1]
+  [Warning 2]
+  [Information 3]
+  [Hint 4])
+
+(define-json-enum ErrorCode
+  [ParseError -32700]
+  [InvalidRequest -32600]
+  [MethodNotFound -32601]
+  [InvalidParams -32602]
+  [InternalError -32603]
+  [ServerErrorStart -32099]
+  [ServerErrorEnd -32000]
+  [ServerNotInitialized -32002]
+  [UnknownErrorCode -32001]
+  [RequestCancelled -32800]
+  [RequestFailed -32803])
+
+(define-json-struct Diagnostic
+  [range Range]
+  [severity DiagnosticSeverity]
+  [source string?]
+  [message string?])
+
+(define-json-struct CodeAction
+  [title string?]
+  [kind string?]
+  [diagnostics (listof Diagnostic)]
+  [isPreferred boolean?]
+  [edit WorkspaceEdit])
+
+(define-json-struct Location
+  [uri string?]
+  [range Range])
+
+(define-json-struct DocumentHighlight
+  [range Range])
+
+(define-json-enum SymbolKind
+  [File 1]
+  [Module 2]
+  [Namespace 3]
+  [Package 4]
+  [Class 5]
+  [Method 6]
+  [Property 7]
+  [Field 8]
+  [Constructor 9]
+  [Enum 10]
+  [Interface 11]
+  [Function 12]
+  [Variable 13]
+  [Constant 14]
+  [String 15]
+  [Number 16]
+  [Boolean 17]
+  [Array 18]
+  [Object 19]
+  [Key 20]
+  [Null 21]
+  [EnumMember 22]
+  [Struct 23]
+  [Event 24]
+  [Operator 25]
+  [TypeParameter 26])
+
+(define-json-struct SymbolInformation
+  [name string?]
+  [kind SymbolKind]
+  [location Location])
+
+;; Hierarchical document symbol. `range` covers the whole form (including its
+;; body) while `selectionRange` only covers the name. `children` recursively
+;; contains nested document symbols.
+(define-json-struct DocumentSymbol
+  [name string?]
+  [kind SymbolKind]
+  [range Range]
+  [selectionRange Range]
+  [children (listof DocumentSymbol)])
+
+(define-json-struct Hover
+  [contents string?]
+  [range Range])
+
+(define-json-struct SignatureInformation
+  [label string?]
+  [documentation string?])
+
+(define-json-struct SignatureHelp
+  [signatures (listof SignatureInformation)])
+
+(define-json-struct CompletionItem
+  [label string?])
+
+(define-json-struct CompletionList
+  [isIncomplete boolean?]
+  [items (listof CompletionItem)])
+
+(define-json-struct ContentChangeEvent-Incremental
+  [range Range]
+  [rangeLength (optional exact-nonnegative-integer?)]
+  [text string?])
+
+(define-json-struct ContentChangeEvent-Full
+  [text string?])
+
+(define-json-union ContentChangeEvent
+  ContentChangeEvent-Incremental
+  ContentChangeEvent-Full)
+
+;; VersionedTextDocumentIdentifier
+(define-json-struct DocIdentifier
+  [version exact-nonnegative-integer?]
+  [uri string?])
+
+;; TextDocumentItem
+(define-json-struct DocItem
+  [uri string?]
+  [languageId string?]
+  [version exact-nonnegative-integer?]
+  [text string?])
+
+(define-json-enum InlayHintKind
+  [Type 1]
+  [Parameter 2])
+
+(define-json-struct InlayHint
+  [position Pos]
+  [label string?]
+  [kind InlayHintKind]
+  [tooltip string?])
+
+(define-json-struct ConfigurationItem
+  [scopeUri (optional string?)]
+  [section string?])
+
+(define-json-struct ConfigurationParams
+  [items (listof ConfigurationItem)])
+
+(define-json-struct Resyntax-Settings
+  [enable (optional boolean?)])
+
+(define-json-enum Document-Formatter
+  [fixw "fixw"]
+  [drracket "drracket"]
+  [fmt "fmt"])
+
+(define-json-enum Indentation-Formatter
+  [fixw "fixw"]
+  [drracket "drracket"])
+
+(define-json-struct Fmt-Settings
+  [indent (optional exact-nonnegative-integer?)]
+  [max-blank-lines (optional exact-nonnegative-integer?) #:json maxBlankLines]
+  [width (optional exact-nonnegative-integer?)])
+
+(define-json-struct Formatting-Configuration
+  [document-formatter (optional Document-Formatter) #:json documentFormatter]
+  [indentation-formatter (optional Indentation-Formatter) #:json indentationFormatter]
+  [fmt-settings (optional Fmt-Settings) #:json fmtSettings])
+
+(define-json-struct Langserver-Settings
+  [resyntax (optional Resyntax-Settings)]
+  [formatting (optional Formatting-Configuration)])
+
+(define-json-union Langserver-Settings-Update
+  Langserver-Settings
+  (listof Langserver-Settings))
+
+(define-json-struct FileRename
+  [oldUri string?]
+  [newUri string?])
+
+(define-json-struct RenameFilesParams
+  [files (listof FileRename)])
+
+(define-json-struct WorkspaceFolder
+  [uri string?]
+  [name string?])
+
+(define-json-struct WorkspaceFoldersChangeEvent
+  [added (listof WorkspaceFolder)]
+  [removed (listof WorkspaceFolder)])
+
+(define-json-struct DidChangeWorkspaceFoldersParams
+  [event WorkspaceFoldersChangeEvent])
+
+(define-json-enum FileChangeType
+  [created 1]
+  [changed 2]
+  [deleted 3])
+
+(define-json-struct FileEvent
+  [uri string?]
+  [type FileChangeType])
+
+(define-json-struct DidChangeWatchedFilesParams
+  [changes (listof FileEvent)])
+
+(define uinteger-upper-limit (sub1 (expt 2 31)))
+
+(define (uinteger? x)
+  (and (integer? x) (<= 0 x uinteger-upper-limit)))
+
+(define-json-struct FormattingOptions
+  [tab-size (contract uinteger?) #:json tabSize]
+  [insert-spaces boolean? #:json insertSpaces]
+  [trim-trailing-whitespace (optional boolean?) #:json trimTrailingWhitespace]
+  [insert-final-newline (optional boolean?) #:json insertFinalNewline]
+  [trim-final-newlines (optional boolean?) #:json trimFinalNewlines]
+  #:rest extras)
+
+;; Character-offset range. Distinct from the protocol-level `Range`
+;; (which uses line/char positions); this one uses zero-based absolute
+;; character offsets.
+(struct CharRange
+  (start end)
+  #:transparent)
+
+;; Public query result for cached lexer tokens. Positions are zero-based
+;; absolute character offsets; callers still need to convert them to line /
+;; character pairs for LSP positions.
+(struct/contract LexerEntry
+  ([start exact-nonnegative-integer?]
+   [end exact-nonnegative-integer?]
+   [text string?]
+   [type symbol?])
+  #:transparent)
+
+(define-json-enum SemanticTokenType
+  [variable "variable"]
+  [function "function"]
+  [string "string"]
+  [number "number"]
+  [regexp "regexp"]
+  [comment "comment"])
+
+(define-json-enum SemanticTokenModifier
+  [definition "definition"])
+
+(struct SemanticToken
+  (start end type modifiers)
+  #:transparent)
+
+;; The order of this list is irrelevant.
+;; The client receives this list from server ability declaration during
+;; initialize handshake then use it to decode server semantic tokens messages.
+;; Different order produces different encoding results of semantic tokens,
+;; but does not affect client and server behavior.
+;; To change the order, simply change it here, don't need to change other code.
+(define *semantic-token-types*
+  (list SemanticTokenType-variable
+        SemanticTokenType-function
+        SemanticTokenType-string
+        SemanticTokenType-number
+        SemanticTokenType-regexp
+        SemanticTokenType-comment))
+
+;; The order of this list is irrelevant, similar to *semantic-token-types*.
+(define *semantic-token-modifiers*
+  (list SemanticTokenModifier-definition))
+
+(define (abs-pos->Pos editor pos)
+  (match-define (list line char) (send editor pos->line/char pos))
+  (Pos #:line line #:char char))
+
+;; Resyntax-Result: result of a resyntax refactoring suggestion
+(define-json-struct Resyntax-Result
+  [start exact-nonnegative-integer?]
+  [end exact-nonnegative-integer?]
+  [message string?]
+  [rule-name symbol?]
+  [new-text string?])
+

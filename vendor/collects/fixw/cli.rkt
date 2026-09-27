@@ -1,0 +1,151 @@
+#lang racket/base
+
+(provide run/user
+         read-config
+         read-config/rec
+         cli-main)
+
+(require "private/api.rkt"
+         "private/rules.rkt"
+         racket/port
+         racket/path
+         racket/match
+         racket/contract
+         racket/hash
+         racket/cmdline)
+
+(define (cli-main)
+  (define time-mode? (make-parameter #f))
+  (define trailing-newline? (make-parameter #f))
+  (define ensure-newline-eof? (make-parameter #f))
+  (define paths
+    (command-line
+      #:program "fixw"
+      #:once-each
+      [("-t" "--time") "show total time to run"
+       (time-mode? #t)]
+      [("-n" "--newline") "ensure a trailing empty line"
+       (trailing-newline? #t)]
+      [("--ensure-newline-eof")
+       "ensure the file ends with at least one newline"
+       (ensure-newline-eof? #t)]
+      #:args files-or-dirs
+      files-or-dirs))
+
+  (define formatter
+    (lambda (in rules)
+      (fixw in rules
+            #:interactive? #f
+            #:trailing-newline? (trailing-newline?)
+            #:ensure-newline-eof? (ensure-newline-eof?))))
+
+  (cond [(time-mode?) (time (run/user paths #:formatter formatter))]
+        [else (run/user paths #:formatter formatter)]))
+
+(define (path-exist? path)
+  (or (file-exists? path)
+      (directory-exists? path)
+      (link-exists? path)))
+
+(define (run/user path-strings #:formatter [formatter fixw])
+  (cond [(null? path-strings)
+         (define output
+           (formatter (current-input-port) (read-config/rec (current-directory))))
+         (display output)]
+        [else
+         (for ([p path-strings])
+           (cond [(not (path-string? p)) (error (format "~v is not a path." p))]
+                 [(not (path-exist? p)) (error (format "path ~v does not exist." p))]
+                 [(file? p) (format-file p (read-config/rec p) #:formatter formatter)]
+                 [(dir? p) (format-dir p (read-config/rec p) #:formatter formatter)]
+                 [else (error "unknown error for path: ~v" p)]))]))
+
+(define/contract (file? path)
+  (-> (or/c path? path-string?) boolean?)
+
+  (file-exists? path))
+
+(define/contract (dir? path)
+  (-> (or/c path? path-string?) boolean?)
+
+  (directory-exists? path))
+
+(define (symbol-list? v)
+  (and (list? v) (andmap symbol? v)))
+
+(define/contract (format-file path rules #:formatter [formatter fixw])
+  (->* ((or/c path? path-string?) (or/c rules? #f)) (#:formatter procedure?) void?)
+
+  (call-with-input-file path
+    (λ (infile)
+      (define original (port->string infile))
+      (define formatted (formatter (open-input-string original) rules))
+      (when (not (string=? formatted original))
+        (with-output-to-file path
+          #:exists 'replace
+          (λ () (display formatted)))))))
+
+(define/contract (format-dir path rules #:formatter [formatter fixw])
+  (->* ((or/c path? path-string?) (or/c rules? #f)) (#:formatter procedure?) void?)
+
+  (let loop ([path path]
+             [rules rules])
+    (for ([p (directory-list path #:build? #t)])
+      (cond [(not (path-exist? p))
+             (error (format "path ~v does not exist." p))]
+            [(and (file? p) (equal? #".rkt" (path-get-extension p)))
+             (format-file p rules #:formatter formatter)]
+            [(dir? p)
+             (when (not (string=? ".git"
+                                  (some-system-path->string
+                                    (file-name-from-path p))))
+               (loop p (rules-merge rules (read-config p))))]
+            [else (void)]))))
+
+(define (rules-merge old-rules new-rules)
+  (-> (or rules? #f) (or rules? #f) rules?)
+
+  (hash-union (or old-rules (hash)) (or new-rules (hash))
+              #:combine/key (λ (k old new) new)))
+
+;; recursively read config start at `path` towards root directory
+(define/contract (read-config/rec dir-path)
+  (-> (or/c path? path-string?) (or/c hash? #f))
+
+  (let loop ([dir-path (simple-form-path dir-path)]
+             [rules (hash)])
+    (define upper-rules (read-config dir-path))
+    (define-values (base _name _must-be-dir?) (split-path dir-path))
+    (cond [(not base) (rules-merge upper-rules rules)]
+          [else (loop base (rules-merge upper-rules rules))])))
+
+(define/contract (read-config dir-path)
+  (-> (or/c path? path-string?) (or/c hash? #f))
+
+  (define conf-file-name (build-path (simple-form-path dir-path) ".lispwords"))
+  (cond [(file-exists? conf-file-name) (parse-config conf-file-name)]
+        [else #f]))
+
+(define/contract (parse-config file-path)
+  (-> complete-path? (or/c rules? #f))
+
+  (call-with-input-file file-path
+    (λ (in)
+      (for/fold ([rules (hash)])
+                ([r (in-port read in)])
+        (match r
+          [(list (? symbol? sym) (? rule? rule))
+           (hash-set rules (symbol->string sym) rule)]
+          [(list (? rule? rule) (? symbol? sym))
+           (hash-set rules (symbol->string sym) rule)]
+          [(list (? symbol-list? sym-lst) (? rule? rule))
+           (for/fold ([rules rules])
+                     ([sym sym-lst])
+             (hash-set rules (symbol->string sym) rule))]
+          [(list (? rule? rule) sym-lst ...)
+           #:when (symbol-list? sym-lst)
+           (for/fold ([rules rules])
+                     ([sym sym-lst])
+             (hash-set rules (symbol->string sym) rule))]
+          [text (error (format "error rule ~v\n in path ~v" text file-path))])))))
+

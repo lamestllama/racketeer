@@ -1,0 +1,349 @@
+'use strict';
+const assert = require('node:assert/strict');
+const test = require('node:test');
+const fs = require('node:fs');
+const path = require('node:path');
+const os = require('node:os');
+const net = require('node:net');
+const vm = require('node:vm');
+const { createRequire } = require('node:module');
+const { once } = require('node:events');
+const { createLanguageProcess } = require('../vscode/language-process');
+
+function load(name, dependencies) {
+  const filename = path.join(__dirname, '..', 'vscode', name);
+  const localRequire = createRequire(filename);
+  const module = { exports: {} };
+  vm.runInNewContext(fs.readFileSync(filename, 'utf8'), {
+    module, exports: module.exports,
+    require: name => Object.hasOwn(dependencies, name) ? dependencies[name] : localRequire(name)
+  }, { filename });
+  return module.exports;
+}
+function deferred() {
+  let resolve, reject;
+  const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
+  return { promise, resolve, reject };
+}
+function event() {
+  const callbacks = new Set();
+  return {
+    subscribe(callback) { callbacks.add(callback); return { dispose: () => callbacks.delete(callback) }; },
+    fire(value) { for (const callback of callbacks) callback(value); },
+    get size() { return callbacks.size; }
+  };
+}
+const disposable = () => ({ dispose() {} });
+const target = { program: '/workspace/example.rkt', cwd: '/workspace', racketExecutable: 'racket' };
+
+test('disposal retains ownership until a pending workflow starts and terminates', async () => {
+  const started = event(), terminated = event(), launch = deferred();
+  let configuration, factory, factoryDisposed = false;
+  const stopped = [];
+  const vscode = { workspace: { isTrusted: true }, debug: {
+    registerDebugAdapterTrackerFactory(_type, value) {
+      factory = value; return { dispose() { factoryDisposed = true; } };
+    },
+    onDidStartDebugSession: started.subscribe,
+    onDidTerminateDebugSession: terminated.subscribe,
+    startDebugging(_folder, config) { configuration = config; return launch.promise; },
+    async stopDebugging(session) { stopped.push(session.id); terminated.fire(session); }
+  } };
+  const context = { subscriptions: [] };
+  const sessions = load('sessions.js', { vscode, './execution': { launchConfiguration: (_target, config) => config } }).registerSessions(context);
+  const pending = sessions.start(target, {});
+  context.subscriptions.forEach(item => item.dispose());
+  assert.equal(factoryDisposed, false);
+  const session = { id: 'late', configuration };
+  assert.ok(factory.createDebugAdapterTracker(session));
+  started.fire(session);
+  launch.resolve(true);
+  const record = await pending;
+  await record.done;
+  assert.ok(stopped.includes('late'));
+  assert.equal(record.ended, true);
+  assert.equal(factoryDisposed, true);
+  assert.equal(started.size, 0);
+  assert.equal(terminated.size, 0);
+  await assert.rejects(sessions.start(target, {}), /stopped/);
+});
+
+test('failed pending startup releases disposal listeners', async () => {
+  const launch = deferred();
+  const started = event(), terminated = event();
+  const vscode = { workspace: { isTrusted: true }, debug: {
+    registerDebugAdapterTrackerFactory: disposable,
+    onDidStartDebugSession: started.subscribe,
+    onDidTerminateDebugSession: terminated.subscribe,
+    startDebugging: () => launch.promise
+  } };
+  const context = { subscriptions: [] };
+  const sessions = load('sessions.js', { vscode, './execution': { launchConfiguration: (_target, config) => config } }).registerSessions(context);
+  const pending = sessions.start(target, {});
+  context.subscriptions.forEach(item => item.dispose());
+  launch.resolve(false);
+  await assert.rejects(pending, /cancelled or failed/);
+  assert.equal(started.size, 0);
+  assert.equal(terminated.size, 0);
+});
+
+test('paused selection inspection preserves the pending outer interaction', async () => {
+  const outer = deferred(), entered = deferred();
+  const session = { id: 'owned', async customRequest(_method, args) {
+    if (args.frameId === undefined) { entered.resolve(); return outer.promise; }
+    assert.equal(args.frameId, 23);
+    return { result: '4' };
+  } };
+  const record = { session, phase: 'ready', ready: Promise.resolve(session), done: new Promise(() => {}) };
+  const vscode = { commands: { executeCommand: async () => {
+    // Focusing the console can clear or change the editor's selected frame.
+    vscode.debug.activeStackItem = undefined;
+  } }, debug: {} };
+  const repl = load('debug-repl.js', { vscode }).registerDebugRepl({ start: async () => record });
+  const evaluating = repl.evaluate(target, '(f 4)');
+  await entered.promise;
+  record.phase = 'paused';
+  await assert.rejects(repl.evaluate(target, 'x'), /Select a stack frame/);
+  vscode.debug.activeStackItem = { session: { id: 'another-session' }, frameId: 23 };
+  await assert.rejects(repl.evaluate(target, 'x'), /Select a stack frame/);
+  vscode.debug.activeStackItem = { session, frameId: 23 };
+  assert.equal((await repl.evaluate(target, 'x')).result, '4');
+  record.phase = 'running';
+  await assert.rejects(repl.evaluate(target, '(f 5)'), /already evaluating/);
+  outer.resolve({ result: '8' });
+  assert.equal((await evaluating).result, '8');
+});
+
+test('captured source ownership gates Continue to Cursor and output does not update contexts', async () => {
+  const factories = [], commands = new Map(), contextCalls = [], requests = [];
+  const terminated = event();
+  const uri = { scheme: 'debug', toString: () => 'debug:session-B/source-1' };
+  const session = { id: 'A', type: 'racketdap', async customRequest(method, args) { requests.push({ method, args }); } };
+  const vscode = {
+    EventEmitter: class { event = () => disposable(); fire() {} dispose() {} },
+    debug: {
+      activeDebugSession: session, activeStackItem: { session, threadId: 1, frameId: 2 },
+      registerDebugAdapterTrackerFactory(_type, factory) { factories.push(factory); return disposable(); },
+      onDidChangeActiveDebugSession: disposable, onDidTerminateDebugSession: terminated.subscribe,
+      asDebugSourceUri: () => uri
+    },
+    window: { showErrorMessage() {}, activeTextEditor: { document: { uri }, selection: { active: { line: 8, character: 2 } } } },
+    workspace: { onDidChangeTextDocument: disposable },
+    languages: { onDidChangeDiagnostics: disposable },
+    commands: {
+      registerCommand(id, command) { commands.set(id, command); return disposable(); },
+      async executeCommand(...args) { contextCalls.push(args); }
+    }
+  };
+  const context = { subscriptions: [] };
+  const sources = load('debug-sources.js', { vscode }).registerDebugSources(context);
+  factories[0].createDebugAdapterTracker({ id: 'B' }).onDidSendMessage({
+    type: 'event', event: 'loadedSource', body: { reason: 'new', source: { path: target.program, sourceReference: 1 } }
+  });
+  assert.equal(sources.pathFor(uri), target.program);
+  assert.equal(sources.pathFor(uri, 'A'), undefined);
+  assert.equal(sources.pathFor(uri, 'B'), target.program);
+  load('debug-actions.js', { vscode }).registerDebugActions(context, sources);
+  const tracker = factories[1].createDebugAdapterTracker(session);
+  tracker.onDidSendMessage({ type: 'event', event: 'stopped', body: { threadId: 1, racketdapActions: ['racketdap/continueToLocation'] } });
+  const updates = contextCalls.length;
+  for (let i = 0; i < 1000; i++) tracker.onDidSendMessage({ type: 'event', event: 'output', body: { output: 'line\n' } });
+  assert.equal(contextCalls.length, updates);
+  await assert.rejects(commands.get('racketdap.continueToCursor')(), /current Racket debug session/);
+  assert.equal(requests.length, 0);
+  terminated.fire(session);
+  assert.ok(contextCalls.some(args => args[1] === 'racketdap.continueToCursor.enabled' && args[2] === false));
+});
+
+test('language startup deadline terminates a real unresponsive child', async t => {
+  const timeout = deferred();
+  const server = createLanguageProcess(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {}, {
+    timeout: 80, onTimeout: timeout.resolve
+  });
+  t.after(() => server.dispose());
+  const child = await server.start();
+  const exited = once(child, 'exit');
+  assert.match((await timeout.promise).message, /timed out/);
+  await exited;
+  assert.equal(server.cancelled, true);
+  await assert.rejects(server.start(), /cancelled/);
+});
+
+test('ready language processes clear the startup deadline and are reaped on disposal', async t => {
+  let timedOut = false;
+  const server = createLanguageProcess(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {}, {
+    timeout: 50, onTimeout: () => { timedOut = true; }
+  });
+  t.after(() => server.dispose());
+  const child = await server.start();
+  server.ready();
+  await new Promise(resolve => setTimeout(resolve, 80));
+  assert.equal(timedOut, false);
+  assert.equal(child.exitCode, null);
+  const exited = once(child, 'exit');
+  await server.dispose();
+  await exited;
+});
+
+test('language cancellation closes owned pipes while a fixture descendant retains inherited stdio', { timeout: 10000 }, async () => {
+  const connected = deferred();
+  let socket;
+  let socketError;
+  const cleanupServer = net.createServer(connection => {
+    socket = connection;
+    socket.on('error', error => { socketError = error; });
+    connected.resolve(connection);
+  });
+  cleanupServer.listen(0, '127.0.0.1');
+  await once(cleanupServer, 'listening');
+  const descendant = `
+    const socket = require('node:net').connect(${cleanupServer.address().port}, '127.0.0.1');
+    let input = '';
+    socket.on('data', chunk => {
+      input += chunk;
+      let end;
+      while ((end = input.indexOf('\\n')) >= 0) {
+        const command = input.slice(0, end);
+        input = input.slice(end + 1);
+        if (command === 'ping') socket.write('alive');
+      }
+    });
+    socket.on('error', () => { process.exitCode = 1; });
+    socket.on('close', () => process.exit(process.exitCode || 0));
+  `;
+  // Detach the fixture descendant so it can outlive its parent on Windows.
+  // Its private control connection still owns its lifetime and cleanup.
+  const parent = `
+    require('node:child_process').spawn(process.execPath, ['-e', ${JSON.stringify(descendant)}], {
+      stdio: 'inherit', detached: true, windowsHide: true
+    });
+    setInterval(() => {}, 1000);
+  `;
+  const server = createLanguageProcess(process.execPath, ['-e', parent], {});
+  let timer;
+  try {
+    const child = await server.start();
+    await Promise.race([connected.promise, new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error('Fixture descendant did not connect')), 3000);
+    })]);
+    clearTimeout(timer);
+    async function ping(stage) {
+      const response = once(socket, 'data');
+      socket.write('ping\n');
+      try {
+        const [answer] = await Promise.race([response, new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error(`Fixture descendant did not answer ${stage}`)), 1000);
+        })]);
+        assert.equal(answer.toString(), 'alive');
+      } finally { clearTimeout(timer); }
+    }
+    await ping('before parent termination');
+    server.cancelStart();
+    await Promise.race([server.dispose(), new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error('Inherited stdio blocked language process disposal')), 1000);
+    })]);
+    clearTimeout(timer);
+    assert.ok(child.exitCode !== null || child.signalCode !== null, 'Owned child has exited');
+    assert.ok(child.stdin.destroyed && child.stdout.destroyed && child.stderr.destroyed);
+    // The descendant is still alive. Cleanup uses this private fixture socket,
+    // never a numeric PID that could have been recycled after the parent exits.
+    await ping('after parent termination');
+  } finally {
+    clearTimeout(timer);
+    // The private control connection owns the fixture descendant's lifetime.
+    // Closing it also releases inherited stdio if cancellation itself failed,
+    // so cleanup cannot hide that failure behind a blocked close handshake.
+    socket?.destroy();
+    await new Promise(resolve => cleanupServer.close(resolve));
+    await server.dispose();
+  }
+  assert.ifError(socketError);
+});
+
+for (const mode of ['cancel', 'reject', 'timeout']) test({
+  cancel: 'restart and disposal cancel language initialization before joining its queue',
+  reject: 'initialization failure reports once and SDK stop reaps the starting process',
+  timeout: 'configured language startup deadline reaps its process and gives timeout-specific advice'
+}[mode], { timeout: 10000 }, async t => {
+  const initializeFails = mode === 'reject';
+  const configuredTimeout = mode === 'timeout' ? 1 : mode === 'cancel' ? 240 : 'unbounded';
+  const commands = new Map(), starting = [];
+  const children = [];
+  const errors = [];
+  const changes = event();
+  const vscode = {
+    StatusBarAlignment: { Left: 1 },
+    window: {
+      createOutputChannel: () => ({ appendLine() {}, append() {}, dispose() {}, show() {} }),
+      createStatusBarItem: () => ({ show() {}, hide() {}, dispose() {} }),
+      showErrorMessage: async message => { errors.push(message); }, onDidChangeActiveTextEditor: disposable
+    },
+    workspace: {
+      isTrusted: true, textDocuments: [], workspaceFolders: [],
+      getConfiguration: () => ({ get: (key, fallback) => key === 'languageServer.startupTimeoutSeconds' ? configuredTimeout : fallback }),
+      createFileSystemWatcher: disposable, onDidOpenTextDocument: disposable, onDidChangeConfiguration: changes.subscribe
+    },
+    extensions: { getExtension() {} },
+    commands: { registerCommand(id, command) { commands.set(id, command); return disposable(); } }
+  };
+  class Client {
+    constructor(_id, _name, factory, options) {
+      this.factory = factory; this.options = options; this.state = event();
+      this.diagnostics = disposable();
+      this.entered = deferred(); starting.push(this.entered.promise);
+    }
+    createDefaultErrorHandler() { return { error: () => ({}), closed: () => ({ action: 'restart' }) }; }
+    onDidChangeState = callback => this.state.subscribe(callback);
+    isRunning() { return false; }
+    dispose() { return this.stop(); }
+    async stop() { throw new Error('SDK cannot stop an initializing connection'); }
+    async start() {
+      const child = await this.factory(); children.push(child); this.entered.resolve();
+      if (!initializeFails) {
+        await once(child, 'close');
+        assert.equal(this.options.errorHandler.closed().action, 'stop');
+      }
+      const failure = new Error(initializeFails ? 'Initialize rejected' : 'Connection closed');
+      assert.equal(this.options.initializationFailedHandler(failure), false);
+      // Match the SDK failure path: its public stop is intentionally unawaited.
+      // The owned client must make that operation valid during initialization.
+      void this.stop();
+      throw failure;
+    }
+  }
+  const language = load('language-client.js', {
+    vscode,
+    'vscode-languageclient/node': { LanguageClient: Client, State: {}, CloseAction: { DoNotRestart: 'stop' } },
+    './language-process': { createLanguageProcess: (_command, _args, _options, lifecycle) => {
+      assert.equal(lifecycle.timeout, mode === 'timeout' ? 1000 : mode === 'cancel' ? 240000 : 180000);
+      return createLanguageProcess(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {}, lifecycle);
+    } }
+  }).registerLanguageTools({ subscriptions: [], asAbsolutePath: value => value }, { setLanguageClient() {} });
+  t.after(() => language.dispose());
+  const first = commands.get('racketdap.restartLanguageServer')();
+  while (!starting.length) await Promise.resolve();
+  await starting[0];
+  if (mode !== 'cancel') {
+    await first;
+    await language.dispose();
+    assert.equal(children.length, 1);
+    assert.equal(errors.length, 1);
+    if (initializeFails) assert.match(errors[0], /Initialize rejected/);
+    else {
+      assert.match(errors[0], /timed out after 1 seconds/);
+      assert.match(errors[0], /startupTimeoutSeconds/);
+      assert.doesNotMatch(errors[0], /Check racketdap.racketExecutable/);
+    }
+    assert.ok(children[0].exitCode !== null || children[0].signalCode !== null);
+    return;
+  }
+  const second = commands.get('racketdap.restartLanguageServer')();
+  await first;
+  while (starting.length < 2) await Promise.resolve();
+  await starting[1];
+  await language.dispose();
+  await second;
+  assert.equal(children.length, 2);
+  assert.deepEqual(errors, []);
+  assert.ok(children.every(child => child.exitCode !== null || child.signalCode !== null));
+});
