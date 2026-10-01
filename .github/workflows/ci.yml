@@ -56,9 +56,9 @@ jobs:
         env:
           npm_config_offline: 'true'
         run: node scripts/package-extension.js | tee .test-output/ci/package.log
-      - name: Run native, protocol, lifecycle and build tests
+      - name: Run workspace reference regressions
         id: headless
-        run: node scripts/test-headless.js 2>&1 | tee .test-output/ci/headless.log
+        run: node --test --test-concurrency=1 --test-timeout=300000 tests/workspace-index.test.js 2>&1 | tee .test-output/ci/headless.log
       - name: Diagnose failed macOS language loads
         if: ${{ failure() && runner.os == 'macOS' && steps.headless.outcome == 'failure' }}
         timeout-minutes: 15

@@ -54,6 +54,7 @@ exports.run = async function () {
         throw new Error(`Timed out: ${description}. ${JSON.stringify({
           editor: editor?.document.uri.toString(), selection: editor?.selection,
           sourceDocument: { closed: document.isClosed, version: document.version },
+          workspaceAnalysis: vscode.workspace.getConfiguration('racket-langserver', workspace.uri).get('workspaceAnalysis'),
           stackItem: item && { sessionId: item.session.id, threadId: item.threadId, frameId: item.frameId },
           breakpoints: vscode.debug.breakpoints, references: referenceLocations, messages: messages.slice(-20)
         })}`);

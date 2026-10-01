@@ -150,6 +150,8 @@ function registerLanguageTools(context, debugSources) {
       executable: config.get('racketExecutable', 'racket'), timeout: startupTimeoutSeconds * 1000, output,
       onStatus: result => {
         if (client !== next) return;
+        if (result.state !== 'indexing') output.appendLine(
+          `Workspace index: ${result.state}, ${result.indexed} files analysed, ${result.failures} failures.`);
         if (result.state === 'indexing') {
           showStatus('$(sync~spin) Racket: indexing',
             `Finding workspace references: ${result.indexed} files analysed. Reference requests wait for this pass.`);

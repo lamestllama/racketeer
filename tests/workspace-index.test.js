@@ -88,6 +88,21 @@ test('standalone analysis preserves local references and protects protocol outpu
   assert.ok(!p.diagnostics().includes('more noise'));
 });
 
+test('references from nested imports include unopened consumers and the definition', { timeout: 120000 }, async t => {
+  const p = await project(t);
+  fs.cpSync(path.join(root, 'examples/multi-file'), p.filename('multi-file'), { recursive: true,
+    filter: source => path.basename(source) !== 'compiled' });
+  p.write('multi-file/index-consumer.rkt', '#lang racket/base\n(require "app/orders.rkt")\n(order-total 10 2 1/10)\n');
+  const source = p.open('multi-file/main.rkt', fs.readFileSync(p.filename('multi-file/main.rkt'), 'utf8'));
+  await p.update();
+  const locations = await p.references(source, { line: 5, character: 35 }, true);
+  for (const [file, line] of [['multi-file/main.rkt', 5], ['multi-file/app/orders.rkt', 4],
+    ['multi-file/index-consumer.rkt', 2]]) {
+    assert.ok(from(locations, uri(p.filename(file))).some(location => location.range.start.line === line),
+      JSON.stringify({ file, line, locations, status: p.notifications.at(-1), diagnostics: p.diagnostics() }));
+  }
+});
+
 test('cancelled requests finish while a macro is blocked, and the index recovers', { timeout: 120000 }, async t => {
   const p = await project(t);
   p.settings.timeoutSeconds = 2;
