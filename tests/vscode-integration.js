@@ -44,7 +44,15 @@ exports.run = async function () {
   async function waitUntil(predicate, description) {
     const deadline = Date.now() + 20000;
     while (!await predicate()) {
-      if (Date.now() >= deadline) throw new Error(`Timed out: ${description}`);
+      if (Date.now() >= deadline) {
+        const editor = vscode.window.activeTextEditor;
+        const item = vscode.debug.activeStackItem;
+        throw new Error(`Timed out: ${description}. ${JSON.stringify({
+          editor: editor?.document.uri.toString(), selection: editor?.selection,
+          stackItem: item && { sessionId: item.session.id, threadId: item.threadId, frameId: item.frameId },
+          breakpoints: vscode.debug.breakpoints, messages: messages.slice(-20)
+        })}`);
+      }
       await new Promise(resolve => setTimeout(resolve, 20));
     }
   }
@@ -110,8 +118,7 @@ exports.run = async function () {
     await document.save();
     const atReturn = bp => bp instanceof vscode.SourceBreakpoint &&
       bp.location.uri.toString() === capturedUri && bp.location.range.start.line === 4;
-    const breakpointEditor = await vscode.window.showTextDocument(capturedDocument);
-    breakpointEditor.selection = new vscode.Selection(4, 0, 4, 0);
+    await vscode.window.showTextDocument(capturedDocument, { selection: new vscode.Range(4, 0, 4, 0) });
     await vscode.commands.executeCommand('editor.debug.action.toggleBreakpoint');
     await waitUntil(() => vscode.debug.breakpoints.some(atReturn), 'F9 adds breakpoint in captured source');
     await waitUntil(() => messages.some(m => m.type === 'response' && m.command === 'setBreakpoints' &&
@@ -229,12 +236,14 @@ exports.run = async function () {
     assert.equal(stopped.body.racketdapStopKind, 'before');
     assert.ok(stopped.body.racketdapActions.includes('racketdap/skipExpression'));
     assert.ok(!stopped.body.racketdapActions.includes('racketdap/replaceResults'));
+    await selectedFrame(paritySession, stopped);
     assert.equal((await vscode.commands.executeCommand('racketdap.skipExpression', '(+ hidden 7)')).result, '10');
     await paritySession.customRequest('next', { threadId: stopped.body.threadId });
     stopped = await event('stopped');
     assert.equal(stopped.body.racketdapStopKind, 'after');
     assert.ok(stopped.body.racketdapActions.includes('racketdap/replaceResults'));
     assert.ok(!stopped.body.racketdapActions.includes('racketdap/skipExpression'));
+    await selectedFrame(paritySession, stopped);
     assert.equal((await vscode.commands.executeCommand('racketdap.replaceResults', '20')).result, '20');
     await vscode.commands.executeCommand('racketdap.printResults');
     await event('output', m => m.body.category === 'console' && m.body.output === '20\n');
