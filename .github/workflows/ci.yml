@@ -13,6 +13,74 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  core:
+    name: Core / ${{ matrix.os }} / Racket ${{ matrix.racket }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022, macos-15]
+        racket: ['9.1', stable]
+        include:
+          - os: ubuntu-24.04
+            architecture: x64
+          - os: windows-2022
+            architecture: x64
+          - os: macos-15
+            architecture: arm64
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: vscode/package-lock.json
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - uses: Bogdanp/setup-racket@2466913449df77df2bad149d1f2fc4e1ea4795dd # v1.15
+        with:
+          version: ${{ matrix.racket }}
+          architecture: ${{ matrix.architecture }}
+          distribution: full
+          variant: CS
+      - name: Record environment
+        run: |
+          mkdir -p .test-output/ci
+          { racket --version; node --version; npm --version; python --version; } | tee .test-output/ci/environment.log
+      - name: Install locked build dependencies
+        run: npm ci --prefix vscode
+      - name: Build the extension offline
+        env:
+          npm_config_offline: 'true'
+        run: node scripts/package-extension.js | tee .test-output/ci/package.log
+      - name: Run native, protocol, lifecycle and build tests
+        id: headless
+        run: node scripts/test-headless.js 2>&1 | tee .test-output/ci/headless.log
+      - name: Diagnose failed macOS language loads
+        if: ${{ failure() && runner.os == 'macOS' && steps.headless.outcome == 'failure' }}
+        timeout-minutes: 15
+        run: python scripts/diagnose-language-loads.py 2>&1 | tee .test-output/ci/language-load-diagnostic.log
+      - name: Verify the artifact and checkout
+        run: |
+          node scripts/artifact.js verify "$(node -p "'dist/' + require('./vscode/package.json').name + '-' + require('./vscode/package.json').version + '.vsix'")"
+          git diff --exit-code
+      - name: Retain core results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: core-${{ matrix.os }}-racket-${{ matrix.racket }}
+          include-hidden-files: true
+          path: .test-output/ci/
+          if-no-files-found: warn
+          retention-days: 14
+
   editor:
     name: Installed extension / ${{ matrix.os }} / Racket ${{ matrix.racket }} / VS Code ${{ matrix.code }}
     runs-on: ${{ matrix.os }}
@@ -21,6 +89,22 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          - os: ubuntu-24.04
+            architecture: x64
+            racket: '9.1'
+            code: minimum
+          - os: ubuntu-24.04
+            architecture: x64
+            racket: '9.1'
+            code: stable
+          - os: ubuntu-24.04
+            architecture: x64
+            racket: stable
+            code: stable
+          - os: windows-2022
+            architecture: x64
+            racket: '9.1'
+            code: stable
           - os: macos-15
             architecture: arm64
             racket: '9.1'
