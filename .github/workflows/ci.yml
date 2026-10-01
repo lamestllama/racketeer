@@ -75,13 +75,8 @@ jobs:
             ? manifest.engines.vscode.replace(/^\^/, '') : process.env.EDITOR_VERSION;
           downloadAndUnzipVSCode({ version, cachePath: path.join(process.env.RUNNER_TEMP, 'vscode-test') })
             .then(executable => {
-              const app = process.platform === 'darwin'
-                ? path.resolve(path.dirname(executable), '../Resources/app')
-                : path.join(path.dirname(executable), 'resources/app');
-              const metadata = JSON.parse(fs.readFileSync(path.join(app, 'package.json'), 'utf8'));
-              const product = JSON.parse(fs.readFileSync(path.join(app, 'product.json'), 'utf8'));
               fs.writeFileSync('.test-output/ci/editor.json', JSON.stringify({
-                requested: version, version: metadata.version, commit: product.commit
+                requested: version, executable
               }, null, 2) + '\n');
               fs.appendFileSync(process.env.GITHUB_OUTPUT, `executable=${executable}\n`);
             })
@@ -96,6 +91,8 @@ jobs:
           node -e 'const p = require("./vscode/package.json"); require("node:fs").appendFileSync(process.env.GITHUB_OUTPUT, `path=dist/${p.name}-${p.version}.vsix\n`);'
       - name: Check editor orchestration
         run: python tests/harness-checks.py
+      - name: Compile standalone GUI test programs
+        run: raco make racketdap/main.rkt racketdap/worker/main.rkt racketdap/tools/macro-stepper.rkt tests/support/macro-stepper-gui.rkt
       - name: Run GUI regressions
         run: |
           if [ "$RUNNER_OS" = Linux ]; then

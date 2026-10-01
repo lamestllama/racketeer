@@ -47,6 +47,21 @@ class EditorIsolation(unittest.TestCase):
                     self.assertEqual(actual, env)
                 spawn.assert_not_called()
 
+    def test_windows_versioned_resources_are_unambiguous(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            executable = root / 'Code.exe'
+            executable.touch()
+            app = root / '123456789a/resources/app'
+            (app / 'out').mkdir(parents=True)
+            (app / 'out/cli.js').touch()
+            self.assertEqual(harness.editor_layout(executable, 'win32'), (executable.resolve(), app.resolve()))
+            other = root / 'abcdef1234/resources/app/out'
+            other.mkdir(parents=True)
+            (other / 'cli.js').touch()
+            with self.assertRaisesRegex(ValueError, 'one resources directory'):
+                harness.editor_layout(executable, 'win32')
+
     def test_previous_workspace_profile_extensions_and_addon_are_never_reused(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

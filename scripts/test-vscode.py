@@ -26,7 +26,12 @@ def editor_layout(code, platform):
     elif platform == 'win32':
         if code.suffix.lower() == '.cmd':
             code = code.parent.parent / 'Code.exe'
-        app = code.parent / 'resources/app'
+        # Windows archives can keep resources under a build-specific directory.
+        candidates = [code.parent / 'resources/app', *code.parent.glob('*/resources/app')]
+        apps = [candidate for candidate in candidates if (candidate / 'out/cli.js').is_file()]
+        if len(apps) != 1:
+            raise ValueError('--code must select a Windows distribution with one resources directory.')
+        app = apps[0]
     else:
         if code.parent.name == 'bin':
             code = code.parent.parent / 'code'
