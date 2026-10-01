@@ -105,7 +105,6 @@ test('references from nested imports include unopened consumers and the definiti
 
 test('cancelled requests finish while a macro is blocked, and the index recovers', { timeout: 120000 }, async t => {
   const p = await project(t);
-  p.settings.timeoutSeconds = 2;
   p.write('blocked.rkt', '#lang racket/base\n(require (for-syntax racket/base))\n(begin-for-syntax (sync never-evt))\n');
   await p.update();
   const cancel = new rpc.CancellationTokenSource();
@@ -123,7 +122,6 @@ test('cancelled requests finish while a macro is blocked, and the index recovers
 
 test('edits and reopening a URI retire pending requests even at the same version', { timeout: 120000 }, async t => {
   const p = await project(t);
-  p.settings.timeoutSeconds = 2;
   p.write('blocked.rkt', '#lang racket/base\n(require (for-syntax racket/base))\n(begin-for-syntax (sync never-evt))\n');
   await p.update();
   const retired = p.references(p.origin);

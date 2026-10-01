@@ -97,7 +97,8 @@ class DapClient {
     if (index >= 0) return Promise.resolve(this.events.splice(index, 1)[0]);
     return new Promise((resolve, reject) => {
       const waiter = { name, predicate, resolve, reject };
-      waiter.timer = setTimeout(() => this.fail(new Error(`Timeout waiting for ${name}: ${this.stderr}`)), this.timeout);
+      waiter.timer = setTimeout(() => this.fail(new Error(
+        `Timeout waiting for ${name}: ${this.stderr}. Events: ${JSON.stringify(this.events.slice(-20))}`)), this.timeout);
       this.waiters.push(waiter);
     });
   }
