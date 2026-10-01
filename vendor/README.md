@@ -50,7 +50,7 @@ The installed full Racket distribution supplies standard libraries and
 documentation. Optional third-party formatters/refactoring tools (`fmt` and
 `resyntax`) are not bundled. The default formatter uses bundled `fixw`.
 
-## JavaScript language client startup
+## JavaScript language client reliability
 
 `patches/vscode-languageclient-start-promise.patch` corrects one line in the
 pinned Microsoft `vscode-languageclient` 9.0.1 dependency (MIT license). Its
@@ -65,9 +65,15 @@ on 29 September 2026. As of 1 October 2026, the latest published client,
 10.1.2, still lacks the fix. Retain this backport until Racketeer adopts a
 compatible release containing it, then remove the patch and its build hooks.
 
-`npm ci` applies the patch through `scripts/patch-language-client.js`. The script
-verifies the dependency version and SHA-256 of both the original and patched
+`patches/vscode-jsonrpc-write-rejection.patch` removes a redundant throw from
+the pinned `vscode-jsonrpc` 8.2.0 request writer (MIT license). A failed write
+already rejects the caller's request and releases its cancellation subscription.
+Throwing again inside the asynchronous promise executor creates an unhandled
+rejection. Keep this correction until the pinned dependency includes it.
+
+`npm ci` applies both patches through `scripts/patch-language-client.js`. The script
+verifies each dependency version and SHA-256 of both the original and patched
 source, supports an already patched installation, and needs no network or
 external patch utility. Unexpected versions or contents fail explicitly.
-The dependency's original MIT license remains in `node_modules` and is included
+Each dependency's original MIT license remains in `node_modules` and is included
 in the bundled `out/THIRD_PARTY_NOTICES.txt` by the extension build.

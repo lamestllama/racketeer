@@ -8,7 +8,39 @@ const net = require('node:net');
 const vm = require('node:vm');
 const { createRequire } = require('node:module');
 const { once } = require('node:events');
+const { spawnSync } = require('node:child_process');
 const { createLanguageProcess } = require('../vscode/language-process');
+
+test('JSON-RPC write failures reject the request without an unhandled rejection', () => {
+  const result = spawnSync(process.execPath, ['--unhandled-rejections=strict', '-e', `
+    const assert = require('node:assert/strict');
+    const { PassThrough, Writable } = require('node:stream');
+    const rpc = require(${JSON.stringify(require.resolve('../vscode/node_modules/vscode-jsonrpc/node'))});
+    (async () => {
+      for (const failure of ['header', 'body', 'encoding']) {
+        let writes = 0;
+        const input = new PassThrough();
+        const output = new Writable({ write(_chunk, _encoding, done) {
+          writes++;
+          queueMicrotask(() => done(writes === (failure === 'header' ? 1 : 2)
+            ? new Error('closed language-server pipe') : undefined));
+        } });
+        const connection = rpc.createMessageConnection(input, output);
+        connection.listen();
+        const params = {};
+        if (failure === 'encoding') params.cycle = params;
+        await assert.rejects(connection.sendRequest('shutdown', params), error => {
+          assert.equal(error.code, rpc.ErrorCodes.MessageWriteError);
+          assert.match(error.message, failure === 'encoding' ? /circular/i : /closed language-server pipe/);
+          return true;
+        });
+        await new Promise(resolve => setImmediate(resolve));
+        connection.dispose(); input.destroy(); output.destroy();
+      }
+    })().catch(error => { console.error(error); process.exitCode = 1; });
+  `], { encoding: 'utf8', timeout: 10000 });
+  assert.equal(result.status, 0, result.stderr || String(result.error));
+});
 
 function load(name, dependencies) {
   const filename = path.join(__dirname, '..', 'vscode', name);
