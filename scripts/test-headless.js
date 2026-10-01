@@ -15,7 +15,7 @@ function run() {
   if (process.argv.includes('--list')) { console.log(JSON.stringify(suites, null, 2)); return; }
   for (const [command, args] of [
     ['raco', ['test', '--timeout', '180', ...suites.racket]],
-    [process.execPath, ['--test', '--test-concurrency=1', '--test-timeout=300000', ...suites.node]]
+    [process.execPath, ['--test', '--test-concurrency=1', '--test-timeout=180000', ...suites.node]]
   ]) {
     const result = spawnSync(command, args, { cwd: root, stdio: 'inherit' });
     if (result.error) throw result.error;

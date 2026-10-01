@@ -15,13 +15,14 @@ branch; failures in one matrix entry do not cancel the other entries.
 | Installed extension, Test Explorer Run/Debug and GUI | Windows x64, macOS ARM64 | 9.1 | Stable |
 
 Each entry installs the full Racket distribution, Node.js 20, Python 3.12 and
-locked npm dependencies. The core jobs run `scripts/test-headless.js`, the same
+locked npm dependencies. On macOS, the installer preserves the distribution's
+file timestamps so bundled bytecode remains valid. The core jobs run `scripts/test-headless.js`, the same
 entry point used by the local npm and editor tasks. Platform-specific tests
 retain explicit skips. Native process ownership and macro-stepper cancellation
 results are recorded in the [quality requirements](quality.md).
-Racket test files have a three-minute timeout. Node test files have five minutes
-to run their sequential cases; individual protocol requests retain their shorter
-deadlines. A blocked suite fails before the overall job deadline.
+Racket and Node test files have a three-minute timeout; individual protocol
+requests retain their shorter deadlines. A blocked suite fails before the
+overall job deadline.
 
 Editor jobs download VS Code through the locked `@vscode/test-electron` development
 dependency. The declared minimum is 1.90.0: earlier versions do not expose the

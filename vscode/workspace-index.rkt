@@ -21,6 +21,10 @@
          racket-langserver/lsp/msg-io
          racket-langserver/lsp/responses)
 
+;; Load installation metadata before cancellable scans. Package changes restart
+;; this process, so each run can reuse the same language suffixes.
+(define module-suffix-regexp (get-module-suffix-regexp))
+
 (struct Settings (enabled? excluded max-files max-bytes timeout) #:transparent)
 (define default-excluded '(".git" "compiled" "node_modules" ".test-output" "dist" "build"))
 (struct Run (generation cancel done state indexed failures workspace documents buffers settings roots) #:mutable)
@@ -112,7 +116,7 @@
         (for ([path (in-directory root descend?)])
           (set! visited (add1 visited))
           (when (> visited (* 20 limit)) (set! incomplete? #t) (full (void)))
-          (when (and (regexp-match? (get-module-suffix-regexp) (path->string path))
+          (when (and (regexp-match? module-suffix-regexp (path->string path))
                      (file-exists? path) (not (link-exists? path)))
             (when (>= (set-count found) limit) (set! incomplete? #t) (full (void)))
             (set-add! found path))))))

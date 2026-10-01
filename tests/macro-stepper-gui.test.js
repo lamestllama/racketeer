@@ -35,7 +35,7 @@ test('native GUI shows a real rewrite, navigates to expansion, and closes throug
   assert.notEqual(result.before, result.after);
 });
 
-test('owned GUI terminal cancellation kills a stuck transformer and its child process', { timeout: 45000 }, async t => {
+test('owned GUI terminal cancellation kills a stuck transformer and its child process', gui, async t => {
   const server = net.createServer();
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
   let socket;
@@ -49,8 +49,7 @@ test('owned GUI terminal cancellation kills a stuck transformer and its child pr
   session.process.start();
   let timer;
   try {
-    // A fresh native GUI launch can exceed 15 seconds on the macOS runner.
-    await Promise.race([connected, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Descendant did not connect: ' + session.output)), 30000); })]);
+    await Promise.race([connected, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Descendant did not connect: ' + session.output)), 15000); })]);
   } finally { clearTimeout(timer); }
   t.diagnostic(`GUI descendant connected in ${Date.now() - started} ms`);
   const disconnected = new Promise((resolve, reject) => {
