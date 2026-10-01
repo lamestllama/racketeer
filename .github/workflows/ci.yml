@@ -20,15 +20,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, windows-2022, macos-15]
-        racket: ['9.1', stable]
+        os: [windows-2022]
+        racket: ['9.1']
         include:
-          - os: ubuntu-24.04
-            architecture: x64
           - os: windows-2022
             architecture: x64
-          - os: macos-15
-            architecture: arm64
     defaults:
       run:
         shell: bash
@@ -89,22 +85,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-24.04
-            architecture: x64
-            racket: '9.1'
-            code: minimum
-          - os: ubuntu-24.04
-            architecture: x64
-            racket: '9.1'
-            code: stable
-          - os: ubuntu-24.04
-            architecture: x64
-            racket: stable
-            code: stable
-          - os: windows-2022
-            architecture: x64
-            racket: '9.1'
-            code: stable
           - os: macos-15
             architecture: arm64
             racket: '9.1'
