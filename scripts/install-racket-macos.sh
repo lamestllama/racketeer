@@ -6,7 +6,8 @@ set -euo pipefail
 version=${1:?Racket version required}
 architecture=${2:?Racket architecture required}
 if [[ $version == stable ]]; then
-  version=$(python -c 'import re, urllib.request; print(re.search(r"\(stable \"([^\"]+)\"\)", urllib.request.urlopen("https://download.racket-lang.org/version.txt").read().decode()).group(1))')
+  version=$(curl --fail --silent --show-error --location --retry 3 https://download.racket-lang.org/version.txt |
+    python -c 'import re, sys; print(re.search(r"\(stable \"([^\"]+)\"\)", sys.stdin.read()).group(1))')
 fi
 case $architecture in
   arm64 | aarch64) architecture=aarch64 ;;
