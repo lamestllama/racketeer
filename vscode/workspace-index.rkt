@@ -91,7 +91,10 @@
     void
     (lambda ()
       (define finished (sync/timeout seconds worker (semaphore-peek-evt (Run-cancel run)) cancel))
-      (cond [(not finished) (cons 'timeout seconds)]
+      (cond [(not finished)
+             (eprintf "Workspace analysis timeout context: ~s\n"
+                      (continuation-mark-set->context (continuation-marks worker)))
+             (cons 'timeout seconds)]
             [(eq? finished worker) result]
             [else #f]))
     (lambda () (custodian-shutdown-all custodian))))

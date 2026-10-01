@@ -493,7 +493,7 @@
      (with-handlers ([(lambda (_) #t)
                       (lambda (e)
                         (set! exit-code 1)
-                        (eprintf "~a\n" (if (exn? e) (exn-message e) (value-preview e))))])
+                        ((error-display-handler) (error-text e) e))])
        (parameterize ([current-input-port program-input]
                       [current-inspector (if (arg config 'noDebug #f)
                                              (current-inspector) (make-inspector))]
