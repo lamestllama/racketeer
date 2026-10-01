@@ -10,7 +10,7 @@ const execute = promisify(execFile);
 
 exports.run = async function (workspace) {
   assert.ok(process.env.PLTADDONDIR, 'Package integration requires the isolated test environment');
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'racket editor package λ '));
+  const directory = vscode.Uri.file(await fs.mkdtemp(path.join(os.tmpdir(), 'racket editor package λ '))).fsPath;
   const name = `racketdap-editor-library-${process.pid}`;
   const library = path.join(directory, name);
   await fs.mkdir(library);

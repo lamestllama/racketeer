@@ -21,6 +21,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          - os: windows-2022
+            architecture: x64
+            racket: '9.1'
+            code: stable
           - os: macos-15
             architecture: arm64
             racket: '9.1'
@@ -103,13 +107,14 @@ jobs:
         run: |
           xvfb-run -a raco test vendor/collects/racket-langserver/tests/lib/doc-test.rkt vendor/collects/racket-langserver/tests/lsp/workspace-lifecycle-test.rkt 2>&1 | tee .test-output/ci/language.log
       - name: Test the installed extension
+        id: integration
         if: ${{ !cancelled() && steps.artifact.outcome == 'success' }}
         env:
           TEST_EDITOR: ${{ steps.editor.outputs.executable }}
           TEST_ARTIFACT: ${{ steps.artifact.outputs.path }}
         run: python scripts/test-vscode.py --code "$TEST_EDITOR" --artifact "$TEST_ARTIFACT" --timeout 1200
       - name: Test the installed extension with the pinned Rhombus runtime
-        if: ${{ !cancelled() && steps.artifact.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.integration.outcome == 'success' }}
         env:
           TEST_EDITOR: ${{ steps.editor.outputs.executable }}
           TEST_ARTIFACT: ${{ steps.artifact.outputs.path }}
