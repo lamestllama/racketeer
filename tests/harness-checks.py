@@ -3,6 +3,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import plistlib
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -23,6 +24,8 @@ class EditorIsolation(unittest.TestCase):
             ('win32', 'Code.exe', 'resources/app', ['Code.exe', 'bin/code.cmd']),
             ('darwin', 'Editor.app/Contents/MacOS/Electron', 'Editor.app/Contents/Resources/app',
              ['Editor.app', 'Editor.app/Contents/MacOS/Electron', 'Editor.app/Contents/Resources/app/bin/code']),
+            ('darwin', 'Editor.app/Contents/MacOS/Code', 'Editor.app/Contents/Resources/app',
+             ['Editor.app', 'Editor.app/Contents/MacOS/Code', 'Editor.app/Contents/Resources/app/bin/code']),
         ]
         with tempfile.TemporaryDirectory(prefix='editor paths λ & ') as temporary:
             for platform, executable, app, entries in layouts:
@@ -31,6 +34,9 @@ class EditorIsolation(unittest.TestCase):
                     file = root / relative
                     file.parent.mkdir(parents=True, exist_ok=True)
                     file.touch()
+                if platform == 'darwin':
+                    (root / 'Editor.app/Contents/Info.plist').write_bytes(
+                        plistlib.dumps({'CFBundleExecutable': Path(executable).name}))
                 for entry in entries:
                     with self.subTest(platform=platform, entry=entry):
                         self.assertEqual(harness.editor_layout(root / entry, platform),

@@ -179,7 +179,7 @@ exports.run = async function () {
     await repl.stop(); await repl.done;
 
     fs.writeFileSync(process.env.RACKETDAP_TEST_REPORT, JSON.stringify({
-      passed: true, extension: extension.id, version: extension.packageJSON.version,
+      passed: true, extension: extension.id, version: extension.packageJSON.version, vscode: vscode.version,
       suites: checks, total: checks.reduce((sum, suite) => sum + suite.total, 0),
       checks: ['Test Explorer Run All and Debug All execute only repository suites', 'real test breakpoint and live local',
         'failed assertion and source location', 'restored suite passes again',

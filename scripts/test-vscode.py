@@ -5,6 +5,7 @@ from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
+import plistlib
 import selectors
 import shutil
 import subprocess
@@ -18,11 +19,13 @@ def editor_layout(code, platform):
     """Accept the distribution's executable, CLI launcher, or macOS bundle."""
     code = Path(shutil.which(str(code)) or code).resolve()
     if platform == 'darwin':
-        if code.suffix == '.app':
-            code = code / 'Contents/MacOS/Electron'
-        elif code.parent.name == 'bin':
-            code = code.parents[3] / 'MacOS/Electron'
-        app = code.parent.parent / 'Resources/app'
+        bundle = next((parent for parent in (code, *code.parents) if parent.suffix == '.app'), None)
+        if bundle is None:
+            raise ValueError('--code must select a VS Code application bundle or its launcher.')
+        with (bundle / 'Contents/Info.plist').open('rb') as source:
+            executable = plistlib.load(source)['CFBundleExecutable']
+        code = bundle / 'Contents/MacOS' / executable
+        app = bundle / 'Contents/Resources/app'
     elif platform == 'win32':
         if code.suffix.lower() == '.cmd':
             code = code.parent.parent / 'Code.exe'
