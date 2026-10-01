@@ -49,7 +49,8 @@
   (match result
     [(cons 'failed (? exn? e)) (exn-message e)]
     [(cons 'failed value) (format "analysis raised: ~e" value)]
-    [_ "analysis exceeded its time or memory limit"]))
+    [(cons 'timeout seconds) (format "analysis exceeded its ~a second time limit" seconds)]
+    [_ "analysis worker stopped without a result"]))
 
 (define (status run)
   (hasheq 'state (Run-state run) 'indexed (Run-indexed run) 'failures (Run-failures run)))
@@ -89,8 +90,10 @@
   (dynamic-wind
     void
     (lambda ()
-      (sync/timeout seconds worker (semaphore-peek-evt (Run-cancel run)) cancel)
-      (and (thread-dead? worker) result))
+      (define finished (sync/timeout seconds worker (semaphore-peek-evt (Run-cancel run)) cancel))
+      (cond [(not finished) (cons 'timeout seconds)]
+            [(eq? finished worker) result]
+            [else #f]))
     (lambda () (custodian-shutdown-all custodian))))
 
 (define (discover roots excluded limit)
@@ -206,7 +209,10 @@
         (match (compute run 10 (lambda () (discover (Run-roots run) (Settings-excluded config)
                                                     (Settings-max-files config))))
           [(list 'ok paths incomplete?)
-           (when incomplete? (set! failures (add1 failures)))
+           (when incomplete?
+             (set! failures (add1 failures))
+             (eprintf "Workspace discovery incomplete after finding ~a files under ~a\n"
+                      (length paths) (Run-roots run)))
            (define sources
              (append (for/list ([(path text) (in-hash (Run-buffers run))] #:when text) path)
                      (filter (lambda (path) (not (hash-has-key? (Run-buffers run) path))) paths)))
@@ -232,7 +238,10 @@
                   (eprintf "Workspace analysis incomplete: ~a (~a)\n" path (analysis-failure failure)))])
              (report! run "indexing" indexed failures))
            (report! run (if (zero? failures) "ready" "partial") indexed failures)]
-          [_ (report! run "partial" indexed (add1 failures))])))
+          [failure
+           (unless (cancelled? run)
+             (eprintf "Workspace discovery incomplete: ~a\n" (analysis-failure failure)))
+           (report! run "partial" indexed (add1 failures))])))
     (lambda () (semaphore-post (Run-done run)))))
 
 ;; The extension sends complete snapshots: text, document identities, roots and

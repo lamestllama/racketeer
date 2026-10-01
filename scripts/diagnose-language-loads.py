@@ -103,6 +103,11 @@ def main():
             for mode in ('direct', 'uninstrumented', 'instrumented'):
                 command = [racket, program] if mode == 'direct' else [racket, driver, program, mode]
                 results.append(run_case(f'{language} / {mode}', command, args.timeout))
+        program = directory / 'images.rkt'
+        shutil.copyfile(ROOT / 'examples/images.rkt', program)
+        for mode in ('direct', 'uninstrumented', 'instrumented'):
+            command = [racket, program] if mode == 'direct' else [racket, driver, program, mode]
+            results.append(run_case(f'image libraries / {mode}', command, args.timeout))
     print('\nsummary: ' + json.dumps(results), flush=True)
     return int(any(result['exitCode'] != 0 or result['timedOut'] for result in results))
 
