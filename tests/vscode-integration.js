@@ -19,7 +19,7 @@ exports.run = async function () {
   const imageChecks = await require('./vscode-images').run(workspace);
   const program = path.join(workspace.uri.fsPath, 'demo.rkt');
   const document = await vscode.workspace.openTextDocument(program);
-  await vscode.window.showTextDocument(document);
+  await vscode.window.showTextDocument(document, { preview: false });
   assert.equal(document.languageId, 'racket');
   const breakpoint = new vscode.SourceBreakpoint(new vscode.Location(document.uri, new vscode.Position(3, 0)), true, '(= subtotal 100)', '1');
   vscode.debug.addBreakpoints([breakpoint]);
@@ -53,6 +53,7 @@ exports.run = async function () {
         const item = vscode.debug.activeStackItem;
         throw new Error(`Timed out: ${description}. ${JSON.stringify({
           editor: editor?.document.uri.toString(), selection: editor?.selection,
+          sourceDocument: { closed: document.isClosed, version: document.version },
           stackItem: item && { sessionId: item.session.id, threadId: item.threadId, frameId: item.frameId },
           breakpoints: vscode.debug.breakpoints, references: referenceLocations, messages: messages.slice(-20)
         })}`);
