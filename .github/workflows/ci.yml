@@ -21,6 +21,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          - os: windows-2022
+            architecture: x64
+            racket: '9.1'
+            code: stable
           - os: macos-15
             architecture: arm64
             racket: '9.1'
@@ -144,6 +148,8 @@ jobs:
             .test-output/**/install.log
             .test-output/**/xvfb.log
             .test-output/**/language-server.log
+            .test-output/**/user/logs/**/*Racket Language Server.log
+            .test-output/**/user/logs/**/exthost.log
             .test-output/**/rhombus-runtime.json
             .test-output/**/rhombus-runtime-lock.json
             .test-output/**/rhombus-install.log

@@ -44,6 +44,7 @@ exports.run = async function () {
     }
     throw new Error(`No ${name} event. Messages: ${JSON.stringify(messages)}`);
   }
+  let referenceLocations;
   async function waitUntil(predicate, description) {
     const deadline = Date.now() + 20000;
     while (!await predicate()) {
@@ -53,7 +54,7 @@ exports.run = async function () {
         throw new Error(`Timed out: ${description}. ${JSON.stringify({
           editor: editor?.document.uri.toString(), selection: editor?.selection,
           stackItem: item && { sessionId: item.session.id, threadId: item.threadId, frameId: item.frameId },
-          breakpoints: vscode.debug.breakpoints, messages: messages.slice(-20)
+          breakpoints: vscode.debug.breakpoints, references: referenceLocations, messages: messages.slice(-20)
         })}`);
       }
       await new Promise(resolve => setTimeout(resolve, 20));
@@ -103,6 +104,7 @@ exports.run = async function () {
       (item.targetSelectionRange || item.range).start.line === 2), 'Captured source navigates to the function definition');
     await waitUntil(async () => {
       const references = await vscode.commands.executeCommand('vscode.executeReferenceProvider', capturedDocument.uri, callPosition);
+      referenceLocations = references;
       return references.some(item => item.uri.fsPath === program && item.range.start.line === 7);
     }, 'captured source finds function references');
     const originalText = document.getText();
@@ -216,6 +218,7 @@ exports.run = async function () {
     }, 'captured source navigates to an imported function');
     await waitUntil(async () => {
       const references = await vscode.commands.executeCommand('vscode.executeReferenceProvider', multiUri, orderCall);
+      referenceLocations = references;
       return references.some(item => item.uri.fsPath === multiProgram && item.range.start.line === 5) &&
         references.some(item => item.uri.fsPath === ordersPath && item.range.start.line === 4) &&
         references.some(item => item.uri.fsPath === unopenedConsumer && item.range.start.line === 2);
