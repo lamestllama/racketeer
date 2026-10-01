@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Reproduce the checked-in upstream sources using pinned, verified archives."""
+import argparse
 import hashlib
 import io
 import json
@@ -11,9 +12,28 @@ import urllib.request
 import zipfile
 
 root = Path(__file__).resolve().parent.parent
-for package in json.loads((root / 'vendor/sources.json').read_text()):
-    data = urllib.request.urlopen(package['url'], timeout=60).read()
-    if hashlib.sha256(data).hexdigest() != package['sha256']:
+packages = json.loads((root / 'vendor/sources.json').read_text())
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument('--package', choices=[package['name'] for package in packages],
+                    help='Regenerate only this package.')
+parser.add_argument('--archive', type=Path, help='Use a local ZIP for --package instead of downloading.')
+parser.add_argument('--archive-sha256',
+                    help='Expected local ZIP checksum (does not verify the remote archive).')
+args = parser.parse_args()
+if args.archive and not args.package:
+    parser.error('--archive requires --package')
+if args.archive_sha256 and not args.archive:
+    parser.error('--archive-sha256 requires --archive')
+if args.package:
+    packages = [package for package in packages if package['name'] == args.package]
+
+for package in packages:
+    checksum = args.archive_sha256 or package['sha256']
+    if not checksum or len(checksum) != 64 or any(c not in '0123456789abcdef' for c in checksum):
+        raise RuntimeError(f"Missing or invalid SHA-256: {package['name']}; "
+                           'fill vendor/sources.json or supply --archive-sha256 for a local ZIP')
+    data = args.archive.read_bytes() if args.archive else urllib.request.urlopen(package['url'], timeout=60).read()
+    if hashlib.sha256(data).hexdigest() != checksum:
         raise RuntimeError(f"Archive checksum mismatch: {package['name']}")
     with tempfile.TemporaryDirectory() as temporary:
         with zipfile.ZipFile(io.BytesIO(data)) as archive:
@@ -29,7 +49,8 @@ for package in json.loads((root / 'vendor/sources.json').read_text()):
         shutil.copytree(source, destination)
     print(f"Verified and copied {package['name']}")
 
-for patch_name in ('semantic-token-viewport.patch', 'watched-create-ownership.patch'):
+server_patches = ('analysis-completion.patch', 'rename-notifications.patch')
+for patch_name in server_patches if any(p['name'] == 'racket-langserver' for p in packages) else ():
     patch = root / 'vendor/patches' / patch_name
     subprocess.run(['git', 'apply', '--directory=vendor/collects/racket-langserver', str(patch)],
                    cwd=root, check=True)

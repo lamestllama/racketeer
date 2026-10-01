@@ -36,7 +36,7 @@ function registerDebugRepl(sessions) {
     return operation;
   }
 
-  async function evaluate(target, expression) {
+  async function evaluate(target, expressions) {
     // The command's target is the frame selected when evaluation was requested.
     // Revealing the console can change the editor's active stack selection.
     const selected = vscode.debug.activeStackItem;
@@ -57,9 +57,13 @@ function registerDebugRepl(sessions) {
     if (record.evaluating.has(evaluation)) throw new Error('This Debug REPL is already evaluating. Continue, cancel, or stop that evaluation first.');
     record.evaluating.add(evaluation);
     try {
-      return await record.session.customRequest('evaluate', {
-        expression, context: 'repl', frameId, racketdapEcho: true
-      });
+      let result;
+      for (const expression of expressions) {
+        result = await record.session.customRequest('evaluate', {
+          expression, context: 'repl', frameId, racketdapEcho: true
+        });
+      }
+      return result;
     } finally { record.evaluating.delete(evaluation); }
   }
   return { open, evaluate };

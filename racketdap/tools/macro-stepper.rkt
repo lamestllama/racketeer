@@ -22,6 +22,7 @@
 
 (define (run-worker)
   (define request (read-json))
+  (join-process-group! (hash-ref request 'processGroup #f))
   (open-macro-stepper request)
   (displayln "Racket macro stepper opened. Close its windows or its editor terminal to finish.")
   (flush-output)
@@ -45,13 +46,14 @@
             (subprocess (current-output-port) #f (current-error-port) group
                         executable (path->string self) "--worker")))
         (set! child process)
-        (displayln input in)
+        (write-json (hash-set (string->jsexpr input) 'processGroup (process-group-name owner)) in)
+        (newline in)
         (close-output-port in)
         (define lease-ended
           (thread (lambda () (let loop () (unless (eof-object? (read-byte)) (loop))))))
         (sync process lease-ended))
       (lambda ()
-        (when (and child (not owner)) (subprocess-kill child #t))
+        (when (and child (eq? (system-type 'os) 'windows)) (subprocess-kill child #t))
         (stop-process-group! owner)
         (when child (subprocess-wait child))))
     (exit (if child (let ([status (subprocess-status child)]) (if (integer? status) status 1)) 1))))

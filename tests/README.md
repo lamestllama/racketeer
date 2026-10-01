@@ -50,7 +50,7 @@ own profile.
 
 ```sh
 node scripts/package-extension.js
-python3 scripts/test-vscode.py --dogfood --artifact dist/racketeer-0.8.0.vsix
+python3 scripts/test-vscode.py --dogfood
 ```
 
 On Linux this needs VS Code and Xvfb; pass `--code` and `--xvfb` when their
@@ -90,8 +90,8 @@ Command-line equivalents:
 ```sh
 node scripts/test-headless.js
 python3 scripts/test-gui.py
-python3 scripts/test-vscode.py --artifact dist/racketeer-0.8.0.vsix
-python3 scripts/test-vscode.py --rhombus --artifact dist/racketeer-0.8.0.vsix
+python3 scripts/test-vscode.py
+python3 scripts/test-vscode.py --rhombus
 ```
 
 The explicit `--rhombus` run installs a pinned Rhombus language runtime into its
@@ -115,19 +115,19 @@ offline packaging check is:
 npm_config_offline=true node scripts/package-extension.js
 ```
 
-The bundled language server has recorded fixes for viewport ranges and delayed
-file-creation notifications. Run its native regression suites on Linux with:
+The bundled upstream language server includes fixes for viewport ranges and
+watched-file notifications. Run its native regression suites on Linux with:
 
 ```sh
 PLTCOLLECTS="$PWD/vendor/collects:" raco test \
   vendor/collects/racket-langserver/tests/lib/doc-test.rkt \
-  vendor/collects/racket-langserver/tests/lsp/watched-create-test.rkt
+  vendor/collects/racket-langserver/tests/lsp/workspace-lifecycle-test.rkt
 ```
 
-This includes the unchanged upstream document cases, viewport bounds, and
-preservation of an open buffer and its incremental edits when a delayed
-file-creation notification arrives. Both patches are recorded in
-`vendor/patches/` and applied by the pinned-source reproduction script.
+This includes the upstream document cases, viewport bounds, and preservation
+of editor buffers through watched-file and rename notifications. The remaining
+rename and analysis-completion patches are recorded in `vendor/patches/` and
+applied by the pinned-source reproduction script.
 
 The loader-isolation regression covers nested module and plain-file executions
 with both Run and Debug policies. Each loader changes evaluation and compilation

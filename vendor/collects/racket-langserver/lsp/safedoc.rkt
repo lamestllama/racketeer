@@ -34,7 +34,7 @@
 ;; Exported field accessors: SafeDoc-doc, SafeDoc-check-syntax-status.
 ;; Access fields only inside an eliminator that acquired the lock.
 (struct SafeDoc
-  (doc rwlock token check-syntax-status)
+  (doc rwlock token check-syntax-status closed?)
   #:mutable
   #:transparent)
 
@@ -43,7 +43,7 @@
   ;; Token identifies this opened document instance in scheduler/query state.
   (define token (gensym 'doc-token))
   (scheduler-register-doc! token)
-  (SafeDoc doc (make-rwlock) token #f))
+  (SafeDoc doc (make-rwlock) token #f #f))
 
 (define (with-read-doc safe-doc proc)
   (call-with-read-lock
@@ -64,6 +64,20 @@
   (call-with-write-lock
     (SafeDoc-rwlock safe-doc)
     (λ () (proc safe-doc))))
+
+;; Retirement and publication use the same lock, so work from a closed
+;; document cannot restore diagnostics or workspace contributions.
+(define (safedoc-close! safe-doc)
+  (with-write-safedoc safe-doc
+    (lambda (sd)
+      (set-SafeDoc-closed?! sd #t))))
+
+(define (with-current-safedoc safe-doc version proc)
+  (with-write-safedoc safe-doc
+    (lambda (sd)
+      (and (not (SafeDoc-closed? sd))
+           (equal? version (Doc-version (SafeDoc-doc sd)))
+           (begin (proc sd) #t)))))
 
 (define (safedoc-check-syntax-running? sd)
   (define doc (SafeDoc-doc sd))
@@ -86,6 +100,24 @@
                     (Doc-uri doc)
                     (doc-diagnostics doc)))
 
+;; Success and failure share the same retirement and replacement guards.
+(define (publish-analysis! safe-doc running-status state update)
+  (define version (Check-Syntax-Status-version running-status))
+  (define finished-status (Check-Syntax-Status state version))
+  (with-current-safedoc safe-doc version
+                        (lambda (sd)
+                          (when (eq? running-status (SafeDoc-check-syntax-status sd))
+                            (update sd)
+                            (set-SafeDoc-check-syntax-status! sd finished-status))))
+  ;; Query callbacks acquire document read locks. Check this run's identity
+  ;; under the query semaphore, after releasing the document write lock.
+  (clear-old-queries/check-syntax-finished
+    (SafeDoc-token safe-doc)
+    #:ready? (lambda ()
+               (with-read-safedoc safe-doc
+                 (lambda (sd)
+                   (eq? finished-status (SafeDoc-check-syntax-status sd)))))))
+
 ;; The only place that actually runs check-syntax.
 (define (safedoc-run-check-syntax! notify-client safe-doc)
   (define-values (uri working-version text-buffer-copy token)
@@ -97,22 +129,27 @@
                 (doc-copy-text-buffer doc)
                 (SafeDoc-token sd)))))
 
-  (with-write-safedoc safe-doc
-    (lambda (sd)
-      (define doc (SafeDoc-doc sd))
-      (when (equal? working-version (Doc-version doc))
-        (set-SafeDoc-check-syntax-status!
-          sd
-          (Check-Syntax-Status 'running working-version)))))
+  ;; Identity distinguishes reruns at the same document version.
+  (define running-status (Check-Syntax-Status 'running working-version))
+  (with-current-safedoc safe-doc working-version
+                        (lambda (sd)
+                          (set-SafeDoc-check-syntax-status! sd running-status)))
+
+  (define (fail-analysis e)
+    (publish-analysis! safe-doc running-status 'failed void)
+    ((error-display-handler)
+     (if (exn? e) (exn-message e) (format "check-syntax raised: ~e" e)) e))
 
   (define (resyntax-task)
     (define text (send text-buffer-copy get-text))
-    (define resyntax-results (run-resyntax/in-place text uri))
-    (with-write-doc safe-doc
-      (lambda (doc)
-        (when (equal? working-version (Doc-version doc))
-          (doc-update-resyntax-result! doc resyntax-results)
-          (send-doc-diagnostics notify-client doc)))))
+    (run-resyntax/in-place text uri))
+
+  (define (publish-resyntax resyntax-results)
+    (with-current-safedoc safe-doc working-version
+                          (lambda (sd)
+                            (define doc (SafeDoc-doc sd))
+                            (doc-update-resyntax-result! doc resyntax-results)
+                            (send-doc-diagnostics notify-client doc))))
 
   (define (check-syntax-task)
     (define text (send text-buffer-copy get-text))
@@ -124,32 +161,26 @@
     (define contribution
       (and (CSResult-succeed? result)
            (send trace get-contribution)))
+    (values result contribution (set->list (send trace get-warn-diags))))
 
-    (with-write-safedoc safe-doc
-      (lambda (sd)
-        (define doc (SafeDoc-doc sd))
-        (define cur-version (Doc-version doc))
-        (define diags (set->list (send trace get-warn-diags)))
-        (send-diagnostics notify-client uri diags)
+  (define (publish-check-syntax result contribution diags)
+    (define trace (CSResult-trace result))
+    (publish-analysis! safe-doc running-status
+                       (if (CSResult-succeed? result) 'succeeded 'failed)
+                       (lambda (sd)
+                         (define doc (SafeDoc-doc sd))
+                         (send-diagnostics notify-client uri diags)
 
-        (when (and (CSResult-succeed? result)
-                   (equal? working-version cur-version))
-          (doc-update-trace! doc trace contribution cur-version)
-          (workspace-set-contribution! current-workspace contribution)
-          (when (and (get-resyntax-enabled) (resyntax-available?))
-            (scheduler-push-task! token 'resyntax resyntax-task)))
-        (when (equal? working-version (Doc-version doc))
-          (set-SafeDoc-check-syntax-status!
-            sd
-            (Check-Syntax-Status
-              (if (CSResult-succeed? result)
-                  'succeeded
-                  'failed)
-              working-version)))))
-    (clear-old-queries/check-syntax-finished token))
+                         (when (CSResult-succeed? result)
+                           (doc-update-trace! doc trace contribution working-version)
+                           (workspace-set-contribution! current-workspace contribution)
+                           (when (and (get-resyntax-enabled) (resyntax-available?))
+                             (scheduler-push-task! token 'resyntax resyntax-task
+                                                   #:publish publish-resyntax))))))
 
   (scheduler-stop-all-tasks! token)
-  (scheduler-push-task! token 'check-syntax check-syntax-task))
+  (scheduler-push-task! token 'check-syntax check-syntax-task
+                        #:publish publish-check-syntax #:fail fail-analysis))
 
 (provide SafeDoc-token
          SafeDoc?
@@ -157,10 +188,10 @@
          SafeDoc-check-syntax-status
          (struct-out Check-Syntax-Status)
          new-safedoc
+         safedoc-close!
          safedoc-run-check-syntax!
          safedoc-check-syntax-running?
          with-read-doc
          with-write-doc
          with-read-safedoc
          with-write-safedoc)
-

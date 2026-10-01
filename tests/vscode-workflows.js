@@ -64,7 +64,7 @@ exports.run = async function (workspace) {
       { passed: 0, failed: 0, errored: 1, skipped: 0 }, 'An early exit must not silently pass');
 
     const helper = await open('helper.rkt', '#lang racket/base\n(provide twice)\n(define (twice x)\n  (* x 2))\n');
-    const moduleText = '#lang racket/base\n(require "helper.rkt")\n(define private 6)\n(module+ main (error "main must not run"))\n(module+ test (require rackunit) (check-equal? (twice private) 12))\n; (twice private)\n(define (local-twice value)\n  (* value 2))\n; (local-twice private)\n';
+    const moduleText = '#lang racket/base\n(require "helper.rkt")\n(define private 6)\n(module+ main (error "main must not run"))\n(module+ test (require rackunit) (check-equal? (twice private) 12))\n; (twice private)\n(define (local-twice value)\n  (* value 2))\n; (local-twice private)\n; (define selected-value 40) ; a trailing comment\n; (+ selected-value 2)\n';
     const moduleEditor = await open('module.rkt', moduleText);
     const bp = new vscode.SourceBreakpoint(new vscode.Location(helper.document.uri, new vscode.Position(3, 0)));
     vscode.debug.addBreakpoints([bp]);
@@ -103,6 +103,13 @@ exports.run = async function (workspace) {
       assert.equal((await evaluation).result, '12');
       await event(first.session, 'output', m => m.body.category === 'console' && m.body.output === '12\n');
       assert.equal((await other.session.customRequest('evaluate', { context: 'repl', expression: 'private' })).result, '100');
+
+      const batchEditor = await vscode.window.showTextDocument(moduleEditor.document);
+      batchEditor.selections = [new vscode.Selection(0, 0, 0, 0),
+        new vscode.Selection(10, moduleEditor.document.lineAt(10).text.length, 10, 2),
+        new vscode.Selection(9, 2, 9, moduleEditor.document.lineAt(9).text.length)];
+      assert.equal((await vscode.commands.executeCommand('racketdap.sendSelectionToDebugRepl')).result, '42');
+      await event(first.session, 'output', m => m.body.category === 'console' && m.body.output === '42\n');
 
       const localBreakpoint = new vscode.SourceBreakpoint(new vscode.Location(moduleEditor.document.uri, new vscode.Position(7, 0)));
       vscode.debug.addBreakpoints([localBreakpoint]);
@@ -160,6 +167,7 @@ exports.run = async function (workspace) {
     return ['Test Explorer discovery and Run All', 'failed checks and source locations', 'early test exit is an error',
       'Debug Test command enters a required source file', 'module-specific Debug REPL reuse',
       'selection evaluation hits breakpoints in the owning REPL', 'Debug REPL restart loads saved edits',
+      'evaluate multiple selections in the owning Debug REPL in source order',
       'selection command inspects a paused outer selection evaluation',
       'Test Explorer cancellation preserves other sessions'];
   } finally {

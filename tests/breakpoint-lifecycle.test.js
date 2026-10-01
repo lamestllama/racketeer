@@ -97,6 +97,25 @@ for (const oneBased of [true, false]) {
       source: { path: program }, line, column: endColumn, endColumn: firstColumn - 1
     })).success, false);
   });
+
+  test(`returned frames use closing boundaries with ${base}-based Unicode coordinates`, async t => {
+    const lines = ['#lang racket/base', '(define-values (a b)', '  (values "first"', '          "λ😀"))'];
+    const { client } = await prepare(t, lines.join('\r\n') + '\r\n', { oneBased, stopOnEntry: true });
+    await ok(client.request('configurationDone'));
+    const before = await client.event('stopped');
+    await ok(client.request('next', { threadId: before.body.threadId }));
+    const after = await client.event('stopped');
+    assert.equal(after.body.racketdapStopKind, 'after');
+    const { stackFrames } = await ok(client.request('stackTrace', { threadId: after.body.threadId }));
+    const top = stackFrames[0];
+    assert.equal(top.line, 3 + base);
+    assert.equal(top.endLine, top.line);
+    assert.equal(top.column, lines[3].indexOf(')') + base);
+    assert.equal(top.endColumn, top.column + 1);
+    assert.match(top.name, /^Returned 2 values at /);
+    await ok(client.request('continue', { threadId: after.body.threadId }));
+    await client.event('terminated');
+  });
 }
 
 test('a late breakpoint selects an unloaded external module for instrumentation', async t => {

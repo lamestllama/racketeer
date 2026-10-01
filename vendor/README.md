@@ -5,26 +5,37 @@ each archive URL and SHA-256. Run `python3 scripts/vendor-language-server.py`
 to reproduce these directories. The VSIX includes these sources, this file,
 the manifest, and the license texts. No Racket package is installed globally.
 
-`patches/semantic-token-viewport.patch` applies to racket-langserver after
-archive verification. Semantic-token ranges reuse the document's existing
-viewport-bound clamping, as inlay hints already do. VS Code may request a range
-ending beyond the document; this previously raised an internal error. The
-patch includes a regression for oversized bounds and wholly outside ranges.
-The vendoring script applies the patch explicitly and fails if it no longer
-matches. No debugger instrumentation is changed by this patch.
+The server is pinned to upstream commit
+`5f3ebe5691a148703c5f93d8b29a83d900fb6005`, which includes the watched-file
+and diagnostic logging fixes. The reproduction script verifies the archive
+and then applies two separate patches, in order:
 
-`patches/watched-create-ownership.patch` preserves a client-open document when
-a delayed watched-file creation event arrives. Previously that event replaced
-the document with an empty buffer, causing subsequent incremental edits and
-language requests to fail. Its regressions cover document identity, content,
-version, and the next incremental edit. The vendoring script explicitly applies
-these two Racket patches; the JavaScript client patch below is applied only by
-the npm installation and extension build.
+- `analysis-completion.patch`: complete requests after analysis failure and reject
+  results from superseded or closed documents. Changes four production files;
+  document analysis does not inspect disk state or track index generations.
+- `rename-notifications.patch`: prevent file rename notifications from opening
+  or closing editor buffers, retaining upstream's existing cache invalidation.
+
+The patches do not introduce disk verification, closed-file retention rules, or
+URI-alias restoration. Rename ownership and analysis completion are separate
+changes.
+
+Workspace indexing belongs to Racketeer, in `vscode/workspace-index.rkt` and
+its client. The separate process reuses the pinned analyser and workspace store
+as libraries. No indexing hooks or index state are added to the language server.
+
+Each patch includes regression tests. Reproduction fails if a patch no longer
+applies. These patches do not change debugger instrumentation. The JavaScript
+client patch below is applied by npm installation and the extension build.
+
+For offline regeneration, supply the pinned ZIP with `--package racket-langserver
+--archive /path/to/archive.zip`; its checksum is still checked against
+`sources.json`.
 
 - **racket-langserver**: Conor Finegan and Jay McCarthy; upstream
-  <https://github.com/jeapostrophe/racket-langserver>, commit
-  `17e1b24d91163402470370bbe956ecb944521f88`. Its `LICENSE` uses the same terms
-  as Racket (MIT or Apache 2.0); full texts are in `licenses/`.
+  <https://github.com/jeapostrophe/racket-langserver>, at the commit above with
+  the listed local patches. Its `LICENSE` uses the same terms as Racket
+  (MIT or Apache 2.0); full texts are in `licenses/`.
 - **fixw**: Copyright 2023 6cdh; upstream
   <https://github.com/6cdh/racket-fixw>, commit
   `036d0f2cd2d6e061f5acf0835662f194509f2a46`. MIT or Apache 2.0;

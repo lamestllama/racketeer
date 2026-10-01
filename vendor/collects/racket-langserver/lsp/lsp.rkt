@@ -30,6 +30,7 @@
   (when safe-doc
     (define token (SafeDoc-token safe-doc))
     (scheduler-close-doc! token)
+    (safedoc-close! safe-doc)
     (clear-old-queries/doc-close token))
   (hash-remove! open-docs uri-sym))
 

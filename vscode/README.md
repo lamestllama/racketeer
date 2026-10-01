@@ -18,13 +18,15 @@ VS Code 1.98.1; other operating systems are not yet verified.
 
 ## Install and start
 
-1. In Extensions, choose **Install from VSIX…** and select `racketeer-0.8.0.vsix`.
+1. In Extensions, choose **Install from VSIX…** and select `racketeer-0.8.2.vsix`.
 2. Open a trusted folder containing your Racket program and a saved `.rkt` file.
 3. Language tools start automatically; **Racket: ready** appears in the status bar.
 4. Use the **Racket:** commands in the Command Palette to run, test, load a REPL,
    or debug. Debugging uses F5/F10/F11/Shift+F11 for Continue/Over/Into/Out.
 
 If Racket is not on PATH, set `racketdap.racketExecutable` in Settings.
+Debugger and language-server startup errors offer **Open Settings** to take you
+to the relevant setting; language-server errors also offer **Show Output**.
 The extension ID is `lamestllama.racketeer`. Remove the earlier
 `lamestllama.racketdap` development extension before installing Racketeer.
 Existing `racketdap` launch configurations and settings remain usable.
@@ -138,11 +140,17 @@ context and can finish the program. Step Out follows the current function's
 return context. Continuation transfers outside a step target are identified in
 the stop description.
 
-The same expression can therefore remain highlighted for two stops: **Before
-expression**, then **Expression returned**. The second stop lets you inspect
-its Results before proceeding. Stepping is by expression, so several stops can
-share a source line. Expanded forms can also share a larger source range, which
-currently makes some stops highlight a whole function.
+The call stack distinguishes **Before evaluation** from **Returned N values**.
+At a return stop the marker moves to the expression's closing parenthesis;
+open **Results** to inspect its values. **Waiting for return** identifies a caller
+whose calculation is still pending. Stepping is by expression, so several stops
+can share a source line. Expanded forms can also share a larger source range,
+which currently makes some stops highlight a whole function.
+
+Captured debugger sources support hover, Go to Definition, and Find References
+through the language server. Navigation opens current project files. These
+features require the captured source to match the current file and are disabled
+for that view if its file changes or the debug session ends.
 
 Select a frame to inspect its locals or evaluate a Racket expression in the
 Debug Console, for example `(+ subtotal 20)` or `(set! subtotal 200)`. These use
@@ -276,10 +284,17 @@ integrated. Changes to source invalidate previous results.
 **Racket: Load Current File in Debug REPL** loads the saved root module into a
 persistent debugging session. It does not execute `main` or `test`. Enter
 expressions in the Debug Console, or select an expression in the source and
-choose **Racket: Evaluate Selection in Debug REPL**. Calls can hit breakpoints
+press **Shift+Enter** or choose **Racket: Evaluate Selection in Debug REPL**. Calls can hit breakpoints
 in any instrumented workspace file. At a stop, the selected stack frame supplies
 the lexical environment; at the interaction prompt, the module's namespace
 includes private definitions.
+
+Change or remove the shortcut in VS Code's **Keyboard Shortcuts** editor by
+searching for **Racket: Evaluate Selection in Debug REPL**, or use `keybindings.json`.
+
+Both selection commands support multiple selections. Select complete expressions;
+they run from top to bottom, ignoring empty cursors. The Debug REPL prints each
+result and stops the batch if an expression fails or is cancelled.
 
 Each file has its own Debug REPL. Loading again reuses it. Use **Racket: Restart
 Debug REPL for Current File** to load saved edits into a fresh session. Restart
@@ -290,6 +305,35 @@ interrupts evaluation in the active Racket debug session; Stop ends the session.
 
 Plain REPL terminals continue to run ordinary Racket through `racket/enter`.
 Debug REPL program input uses its associated integrated terminal.
+
+After an expression returns an image, choose **Racket: View Image** from the
+Command Palette or the preview button on the debug toolbar.
+It opens a PNG snapshot in VS Code's built-in image editor. Use **Racket: Save
+Image As…** from that editor to keep a copy. Try `tile`, `drawing`, and `chart`
+in `examples/images.rkt` for `2htdp/image`, pict, and plot examples.
+If an expression returns several image values, such as `(values tile drawing chart)`,
+the command lets you choose one. The labels retain each value's position in the
+complete result, including any non-image values.
+The picker lists up to 200 images from that result; evaluate a particular value
+separately to view one beyond that limit.
+
+While paused, right-click an image in **Variables** and choose **Racket: View
+Image**. This also works for image fields inside expanded structures and images
+in the **Results** scope. It uses the selected value directly, without evaluating
+an expression or changing the last console result. Previews share one editor
+group so opening several images keeps the source visible.
+
+Viewing converts the retained value; it does not evaluate the expression again.
+Conversion can execute the value's code: use **Racket: Cancel Evaluation** to
+interrupt it. The live result expires when another interaction starts or the
+program resumes. A rendered snapshot remains available until its last tab is
+closed or the editor reloads. PNG previews are limited to 8 MiB; inline rich
+output and interactive plot controls are not yet supported.
+
+The workflow follows Racket's [picture-value model](https://docs.racket-lang.org/quick/)
+using the public [conversion protocol](https://docs.racket-lang.org/file/convertible.html).
+Racketeer uses an explicit
+editor preview, keeping the source-and-REPL workflow separate from notebook files.
 
 ## Packages
 
@@ -342,3 +386,36 @@ Copyright © 2026 Eric Parsonage. Racketeer's original code and documentation
 are licensed under Apache-2.0 OR MIT, at your choice. The extension includes
 `LICENSE`, `LICENSE-APACHE`, `LICENSE-MIT`, and `COPYRIGHT`. Bundled dependencies
 retain their own copyright and licence notices.
+
+### Workspace references
+
+Racketeer analyses unopened Racket module files in trusted workspaces using a
+separate indexing service. It works with either the bundled or installed language
+server, reusing the bundled analysis libraries.
+Find All References waits for the current analysis pass and can be cancelled.
+Unsaved editor buffers remain authoritative for their own source files; closing
+a buffer returns that file to disk analysis. Dependencies are loaded from disk,
+so save changes to imported modules before relying on dependent analysis.
+
+The status bar shows indexing progress and warns when references are partial.
+Use **Racket: Refresh Workspace References** after external package changes or
+to retry failed analysis. Background diagnostics and project-wide rename are
+not part of this feature. Files that fail analysis make the index partial; failed
+queries report an error instead of using an older analysis.
+
+Settings under `racket-langserver.workspaceAnalysis` control whether analysis
+is enabled, excluded directory names, file count, maximum source size and the
+time limit per file. Defaults are 1,000 files, 1 MiB per file and 20 seconds per
+file. One background worker runs at a time, with a 256 MiB analysis memory limit;
+a pass accepts at most 16 MiB of source input and 200,000 reference/definition
+locations. Excluded directories and symbolic links are not scanned. Reaching
+a limit or failing to analyse a file produces a partial index.
+
+Changes within watched workspace directories conservatively restart analysis,
+including non-Racket files that readers or macros may use. Dependencies outside
+those directories, excluded files, environment changes and nondeterministic
+macros require a manual refresh. Initial indexing can take time, especially
+when dependencies are not compiled. These limits bound work and retained facts;
+they are not a total process memory limit. Both language tools use Racket's
+compilation cache under the Racket addon directory's `racketeer`
+subdirectory, keeping generated bytecode outside the project.

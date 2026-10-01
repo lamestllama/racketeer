@@ -9,6 +9,7 @@ const { createProgramTerminal } = require('./terminal');
 const { registerLanguageTools } = require('./language-client');
 const { registerFileCommands } = require('./commands');
 const { registerDebugActions } = require('./debug-actions');
+const { registerDebugImages } = require('./debug-images');
 const { registerDebugSources } = require('./debug-sources');
 const { registerSessions } = require('./sessions');
 const { registerTesting } = require('./testing');
@@ -23,6 +24,7 @@ function activate(context) {
   registerFileCommands(context, sessions, testing, registerDebugRepl(sessions));
   const debugSources = registerDebugSources(context);
   registerDebugActions(context, debugSources);
+  registerDebugImages(context);
   languageTools = registerLanguageTools(context, debugSources);
   const provider = {
     provideDebugConfigurations() {
@@ -56,7 +58,11 @@ function activate(context) {
           throw new Error('Racket 9.1 or newer is required.');
         }
       } catch (error) {
-        vscode.window.showErrorMessage(`Cannot start Racket DAP: ${error.message} Set racketdap.racketExecutable to your Racket executable.`);
+        void vscode.window.showErrorMessage(
+          `Cannot start Racket DAP: ${error.message} Set racketdap.racketExecutable to your Racket executable.`,
+          'Open Settings').then(action => {
+          if (action === 'Open Settings') return vscode.commands.executeCommand('workbench.action.openSettings', '@id:racketdap.racketExecutable');
+        });
         return undefined;
       }
       return config;

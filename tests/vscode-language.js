@@ -21,7 +21,7 @@ exports.run = async (extension, workspace) => {
   const program = path.join(directory, 'language "λ".rkt');
   const marker = name => path.join(directory, `${name}.txt`);
   const write = (name, expression) => `(call-with-output-file ${JSON.stringify(marker(name))} #:exists 'truncate (lambda (out) (display ${expression} out)))`;
-  for (const name of ['run', 'test', 'repl', 'selection']) fs.rmSync(marker(name), { force: true });
+  for (const name of ['run', 'test', 'repl', 'selection', 'selections']) fs.rmSync(marker(name), { force: true });
   const source = [
     '#lang racket/base',
     '(provide square)',
@@ -34,9 +34,13 @@ exports.run = async (extension, workspace) => {
     `;; ${write('selection', '(square 9)')}`,
     '(define-values (answer remainder) (values 49 0))',
     '; (values 1 2)',
-    '(define text "(values 1 2)")', ''
+    '(define text "(values 1 2)")',
+    ';; (define selected-value 40) ; a trailing comment',
+    `;; ${write('selections', '(+ selected-value 2)')}`, ''
   ].join('\n');
   fs.writeFileSync(program, source);
+  const unopened = path.join(directory, 'unopened consumer.rkt');
+  fs.writeFileSync(unopened, `#lang racket/base\n(require (file ${JSON.stringify(path.basename(program))}))\n(square 4)\n`);
   const document = await vscode.workspace.openTextDocument(program);
   const editor = await vscode.window.showTextDocument(document);
   await extension.exports.languageServerReady();
@@ -50,6 +54,23 @@ exports.run = async (extension, workspace) => {
   assert.equal((definition.targetSelectionRange || definition.range).start.line, 2);
   const references = await vscode.commands.executeCommand('vscode.executeReferenceProvider', document.uri, call);
   assert.ok(references.some(reference => reference.range.start.line === 4));
+  assert.ok(references.some(reference => reference.uri.fsPath === unopened && reference.range.start.line === 2),
+    'References include a workspace module that has never been opened');
+  assert.ok(!vscode.workspace.textDocuments.some(item => item.uri.fsPath === unopened),
+    'Background analysis leaves unopened files closed in the editor');
+  fs.appendFileSync(unopened, '(square 5)\n');
+  await until(async () => {
+    const updated = await vscode.commands.executeCommand('vscode.executeReferenceProvider', document.uri, call);
+    return updated.some(reference => reference.uri.fsPath === unopened && reference.range.start.line === 3);
+  }, 'workspace references refresh after an external write');
+  const analysisConfig = vscode.workspace.getConfiguration('racket-langserver');
+  await analysisConfig.update('workspaceAnalysis.enabled', false, vscode.ConfigurationTarget.Workspace);
+  const localReferences = await vscode.commands.executeCommand('vscode.executeReferenceProvider', document.uri, call);
+  assert.ok(localReferences.some(reference => reference.uri.fsPath === program));
+  assert.ok(!localReferences.some(reference => reference.uri.fsPath === unopened));
+  await analysisConfig.update('workspaceAnalysis.enabled', true, vscode.ConfigurationTarget.Workspace);
+  await until(async () => (await vscode.commands.executeCommand('vscode.executeReferenceProvider', document.uri, call))
+    .some(reference => reference.uri.fsPath === unopened), 'workspace index re-enabled independently');
   const hover = await vscode.commands.executeCommand('vscode.executeHoverProvider', document.uri, new vscode.Position(5, 22));
   assert.ok(hover.some(item => item.contents.length), 'Hover includes documentation for list');
   const valuesPosition = new vscode.Position(9, document.lineAt(9).text.indexOf('(values') + 2);
@@ -109,6 +130,12 @@ exports.run = async (extension, workspace) => {
   editor.selection = new vscode.Selection(8, 3, 8, document.lineAt(8).text.length);
   assert.equal(await vscode.commands.executeCommand('racketdap.sendSelection'), terminal);
   await until(() => fs.existsSync(marker('selection')) && fs.readFileSync(marker('selection'), 'utf8') === '81', 'selected expression evaluated in module REPL');
+  editor.selections = [new vscode.Selection(0, 0, 0, 0),
+    new vscode.Selection(13, document.lineAt(13).text.length, 13, 3),
+    new vscode.Selection(12, 3, 12, document.lineAt(12).text.length)];
+  assert.equal(await vscode.commands.executeCommand('racketdap.sendSelection'), terminal);
+  await until(() => fs.existsSync(marker('selections')) && fs.readFileSync(marker('selections'), 'utf8') === '42',
+    'multiple selections evaluate in source order, ignoring the empty primary cursor');
   terminal.dispose();
 
   await vscode.workspace.getConfiguration('racketdap').update('languageServer.enabled', false, vscode.ConfigurationTarget.Workspace);
@@ -122,8 +149,11 @@ exports.run = async (extension, workspace) => {
 
   return [process.env.RACKETDAP_TEST_RHOMBUS === '1'
     ? 'bundled language server with isolated Rhombus runtime addon'
-    : 'bundled language server with empty Racket addon directory', 'definition', 'references', 'hover documentation',
+    : 'bundled language server with empty Racket addon directory', 'definition', 'references',
+    'workspace references include unopened files without opening editor buffers',
+    'workspace references refresh after external writes', 'disable/enable workspace index independently', 'hover documentation',
     'values documentation', 'values semantic function highlighting', 'built-in syntax highlighting preserves strings and comments',
     'completion', 'rename', 'formatting', 'unsaved diagnostics and repair', 'run task', 'Test Explorer file run',
-    'REPL', 'load quoted Unicode file in REPL', 'evaluate selection', 'disable/enable language server', 'restart language server'];
+    'REPL', 'load quoted Unicode file in REPL', 'evaluate selection', 'evaluate multiple selections in the plain REPL',
+    'disable/enable language server', 'restart language server'];
 };

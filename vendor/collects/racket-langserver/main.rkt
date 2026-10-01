@@ -5,6 +5,7 @@
          racket/function
          racket/list
          racket/match
+         racket/port
          racket/class
          racket/async-channel
          "common/interfaces.rkt"
@@ -48,7 +49,7 @@
       (channel-recv-evt (Q-out-ch q)))))
 
 (define (report-error exn)
-  (eprintf "\nCaught exn:\n~a\n" (exn->string exn)))
+  (log-racket-langserver-error "Caught exn:\n~a" (exn->string exn)))
 
 ;; We spawn some threads:
 ;; * current-thread - read request message from a specified input-port
@@ -74,7 +75,10 @@
       [_
        (maybe-debug-log msg)
        (with-handlers ([exn:fail? report-error])
-         (send server process-message msg))])
+         ;; Language readers, lexers and formatting hooks can print. Protocol
+         ;; messages are queued to write-resp, which retains the real port.
+         (parameterize ([current-output-port (open-output-nowhere)])
+           (send server process-message msg)))])
     (consume))
   (define (write-resp)
     (display-message/flush (async-channel-get resp-ch))
@@ -84,9 +88,8 @@
   (spawn write-resp)
   (for ([msg (in-port read-message)])
     (sync (queue-send-evt q msg)))
-  (eprintf "Unexpected EOF\n")
+  (log-racket-langserver-error "Unexpected EOF")
   (exit 1))
 
 (module+ main
   (main-loop))
-

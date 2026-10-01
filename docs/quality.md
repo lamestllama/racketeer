@@ -66,11 +66,16 @@ minimum and current stable editor versions. [CI details](ci.md) distinguish
 these checks from the Windows/macOS editor coverage still needed. A configured
 job establishes support only once its results pass for the revision in question.
 
-Owned process-group cleanup is exercised on Linux, including abrupt worker and
-adapter death. The Unix implementation retains a separate live group leader;
-processes that deliberately leave that group are outside its ownership. Windows
-currently terminates the immediate worker and needs native process-tree ownership
-and validation before equivalent cleanup can be claimed.
+Owned process cleanup passes the [native lifecycle and macro-stepper checks](https://github.com/lamestllama/racketeer/actions/runs/36821772249)
+on Windows x64 with Racket 9.1 and 9.3, Linux x64 and macOS ARM64 with Racket 9.1.
+The Unix implementation retains a separate live group leader; processes that
+deliberately leave that group are outside its ownership. Windows uses a Job
+Object owned by the adapter or macro-stepper supervisor. Its worker joins before
+running project code; closing the owner's handle terminates the job, including
+on owner death. Checks cover children and grandchildren, startup cancellation,
+Stop, Disconnect, worker and adapter crashes, preservation of unrelated processes,
+and cancellation of a stuck macro transformer with a child process. These checks
+do not establish installed VS Code extension support on Windows or macOS.
 
 Known product boundaries remain explicit:
 

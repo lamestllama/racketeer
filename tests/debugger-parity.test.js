@@ -62,6 +62,11 @@ test('skip and replace preserve multiple values, skipped effects, live Results, 
   assert.ok(s.racketdapActions.includes('racketdap/printResults'));
   const original = await results(client, s.frame); assert.deepEqual(original.values, ['8', '9']);
   assert.equal((await client.request('racketdap/skipExpression', { threadId: s.threadId, expression: '0' })).success, false);
+  await ok(client.request('racketdap/replaceResults', { threadId: s.threadId, expression: '(values)' }));
+  const invalidated = await client.event('invalidated', event => event.body.areas.includes('stacks'));
+  assert.equal(invalidated.body.threadId, s.threadId);
+  const refreshed = await ok(client.request('stackTrace', { threadId: s.threadId }));
+  assert.match(refreshed.stackFrames[0].name, /^Returned 0 values at /);
   await ok(client.request('racketdap/replaceResults', { threadId: s.threadId, expression: '(values 40 50)' }));
   assert.equal((await client.request('racketdap/replaceResults', { threadId: s.threadId, expression: '(error "bad edit")' })).success, false);
   assert.deepEqual((await ok(client.request('variables', { variablesReference: original.reference }))).variables.map(v => v.value), ['40', '50']);
@@ -78,6 +83,8 @@ test('closing-parenthesis breakpoints stop at completion and expose replaceable 
   await ok(client.request('setBreakpoints', { source: { path: program }, breakpoints: [{ line: 2, column: end }] }));
   await ok(client.request('configurationDone'));
   const s = await stopped(client); assert.equal(s.racketdapStopKind, 'after');
+  assert.equal(s.frame.column, end);
+  assert.equal(s.frame.endColumn, end + 1);
   assert.deepEqual((await results(client, s.frame)).values, ['3']);
   const locations = await ok(client.request('breakpointLocations', { source: { path: program }, line: 2 }));
   assert.ok(locations.breakpoints.some(b => b.column === end && b.racketdapPhase === 'after'));

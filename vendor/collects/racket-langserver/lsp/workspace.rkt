@@ -15,7 +15,6 @@
          "lsp.rkt"
          "safedoc.rkt"
          "../doclib/doc.rkt"
-         "scheduler.rkt"
          "../common/settings.rkt"
          "../workspace/current.rkt"
          "../workspace/state.rkt")
@@ -32,26 +31,10 @@
 
 (define (didRenameFiles params)
   (match-define (^RenameFilesParams #:files files) params)
+  ;; Document close/open notifications own editor buffers, not file operations.
   (for ([f files])
-    (match-define (FileRename #:oldUri old-uri #:newUri new-uri) f)
-    (workspace-remove-path! current-workspace (uri->path old-uri))
-
-    ; remove all awaiting internal queries about `old-uri`
-    (define safe-doc (lsp-get-doc old-uri #f))
-
-
-    ; `safe-doc = #f` should be rarely happened.
-    ; we simply give up to handle it, let's trust LSP client will send
-    ; other request about analysis this file.
-    (when safe-doc
-      (lsp-close-doc! old-uri))
-
-    (when (and safe-doc (regexp-match (get-module-suffix-regexp) new-uri))
-      (define-values (old-text old-version)
-        (with-read-doc safe-doc
-          (lambda (doc)
-            (values (doc-get-text doc) (Doc-version doc)))))
-      (lsp-open-doc! new-uri old-text old-version))))
+    (match-define (FileRename #:oldUri old-uri #:newUri _) f)
+    (workspace-remove-path! current-workspace (uri->path old-uri))))
 
 (define (didChangeWorkspaceFolders params)
   (match-define (^DidChangeWorkspaceFoldersParams #:event event) params)
@@ -66,32 +49,7 @@
     (republish-open-doc-contributions!)))
 
 (define (didChangeWatchedFiles params)
-  (match-define (^DidChangeWatchedFilesParams #:changes changes) params)
-  (for ([change changes])
-    (match-define (FileEvent #:uri uri #:type type) change)
-    (match (FileChangeType-v type)
-      ['created (handle-file-created uri)]
-      ['changed (handle-file-changed uri)]
-      ['deleted (handle-file-deleted uri)]
-      [_ (eprintf "Invalid file event type: ~a~n" type)])))
-
-(define (handle-file-created uri)
-  ;; File watchers can report creation after didOpen. The client's buffer and
-  ;; version remain authoritative until didClose.
-  (when (and (regexp-match (get-module-suffix-regexp) uri)
-             (not (lsp-get-doc uri #f)))
-    (lsp-open-doc! uri "" 0)))
-
-(define (handle-file-changed uri)
-  (when (regexp-match (get-module-suffix-regexp) uri)
-    (let ([safe-doc (lsp-get-doc uri #f)])
-      (when safe-doc
-        (clear-old-queries/doc-close (SafeDoc-token safe-doc))))))
-
-(define (handle-file-deleted uri)
-  (workspace-remove-path! current-workspace (uri->path uri))
-  (when (regexp-match (get-module-suffix-regexp) uri)
-    (lsp-close-doc! uri)))
+  (void))
 
 (define (apply-langserver-settings settings)
   (match-define (Langserver-Settings #:resyntax resyntax #:formatting formatting)

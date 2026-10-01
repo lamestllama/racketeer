@@ -1,6 +1,7 @@
 #lang racket/base
 
 (require (only-in ffi/unsafe/global get-place-table)
+         file/convertible
          racket/path
          racket/port
          racket/runtime-path
@@ -79,6 +80,9 @@
              (source-selected? resolved))))
   (define target (if (null? submodule) source `(submod ,source ,@submodule)))
   (define namespace (make-base-namespace))
+  ;; Image values and the debugger must share the conversion property identity.
+  (when instrument?
+    (namespace-attach-module (namespace-anchor->namespace anchor) 'file/convertible namespace))
   (when language
     (unless (symbol? language) (raise-argument-error 'run-module "language module-path symbol" language))
     (parameterize ([current-namespace namespace]) (namespace-require language)))
@@ -150,6 +154,7 @@
             (if parent-bindings
                 (module-binding-context-child! parent-bindings (syntax-e name) inherit?)
                 (make-module-binding-context)))
+          ;; Keep declaration bindings when a module is loaded during expansion.
           (define rewritten
             (syntax-case form (module module* module+ begin)
             [(module . _) (not (equal? (syntax-source form) selected-source)) form]
@@ -157,29 +162,29 @@
             [(module name language (mb body ...))
              (and (memq (syntax-e #'language) '(racket/base racket))
                   (eq? (syntax-e #'mb) '#%module-begin))
-             #`(module name language
+             #`(#,(car (syntax-e form)) name language
                  (mb #,@(wrap-body (syntax->list #'(body ...)) #'mb (context-for #'name #f))))]
             [(module name language body ...)
              (memq (syntax-e #'language) '(racket/base racket))
-             #`(module name language #,@(wrap-body (syntax->list #'(body ...)) form (context-for #'name #f)))]
+             #`(#,(car (syntax-e form)) name language #,@(wrap-body (syntax->list #'(body ...)) form (context-for #'name #f)))]
             [(module* name language body ...)
              (or (not (syntax-e #'language))
                  (memq (syntax-e #'language) '(racket/base racket)))
-             #`(module* name language
+             #`(#,(car (syntax-e form)) name language
                  #,@(wrap-body (syntax->list #'(body ...)) form
                                (context-for #'name (not (syntax-e #'language)))))]
             [(module name language . _)
              (syntax-case form ()
                [(_ name language body ...)
-                #`(module name #,(language-wrapper #'language form (context-for #'name #f)) body ...)])]
+                #`(#,(car (syntax-e form)) name #,(language-wrapper #'language form (context-for #'name #f)) body ...)])]
             [(module* name language . _)
              (syntax-case form ()
                [(_ name language body ...)
-                #`(module* name #,(language-wrapper #'language form (context-for #'name #f)) body ...)])]
+                #`(#,(car (syntax-e form)) name #,(language-wrapper #'language form (context-for #'name #f)) body ...)])]
             [(module+ name body ...)
-             #`(module+ name #,@(wrap-body (syntax->list #'(body ...)) form (context-for #'name #t)))]
+             #`(#,(car (syntax-e form)) name #,@(wrap-body (syntax->list #'(body ...)) form (context-for #'name #t)))]
             [(begin body ...)
-             #`(begin #,@(map (lambda (item) (rewrite-submodule item parent-bindings))
+             #`(#,(car (syntax-e form)) #,@(map (lambda (item) (rewrite-submodule item parent-bindings))
                               (syntax->list #'(body ...))))]
             [_ form]))
           (if (syntax? rewritten)

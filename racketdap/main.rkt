@@ -38,7 +38,9 @@
   (cond
     [process-group
      (stop-process-group! process-group)
-     (set! process-group #f)]
+     (set! process-group #f)
+     ;; A Windows worker can still be starting, before it has joined the job.
+     (when (and process (eq? (system-type 'os) 'windows)) (subprocess-kill process #t))]
     [process (subprocess-kill process #t)]))
 (define (fail-launch! message)
   (when launch-request
@@ -149,7 +151,8 @@
            (dynamic-wind
              void
              (lambda ()
-               (write-message (hasheq 'port port 'token token 'config config 'client client) child-in))
+               (write-message (hasheq 'port port 'token token 'config config 'client client
+                                      'processGroup (process-group-name owned-group)) child-in))
              (lambda () (unless (port-closed? child-in) (close-output-port child-in))))
            (define connection (sync (tcp-accept-evt listener)))
            (tcp-close listener)

@@ -14,6 +14,7 @@
            (stackTrace . (paused)) (scopes . (paused)) (variables . (paused))
            (exceptionInfo . (paused exception))
            (evaluate . (paused evaluate interactive))
+           (racketdap/renderImage . (paused evaluate))
            (setVariable . (paused evaluate))
            (continue . (paused resume all-threads))
            (next . (paused resume all-threads step))

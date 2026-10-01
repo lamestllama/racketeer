@@ -35,7 +35,7 @@ test('native GUI shows a real rewrite, navigates to expansion, and closes throug
   assert.notEqual(result.before, result.after);
 });
 
-test('owned GUI terminal cancellation kills a stuck transformer and its child process', { ...gui, skip: process.platform === 'win32' }, async t => {
+test('owned GUI terminal cancellation kills a stuck transformer and its child process', gui, async t => {
   const server = net.createServer();
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
   let socket;
@@ -50,8 +50,12 @@ test('owned GUI terminal cancellation kills a stuck transformer and its child pr
   try {
     await Promise.race([connected, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Descendant did not connect: ' + session.output)), 15000); })]);
   } finally { clearTimeout(timer); }
-  const disconnected = once(socket, 'close');
-  await session.process.stop(); await disconnected;
+  const disconnected = new Promise((resolve, reject) => {
+    socket.once('close', resolve);
+    // Forced process termination can reset the connection on Windows.
+    socket.once('error', error => { if (error.code !== 'ECONNRESET') reject(error); });
+  });
+  await Promise.all([session.process.stop(), disconnected]);
   assert.deepEqual(session.errors, []);
   assert.equal(session.code, 0);
 });

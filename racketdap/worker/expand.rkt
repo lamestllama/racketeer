@@ -7,7 +7,11 @@
   (define-syntax (name stx)
     (syntax-case stx ()
       [(_ body (... ...))
-       #'(instrument-language-body rewrite runtime-path (language-module-begin body (... ...)))])))
+       (with-syntax ([original-body
+                      (datum->syntax stx
+                        (cons #'language-module-begin (syntax->list #'(body (... ...))))
+                        stx stx)])
+         #'(instrument-language-body rewrite runtime-path original-body))])))
 
 (define-syntax (instrument-language-body stx)
   (syntax-case stx ()
@@ -31,6 +35,8 @@
 ;; remain in the module's ordinary expansion pass. Only runtime expressions
 ;; undergo complete expansion before annotation; their lexical syntax has
 ;; already been consumed when the resulting core expression is compiled.
+;; #%expression defers bare expressions to the same pass as definition RHSs,
+;; preserving expansion order and the placement of shared lifted expressions.
 (define-syntax (instrument-form stx)
   (syntax-case stx ()
     [(_ transform form)
@@ -53,7 +59,7 @@
             [(#%declare . _) expanded]
             [(module . _) ((syntax-e #'transform) 'module expanded)]
             [(module* . _) ((syntax-e #'transform) 'module expanded)]
-            [else #`(instrument-expression transform #,expanded)]))])]))
+            [else #`(#%expression (instrument-expression transform #,expanded))]))])]))
 
 (define-syntax (instrument-expression stx)
   (syntax-case stx ()

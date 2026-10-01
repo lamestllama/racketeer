@@ -9,6 +9,7 @@ language-process.js
 commands.js
 terminal.js
 debug-actions.js
+debug-images.js
 debug-sources.js
 execution.js
 sessions.js
@@ -18,3 +19,4 @@ debug-repl.js
 packages.js
 macro-stepper.js
 macro-process.js
+workspace-index.js

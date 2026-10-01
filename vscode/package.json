@@ -2,7 +2,7 @@
   "name": "racketeer",
   "displayName": "Racketeer: Organised Racket",
   "description": "Racket debugging and REPL, with Racket and Rhombus editing for VS Code.",
-  "version": "0.8.0",
+  "version": "0.8.2",
   "publisher": "lamestllama",
   "author": { "name": "Eric Parsonage", "email": "eric@eparsonage.com", "url": "https://github.com/lamestllama" },
   "icon": "images/racket.png",
@@ -79,6 +79,9 @@
       }
     ],
     "commands": [
+      { "command": "racketdap.viewImage", "title": "Racket: View Image", "enablement": "racketdap.viewImage.enabled || debugProtocolVariableMenuContext == 'racketdap.image'", "icon": "$(preview)" },
+      { "command": "racketdap.saveImage", "title": "Racket: Save Image As…", "enablement": "resourceScheme == racketeer-image", "icon": "$(save-as)" },
+      {"command": "racketdap.refreshWorkspaceReferences", "title": "Racket: Refresh Workspace References"},
       { "command": "racketdap.openMacroStepper", "title": "Racket: Open Line or Selection in Macro Stepper" },
       { "command": "racketdap.openFileInMacroStepper", "title": "Racket: Open File in Macro Stepper" },
       { "command": "racketdap.managePackages", "title": "Racket: Manage Packages" },
@@ -186,6 +189,11 @@
     "configuration": {
       "title": "Racketeer",
       "properties": {
+        "racket-langserver.workspaceAnalysis.enabled": {"type": "boolean", "default": true, "description": "Analyse unopened workspace files for references. Readers and macros run during analysis, as they do for open files. Applies to the bundled language server."},
+        "racket-langserver.workspaceAnalysis.excludedDirectories": {"type": "array", "items": {"type": "string", "minLength": 1}, "default": [".git", "compiled", "node_modules", ".test-output", "dist", "build"], "description": "Directory names excluded from workspace reference analysis and dependency watching. Each name matches a whole path component."},
+        "racket-langserver.workspaceAnalysis.maxFiles": {"type": "integer", "minimum": 1, "maximum": 10000, "default": 1000, "description": "Maximum files discovered per workspace analysis pass. Reaching a limit is reported as partial references."},
+        "racket-langserver.workspaceAnalysis.maxFileBytes": {"type": "integer", "minimum": 1, "maximum": 10485760, "default": 1048576, "description": "Maximum source file size for background reference analysis."},
+        "racket-langserver.workspaceAnalysis.timeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 90, "default": 20, "description": "Time limit for each background file analysis. Timed-out files make the reference index partial."},
         "racketdap.racketExecutable": {
           "type": "string",
           "default": "racket",
@@ -396,13 +404,25 @@
     ],
     "keybindings": [
       {
+        "command": "racketdap.sendSelectionToDebugRepl",
+        "key": "shift+enter",
+        "when": "editorTextFocus && editorLangId == racket && resourceScheme == file && editorHasSelection"
+      },
+      {
         "command": "racketdap.openMacroStepper",
         "key": "alt+shift+enter",
         "when": "editorTextFocus && editorLangId == racket"
       }
     ],
     "menus": {
+      "debug/variables/context": [
+        { "command": "racketdap.viewImage", "when": "debugType == racketdap && debugProtocolVariableMenuContext == 'racketdap.image'", "group": "1_view@1" }
+      ],
+      "debug/toolBar": [
+        { "command": "racketdap.viewImage", "when": "racketdap.viewImage.enabled", "group": "navigation@20" }
+      ],
       "editor/title": [
+        { "command": "racketdap.saveImage", "when": "resourceScheme == racketeer-image", "group": "navigation@1" },
         {
           "command": "racketdap.runFile",
           "when": "resourceLangId == racket && resourceScheme == file",

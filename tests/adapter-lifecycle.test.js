@@ -4,10 +4,14 @@ const test = require('node:test');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
+const { execFile, spawn } = require('node:child_process');
+const { promisify } = require('node:util');
+const { once } = require('node:events');
 const { setTimeout: delay } = require('node:timers/promises');
 const { DapClient } = require('./dap-client');
 const { deferCleanup } = require('./cleanup');
 const program = path.resolve(__dirname, '../examples/demo.rkt');
+const execute = promisify(execFile);
 async function ok(promise) {
   const response = await promise;
   assert.equal(response.success, true, response.message);
@@ -55,6 +59,43 @@ for (const command of ['terminate', 'disconnect']) {
     assert.ok(!client.events.some(event => event.event === 'initialized'));
   });
 }
+
+test('terminate during real worker startup closes the session promptly', async t => {
+  const client = await clientFor(t);
+  const start = Date.now();
+  const launched = client.request('launch', { program });
+  await ok(client.request('terminate'));
+  await launched;
+  await client.event('terminated');
+  assert.ok(Date.now() - start < 3000, 'Startup cancellation must not wait for the worker handshake');
+  assert.deepEqual((await ok(client.request('threads'))).threads, []);
+});
+
+test('an unavailable process-group executable reports the missing command', { skip: process.platform === 'win32' }, async t => {
+  const missing = path.join(await temporary(t), 'missing-racket');
+  const module = path.resolve(__dirname, '../racketdap/process-group.rkt');
+  const expression = `(begin (require (file ${JSON.stringify(module)})) (start-process-group ${JSON.stringify(missing)}))`;
+  await assert.rejects(execute('racket', ['-e', expression], { timeout: 10000 }), error => {
+    assert.ok(error.stderr.includes(`Cannot resolve the Racket executable: ${missing}`), error.stderr);
+    return true;
+  });
+});
+
+test('a closed Windows job cannot be joined', { skip: process.platform !== 'win32' }, async () => {
+  const module = path.resolve(__dirname, '../racketdap/process-group.rkt');
+  const expression = `(begin (require (file ${JSON.stringify(module)}))
+    (define-values (owner group) (start-process-group))
+    (define name (process-group-name owner))
+    (stop-process-group! owner)
+    (stop-process-group! owner)
+    (join-process-group! name)
+    (displayln "must not run"))`;
+  await assert.rejects(execute('racket', ['-e', expression], { timeout: 10000 }), error => {
+    assert.match(error.stderr, /OpenJobObjectW: Windows error/);
+    assert.doesNotMatch(error.stdout, /must not run/);
+    return true;
+  });
+});
 
 test('worker bootstrap preserves a source path with spaces and Unicode in another directory', async t => {
   const directory = await temporary(t);
@@ -131,6 +172,13 @@ test('the startup deadline covers the entire framed handshake', { skip: process.
 
 async function running(pid) {
   try {
+    if (process.platform === 'win32') { process.kill(pid, 0); return true; }
+    if (process.platform === 'darwin') {
+      try {
+        const { stdout } = await execute('ps', ['-p', String(pid), '-o', 'stat=']);
+        return !!stdout.trim() && !stdout.trim().startsWith('Z');
+      } catch (error) { if (error.code === 1) return false; throw error; }
+    }
     // A zombie is already terminated; the host's init owns its reaping.
     const stat = await fs.readFile(`/proc/${pid}/stat`, 'utf8');
     return stat.slice(stat.lastIndexOf(')') + 2, stat.lastIndexOf(')') + 3) !== 'Z';
@@ -148,14 +196,23 @@ async function waitGone(pid) {
   assert.fail(`Owned descendant ${pid} survived worker shutdown`);
 }
 
-for (const ending of ['worker crash', 'adapter EOF', 'adapter crash']) {
-  test(`${ending} terminates all owned descendants`, { skip: process.platform !== 'linux' }, async t => {
+for (const ending of ['terminate', 'disconnect', 'worker crash', 'adapter EOF', 'adapter crash']) {
+  test(`${ending} terminates all owned descendants`, async t => {
   const directory = await temporary(t);
   const target = path.join(directory, 'owned-processes.rkt');
+  const childProgram = path.join(directory, 'child.rkt');
+  await fs.writeFile(childProgram, `#lang racket/base
+(define-values (child out in err)
+  (subprocess #f #f #f (find-system-path 'exec-file) "-e" "(sync never-evt)"))
+(printf "owned-grandchild ~a\\n" (subprocess-pid child))
+(flush-output)
+(sync never-evt)
+`);
   await fs.writeFile(target, `#lang racket/base
-(require ffi/unsafe)
-(define getpid (get-ffi-obj "getpid" (ffi-lib #f) (_fun -> _int)))
-(define-values (child out in err) (subprocess #f #f #f (find-executable-path "sleep") "120"))
+(require racket/os)
+(define-values (child out in err)
+  (subprocess (current-output-port) #f (current-error-port)
+              (find-system-path 'exec-file) ${JSON.stringify(childProgram)}))
 (printf "owned-pids ~a ~a\\n" (getpid) (subprocess-pid child))
 (flush-output)
 (sync never-evt)
@@ -169,14 +226,23 @@ for (const ending of ['worker crash', 'adapter EOF', 'adapter crash']) {
   await client.event('initialized');
   await ok(client.request('configurationDone'));
   let output = '';
-  let match;
-  while (!(match = /owned-pids (\d+) (\d+)/.exec(output))) {
+  let match, grandchildMatch;
+  while (!(match = /owned-pids (\d+) (\d+)/.exec(output)) ||
+         !(grandchildMatch = /owned-grandchild (\d+)/.exec(output))) {
     output += (await client.event('output', event => event.body.category === 'stdout')).body.output;
   }
-  const worker = Number(match[1]), descendant = Number(match[2]);
-  deferCleanup(t, async () => { if (await running(descendant)) process.kill(descendant, 'SIGKILL'); });
-  assert.ok(await running(descendant));
-  if (ending === 'worker crash') {
+  const worker = Number(match[1]), descendants = [Number(match[2]), Number(grandchildMatch[1])];
+  deferCleanup(t, async () => {
+    for (const pid of descendants.reverse()) if (await running(pid)) process.kill(pid, 'SIGKILL');
+  });
+  for (const pid of descendants) assert.ok(await running(pid));
+  const unrelated = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+  const unrelatedClosed = once(unrelated, 'close');
+  deferCleanup(t, async () => { unrelated.kill('SIGKILL'); await unrelatedClosed; });
+  if (ending === 'terminate' || ending === 'disconnect') {
+    await ok(client.request(ending));
+    await client.event('terminated');
+  } else if (ending === 'worker crash') {
     process.kill(worker, 'SIGKILL');
     await client.event('terminated');
     assert.equal((await client.request('threads')).success, true);
@@ -187,6 +253,7 @@ for (const ending of ['worker crash', 'adapter EOF', 'adapter crash']) {
     await client.closed;
   }
   await waitGone(worker);
-  await waitGone(descendant);
+  for (const pid of descendants) await waitGone(pid);
+  assert.ok(await running(unrelated.pid), 'Other processes must survive session cleanup');
   });
 }

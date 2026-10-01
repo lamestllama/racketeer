@@ -2,10 +2,11 @@
 
 (require racket/async-channel racket/file racket/list racket/path racket/port
          racket/string racket/tcp
-         "../protocol.rkt" "../commands.rkt" "../source.rkt" "../packages.rkt" "load.rkt" "../instrumentation/instrument.rkt"
-         "inspect.rkt" "stepping.rkt" "expressions.rkt" "cancel.rkt")
+         "../protocol.rkt" "../commands.rkt" "../source.rkt" "../packages.rkt" "../process-group.rkt" "load.rkt" "../instrumentation/instrument.rkt"
+         "inspect.rkt" "stepping.rkt" "expressions.rkt" "cancel.rkt" "images.rkt")
 
 (define bootstrap (read-message (current-input-port)))
+(join-process-group! (hash-ref bootstrap 'processGroup #f))
 (define-values (control-in control-out) (tcp-connect "127.0.0.1" (hash-ref bootstrap 'port)))
 (define output-lock (make-semaphore 1))
 (define (send object) (call-with-semaphore output-lock (lambda () (write-message object control-out))))
@@ -172,14 +173,29 @@
   (for ([entry (in-list (hash-values awaiting))] #:when (eq? (car entry) pause))
     (reply (cdr entry) (hasheq) "The paused thread resumed or ended.")))
 (define (describe pause name value)
-  (hasheq 'name name 'value (value-preview value) 'type (value-type value)
-          'variablesReference (if (expandable? value) (new-handle variables pause (cons 'value value)) 0)))
+  (define image? (image-value? value))
+  (define result
+    (hasheq 'name name 'value (value-preview value) 'type (value-type value)
+            'variablesReference (if (or image? (expandable? value))
+                                    (new-handle variables pause (cons 'value value)) 0)))
+  (if image?
+      (hash-set (hash-set result 'racketdapImage #t) '__vscodeVariableMenuContext "racketdap.image")
+      result))
 (define (describe-results pause result)
   (define display-result
     (cond [(null? result) (hasheq 'value "#<zero values>" 'type "values" 'variablesReference 0)]
           [(null? (cdr result)) (describe pause "" (car result))]
-          [else (hasheq 'value (string-join (map value-preview (take result (min 10 (length result)))) "\n")
-                        'type "values" 'variablesReference (new-handle variables pause (cons 'results result)))]))
+          [else
+           ;; Bound the picker metadata and retained handles like a variables page.
+           (define image-count 0)
+           (hasheq 'value (string-join (map value-preview (take result (min 10 (length result)))) "\n")
+                        'type "values" 'variablesReference (new-handle variables pause (cons 'results result))
+                        'racketdapImages
+                        (for/list ([value (in-list result)] [i (in-naturals 1)]
+                                   #:break (= image-count 200)
+                                   #:when (image-value? value))
+                          (set! image-count (add1 image-count))
+                          (describe pause (format "value ~a" i) value)))]))
   (hash-set (hash-remove (hash-remove display-result 'name) 'value) 'result (hash-ref display-result 'value)))
 (define (owned table id pause)
   (define entry (hash-ref table id #f))
@@ -195,12 +211,18 @@
              (not (zero? (owned frames (arg a 'frameId) pause))))
     (error 'debugger "Expression actions apply to the executing frame."))
   (case (string->symbol command)
+    [(racketdap/renderImage)
+     (define descriptor (owned variables (hash-ref a 'variablesReference) pause))
+     (unless (eq? (car descriptor) 'value) (error 'image "Select a single image value."))
+     (render-image (cdr descriptor))]
     [(racketdap/skipExpression racketdap/replaceResults)
      (define result (call-with-values (lambda () (stop-evaluate stop (read-expression (hash-ref a 'expression)))) list))
      (if (equal? command "racketdap/skipExpression")
          (stop-skip! stop result)
          (stop-replace-results! stop result))
-     (event "invalidated" (hasheq 'areas '("variables") 'threadId (state-id (paused-state pause))))
+     (event "invalidated" (hasheq 'areas (if (equal? command "racketdap/replaceResults")
+                                           '("stacks" "variables") '("variables"))
+                                  'threadId (state-id (paused-state pause))))
      (describe-results pause result)]
     [(racketdap/printBinding racketdap/setBinding)
      (define index (if (arg a 'frameId) (owned frames (arg a 'frameId) pause) 0))
@@ -236,10 +258,23 @@
              (for/list ([i (in-range (min start total) end)])
                (define raw (stop-frame-source stop i))
                (define source (hash-ref sources (syntax-source raw) #f))
-               (define loc (if source (location source (syntax-position raw) (syntax-span raw))
+               (define returned? (and (zero? i) (eq? (stop-kind stop) 'after)))
+               (define return-position (and returned? (site-boundary-position (stop-site stop) 'after)))
+               (define position (or return-position (syntax-position raw)))
+               (define loc (if source (location source position (if return-position 1 (syntax-span raw)))
                                (hasheq 'line 1 'column 1)))
+               (define label
+                 (cond
+                   [(positive? i) "Waiting for return"]
+                   [returned?
+                    (define count (length (stop-results stop)))
+                    (format "Returned ~a ~a" count (if (= count 1) "value" "values"))]
+                   [else (case (stop-kind stop)
+                           [(before) "Before evaluation"]
+                           [(exception) "Exception"]
+                           [else "Paused (approximate)"])]))
                (hash-set (hash-set loc 'id (new-handle frames pause i))
-                         'name (format "~a at ~a:~a" (if (zero? i) "expression" "caller")
+                         'name (format "~a at ~a:~a" label
                                        (if source (path->string (file-name-from-path (source-file-path source))) "Racket")
                                        (hash-ref loc 'line)))))]
     [(scopes)
@@ -392,7 +427,7 @@
   (cond
     [(pair? hit-ids) (set! entry-pending? #f) (pause-loop st stop "breakpoint" (or failure (if before? "Before expression" "Expression returned")) hit-ids)]
     [reached? (pause-loop st stop "goto" "Continue-to target reached" '())]
-    [(and before? entry-pending?) (set! entry-pending? #f) (pause-loop st stop "entry" "Before first expression" '())]
+    [(and before? entry-pending?) (set! entry-pending? #f) (pause-loop st stop "entry" "Starting program; first expression has not run" '())]
     [(and before? (eq? (state-pause? st) 'deferred)) (pause-loop st stop "pause" "Paused at an expression" '())]
     [step-message (pause-loop st stop "step" step-message '())]))
 (define (on-exception stop)
@@ -451,6 +486,8 @@
                         (set! exit-code 1)
                         (eprintf "~a\n" (if (exn? e) (exn-message e) (value-preview e))))])
        (parameterize ([current-input-port program-input]
+                      [current-inspector (if (arg config 'noDebug #f)
+                                             (current-inspector) (make-inspector))]
                       [current-subprocess-custodian-mode 'kill]
                       [exit-handler
                        (lambda (status)

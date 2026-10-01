@@ -21,8 +21,8 @@ exports.run = async function () {
     ['tests/loader-isolation.rkt', 14],
     ['tests/macro-stepper.rkt', 10],
     ['tests/packages.rkt', 3],
-    ['tests/parity-languages.rkt', 10],
-    ['tests/protocol-inspection.rkt', 9],
+    ['tests/parity-languages.rkt', 13],
+    ['tests/protocol-inspection.rkt', 12],
     ['tests/stepping.rkt', 8],
     ['tests/source-loading.rkt', 10]
   ]);

@@ -1,0 +1,73 @@
+diff --git a/lsp/workspace.rkt b/lsp/workspace.rkt
+index 749eedc..9a9439e 100644
+--- a/lsp/workspace.rkt
++++ b/lsp/workspace.rkt
+@@ -33,22 +33,6 @@
+   (match-define (^RenameFilesParams #:files files) params)
++  ;; Document close/open notifications own editor buffers, not file operations.
+   (for ([f files])
+-    (match-define (FileRename #:oldUri old-uri #:newUri new-uri) f)
+-    (workspace-remove-path! current-workspace (uri->path old-uri))
+-
+-    ; remove all awaiting internal queries about `old-uri`
+-    (define safe-doc (lsp-get-doc old-uri #f))
+-
+-
+-    ; `safe-doc = #f` should be rarely happened.
+-    ; we simply give up to handle it, let's trust LSP client will send
+-    ; other request about analysis this file.
+-    (when safe-doc
+-      (lsp-close-doc! old-uri))
+-
+-    (when (and safe-doc (regexp-match (get-module-suffix-regexp) new-uri))
+-      (define-values (old-text old-version)
+-        (with-read-doc safe-doc
+-          (lambda (doc)
+-            (values (doc-get-text doc) (Doc-version doc)))))
+-      (lsp-open-doc! new-uri old-text old-version))))
++    (match-define (FileRename #:oldUri old-uri #:newUri _) f)
++    (workspace-remove-path! current-workspace (uri->path old-uri))))
+ 
+diff --git a/tests/lsp/workspace-lifecycle-test.rkt b/tests/lsp/workspace-lifecycle-test.rkt
+index 838fef2..04345cb 100644
+--- a/tests/lsp/workspace-lifecycle-test.rkt
++++ b/tests/lsp/workspace-lifecycle-test.rkt
+@@ -8,2 +8,3 @@
+          "../../lsp/safedoc.rkt"
++         "../../lsp/scheduler.rkt"
+          "../../lsp/workspace.rkt"
+@@ -12,3 +13,2 @@
+          racket/file
+-         racket/list
+          rackunit)
+@@ -50,3 +50,4 @@
+         (Doc-contribution doc))))
+-  (values uri safe-doc contribution (first (hash-keys (Doc-Contribution-references contribution)))))
++  (values uri safe-doc contribution
++          (with-read-doc safe-doc (lambda (doc) (doc-module-binding-at doc (Pos 2 0))))))
+ 
+@@ -118,5 +119,8 @@
+ 
+-        ;; Rename removes the old path contribution and opens the new URI.
++        ;; Rename preserves editor ownership until client close/open notifications.
+         (define-values (_rename-uri _rename-doc _rename-contribution _rename-binding)
+           (open-expanded-doc source-path))
++        (define query-signal #f)
++        (async-query-wait (SafeDoc-token _rename-doc)
++                          (lambda (signal) (set! query-signal signal)))
+         (didChangeWorkspaceFolders (folder-change (list root) '()))
+@@ -125,3 +129,13 @@
+         (check-contribution-paths module-binding '())
+-        (check-true (SafeDoc? (lsp-get-doc (path->uri renamed-path) #f))))
++        (check-eq? (lsp-get-doc uri #f) _rename-doc)
++        (check-false query-signal "a rename does not finish or cancel the buffer's queries")
++        (check-false (lsp-get-doc (path->uri renamed-path) #f))
++
++        ;; A destination that is already open also keeps its text and version.
++        (define destination (lsp-open-doc! (path->uri renamed-path) "unsaved destination" 7))
++        (didRenameFiles (rename-files source-path renamed-path))
++        (check-eq? (lsp-get-doc uri #f) _rename-doc)
++        (check-eq? (lsp-get-doc (path->uri renamed-path) #f) destination)
++        (check-equal? (with-read-doc destination doc-get-text) "unsaved destination")
++        (check-equal? (with-read-doc destination Doc-version) 7))
+       (lambda ()

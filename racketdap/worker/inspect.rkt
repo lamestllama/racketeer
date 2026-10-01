@@ -1,6 +1,12 @@
 #lang racket/base
 (require racket/list racket/promise "../instrumentation/instrument.rkt")
 (provide value-preview value-type children expandable?)
+;; Retain the inspector above the debuggee's structure types.
+(define debugger-inspector (current-inspector))
+(define (visible-structure-type value)
+  (parameterize ([current-inspector debugger-inspector])
+    (define-values (type skipped?) (struct-info value))
+    (and (not (unavailable? value)) (not skipped?) type)))
 (define (clip s [limit 160])
   (if (> (string-length s) limit) (string-append (substring s 0 limit) "…") s))
 (define (value-type v)
@@ -10,7 +16,9 @@
         [(bytes? v) "bytes"] [(number? v) "number"] [(boolean? v) "boolean"]
         [(symbol? v) "symbol"] [(keyword? v) "keyword"] [(char? v) "character"]
         [(void? v) "void"] [(promise? v) "promise"] [(procedure? v) "procedure"]
-        [(port? v) "port"] [(thread? v) "thread"] [else "opaque value"]))
+        [(port? v) "port"] [(thread? v) "thread"]
+        [(visible-structure-type v) => (lambda (type) (clip (symbol->string (object-name type))))]
+        [else "opaque value"]))
 (define (large-number? n)
   (and (exact? n)
        (if (real? n)
@@ -36,7 +44,8 @@
     [(hash? v) (format "#<hash: ~a entries>" (hash-count v))]
     [else (format "#<~a>" (value-type v))]))
 (define (expandable? v)
-  (and (not (impersonator? v)) (or (pair? v) (vector? v) (box? v) (hash? v))))
+  (and (not (impersonator? v))
+       (or (pair? v) (vector? v) (box? v) (hash? v) (and (visible-structure-type v) #t))))
 (define (children value start count)
   (define end (+ start count))
   (cond
@@ -54,4 +63,17 @@
                  (if (< i start) items
                      (cons (cons (number->string i)
                                  (cons (hash-iterate-key value position) (hash-iterate-value value position))) items)))))]
-    [else '()]))
+    [else
+     (parameterize ([current-inspector debugger-inspector])
+       (define type (visible-structure-type value))
+       (define-values (_ fields)
+         (let loop ([type type])
+           (if (not type) (values 0 '())
+               (let-values ([(name init auto ref set immutable super skipped?) (struct-type-info type)])
+                 (define-values (offset fields) (loop super))
+                 (values (+ offset init auto)
+                         (append fields
+                                 (for/list ([i (in-range (max 0 (- start offset))
+                                                        (max 0 (min (+ init auto) (- end offset))))])
+                                   (cons (number->string (+ offset i)) (ref value i)))))))))
+       fields)]))

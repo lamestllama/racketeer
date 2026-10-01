@@ -6,11 +6,11 @@
          "../../doclib/doc.rkt"
          "../../lsp/lsp.rkt"
          "../../lsp/safedoc.rkt"
+         "../../lsp/scheduler.rkt"
          "../../lsp/workspace.rkt"
          "../../workspace/api.rkt"
          "../../workspace/current.rkt"
          racket/file
-         racket/list
          rackunit)
 
 (define source-text
@@ -34,11 +34,11 @@
       #:files
       (list (FileRename #:oldUri (path->uri old-path) #:newUri (path->uri new-path))))))
 
-(define (delete-file path)
+(define (watched-file-change path type)
   (->jsexpr
     (DidChangeWatchedFilesParams
       #:changes
-      (list (FileEvent #:uri (path->uri path) #:type FileChangeType-deleted)))))
+      (list (FileEvent #:uri (path->uri path) #:type type)))))
 
 (define (open-expanded-doc path)
   (define uri (path->uri path))
@@ -48,7 +48,8 @@
       (lambda (doc)
         (check-true (doc-expand! doc))
         (Doc-contribution doc))))
-  (values uri safe-doc contribution (first (hash-keys (Doc-Contribution-references contribution)))))
+  (values uri safe-doc contribution
+          (with-read-doc safe-doc (lambda (doc) (doc-module-binding-at doc (Pos 2 0))))))
 
 (define (check-contribution-paths module-binding expected)
   (check-equal?
@@ -88,23 +89,55 @@
         (with-write-doc reopened-doc
           (lambda (doc)
             (doc-reset! doc "#lang racket/base\n(")
+            (doc-update-version! doc 2)
             (check-false (doc-expand! doc))
             (check-eq? (Doc-contribution doc) reopened-contribution)))
         (didChangeWorkspaceFolders (folder-change (list root) '()))
         (check-contribution-paths module-binding (list source-path))
 
-        ;; Delete removes the old path contribution.
-        (didChangeWatchedFiles (delete-file source-path))
-        (check-contribution-paths module-binding '())
+        ;; Watched-file events leave the editor buffer and contribution untouched.
+        (for ([type (in-list (list FileChangeType-deleted
+                                   FileChangeType-created
+                                   FileChangeType-changed))])
+          (didChangeWatchedFiles (watched-file-change source-path type))
+          (check-eq? (lsp-get-doc reopened-uri #f) reopened-doc)
+          (with-read-doc reopened-doc
+            (lambda (doc)
+              (check-equal? (doc-get-text doc) "#lang racket/base\n(")
+              (check-equal? (Doc-version doc) 2)))
+          (check-contribution-paths module-binding (list source-path))
+          (didChangeWatchedFiles (watched-file-change renamed-path type))
+          (check-false (lsp-get-doc (path->uri renamed-path) #f)))
 
-        ;; Rename removes the old path contribution and opens the new URI.
+        ;; The next incremental edit still applies to the editor's text.
+        (with-write-doc (lsp-get-doc reopened-uri)
+          (lambda (doc)
+            (doc-apply-edit! doc (Range (Pos 1 1) (Pos 1 1)) "void)")
+            (doc-update-version! doc 3)
+            (check-equal? (doc-get-text doc) "#lang racket/base\n(void)")
+            (check-equal? (Doc-version doc) 3)))
+
+        ;; Rename preserves editor ownership until client close/open notifications.
         (define-values (_rename-uri _rename-doc _rename-contribution _rename-binding)
           (open-expanded-doc source-path))
+        (define query-signal #f)
+        (async-query-wait (SafeDoc-token _rename-doc)
+                          (lambda (signal) (set! query-signal signal)))
         (didChangeWorkspaceFolders (folder-change (list root) '()))
         (check-contribution-paths module-binding (list source-path))
         (didRenameFiles (rename-files source-path renamed-path))
         (check-contribution-paths module-binding '())
-        (check-true (SafeDoc? (lsp-get-doc (path->uri renamed-path) #f))))
+        (check-eq? (lsp-get-doc uri #f) _rename-doc)
+        (check-false query-signal "a rename does not finish or cancel the buffer's queries")
+        (check-false (lsp-get-doc (path->uri renamed-path) #f))
+
+        ;; A destination that is already open also keeps its text and version.
+        (define destination (lsp-open-doc! (path->uri renamed-path) "unsaved destination" 7))
+        (didRenameFiles (rename-files source-path renamed-path))
+        (check-eq? (lsp-get-doc uri #f) _rename-doc)
+        (check-eq? (lsp-get-doc (path->uri renamed-path) #f) destination)
+        (check-equal? (with-read-doc destination doc-get-text) "unsaved destination")
+        (check-equal? (with-read-doc destination Doc-version) 7))
       (lambda ()
         (lsp-close-doc! uri)
         (lsp-close-doc! (path->uri source-path))

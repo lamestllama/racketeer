@@ -1,8 +1,9 @@
 # Debugger parity target
 
 The initial target is the behavior of a graphical Racket debugger.
-Broader IDE facilities are a separate task. This matrix records functional
-coverage in Racketeer; VS Code supplies its own visual presentation.
+The overall target includes IDE facilities, presented through native
+VS Code workflows. This matrix covers the debugger portion; it does not establish
+full IDE parity.
 
 | Debugger operation | Extension behavior | Regression evidence |
 | --- | --- | --- |
@@ -20,7 +21,9 @@ coverage in Racketeer; VS Code supplies its own visual presentation.
 | Print or assign a binding | Cursor commands use selected live frame | component, protocol, editor suites |
 | Stack and locals | Select frame; inspect or evaluate in its environment | original DAP and editor suites |
 | Unhandled exceptions | Inspect before unwind; continue propagates exception | DAP, interactive, GUI suites |
-| Multiple source files | Workspace roots and explicitly selected breakpoint files | module and DAP suites |
+| Multiple source files | Workspace roots, breakpoint files, and modules loaded during macro expansion | module, language, and DAP suites |
+| Structure values | Paged fields in Variables and Watch without invoking custom printers | inspection and DAP suites |
+| Image results | Native image editor for Variables and Debug Console results; native picker for multiple images | image protocol and editor suites |
 | Non-module programs | Sequential source loading with explicit `language` | language and protocol suites |
 | GUI programs | Eventspace lifetime, callback stops, interactive dispatch | GUI suite under Xvfb |
 
@@ -39,8 +42,10 @@ Unselected dependencies retain normal loading and assignment protections.
 
 This is a tested feature mapping, not a guarantee for every third-party language
 or platform. Validation uses Linux ARM64, Racket 9.1 CS, and VS Code 1.98.1. Text
-sources are the editor input; the WXME editor, graphical syntax, and rich
-Interactions rendering are separate IDE capabilities. Compiler-phase debugging,
+sources are the current editor input. WXME documents, graphical syntax,
+and inline rich Interactions rendering remain outstanding IDE capabilities. Static
+image previews support choosing among multiple returned values; interactive plots
+and embedded editor objects remain outside that slice. Compiler-phase debugging,
 tracing every caught exception, reverse execution, and arbitrary-process attach
 are not part of the documented graphical-debugger baseline mapped here.
 

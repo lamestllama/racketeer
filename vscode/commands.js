@@ -13,6 +13,14 @@ function racketString(text) {
   }) + '"';
 }
 
+function selectedExpressions(editor) {
+  if (!editor || editor.document.languageId !== 'racket') throw new Error('Open a Racket editor first.');
+  const selections = editor.selections.filter(selection => !selection.isEmpty);
+  if (!selections.length) throw new Error('Select a complete Racket expression to evaluate.');
+  return selections.sort((a, b) => a.start.compareTo(b.start))
+    .map(selection => editor.document.getText(selection));
+}
+
 function registerFileCommands(context, sessions, testing, debugRepl) {
   const terminals = new Map();
   const macroStepper = registerMacroStepper(context);
@@ -69,10 +77,8 @@ function registerFileCommands(context, sessions, testing, debugRepl) {
     ...Object.fromEntries(Object.entries(fileCommands).map(([name, command]) =>
       [name, async () => command(await activeTarget())])),
     sendSelectionToDebugRepl: async () => {
-      const editor = vscode.window.activeTextEditor;
-      if (!editor || editor.selection.isEmpty) throw new Error('Select a complete Racket expression to evaluate.');
-      const expression = editor.document.getText(editor.selection);
-      return debugRepl.evaluate(await activeTarget(), expression);
+      const expressions = selectedExpressions(vscode.window.activeTextEditor);
+      return debugRepl.evaluate(await activeTarget(), expressions);
     },
     startRepl: () => {
       const document = vscode.window.activeTextEditor?.document;
@@ -80,10 +86,9 @@ function registerFileCommands(context, sessions, testing, debugRepl) {
     },
     sendSelection: async () => {
       const editor = vscode.window.activeTextEditor;
-      if (!editor || editor.document.languageId !== 'racket') throw new Error('Open a Racket editor first.');
-      if (editor.selection.isEmpty) throw new Error('Select a complete Racket expression to evaluate.');
+      const expressions = selectedExpressions(editor);
       const terminal = repl(editor.document.uri.scheme === 'file' ? editor.document : undefined);
-      terminal.sendText(editor.document.getText(editor.selection));
+      for (const expression of expressions) terminal.sendText(expression);
       return terminal;
     }
   };

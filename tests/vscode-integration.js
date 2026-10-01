@@ -16,6 +16,7 @@ exports.run = async function () {
     ? await require('./vscode-rhombus').run(extension, workspace) : [];
   const workflowChecks = await require('./vscode-workflows').run(workspace);
   const packageChecks = await require('./vscode-packages').run(workspace);
+  const imageChecks = await require('./vscode-images').run(workspace);
   const program = path.join(workspace.uri.fsPath, 'demo.rkt');
   const document = await vscode.workspace.openTextDocument(program);
   await vscode.window.showTextDocument(document);
@@ -42,10 +43,19 @@ exports.run = async function () {
   }
   async function waitUntil(predicate, description) {
     const deadline = Date.now() + 20000;
-    while (!predicate()) {
+    while (!await predicate()) {
       if (Date.now() >= deadline) throw new Error(`Timed out: ${description}`);
       await new Promise(resolve => setTimeout(resolve, 20));
     }
+  }
+  async function selectedFrame(session, stop) {
+    await waitUntil(() => {
+      const item = vscode.debug.activeStackItem;
+      return item?.session.id === session.id && messages.some(message =>
+        message.sessionId === session.id && message.type === 'response' &&
+        message.command === 'stackTrace' && message.seq > stop.seq &&
+        message.body?.stackFrames?.some(frame => frame.id === item.frameId));
+    }, 'editor selects a frame from the current stop');
   }
   try {
     assert.equal(await vscode.debug.startDebugging(workspace, {
@@ -76,6 +86,13 @@ exports.run = async function () {
     const snapshotHover = await vscode.commands.executeCommand('vscode.executeHoverProvider', capturedDocument.uri, valuesPosition);
     assert.ok(snapshotHover.some(item => item.contents.some(content => /values/.test(content.value || content))),
       'Captured source receives language-server documentation');
+    const callPosition = new vscode.Position(7, 31);
+    const definitions = await vscode.commands.executeCommand('vscode.executeDefinitionProvider', capturedDocument.uri, callPosition);
+    assert.ok(definitions.some(item => (item.targetUri || item.uri).fsPath === program &&
+      (item.targetSelectionRange || item.range).start.line === 2), 'Captured source navigates to the function definition');
+    const references = await vscode.commands.executeCommand('vscode.executeReferenceProvider', capturedDocument.uri, callPosition);
+    assert.ok(references.some(item => item.uri.fsPath === program && item.range.start.line === 7),
+      'Captured source finds function references');
     const originalText = document.getText();
     const changedSource = new vscode.WorkspaceEdit();
     changedSource.insert(document.uri, new vscode.Position(0, 0), '; unsaved change while debugging\n');
@@ -83,6 +100,10 @@ exports.run = async function () {
     assert.deepEqual(await semanticTokens(capturedDocument), [], 'Mismatched source cannot supply semantic tokens');
     assert.deepEqual(await vscode.commands.executeCommand('vscode.executeHoverProvider', capturedDocument.uri, valuesPosition), [],
       'Mismatched source cannot supply hover documentation');
+    for (const command of ['vscode.executeDefinitionProvider', 'vscode.executeReferenceProvider']) {
+      assert.deepEqual(await vscode.commands.executeCommand(command, capturedDocument.uri, callPosition), [],
+        'Mismatched source cannot supply navigation locations');
+    }
     const restore = new vscode.WorkspaceEdit();
     restore.replace(document.uri, new vscode.Range(document.positionAt(0), document.positionAt(document.getText().length)), originalText);
     assert.equal(await vscode.workspace.applyEdit(restore), true);
@@ -109,6 +130,14 @@ exports.run = async function () {
     stopped = await event('stopped');
     assert.equal(stopped.body.description, 'Expression returned');
     const after = await session.customRequest('stackTrace', { threadId: stopped.body.threadId });
+    assert.match(after.stackFrames[0].name, /^Returned 1 value at /);
+    assert.equal(after.stackFrames[0].column, '  (define tax (* subtotal rate'.length + 1);
+    assert.equal(after.stackFrames[0].endColumn, after.stackFrames[0].column + 1);
+    await waitUntil(() => {
+      const editor = vscode.window.activeTextEditor;
+      return editor?.document.uri.toString() === capturedUri && editor.selection.start.line === 3 &&
+        editor.selection.start.character === after.stackFrames[0].column - 1;
+    }, 'editor selects the closing parenthesis after evaluation');
     const { scopes } = await session.customRequest('scopes', { frameId: after.stackFrames[0].id });
     const resultScope = scopes.find(s => s.name.startsWith('Results'));
     assert.ok(resultScope);
@@ -152,6 +181,40 @@ exports.run = async function () {
     await event('terminated');
     terminal.dispose();
     messages.length = 0;
+    const multiProgram = path.join(workspace.uri.fsPath, 'multi-file/main.rkt');
+    const unopenedConsumer = path.join(workspace.uri.fsPath, 'multi-file/index-consumer.rkt');
+    fs.writeFileSync(unopenedConsumer, '#lang racket/base\n(require "app/orders.rkt")\n(order-total 10 2 1/10)\n');
+    const multiDocument = await vscode.workspace.openTextDocument(multiProgram);
+    await vscode.window.showTextDocument(multiDocument);
+    assert.equal(await vscode.debug.startDebugging(workspace, {
+      type: 'racketdap', request: 'launch', name: 'Captured source navigation',
+      program: multiProgram, stopOnEntry: true
+    }), true);
+    const multiStop = await event('stopped');
+    const multiSession = vscode.debug.activeDebugSession;
+    const multiFrames = (await multiSession.customRequest('stackTrace', { threadId: multiStop.body.threadId })).stackFrames;
+    const multiUri = vscode.debug.asDebugSourceUri(multiFrames[0].source, multiSession);
+    await vscode.workspace.openTextDocument(multiUri);
+    const orderCall = new vscode.Position(5, 35);
+    const ordersPath = path.join(workspace.uri.fsPath, 'multi-file/app/orders.rkt');
+    await waitUntil(async () => {
+      const locations = await vscode.commands.executeCommand('vscode.executeDefinitionProvider', multiUri, orderCall);
+      return locations.some(item => (item.targetUri || item.uri).fsPath === ordersPath &&
+        (item.targetSelectionRange || item.range).start.line === 4);
+    }, 'captured source navigates to an imported function');
+    await waitUntil(async () => {
+      const references = await vscode.commands.executeCommand('vscode.executeReferenceProvider', multiUri, orderCall);
+      return references.some(item => item.uri.fsPath === multiProgram && item.range.start.line === 5) &&
+        references.some(item => item.uri.fsPath === ordersPath && item.range.start.line === 4) &&
+        references.some(item => item.uri.fsPath === unopenedConsumer && item.range.start.line === 2);
+    }, 'captured source finds references in unopened files');
+    assert.ok(!vscode.workspace.textDocuments.some(item => item.uri.fsPath === unopenedConsumer));
+    await vscode.debug.stopDebugging(multiSession);
+    await event('terminated');
+    await waitUntil(() => vscode.debug.activeDebugSession?.id !== multiSession.id, 'navigation session ends');
+    assert.deepEqual(await vscode.commands.executeCommand('vscode.executeDefinitionProvider', multiUri, orderCall), [],
+      'A completed session no longer supplies navigation from its captured sources');
+    messages.length = 0;
     const parityProgram = path.join(workspace.uri.fsPath, 'debugger-actions.rkt');
     fs.writeFileSync(parityProgram, '#lang racket/base\n(define hidden 3)\n(define x (+ hidden 1))\n(displayln x)\n');
     const parityDocument = await vscode.workspace.openTextDocument(parityProgram);
@@ -175,8 +238,7 @@ exports.run = async function () {
     await vscode.commands.executeCommand('racketdap.printResults');
     await event('output', m => m.body.category === 'console' && m.body.output === '20\n');
     // Wait for VS Code to focus the new stop before actions use its selected frame.
-    await waitUntil(() => vscode.debug.activeStackItem?.session.id === paritySession.id &&
-      vscode.debug.activeStackItem?.frameId !== undefined, 'selected debugger frame');
+    await selectedFrame(paritySession, stopped);
     assert.equal((await vscode.commands.executeCommand('racketdap.printBinding', 'hidden')).result, '3');
     assert.equal((await vscode.commands.executeCommand('racketdap.setBinding', 'hidden', '9')).result, '9');
     const cursorEditor = vscode.window.activeTextEditor || await vscode.window.showTextDocument(parityDocument);
@@ -188,13 +250,11 @@ exports.run = async function () {
     // No interactive launch flag is supplied: completing the file ends debugging.
     for (let steps = 0; ; steps++) {
       assert.ok(steps < 10, 'Stepping must finish the small program');
-      await waitUntil(() => vscode.debug.activeStackItem?.session.id === paritySession.id &&
-        vscode.debug.activeStackItem?.frameId !== undefined, 'frame ready for Step Over');
-      const oldFrame = vscode.debug.activeStackItem.frameId;
+      await selectedFrame(paritySession, stopped);
       await vscode.commands.executeCommand('workbench.action.debug.stepOver');
       const next = await event(['stopped', 'terminated']);
       if (next.event === 'terminated') break;
-      await waitUntil(() => vscode.debug.activeStackItem?.frameId !== oldFrame, 'stepped frame selected');
+      stopped = next;
     }
     await waitUntil(() => vscode.debug.activeDebugSession?.id !== paritySession.id, 'VS Code leaves debug mode');
     assert.ok(!messages.some(m => m.event === 'racketdap/ready'), 'Normal launch does not stay in the interaction loop');
@@ -244,9 +304,11 @@ exports.run = async function () {
       for (const owner of ownershipSessions) await vscode.debug.stopDebugging(owner);
     }
     const report = { passed: true, extension: extension.id, version: extension.packageJSON.version,
-      vscode: vscode.version, checks: [...languageChecks, ...macroChecks, ...rhombusChecks, ...workflowChecks, ...packageChecks, 'activation', 'language registration', 'gutter breakpoint', 'stack',
+      vscode: vscode.version, checks: [...languageChecks, ...macroChecks, ...rhombusChecks, ...workflowChecks, ...packageChecks, ...imageChecks, 'activation', 'language registration', 'gutter breakpoint', 'stack',
         'captured source language', 'F9 adds verified breakpoint in captured source', 'F9 removes breakpoint',
         'captured source semantic highlighting', 'captured source language hover', 'stale source excludes language results',
+        'captured source definitions and references across unopened files', 'completed session excludes source navigation',
+        'return marker and value count distinguish expression completion',
         'editor Step Over to completion exits debugging',
         'live evaluation', 'mutation', 'step over', 'Results scope', 'continue', 'output', 'termination',
         'conditional and hit-count breakpoint', 'logpoint', 'exception stop', 'exceptionInfo',

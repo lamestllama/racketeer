@@ -32,6 +32,9 @@ test('complete session: break, inspect, evaluate, mutate, step, results, output,
   assert.equal(stopped.body.reason, 'breakpoint');
   let top = await frame(client, stopped);
   assert.equal(top.line, 4);
+  assert.match(top.name, /^Before evaluation at /);
+  const pendingFrames = (await ok(client.request('stackTrace', { threadId: stopped.body.threadId }))).stackFrames;
+  assert.match(pendingFrames[1].name, /^Waiting for return at /);
   const originalFrame = top.id;
   const scopes = await ok(client.request('scopes', { frameId: top.id }));
   const locals = scopes.scopes[0].variablesReference;
@@ -51,6 +54,9 @@ test('complete session: break, inspect, evaluate, mutate, step, results, output,
   assert.equal(stopped.body.description, 'Expression returned');
   assert.equal((await client.request('scopes', { frameId: originalFrame })).success, false);
   top = await frame(client, stopped);
+  assert.match(top.name, /^Returned 1 value at /);
+  assert.equal(top.column, '  (define tax (* subtotal rate'.length + 1);
+  assert.equal(top.endColumn, top.column + 1);
   const afterScopes = await ok(client.request('scopes', { frameId: top.id }));
   const results = afterScopes.scopes.find(s => s.name.startsWith('Results'));
   assert.ok(results);
@@ -62,6 +68,7 @@ test('complete session: break, inspect, evaluate, mutate, step, results, output,
   stopped = await client.event('stopped');
   assert.equal(stopped.body.description, 'Expression returned');
   top = await frame(client, stopped);
+  assert.match(top.name, /^Returned 2 values at /);
   const callerScopes = await ok(client.request('scopes', { frameId: top.id }));
   const returned = callerScopes.scopes.find(s => s.name.startsWith('Results'));
   assert.deepEqual((await ok(client.request('variables', { variablesReference: returned.variablesReference }))).variables.map(v => v.value), ['220', '20']);
@@ -363,5 +370,35 @@ test('target exit ends its ordinary subprocess group without hanging inherited o
   try {
     const stat = await fs.readFile(`/proc/${pid}/stat`, 'utf8');
     assert.match(stat, /\) Z /, 'A remaining child may only be a zombie awaiting reaping');
-  } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  } catch (error) { if (!['ENOENT', 'ESRCH'].includes(error.code)) throw error; }
+});
+test('opaque program structures expose paged fields without invoking user code', async t => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'racketdap-structures-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const program = path.join(dir, 'main.rkt');
+  await fs.writeFile(program, `#lang racket/base
+(define effects 0)
+(struct post (title body)
+  #:property prop:custom-write (lambda args (set! effects (add1 effects)))
+  #:property prop:object-name (lambda (_) (set! effects (add1 effects)) 'wrong))
+(define (show value)
+  (displayln effects))
+(show (post "Title" "Body"))
+`);
+  const client = new DapClient(); t.after(() => client.close());
+  await launch(client, program);
+  await ok(client.request('setBreakpoints', { source: { path: program }, breakpoints: [{ line: 7 }] }));
+  await ok(client.request('configurationDone'));
+  const stopped = await client.event('stopped');
+  const top = await frame(client, stopped);
+  const value = await ok(client.request('evaluate', { frameId: top.id, expression: 'value', context: 'watch' }));
+  assert.equal(value.type, 'post');
+  assert.equal(value.result, '#<post>');
+  assert.ok(value.variablesReference > 0);
+  const fields = (await ok(client.request('variables', { variablesReference: value.variablesReference, start: 1, count: 1 }))).variables;
+  assert.deepEqual(fields.map(({ name, value }) => ({ name, value })), [{ name: '1', value: '"Body"' }]);
+  assert.equal((await ok(client.request('evaluate', { frameId: top.id, expression: 'effects' }))).result, '0');
+  await ok(client.request('continue', { threadId: stopped.body.threadId }));
+  await client.event('terminated');
+  assert.equal((await client.event('exited')).body.exitCode, 0);
 });

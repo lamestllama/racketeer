@@ -29,7 +29,7 @@ function registerDebugSources(context) {
     if (!token.isCancellationRequested && version === file.version && pathFor(document.uri) &&
         normalize(file.getText()) === normalize(document.getText())) return result;
   }
-  function setLanguageClient(client) {
+  function setLanguageClient(client, provideReferences) {
     for (const provider of providers) provider.dispose();
     providers = [];
     if (!client) return;
@@ -48,6 +48,31 @@ function registerDebugSources(context) {
           position: { line: position.line, character: position.character }
         });
         return result ? client.protocol2CodeConverter.asHover(result) : undefined;
+      }
+    }));
+    providers.push(vscode.languages.registerDefinitionProvider(selector, {
+      async provideDefinition(document, position, token) {
+        const result = await query(client, document, token, 'textDocument/definition', {
+          position: client.code2ProtocolConverter.asPosition(position)
+        });
+        return client.protocol2CodeConverter.asDefinitionResult(result, token);
+      }
+    }));
+    providers.push(vscode.languages.registerReferenceProvider(selector, {
+      async provideReferences(document, position, options, token) {
+        const file = await matchingFile(document, token);
+        if (!file) return;
+        const version = file.version;
+        const next = async () => {
+          const result = await client.sendRequest('textDocument/references', {
+            textDocument: { uri: file.uri.toString() },
+            position: client.code2ProtocolConverter.asPosition(position), context: options
+          }, token);
+          return client.protocol2CodeConverter.asReferences(result, token);
+        };
+        const result = provideReferences ? await provideReferences(file, position, options, token, next) : await next();
+        if (!token.isCancellationRequested && version === file.version && pathFor(document.uri) &&
+            normalize(file.getText()) === normalize(document.getText())) return result;
       }
     }));
     changed.fire();

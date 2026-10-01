@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.8.2
+
+- Resolve the Unix cleanup helper through PATH so adapter crashes also stop grandchildren.
+- Own debugger and macro-stepper descendants with Windows Job Objects.
+- Evaluate multiple selections in source order in the plain and Debug REPLs.
+- Evaluate selected Racket expressions in the Debug REPL with Shift+Enter.
+- Open the relevant setting directly from debugger and language-server startup errors.
+- Report language-server startup failures once while keeping diagnostic detail in Output.
+- Preview and save image results in the native image editor, with a picker for multiple returned images.
+- View image variables directly from the debugger context menu and keep image previews in one editor group.
+- Find references in unopened workspace files using a separate Racketeer indexing service with bounded analysis.
+- Keep editor buffers authoritative during file replacement and rename events.
+- Show incomplete indexing and provide a command to refresh workspace references.
+- Update the bundled language server with lifecycle, cancellation and logging fixes.
+
+## 0.8.1
+
+- Distinguish pending evaluation, returned values, and waiting callers in the
+  call stack; point return stops at the expression's closing parenthesis.
+- Enable Go to Definition and Find References in captured debugger sources
+  while their contents match the current project file.
+
 ## 0.8.0
 
 - Use the Racket project logo as the extension icon, with its upstream notice.
