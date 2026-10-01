@@ -20,6 +20,8 @@ exports.run = async function (extension, workspace) {
   const ended = new Set();
   const active = new Set();
   const subscription = vscode.window.onDidCloseTerminal(value => ended.add(value));
+  // Creating the marker precedes writing and closing it in the worker.
+  const markerWritten = (file, expected) => fs.existsSync(file) && fs.readFileSync(file, 'utf8') === expected;
   const timeout = async (predicate, description) => {
     const started = Date.now();
     const deadline = started + 20000;
@@ -63,7 +65,7 @@ exports.run = async function (extension, workspace) {
     assert.equal(document.isDirty, true);
     terminal = await launch('racketdap.openFileInMacroStepper');
     assert.ok(terminal, 'Whole-file command returns its owned terminal');
-    await timeout(() => fs.existsSync(marker), 'dirty module expands with relative macro import');
+    await timeout(() => markerWritten(marker, 'expanded buffer'), 'dirty module expands with relative macro import');
     assert.equal(fs.readFileSync(marker, 'utf8'), 'expanded buffer');
     assert.equal(fs.existsSync(runtime), false, 'Module runtime body was not instantiated');
     assert.match(fs.readFileSync(source, 'utf8'), /on-disk version/, 'Command does not save the document');
@@ -81,14 +83,14 @@ exports.run = async function (extension, workspace) {
     await vscode.window.showTextDocument(untitled, { selection: new vscode.Range(1, 3, 1, 3) });
     terminal = await launch('racketdap.openMacroStepper');
     assert.ok(terminal, 'Untitled current-line command returns its owned terminal');
-    await timeout(() => fs.existsSync(lineMarker), 'current line expands in its owned worker');
+    await timeout(() => markerWritten(lineMarker, '2'), 'current line expands in its owned worker');
     assert.equal(fs.readFileSync(lineMarker, 'utf8'), '2');
     assert.equal(fs.existsSync(selectionMarker), false, 'Only the current line was expanded');
     // Launch a second independently owned selection before stopping the first.
     await vscode.window.showTextDocument(untitled, { selection: new vscode.Range(2, 0, 2, selection.length) });
     const second = await launch('racketdap.openMacroStepper');
     assert.ok(second);
-    await timeout(() => fs.existsSync(selectionMarker), 'selected fragment expands in its owned worker');
+    await timeout(() => markerWritten(selectionMarker, '3'), 'selected fragment expands in its owned worker');
     assert.equal(fs.readFileSync(selectionMarker, 'utf8'), '3');
     await closeTerminal();
     assert.equal(ended.has(second), false, 'Stopping one stepper preserves another terminal');
