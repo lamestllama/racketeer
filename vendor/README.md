@@ -6,26 +6,24 @@ to reproduce these directories. The VSIX includes these sources, this file,
 the manifest, and the license texts. No Racket package is installed globally.
 
 The server is pinned to upstream commit
-`5f3ebe5691a148703c5f93d8b29a83d900fb6005`, which includes the watched-file
-and diagnostic logging fixes. The reproduction script verifies the archive
-and then applies two separate patches, in order:
+`5029bdb7d22b4ce7848fbd74d34224c450e2da16`, which includes the watched-file,
+diagnostic logging and rename notification fixes. The reproduction script
+verifies the archive and then applies one patch:
 
 - `analysis-completion.patch`: complete requests after analysis failure and reject
   results from superseded or closed documents. Changes four production files;
   document analysis does not inspect disk state or track index generations.
-- `rename-notifications.patch`: prevent file rename notifications from opening
-  or closing editor buffers, retaining upstream's existing cache invalidation.
 
-The patches do not introduce disk verification, closed-file retention rules, or
-URI-alias restoration. Rename ownership and analysis completion are separate
-changes.
+The patch does not introduce disk verification, closed-file retention rules, or
+URI-alias restoration. Rename ownership is provided by upstream
+[PR #244](https://github.com/jeapostrophe/racket-langserver/pull/244).
 
 Workspace indexing belongs to Racketeer, in `vscode/workspace-index.rkt` and
 its client. The separate process reuses the pinned analyser and workspace store
 as libraries. No indexing hooks or index state are added to the language server.
 
-Each patch includes regression tests. Reproduction fails if a patch no longer
-applies. These patches do not change debugger instrumentation. The JavaScript
+The patch includes regression tests. Reproduction fails if it no longer
+applies. It does not change debugger instrumentation. The JavaScript
 client patch below is applied by npm installation and the extension build.
 
 For offline regeneration, supply the pinned ZIP with `--package racket-langserver

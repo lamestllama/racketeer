@@ -126,8 +126,8 @@ PLTCOLLECTS="$PWD/vendor/collects:" raco test \
 
 This includes the upstream document cases, viewport bounds, and preservation
 of editor buffers through watched-file and rename notifications. The remaining
-rename and analysis-completion patches are recorded in `vendor/patches/` and
-applied by the pinned-source reproduction script.
+analysis-completion patch is recorded in `vendor/patches/` and applied by the
+pinned-source reproduction script.
 
 The loader-isolation regression covers nested module and plain-file executions
 with both Run and Debug policies. Each loader changes evaluation and compilation
