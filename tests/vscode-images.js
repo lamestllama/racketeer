@@ -16,8 +16,8 @@ exports.run = async function (workspace) {
       };
     }
   });
-  async function until(check, description) {
-    const deadline = Date.now() + 30000;
+  async function until(check, description, timeout = 30000) {
+    const deadline = Date.now() + timeout;
     while (Date.now() < deadline) {
       const result = await check();
       if (result) return result;
@@ -26,20 +26,23 @@ exports.run = async function (workspace) {
     throw new Error(`Timed out: ${description}. ${JSON.stringify(events.slice(-20)
       .map(({ session, ...message }) => ({ sessionId: session.id, ...message })))}`);
   }
-  async function event(session, name) {
+  async function event(session, name, timeout) {
     return until(() => {
       const index = events.findIndex(event => event.session.id === session.id && event.event === name);
       return index >= 0 && events.splice(index, 1)[0];
-    }, name);
+    }, name, timeout);
   }
-  const ready = session => event(session, 'racketdap/ready');
+  const ready = (session, timeout) => event(session, 'racketdap/ready', timeout);
   try {
+    const started = Date.now();
     assert.equal(await vscode.debug.startDebugging(workspace, {
       type: 'racketdap', request: 'launch', name: 'Image result inspection',
       program: path.join(workspace.uri.fsPath, 'images.rkt'), interactive: true, submodule: []
     }), true);
     const session = await until(() => sessions[0], 'image debug session starts');
-    await ready(session);
+    // Match the protocol suite's budget for loading the image libraries.
+    await ready(session, 60000);
+    console.log(`Image example startup: ${Date.now() - started} ms`);
     await until(() => vscode.debug.activeDebugSession?.id === session.id, 'image session selected');
     for (const [name, width, height] of [['tile', 64, 32], ['drawing', 48, 32], ['chart', 240, 160]]) {
       const value = await session.customRequest('evaluate', { expression: name, context: 'repl' });

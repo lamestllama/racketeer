@@ -13,9 +13,18 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  image-load:
-    runs-on: macos-15
-    timeout-minutes: 15
+  editor:
+    name: Installed extension / ${{ matrix.os }} / Racket ${{ matrix.racket }} / VS Code ${{ matrix.code }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            architecture: arm64
+            racket: '9.1'
+            code: stable
     defaults:
       run:
         shell: bash
@@ -33,43 +42,113 @@ jobs:
           python-version: '3.12'
       - uses: Bogdanp/setup-racket@2466913449df77df2bad149d1f2fc4e1ea4795dd # v1.15
         with:
-          version: 9.1
-          architecture: arm64
+          version: ${{ matrix.racket }}
+          architecture: ${{ matrix.architecture }}
           distribution: full
           variant: CS
-      - name: Measure fresh image loads
+      - name: Install display dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y xvfb xauth libgtk-3-0 libnss3 libasound2t64
+      - name: Record environment
         run: |
           mkdir -p .test-output/ci
-          python <<'PYTHON' 2>&1 | tee .test-output/ci/image-load.log
-          import importlib.util
-          import json
-          from pathlib import Path
-          import shutil
-          import tempfile
-          spec = importlib.util.spec_from_file_location('diagnostic', 'scripts/diagnose-language-loads.py')
-          diagnostic = importlib.util.module_from_spec(spec)
-          spec.loader.exec_module(diagnostic)
-          root = Path.cwd()
-          racket = shutil.which('racket')
-          with tempfile.TemporaryDirectory(prefix='image-load-') as temporary:
-              folder = Path(temporary)
-              driver = folder / 'driver.rkt'
-              driver.write_text('#lang racket/base\n'
-                  + '(require (file ' + json.dumps(str(root / 'racketdap/worker/load.rkt')) + '))\n'
-                  + '(run-module (string->path (vector-ref (current-command-line-arguments) 0)))\n')
-              program = folder / 'images.rkt'
-              shutil.copyfile(root / 'examples/images.rkt', program)
-              results = []
-              for repeat in range(3):
-                  results.append(diagnostic.run_case(f'direct {repeat}', [racket, program], 120))
-                  results.append(diagnostic.run_case(f'instrumented {repeat}', [racket, driver, program], 120))
-              print(json.dumps(results, indent=2))
-          PYTHON
-      - name: Measure image protocol regression
-        run: node --test --test-name-pattern='image, pict and plot results' tests/images.test.js 2>&1 | tee .test-output/ci/image-protocol.log
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+          { racket --version; node --version; npm --version; python --version; } | tee .test-output/ci/environment.log
+      - name: Install locked build dependencies
+        run: npm ci --prefix vscode
+      - name: Download the selected editor
+        id: editor
+        env:
+          EDITOR_VERSION: ${{ matrix.code }}
+        run: |
+          node <<'JS'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const { downloadAndUnzipVSCode } = require('./vscode/node_modules/@vscode/test-electron');
+          const manifest = require('./vscode/package.json');
+          const version = process.env.EDITOR_VERSION === 'minimum'
+            ? manifest.engines.vscode.replace(/^\^/, '') : process.env.EDITOR_VERSION;
+          downloadAndUnzipVSCode({ version, cachePath: path.join(process.env.RUNNER_TEMP, 'vscode-test') })
+            .then(executable => {
+              fs.writeFileSync('.test-output/ci/editor.json', JSON.stringify({
+                requested: version, executable
+              }, null, 2) + '\n');
+              fs.appendFileSync(process.env.GITHUB_OUTPUT, `executable=${executable}\n`);
+            })
+            .catch(error => { console.error(error); process.exitCode = 1; });
+          JS
+      - name: Build the extension offline
+        id: artifact
+        env:
+          npm_config_offline: 'true'
+        run: |
+          node scripts/package-extension.js | tee .test-output/ci/package.log
+          node -e 'const p = require("./vscode/package.json"); require("node:fs").appendFileSync(process.env.GITHUB_OUTPUT, `path=dist/${p.name}-${p.version}.vsix\n`);'
+      - name: Check editor orchestration
+        run: python tests/harness-checks.py
+      - name: Compile standalone GUI test programs
+        run: raco make racketdap/main.rkt racketdap/worker/main.rkt racketdap/tools/macro-stepper.rkt tests/support/macro-stepper-gui.rkt
+      - name: Run GUI regressions
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then
+            python scripts/test-gui.py 2>&1 | tee .test-output/ci/gui.log
+          else
+            node --test --test-concurrency=1 tests/gui-parity.test.js tests/macro-stepper-gui.test.js 2>&1 | tee .test-output/ci/gui.log
+          fi
+      - name: Run bundled language-server regressions
+        if: runner.os == 'Linux'
+        env:
+          PLTCOLLECTS: '${{ github.workspace }}/vendor/collects:'
+        run: |
+          xvfb-run -a raco test vendor/collects/racket-langserver/tests/lib/doc-test.rkt vendor/collects/racket-langserver/tests/lsp/workspace-lifecycle-test.rkt 2>&1 | tee .test-output/ci/language.log
+      - name: Test the installed extension
+        id: integration
+        if: ${{ !cancelled() && steps.artifact.outcome == 'success' }}
+        env:
+          TEST_EDITOR: ${{ steps.editor.outputs.executable }}
+          TEST_ARTIFACT: ${{ steps.artifact.outputs.path }}
+        run: python scripts/test-vscode.py --code "$TEST_EDITOR" --artifact "$TEST_ARTIFACT" --timeout 1200
+      - name: Test the installed extension with the pinned Rhombus runtime
+        if: ${{ !cancelled() && steps.integration.outcome == 'success' }}
+        env:
+          TEST_EDITOR: ${{ steps.editor.outputs.executable }}
+          TEST_ARTIFACT: ${{ steps.artifact.outputs.path }}
+        run: python scripts/test-vscode.py --rhombus --code "$TEST_EDITOR" --artifact "$TEST_ARTIFACT" --timeout 1200
+      - name: Run and debug the repository tests through Test Explorer
+        if: ${{ !cancelled() && steps.artifact.outcome == 'success' }}
+        env:
+          TEST_EDITOR: ${{ steps.editor.outputs.executable }}
+          TEST_ARTIFACT: ${{ steps.artifact.outputs.path }}
+        run: python scripts/test-vscode.py --dogfood --code "$TEST_EDITOR" --artifact "$TEST_ARTIFACT" --timeout 1200
+      - name: Verify the artifact and checkout
+        env:
+          TEST_ARTIFACT: ${{ steps.artifact.outputs.path }}
+        run: |
+          node scripts/artifact.js verify "$TEST_ARTIFACT"
+          git diff --exit-code
+      - name: Retain the tested artifact and reports
         if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: image-load-macos
+          name: editor-${{ matrix.os }}-racket-${{ matrix.racket }}-code-${{ matrix.code }}
           include-hidden-files: true
-          path: .test-output/ci/
+          path: |
+            dist/*.vsix
+            dist/*.vsix.build.json
+            .test-output/ci/
+            .test-output/**/latest.json
+            .test-output/**/vscode-report.json
+            .test-output/**/editor-result.json
+            .test-output/**/vscode.log
+            .test-output/**/install.log
+            .test-output/**/xvfb.log
+            .test-output/**/language-server.log
+            .test-output/**/user/logs/**/*Racket Language Server.log
+            .test-output/**/user/logs/**/exthost.log
+            .test-output/**/rhombus-runtime.json
+            .test-output/**/rhombus-runtime-lock.json
+            .test-output/**/rhombus-install.log
+            .test-output/**/rhombus-probe.log
+          if-no-files-found: warn
+          retention-days: 14
