@@ -115,6 +115,24 @@ macro transformer while it expands code is a separate, phase-aware feature.
 
 ## 3. Architecture and ownership
 
+The adapter, language tools, and VS Code integration share a repository, but
+have separate responsibilities. `racketdap/` runs independently of `vscode/`
+and the bundled language server. Stepping, live values, and execution results
+belong to the adapter. Workspace references and rename belong to language
+analysis. VS Code owns commands, editor views, and presentation of those results.
+Language analysis must not become a prerequisite for launching or controlling
+a debug session.
+
+Keep the adapter's stdio DAP entry point usable by other clients. Any optional
+client-specific metadata must leave ordinary DAP operations usable without it.
+The protocol session regression runs a standalone copy of `racketdap/`, without
+the extension, bundled server, user package links, or repository working directory.
+
+A separate repository is a release and ownership decision. Extract the adapter
+when consumers need an independent release cycle; until then, one repository
+allows protocol and editor changes to be reviewed and tested together without
+introducing a dependency between their implementations.
+
 ```mermaid
 flowchart LR
     E[Editor / DAP client] <-->|DAP over stdio| A[Racket adapter]

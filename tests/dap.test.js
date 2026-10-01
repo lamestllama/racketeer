@@ -4,7 +4,9 @@ const test = require('node:test');
 const path = require('node:path');
 const fs = require('node:fs/promises');
 const os = require('node:os');
+const { spawn } = require('node:child_process');
 const { DapClient } = require('./dap-client');
+const { deferCleanup } = require('./cleanup');
 const root = path.resolve(__dirname, '..');
 const demo = path.join(root, 'examples/demo.rkt');
 async function ok(promise) {
@@ -22,10 +24,25 @@ async function frame(client, stopped) {
   assert.ok(stack.stackFrames.length);
   return stack.stackFrames[0];
 }
-test('complete session: break, inspect, evaluate, mutate, step, results, output, terminate', async t => {
-  const client = new DapClient(); t.after(() => client.close());
-  await launch(client);
-  const pending = await ok(client.request('setBreakpoints', { source: { path: demo }, breakpoints: [{ line: 4 }] }));
+test('standalone adapter: break, inspect, evaluate, mutate, step, results, output, terminate', async t => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'racketeer-standalone-'));
+  deferCleanup(t, () => fs.rm(directory, { recursive: true, force: true }));
+  await fs.cp(path.join(root, 'racketdap'), path.join(directory, 'racketdap'), {
+    recursive: true, filter: file => path.basename(file) !== 'compiled'
+  });
+  const program = path.join(directory, 'demo.rkt');
+  await fs.copyFile(demo, program);
+  // Only the adapter sources and the installed Racket distribution are present.
+  // Exclude user package links and collection/cache overrides from this session.
+  const env = { ...process.env, PLTADDONDIR: path.join(directory, 'addon') };
+  delete env.PLTCOLLECTS;
+  delete env.PLT_COMPILED_FILE_ROOTS;
+  const client = new DapClient(path.join(directory, 'racketdap/main.rkt'), {
+    spawn: (command, args, options) => spawn(command, args, { ...options, cwd: directory, env })
+  });
+  deferCleanup(t, () => client.close());
+  await launch(client, program);
+  const pending = await ok(client.request('setBreakpoints', { source: { path: program }, breakpoints: [{ line: 4 }] }));
   assert.equal(pending.breakpoints[0].verified, false);
   await ok(client.request('configurationDone'));
   let stopped = await client.event('stopped');
