@@ -101,9 +101,10 @@ exports.run = async function () {
     const definitions = await vscode.commands.executeCommand('vscode.executeDefinitionProvider', capturedDocument.uri, callPosition);
     assert.ok(definitions.some(item => (item.targetUri || item.uri).fsPath === program &&
       (item.targetSelectionRange || item.range).start.line === 2), 'Captured source navigates to the function definition');
-    const references = await vscode.commands.executeCommand('vscode.executeReferenceProvider', capturedDocument.uri, callPosition);
-    assert.ok(references.some(item => item.uri.fsPath === program && item.range.start.line === 7),
-      'Captured source finds function references');
+    await waitUntil(async () => {
+      const references = await vscode.commands.executeCommand('vscode.executeReferenceProvider', capturedDocument.uri, callPosition);
+      return references.some(item => item.uri.fsPath === program && item.range.start.line === 7);
+    }, 'captured source finds function references');
     const originalText = document.getText();
     const changedSource = new vscode.WorkspaceEdit();
     changedSource.insert(document.uri, new vscode.Position(0, 0), '; unsaved change while debugging\n');
