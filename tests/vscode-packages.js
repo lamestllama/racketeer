@@ -140,14 +140,14 @@ exports.run = async function (workspace) {
       await new Promise(resolve => setTimeout(resolve, 50));
     }
     assert.equal((await vscode.commands.executeCommand('racketdap.testPackage', name)).exitCode, 0);
-    // This runner uses an isolated Linux editor. A real process that never
-    // speaks LSP must not prevent a corrected configuration from taking over.
+    // A real process that never speaks LSP must not prevent a corrected
+    // configuration from taking over. Build a native executable on every OS.
     const hangingScript = path.join(directory, 'unresponsive-server.rkt');
-    const hangingExecutable = path.join(directory, 'unresponsive-racket');
+    const hangingExecutable = path.join(directory, process.platform === 'win32' ? 'unresponsive-racket.exe' : 'unresponsive-racket');
     const startupMarker = path.join(directory, 'server-started.txt');
-    const shellQuote = value => `'${value.replace(/'/g, `'\\''`)}'`;
     await fs.writeFile(hangingScript, `#lang racket/base\n(require racket/os)\n(call-with-output-file ${JSON.stringify(startupMarker)} (lambda (out) (display (getpid) out)))\n(sync never-evt)\n`);
-    await fs.writeFile(hangingExecutable, `#!/bin/sh\nexec ${shellQuote(settings.get('racketExecutable', 'racket'))} ${shellQuote(hangingScript)}\n`, { mode: 0o700 });
+    await execute(settings.get('racketExecutable', 'racket'),
+      ['-l', 'raco', '--', 'exe', '-o', hangingExecutable, hangingScript], { timeout: 60000 });
     const initializationRejections = [];
     const captureInitializationRejection = error => initializationRejections.push(String(error?.stack || error));
     process.on('unhandledRejection', captureInitializationRejection);

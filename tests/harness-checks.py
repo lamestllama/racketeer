@@ -17,6 +17,36 @@ runtime_spec.loader.exec_module(runtime)
 
 
 class EditorIsolation(unittest.TestCase):
+    def test_distribution_paths_resolve_without_shell_quoting(self):
+        layouts = [
+            ('linux', 'code', 'resources/app', ['code', 'bin/code']),
+            ('win32', 'Code.exe', 'resources/app', ['Code.exe', 'bin/code.cmd']),
+            ('darwin', 'Editor.app/Contents/MacOS/Electron', 'Editor.app/Contents/Resources/app',
+             ['Editor.app', 'Editor.app/Contents/MacOS/Electron', 'Editor.app/Contents/Resources/app/bin/code']),
+        ]
+        with tempfile.TemporaryDirectory(prefix='editor paths λ & ') as temporary:
+            for platform, executable, app, entries in layouts:
+                root = Path(temporary) / platform
+                for relative in (executable, app + '/out/cli.js', *[p for p in entries if not p.endswith('.app')]):
+                    file = root / relative
+                    file.parent.mkdir(parents=True, exist_ok=True)
+                    file.touch()
+                for entry in entries:
+                    with self.subTest(platform=platform, entry=entry):
+                        self.assertEqual(harness.editor_layout(root / entry, platform),
+                                         ((root / executable).resolve(), (root / app).resolve()))
+                (root / app / 'out/cli.js').unlink()
+                with self.assertRaises(ValueError):
+                    harness.editor_layout(root / executable, platform)
+
+    def test_native_desktop_does_not_start_a_virtual_display_or_change_environment(self):
+        env = {'DISPLAY': 'user display', 'PLTADDONDIR': 'private addon'}
+        for platform in ('win32', 'darwin'):
+            with patch.object(harness.sys, 'platform', platform), patch.object(harness.subprocess, 'Popen') as spawn:
+                with harness.editor_display(Path('/unused'), env, None) as actual:
+                    self.assertEqual(actual, env)
+                spawn.assert_not_called()
+
     def test_previous_workspace_profile_extensions_and_addon_are_never_reused(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

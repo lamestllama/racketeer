@@ -18,7 +18,7 @@ async function until(check, description, timeout = 30000) {
 exports.run = async (extension, workspace) => {
   const directory = path.join(workspace.uri.fsPath, 'development checks');
   fs.mkdirSync(directory, { recursive: true });
-  const program = path.join(directory, 'language "λ".rkt');
+  const program = path.join(directory, process.platform === 'win32' ? "language 'λ'.rkt" : 'language "λ".rkt');
   const marker = name => path.join(directory, `${name}.txt`);
   const write = (name, expression) => `(call-with-output-file ${JSON.stringify(marker(name))} #:exists 'truncate (lambda (out) (display ${expression} out)))`;
   for (const name of ['run', 'test', 'repl', 'selection', 'selections']) fs.rmSync(marker(name), { force: true });

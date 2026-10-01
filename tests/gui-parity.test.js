@@ -6,7 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { DapClient } = require('./dap-client');
 async function ok(p) { const r = await p; assert.equal(r.success, true, r.message); return r.body; }
-for (const interactive of [false, true]) test(`GUI callback debugging with interactive=${interactive}`, { skip: !process.env.DISPLAY }, async t => {
+for (const interactive of [false, true]) test(`GUI callback debugging with interactive=${interactive}`, { skip: process.platform === 'linux' && !process.env.DISPLAY }, async t => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'racket-gui-parity-'));
   const program = path.join(dir, 'gui.rkt');
   await fs.writeFile(program, ['#lang racket/gui',
@@ -35,7 +35,7 @@ for (const interactive of [false, true]) test(`GUI callback debugging with inter
   assert.equal((await client.event('exited')).body.exitCode, 0);
 });
 
-test('unhandled GUI callback exceptions expose live frames before unwinding', { skip: !process.env.DISPLAY }, async t => {
+test('unhandled GUI callback exceptions expose live frames before unwinding', { skip: process.platform === 'linux' && !process.env.DISPLAY }, async t => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'racket-gui-exception-'));
   const program = path.join(dir, 'gui.rkt');
   await fs.writeFile(program, ['#lang racket/gui',
