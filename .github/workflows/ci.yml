@@ -21,7 +21,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [macos-15]
-        racket: [stable]
+        racket: ['9.1', stable]
         include:
           - os: macos-15
             architecture: arm64
@@ -41,11 +41,18 @@ jobs:
         with:
           python-version: '3.12'
       - uses: Bogdanp/setup-racket@2466913449df77df2bad149d1f2fc4e1ea4795dd # v1.15
+        if: runner.os != 'macOS'
         with:
           version: ${{ matrix.racket }}
           architecture: ${{ matrix.architecture }}
           distribution: full
           variant: CS
+      - name: Install Racket with preserved timestamps
+        if: runner.os == 'macOS'
+        env:
+          RACKET_VERSION: ${{ matrix.racket }}
+          RACKET_ARCH: ${{ matrix.architecture }}
+        run: bash scripts/install-racket-macos.sh "$RACKET_VERSION" "$RACKET_ARCH"
       - name: Record environment
         run: |
           mkdir -p .test-output/ci
@@ -109,11 +116,18 @@ jobs:
         with:
           python-version: '3.12'
       - uses: Bogdanp/setup-racket@2466913449df77df2bad149d1f2fc4e1ea4795dd # v1.15
+        if: runner.os != 'macOS'
         with:
           version: ${{ matrix.racket }}
           architecture: ${{ matrix.architecture }}
           distribution: full
           variant: CS
+      - name: Install Racket with preserved timestamps
+        if: runner.os == 'macOS'
+        env:
+          RACKET_VERSION: ${{ matrix.racket }}
+          RACKET_ARCH: ${{ matrix.architecture }}
+        run: bash scripts/install-racket-macos.sh "$RACKET_VERSION" "$RACKET_ARCH"
       - name: Install display dependencies
         if: runner.os == 'Linux'
         run: |
