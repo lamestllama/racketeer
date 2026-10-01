@@ -45,6 +45,12 @@
 (define (cancelled? run)
   (sync/timeout 0 (semaphore-peek-evt (Run-cancel run))))
 
+(define (analysis-failure result)
+  (match result
+    [(cons 'failed (? exn? e)) (exn-message e)]
+    [(cons 'failed value) (format "analysis raised: ~e" value)]
+    [_ "analysis exceeded its time or memory limit"]))
+
 (define (status run)
   (hasheq 'state (Run-state run) 'indexed (Run-indexed run) 'failures (Run-failures run)))
 
@@ -220,9 +226,10 @@
                    ;; populate a replacement run, even if cancellation is late.
                    (workspace-set-contribution! (Run-workspace run) contribution)
                    (set! indexed (add1 indexed))])]
-               [_
+               [failure
                 (set! failures (add1 failures))
-                (unless (cancelled? run) (eprintf "Workspace analysis incomplete: ~a\n" path))])
+                (unless (cancelled? run)
+                  (eprintf "Workspace analysis incomplete: ~a (~a)\n" path (analysis-failure failure)))])
              (report! run "indexing" indexed failures))
            (report! run (if (zero? failures) "ready" "partial") indexed failures)]
           [_ (report! run "partial" indexed (add1 failures))])))
@@ -304,7 +311,7 @@
                                            (success-response id
                                                              (->jsexpr (reference-sources->locations
                                                                          (merge-reference-sources (Run-workspace run) live include?))))]
-                                          [_ (error-response id -32603 "Reference analysis failed or exceeded its limit")])))))
+                                          [failure (error-response id -32603 (analysis-failure failure))])))))
           (or answer (retry))])])))
 
 (define (serve)

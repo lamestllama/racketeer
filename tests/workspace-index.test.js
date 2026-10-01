@@ -98,6 +98,7 @@ test('cancelled requests finish while a macro is blocked, and the index recovers
   cancel.dispose();
   assert.equal(from(await p.references(p.origin), uri(p.filename('uses.rkt'))).length, 1);
   assert.equal(p.notifications.at(-1).state, 'partial');
+  assert.match(p.diagnostics(), /blocked\.rkt \(analysis exceeded its time or memory limit\)/);
   fs.unlinkSync(p.filename('blocked.rkt')); await p.update();
   assert.equal(from(await p.references(p.origin), uri(p.filename('uses.rkt'))).length, 1);
   assert.equal(p.notifications.at(-1).state, 'ready');
