@@ -125,6 +125,7 @@ exports.run = async function () {
     const atReturn = bp => bp instanceof vscode.SourceBreakpoint &&
       bp.location.uri.toString() === capturedUri && bp.location.range.start.line === 4;
     await vscode.window.showTextDocument(capturedDocument, { selection: new vscode.Range(4, 0, 4, 0) });
+    await vscode.commands.executeCommand('workbench.action.focusActiveEditorGroup');
     await vscode.commands.executeCommand('editor.debug.action.toggleBreakpoint');
     await waitUntil(() => vscode.debug.breakpoints.some(atReturn), 'F9 adds breakpoint in captured source');
     await waitUntil(() => messages.some(m => m.type === 'response' && m.command === 'setBreakpoints' &&

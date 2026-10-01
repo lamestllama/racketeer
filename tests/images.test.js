@@ -7,6 +7,7 @@ const os = require('node:os');
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const { DapClient } = require('./dap-client');
+const { deferCleanup } = require('./cleanup');
 const execute = promisify(execFile);
 const root = path.resolve(__dirname, '..');
 
@@ -17,11 +18,11 @@ async function ok(request) {
 }
 async function session(t, source) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'racket-images-'));
-  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  deferCleanup(t, () => fs.rm(directory, { recursive: true, force: true }));
   const program = path.join(directory, 'images.rkt');
   await fs.writeFile(program, source);
   const client = new DapClient(undefined, { timeout: 60000 });
-  t.after(() => client.close());
+  deferCleanup(t, () => client.close());
   await ok(client.request('initialize', { adapterID: 'racketdap' }));
   await ok(client.request('launch', { program, cwd: directory, interactive: true }));
   await ok(client.request('configurationDone'));
@@ -166,11 +167,11 @@ test('image choices include values beyond the text preview and exclude empty or 
 
 test('a paused frame can render a retained image and resuming expires its reference', async t => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'racket-paused-image-'));
-  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  deferCleanup(t, () => fs.rm(directory, { recursive: true, force: true }));
   const program = path.join(directory, 'image.rkt');
   await fs.writeFile(program, '#lang racket/base\n(require pict)\n(define picture (disk 8))\n(void)\n');
   const client = new DapClient();
-  t.after(() => client.close());
+  deferCleanup(t, () => client.close());
   await ok(client.request('initialize', { adapterID: 'racketdap' }));
   await ok(client.request('launch', { program, cwd: directory, interactive: true }));
   await ok(client.request('setBreakpoints', { source: { path: program }, breakpoints: [{ line: 4 }] }));

@@ -16,7 +16,7 @@ const addon = fs.mkdtempSync(path.join(os.tmpdir(), 'racketeer-index-addon-'));
 test.after(() => fs.rmSync(addon, { recursive: true, force: true }));
 
 async function project(t) {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'racketeer-index-'));
+  const directory = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'racketeer-index-')));
   const documents = new Map(), notifications = [];
   let revision = 0, identity = 0, diagnostics = '';
   const child = spawn('racket', [path.join(root, 'vscode/workspace-index-server.rkt')], {
@@ -59,7 +59,9 @@ const from = (locations, source) => locations.filter(location => location.uri ==
 
 test('standalone index follows disk and unsaved buffers through close, rename and deletion', { timeout: 120000 }, async t => {
   const p = await project(t), consumer = uri(p.filename('uses.rkt'));
-  assert.equal(from(await p.references(p.origin), consumer).length, 1);
+  const initial = await p.references(p.origin);
+  assert.equal(from(initial, consumer).length, 1, JSON.stringify({ consumer, locations: initial,
+    status: p.notifications.at(-1), diagnostics: p.diagnostics() }));
   p.write('uses.rkt', uses + '(square 4)\n'); await p.update();
   assert.equal(from(await p.references(p.origin), consumer).length, 2);
   p.open('uses.rkt', uses + '(square 4)\n(square 5)\n', 7);
