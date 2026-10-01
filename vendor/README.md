@@ -59,6 +59,12 @@ closing during initialization clears the instance field before `start()`
 returns; returning that field instead loses the rejected promise and causes an
 unhandled rejection when cancelling a stalled startup.
 
+Microsoft merged this fix in
+[PR #1867](https://github.com/microsoft/vscode-languageserver-node/pull/1867)
+on 29 September 2026. As of 1 October 2026, the latest published client,
+10.1.2, still lacks the fix. Retain this backport until Racketeer adopts a
+compatible release containing it, then remove the patch and its build hooks.
+
 `npm ci` applies the patch through `scripts/patch-language-client.js`. The script
 verifies the dependency version and SHA-256 of both the original and patched
 source, supports an already patched installation, and needs no network or
