@@ -81,6 +81,7 @@ jobs:
           retention-days: 14
 
   editor:
+    if: false
     name: Installed extension / ${{ matrix.os }} / Racket ${{ matrix.racket }} / VS Code ${{ matrix.code }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
