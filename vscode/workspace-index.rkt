@@ -21,10 +21,6 @@
          racket-langserver/lsp/msg-io
          racket-langserver/lsp/responses)
 
-;; Load installation metadata before cancellable scans. Package changes restart
-;; this process, so each run can reuse the same language suffixes.
-(define module-suffix-regexp (get-module-suffix-regexp))
-
 (struct Settings (enabled? excluded max-files max-bytes timeout) #:transparent)
 (define default-excluded '(".git" "compiled" "node_modules" ".test-output" "dist" "build"))
 (struct Run (generation cancel done state indexed failures workspace documents buffers settings roots) #:mutable)
@@ -51,8 +47,7 @@
 
 (define (analysis-failure result)
   (match result
-    [(cons 'failed (? exn? e)) (exn-message e)]
-    [(cons 'failed value) (format "analysis raised: ~e" value)]
+    [(cons 'failed message) message]
     [(cons 'timeout seconds) (format "analysis exceeded its ~a second time limit" seconds)]
     [_ "analysis worker stopped without a result"]))
 
@@ -68,42 +63,52 @@
                            (set-Run-failures! run failures)
                            (notify-client "status" (status run))))))
 
-(define (compute run seconds thunk [cancel never-evt])
+(define (compute run seconds request [cancel never-evt])
   (cond
     [(eq? worker-slot (sync worker-slot (semaphore-peek-evt (Run-cancel run)) cancel))
      (dynamic-wind void
-                   (lambda () (and (not (cancelled? run)) (not (sync/timeout 0 cancel)) (compute/slot run seconds thunk cancel)))
+                   (lambda () (and (not (cancelled? run)) (not (sync/timeout 0 cancel)) (compute/slot run seconds request cancel)))
                    (lambda () (semaphore-post worker-slot)))]
     [else #f]))
 
-(define (compute/slot run seconds thunk cancel)
-  (define custodian (make-custodian))
-  (custodian-limit-memory custodian (* 256 1024 1024))
-  (define result #f)
+(define (compute/slot run seconds request cancel)
+  ;; Cancellation must discard the runtime doing the work, including its module
+  ;; loading state. The controlling thread only exchanges immutable snapshots.
   (define worker
-    (parameterize ([current-custodian custodian])
-      (thread
-        (lambda ()
-          (set! result
-                (with-handlers ([(lambda (_) #t) (lambda (e) (cons 'failed e))])
-                  (parameterize ([current-output-port (open-output-nowhere)]
-                                 [current-error-port (open-output-nowhere)]
-                                 [current-input-port (open-input-string "")]
-                                 [exit-handler (lambda (_) (error 'workspace-analysis "worker exited"))])
-                    (cons 'ok (thunk)))))))))
+    (place channel
+      (custodian-limit-memory (current-custodian) (* 256 1024 1024))
+      (define result
+        (with-handlers ([(lambda (_) #t)
+                         (lambda (e) (cons 'failed (if (exn? e) (exn-message e) (format "~s" e))))])
+          (parameterize ([current-output-port (open-output-nowhere)]
+                         [current-error-port (open-output-nowhere)]
+                         [current-input-port (open-input-string "")]
+                         [exit-handler (lambda (_) (error 'workspace-analysis "worker exited"))])
+            (match (place-channel-get channel)
+              [(list 'discover roots excluded limit)
+               (cons 'ok (discover roots excluded limit))]
+              [(list 'analyse path max-bytes buffer query)
+               (match-define (list contribution size count references) (analyse path max-bytes buffer query))
+               (list 'ok (contribution->datum contribution) size count references)]))))
+      (place-channel-put channel result)
+      ;; Keep a successful reply distinguishable from an abnormal early exit.
+      (place-channel-get channel)))
+  (define dead (place-dead-evt worker))
   (dynamic-wind
     void
     (lambda ()
-      (define finished (sync/timeout seconds worker (semaphore-peek-evt (Run-cancel run)) cancel))
-      (cond [(not finished)
-             (eprintf "Workspace analysis timeout context: ~s\n"
-                      (continuation-mark-set->context (continuation-marks worker)))
-             (cons 'timeout seconds)]
-            [(eq? finished worker) result]
+      (place-channel-put worker request)
+      (define finished
+        (sync/timeout seconds worker dead
+                      (semaphore-peek-evt (Run-cancel run)) cancel))
+      (cond [(not finished) (cons 'timeout seconds)]
+            [(pair? finished) finished]
+            [(eq? finished dead) (cons 'failed "analysis worker exited")]
             [else #f]))
-    (lambda () (custodian-shutdown-all custodian))))
+    (lambda () (place-kill worker) (place-wait worker))))
 
 (define (discover roots excluded limit)
+  (define module-suffix-regexp (get-module-suffix-regexp))
   (define found (mutable-set))
   (define visited 0)
   (define incomplete? #f)
@@ -173,36 +178,6 @@
                     (for/hash ([entry (in-list definitions)])
                       (values (apply Module-Binding (car entry)) (jsexpr->Location (cdr entry))))))
 
-;; Check Syntax and readers may retain process-local caches beyond a namespace.
-;; Each analysis therefore has its own place; only source snapshots and immutable
-;; language facts cross the boundary. Live documents and traces stay private.
-(define (analyse-isolated path max-bytes buffer [query #f])
-  (define worker
-    (place channel
-      (custodian-limit-memory (current-custodian) (* 256 1024 1024))
-      (match-define (list path max-bytes buffer query) (place-channel-get channel))
-      (define result
-        (with-handlers ([(lambda (_) #t)
-                         (lambda (e) (list 'failed (if (exn? e) (exn-message e) (format "~s" e))))])
-          (match-define (list contribution size count references)
-            (parameterize ([current-output-port (open-output-nowhere)]
-                           [current-error-port (open-output-nowhere)]
-                           [current-input-port (open-input-string "")]
-                           [exit-handler (lambda (_) (error 'workspace-analysis "worker exited"))])
-              (analyse path max-bytes buffer query)))
-          (list 'ok (contribution->datum contribution) size count references)))
-      (place-channel-put channel result)
-      ;; Keep a successful reply distinguishable from an abnormal early exit.
-      (place-channel-get channel)))
-  (dynamic-wind void
-                (lambda ()
-                  (place-channel-put worker (list path max-bytes buffer query))
-                  (match (sync worker (place-dead-evt worker))
-                    [(list 'ok datum size count references) (list (datum->contribution datum) size count references)]
-                    [(list 'failed message) (error 'workspace-analysis "~a" message)]
-                    [_ (error 'workspace-analysis "analysis worker exited")]))
-                (lambda () (place-kill worker))))
-
 (define (run-index run)
   (define config (Run-settings run))
   (define indexed 0)
@@ -213,8 +188,8 @@
     void
     (lambda ()
       (unless (sync/timeout 0.3 (semaphore-peek-evt (Run-cancel run)))
-        (match (compute run 10 (lambda () (discover (Run-roots run) (Settings-excluded config)
-                                                    (Settings-max-files config))))
+        (match (compute run 10 (list 'discover (Run-roots run) (Settings-excluded config)
+                                     (Settings-max-files config)))
           [(list 'ok paths incomplete?)
            (when incomplete?
              (set! failures (add1 failures))
@@ -227,8 +202,8 @@
            (for ([path (in-list sources)] [n (in-range (Settings-max-files config))]
                  #:break (or (cancelled? run) (> bytes (* 16 1024 1024)) (> facts 200000)))
              (match (compute run (Settings-timeout config)
-                             (lambda () (analyse-isolated path (Settings-max-bytes config)
-                                                          (hash-ref (Run-buffers run) path #f))))
+                             (list 'analyse path (Settings-max-bytes config)
+                                   (hash-ref (Run-buffers run) path #f) #f))
                [(list 'ok contribution size count _)
                 (set! bytes (+ bytes size))
                 (set! facts (+ facts count))
@@ -237,7 +212,7 @@
                   [else
                    ;; Each run has its own store. A retired worker can never
                    ;; populate a replacement run, even if cancellation is late.
-                   (workspace-set-contribution! (Run-workspace run) contribution)
+                   (workspace-set-contribution! (Run-workspace run) (datum->contribution contribution))
                    (set! indexed (add1 indexed))])]
                [failure
                 (set! failures (add1 failures))
@@ -310,9 +285,8 @@
           ;; LSP trace or stale contribution is mixed into the index's results.
           (define result
             (compute run (Settings-timeout (Run-settings run))
-                     (lambda () (analyse-isolated path (Settings-max-bytes (Run-settings run))
-                                                  (hash-ref doc 'text)
-                                                  (list uri (hash-ref params 'position) include?))) cancel))
+                     (list 'analyse path (Settings-max-bytes (Run-settings run))
+                           (hash-ref doc 'text) (list uri (hash-ref params 'position) include?)) cancel))
           (define answer
             (call-with-semaphore state-lock
                                  (lambda ()
