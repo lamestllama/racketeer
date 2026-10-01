@@ -23,7 +23,8 @@ exports.run = async function (workspace) {
       if (result) return result;
       await new Promise(resolve => setTimeout(resolve, 30));
     }
-    throw new Error(`Timed out: ${description}`);
+    throw new Error(`Timed out: ${description}. ${JSON.stringify(events.slice(-20)
+      .map(({ session, ...message }) => ({ sessionId: session.id, ...message })))}`);
   }
   async function event(session, name) {
     return until(() => {

@@ -21,10 +21,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: windows-2022
-            architecture: x64
-            racket: '9.1'
-            code: stable
           - os: macos-15
             architecture: arm64
             racket: '9.1'
