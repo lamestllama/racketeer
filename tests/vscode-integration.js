@@ -28,7 +28,10 @@ exports.run = async function () {
   const tracker = vscode.debug.registerDebugAdapterTrackerFactory('racketdap', {
     createDebugAdapterTracker(session) {
       sessions.set(session.id, session);
-      return { onDidSendMessage(message) { messages.push({ ...message, sessionId: session.id }); } };
+      return {
+        onWillReceiveMessage(message) { messages.push({ ...message, sessionId: session.id }); },
+        onDidSendMessage(message) { messages.push({ ...message, sessionId: session.id }); }
+      };
     }
   });
   async function event(name, predicate = () => true) {

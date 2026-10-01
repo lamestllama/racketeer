@@ -72,6 +72,15 @@
   (when (and (hash-has-key? request 'phase) (not (member (hash-ref request 'phase) '("before" "after"))))
     (error 'breakpoint "phase must be before or after")))
 (define (canonical p) (simplify-path (path->complete-path p)))
+(define (referenced-source reference)
+  (or (and (exact-positive-integer? reference)
+           (findf (lambda (source) (= (source-file-id source) reference)) (hash-values sources)))
+      (error 'source "Unknown source reference.")))
+(define (source-path source)
+  (define reference (arg source 'sourceReference 0))
+  (if (equal? reference 0)
+      (canonical (hash-ref source 'path))
+      (source-file-path (referenced-source reference))))
 (define (source-json source)
   (hasheq 'name (path->string (file-name-from-path (source-file-path source)))
           'path (path->string (source-file-path source)) 'sourceReference (source-file-id source)))
@@ -357,7 +366,7 @@
            (define valid?
              (with-handlers ([exn:fail? (lambda (e) (reply request (hasheq) (exn-message e)) #f)])
                (when (equal? command "racketdap/continueToLocation")
-                 (define path (canonical (hash-ref (hash-ref a 'source) 'path)))
+                 (define path (source-path (hash-ref a 'source)))
                  (define-values (targets phase) (select-targets path a))
                  (when (null? targets) (error 'continue-to "No executable expression boundary at this location."))
                  (set-state-run-to! st (cons phase targets)))
@@ -533,7 +542,7 @@
   (define command (hash-ref request 'command))
   (case (string->symbol command)
     [(setBreakpoints)
-     (define path (canonical (hash-ref (hash-ref a 'source) 'path)))
+     (define path (source-path (hash-ref a 'source)))
      (define requested (arg a 'breakpoints '()))
      (unless (list? requested) (error 'setBreakpoints "breakpoints must be an array"))
      ;; A pending breakpoint is resolved later on the target thread. Validate
@@ -576,12 +585,11 @@
             (hasheq 'threads (for/list ([st (in-hash-values states-by-id)] #:unless (thread-dead? (state-thread st)))
                                (hasheq 'id (state-id st) 'name (format "Racket thread ~a" (state-id st))))))]
     [(source)
-     (define source (findf (lambda (s) (= (source-file-id s) (arg a 'sourceReference 0))) (hash-values sources)))
-     (unless source (error 'source "Unknown source reference."))
+     (define source (referenced-source (arg a 'sourceReference 0)))
      (reply request (hasheq 'content (source-file-text source) 'mimeType "text/x-racket"))]
     [(loadedSources) (reply request (hasheq 'sources (map source-json (hash-values sources))))]
     [(breakpointLocations)
-     (define path (canonical (hash-ref (hash-ref a 'source) 'path)))
+     (define path (source-path (hash-ref a 'source)))
      (define source (hash-ref sources path #f))
      (define first-line (coordinate a 'line line-base line-base))
      (define last-line (coordinate a 'endLine line-base first-line))
