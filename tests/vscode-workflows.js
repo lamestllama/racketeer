@@ -166,10 +166,13 @@ exports.run = async function (workspace) {
       assert.deepEqual(first.session.configuration.submodule, []);
       assert.equal(await vscode.commands.executeCommand('racketdap.startDebugRepl'), first, 'Reuse this module’s REPL');
 
-      await open('other.rkt', '#lang racket/base\n(define private 100)\n');
+      await open('other.rkt', '#lang racket/base\n' +
+        '(module configure-runtime racket/base (print-as-expression #f))\n(define private 100)\n');
       const other = await vscode.commands.executeCommand('racketdap.startDebugRepl');
       owned.push(other);
       assert.ok(await other.ready);
+      assert.equal((await other.session.customRequest('evaluate', { context: 'repl', expression: '(print-as-expression)' })).result, '#f');
+      assert.equal((await first.session.customRequest('evaluate', { context: 'repl', expression: '(print-as-expression)' })).result, '#t');
       const editor = await vscode.window.showTextDocument(moduleEditor.document);
       editor.selection = new vscode.Selection(5, 2, 5, moduleEditor.document.lineAt(5).text.length);
       const evaluation = vscode.commands.executeCommand('racketdap.sendSelectionToDebugRepl');
@@ -246,6 +249,7 @@ exports.run = async function (workspace) {
       'teaching-language check counts and failure locations', 'coverage marks an untaken literal branch',
       'failed checks and source locations', 'early test exit is an error',
       'Debug Test command enters a required source file', 'module-specific Debug REPL reuse',
+      'Debug REPL applies language runtime configuration separately for each session',
       'selection evaluation hits breakpoints in the owning REPL', 'Debug REPL restart loads saved edits',
       'evaluate multiple selections in the owning Debug REPL in source order',
       'selection command inspects a paused outer selection evaluation',

@@ -365,10 +365,21 @@
          exception-handler
          (lambda ()
            (define (execute)
-             ;; Match raco test's single-file runtime configuration, including
-             ;; the teaching languages' signature reporting parameters.
-             (when (and test? (module-declared? `(submod ,source configure-runtime) #t))
-               (dynamic-require `(submod ,source configure-runtime) #f))
+             (unless language
+               ;; Configure the launched module, not its dependencies. Tests
+               ;; use the enclosing file's configuration, as raco test does.
+               (define runtime-target (if test? source target))
+               (define config-module `(submod ,source ,@(if test? '() submodule) configure-runtime))
+               (when (module-declared? config-module #t)
+                 (dynamic-require config-module #f))
+               ;; Racket also applies legacy language metadata after the
+               ;; submodule. raco test uses only the submodule protocol.
+               (define info (and (not test?) (module->language-info runtime-target #t)))
+               (define (invoke spec)
+                 ((dynamic-require (vector-ref spec 0) (vector-ref spec 1)) (vector-ref spec 2)))
+               (when info
+                 (for ([config (in-list ((invoke info) 'configure-runtime '()))])
+                   (invoke config))))
              (if language
                  (begin
                    (when instrument?

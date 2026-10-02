@@ -2,7 +2,7 @@
   "name": "racketeer",
   "displayName": "Racketeer: Organised Racket",
   "description": "Racket debugging and REPL, with Racket and Rhombus editing for VS Code.",
-  "version": "0.8.6",
+  "version": "0.8.7",
   "publisher": "lamestllama",
   "author": { "name": "Eric Parsonage", "email": "eric@eparsonage.com", "url": "https://github.com/lamestllama" },
   "icon": "images/racket.png",

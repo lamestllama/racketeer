@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.7
+
+- Apply the language's runtime configuration before debugging and retain it in the Debug REPL, including custom printing and legacy language configuration.
+
 ## 0.8.6
 
 - Report teaching-language check counts, failures and signature violations through Test Explorer, and load each test file's language runtime configuration.

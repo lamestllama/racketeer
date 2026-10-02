@@ -11,6 +11,14 @@ existing adapter and worker. A test Run sets DAP `noDebug`; the loader disables
 instrumentation and exception stops. Debug uses the same module selection and
 reporting with instrumentation enabled.
 
+Module launches apply the language's documented
+[runtime configuration](https://docs.racket-lang.org/reference/running-sa.html)
+before executing the program: `configure-runtime`, then legacy language metadata
+when provided. Debug REPL evaluations retain these parameters. Only the launched
+module is configured; required libraries keep normal `require` behaviour. An
+explicit submodule uses its own configuration. Plain files retain their chosen
+top-level language, and test profiles follow the `raco test` rule below.
+
 ## Test discovery and reporting
 
 Test Explorer discovers files through configurable workspace-relative globs.
