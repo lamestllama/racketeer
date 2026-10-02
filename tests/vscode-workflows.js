@@ -63,6 +63,29 @@ exports.run = async function (workspace) {
     assert.deepEqual(await vscode.commands.executeCommand('racketdap.testFile'),
       { passed: 0, failed: 0, errored: 1, skipped: 0 }, 'An early exit must not silently pass');
 
+    const teaching = await open('teaching.rkt', '#lang htdp/bsl\n' +
+      '(define (price count) (+ 7 count))\n(check-expect (price 2) 9)\n(check-expect (price 4) 10)\n');
+    const teachingStart = sessions.length;
+    assert.deepEqual(await vscode.commands.executeCommand('racketdap.testFile'),
+      { passed: 0, failed: 1, errored: 0, skipped: 0 });
+    const teachingSession = sessions[teachingStart];
+    assert.deepEqual((await event(teachingSession, 'racketdap/test', m => m.body.kind === 'summary')).body,
+      { kind: 'summary', status: 'failed', total: 2, failed: 1 });
+    const teachingFailure = (await event(teachingSession, 'racketdap/test', m => m.body.kind === 'failure')).body;
+    assert.deepEqual(teachingFailure.location, { path: teaching.document.uri.fsPath, line: 4, column: 1 });
+
+    const literals = await open('literals.rkt', '#lang racket/base\n(require rackunit)\n' +
+      '(define (choose flag) (if flag \'left \'right))\n(check-equal? (choose #t) \'left)\n');
+    await settings.update('testing.include', 'workflows/literals.rkt', vscode.ConfigurationTarget.Workspace);
+    await vscode.commands.executeCommand('testing.refreshTests');
+    const coverageStart = sessions.length;
+    await vscode.commands.executeCommand('testing.coverageAll');
+    const literalReport = await event(sessions[coverageStart], 'racketdap/coverage',
+      m => m.body.path === literals.document.uri.fsPath);
+    const branchColumn = literals.document.lineAt(2).text.indexOf("'right");
+    assert.ok(literalReport.body.statements.some(s => s.line === 2 && s.column === branchColumn &&
+      s.endLine === 2 && s.endColumn === branchColumn + 6 && s.executed === false));
+
     let individual = await open('cases.rkt', '#lang racket/base\n(require rackunit)\n' +
       '(define (twice x)\n  (* x 2))\n(module+ test\n' +
       '  (test-case "same" (error "unselected test ran"))\n' +
@@ -219,7 +242,9 @@ exports.run = async function (workspace) {
     const surviving = owned.at(-1);
     assert.equal((await surviving.session.customRequest('evaluate', { context: 'repl', expression: '(+ 1 2)' })).result, '3');
 
-    return ['Test Explorer discovery and Run All', 'individual Run and Debug Test at Cursor', 'native Test Coverage at Cursor', 'failed checks and source locations', 'early test exit is an error',
+    return ['Test Explorer discovery and Run All', 'individual Run and Debug Test at Cursor', 'native Test Coverage at Cursor',
+      'teaching-language check counts and failure locations', 'coverage marks an untaken literal branch',
+      'failed checks and source locations', 'early test exit is an error',
       'Debug Test command enters a required source file', 'module-specific Debug REPL reuse',
       'selection evaluation hits breakpoints in the owning REPL', 'Debug REPL restart loads saved edits',
       'evaluate multiple selections in the owning Debug REPL in source order',

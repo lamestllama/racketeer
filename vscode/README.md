@@ -274,6 +274,10 @@ Results include logged check counts, test output, and clickable failure
 locations for direct RackUnit checks and immediately executed test cases.
 Explicitly run suites also contribute their RackUnit counts; custom runners
 that replace the reporting hooks may provide details only in test output.
+Teaching-language checks such as `check-expect` also report counts and failure
+locations. Signature violations fail the file; registered checks that never run
+produce an incomplete result. Plain Racket modules using
+`test-engine/racket-tests` must invoke `(test)` themselves.
 An individual run preserves module setup and skips the other discovered cases.
 Source changes are checked before execution so a stale selection cannot run a
 different case. Uncaught
@@ -289,8 +293,9 @@ Changes to source invalidate previous results.
 Use VS Code's **Run Tests with Coverage** controls to see executed and unexecuted
 expressions in the Test Coverage view and editor. Coverage combines completed
 tests and their loaded dependencies under `racketdap.testing.sourceRoots`.
-It measures debugger expression sites, not branch or function coverage; atomic
-operands, transformer code, and files that were never loaded are not measured.
+It measures executed expressions, including constants and references, rather
+than branch or function coverage. Transformer code and files that were never
+loaded are not measured.
 Changed sources are omitted. Run coverage again after editing.
 
 ### Debug REPL

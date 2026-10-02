@@ -101,9 +101,10 @@ encoding with Node's strict unhandled-rejection handling. See the
 
 Known product boundaries remain explicit:
 
-- Test Explorer reports files and RackUnit failures; it does not discover
-  individual cases or implement all `info.rkt` policies. Test Package uses the
-  native runner and reports in the task terminal.
+- Test Explorer discovers direct named RackUnit cases and reports RackUnit and
+  teaching-language failures. Dynamic cases, suites, mixed forms and teaching
+  checks retain file-level execution. Package `info.rkt` policies are not fully
+  integrated; Test Package uses the native runner in the task terminal.
 - The language client uses one Racket installation per window, selected by the
   first workspace folder. Use separate windows for different installations.
 - Package mutation commands operate in user scope. Debugging requires source

@@ -39,6 +39,21 @@ are the same instances the program uses. Public `current-check-around` and
 logging to the original handlers. `test-report` supplies the authoritative
 failure counts, including tests explicitly run with `rackunit/text-ui`.
 
+Teaching-language checks contribute counts and failures from the public
+[`test-engine/test-engine` result object](https://docs.racket-lang.org/test-engine/index.html).
+The runner reads completed results without executing checks again or parsing
+their output. Signature violations also fail the file. Check failures have
+clickable source locations when the framework supplies a file path; its original
+report retains the actual and expected values. Registered checks that did not
+run make the result incomplete, including when `test-execute` disables them.
+Plain Racket modules using `test-engine/racket-tests` must invoke `(test)`.
+
+Each test profile loads the file's `configure-runtime` submodule, when present,
+before its test submodule or module body, matching the documented
+[`raco test` single-file default](https://docs.racket-lang.org/raco/test.html).
+This lets teaching languages install their runtime reporting parameters.
+An independent test submodule still does not require its enclosing module to run.
+
 Loader hooks are restricted to their execution's module registry. A nested
 execution inherits the surrounding load handlers dynamically, but those handlers
 delegate unchanged when the nested execution has installed its own loader.
@@ -91,12 +106,23 @@ are combined, including their loaded dependencies under the configured source
 roots. Files that are never loaded are not included. Assertion failures still
 produce coverage; cancelled or incomplete processes do not.
 
-Coverage uses the debugger's runtime expression sites, grouped by source range.
+Coverage uses the shared instrumenter, including runtime constants and references,
+grouped by source range. Ordinary debugger stepping retains its existing sites.
 It reports whether each expression ran, not execution counts, branch coverage,
-or function coverage. Atomic operands and transformer execution are not measured.
+or function coverage. Transformer execution is not measured.
 Generated expressions sharing a range contribute one result. Edited sources and
 different revisions loaded by separate test processes are omitted rather than
 combined. Run coverage again after editing to refresh the totals.
+
+The behavior comparison used original examples in the Racket 9.1 IDE. Two
+`check-expect` forms, one failing, produced two tests and one failure. With
+syntactic test suite coverage enabled, `(if flag 'left 'right)` called with
+`#t` marked `'right` as unexecuted. Racketeer's native test results and coverage
+now report those same outcomes. The regression fixtures in
+[`teaching-tests.test.js`](../tests/teaching-tests.test.js) and
+[`test-coverage.test.js`](../tests/test-coverage.test.js) were written independently
+from those observations and public documentation, without consulting that IDE's
+implementation or tests. This comparison establishes these behaviors only.
 
 The adapter accepts `coverage: true` together with `testMode: true` and
 `noDebug: true`. Before the final test summary it emits `racketdap/coverage`

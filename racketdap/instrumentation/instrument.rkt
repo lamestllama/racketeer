@@ -79,6 +79,7 @@
 (define (instrument-module expanded source fresh-id on-event
                            #:module-bindings [known-module-bindings '()]
                            #:module-context [module-context #f]
+                           #:coverage? [coverage? #f]
                            #:tail? [initial-tail? #f])
   (define descriptors '())
   ;; Retain source-facing aliases for module bindings that expansion may rename.
@@ -125,7 +126,7 @@
          (not (syntax-source (car parts)))
          (not (syntax-property expression 'origin))))
   (define (site-for expression tail? visible?)
-    (and (stoppable? expression)
+    (and (or coverage? (stoppable? expression))
          (syntax-position expression)
          (equal? (source-name source) (source-name (syntax-source expression)))
          (let ([s (site (fresh-id) (syntax-source expression)

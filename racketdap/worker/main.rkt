@@ -517,6 +517,7 @@
                       [current-command-line-arguments (list->vector (arg config 'args '()))])
          (run-module (hash-ref config 'program)
                      #:instrument? (or (arg config 'coverage #f) (not (arg config 'noDebug #f)))
+                     #:coverage? (arg config 'coverage #f)
                      #:on-event (if (arg config 'coverage #f) on-coverage-event on-event)
                      #:on-exception (and (not (arg config 'noDebug #f)) on-exception)
                      #:on-pause (and (not (arg config 'noDebug #f)) on-pause)

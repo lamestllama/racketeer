@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.8.6
+
+- Report teaching-language check counts, failures and signature violations through Test Explorer, and load each test file's language runtime configuration.
+- Include constants and references in test coverage so untaken literal branches and unused constant function bodies are visible.
+
 ## 0.8.5
 
 - Run tests with native VS Code coverage controls and highlight executed expressions across loaded source files, keeping results tied to the source that ran.

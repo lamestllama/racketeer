@@ -72,6 +72,34 @@ test('coverage respects selected cases and remains available for assertion failu
   assert.equal((await client.event('racketdap/test', e => e.body.kind === 'summary')).body.status, 'failed');
 });
 
+test('coverage includes untaken literal and reference branches and unused constant function bodies', async t => {
+  const source = '#lang racket/base\n(require rackunit)\n' +
+    '(define (choose flag) (if flag \'left \'right))\n' +
+    '(define (identity flag yes no) (if flag yes no))\n' +
+    '(define (unused) 42)\n' +
+    '(check-equal? (choose #t) \'left)\n(check-equal? (identity #t 1 2) 1)\n';
+  const { client, program } = await fixture(t, source);
+  const [report] = await run(client, program);
+  assert.equal(expression(report, source, "'right").executed, false);
+  assert.equal(expression(report, source, 'yes').executed, true);
+  assert.equal(expression(report, source, 'no').executed, false);
+  assert.equal(expression(report, source, '42').executed, false);
+  assert.equal((await client.event('racketdap/test', e => e.body.kind === 'summary')).body.status, 'passed');
+});
+
+test('coverage preserves multiple values, quoted data, evaluation order and tail recursion', async t => {
+  const source = '#lang racket/base\n(require rackunit)\n' +
+    '(define count 0)\n(define (bump) (set! count (add1 count)) count)\n' +
+    '(check-equal? (list (bump) (bump) (bump)) \'(1 2 3))\n' +
+    '(check-equal? (call-with-values (lambda () (if #t (values 3 4) (values))) list) \'(3 4))\n' +
+    '(check-equal? (call-with-values (lambda () (values)) list) \'())\n' +
+    '(check-equal? (let loop ([n 2000]) (if (zero? n) \'done (loop (sub1 n)))) \'done)\n';
+  const { client, program } = await fixture(t, source);
+  await run(client, program);
+  assert.deepEqual((await client.event('racketdap/test', e => e.body.kind === 'summary')).body,
+    { kind: 'summary', status: 'passed', total: 4, failed: 0 });
+});
+
 test('ordinary runs and incomplete test processes do not publish coverage', async t => {
   for (const [source, options] of [
     ['#lang racket/base\n(require rackunit)\n(check-true #t)\n', { coverage: false }],

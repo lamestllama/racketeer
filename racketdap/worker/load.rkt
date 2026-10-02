@@ -38,6 +38,7 @@
 ;; target thread; selected modules bypass bytecode without writing caches.
 (define (run-module path
                     #:instrument? [instrument? #t]
+                    #:coverage? [coverage? #f]
                     #:language [language #f]
                     #:on-sites [on-sites void]
                     #:on-event [on-event #f]
@@ -125,7 +126,8 @@
                           (file ,(path->string expander-path)))
                  (provide (filtered-out
                            (lambda (name)
-                             (and (not (equal? name "original:#%module-begin"))
+                             (and (regexp-match? #rx"^original:" name)
+                                  (not (equal? name "original:#%module-begin"))
                                   (substring name 9)))
                            (all-from-out ,(syntax->datum language)))
                           (rename-out [debug-module-begin #%module-begin]))
@@ -133,7 +135,8 @@
           (datum->syntax context `(quote ,name)))
         (define (annotate expanded [bindings #f])
           (define-values (annotated sites)
-            (instrument-module expanded selected-source fresh-id on-event #:module-context bindings))
+            (instrument-module expanded selected-source fresh-id on-event #:module-context bindings
+                               #:coverage? coverage?))
           (on-sites sites)
           annotated)
         (define (make-transform bindings)
@@ -151,7 +154,18 @@
                                     (rename-in (file ,(path->string expander-path))
                                                [instrument-form ,wrapper-name])))
            (for/list ([item (in-list body)])
-             #`(#,wrapper #,transform #,item))))
+             ;; Racket's module-begin must see an explicit runtime configuration
+             ;; before expansion, or it inserts a second submodule of that name.
+             (syntax-case item ()
+               [(head name language form ...)
+                (and (memq (syntax-e #'head) '(module module*))
+                     (eq? (syntax-e #'name) 'configure-runtime))
+                (let ([child (module-binding-context-child! bindings 'configure-runtime
+                                                           (not (syntax-e #'language)))])
+                  (if (syntax-e #'language)
+                      #`(head name #,(language-wrapper #'language item child) form ...)
+                      #`(head name language #,@(wrap-body (syntax->list #'(form ...)) item child))))]
+               [_ #`(#,wrapper #,transform #,item)]))))
         (define (rewrite-submodule form [parent-bindings #f])
           (define (context-for name inherit?)
             (if parent-bindings
@@ -351,6 +365,10 @@
          exception-handler
          (lambda ()
            (define (execute)
+             ;; Match raco test's single-file runtime configuration, including
+             ;; the teaching languages' signature reporting parameters.
+             (when (and test? (module-declared? `(submod ,source configure-runtime) #t))
+               (dynamic-require `(submod ,source configure-runtime) #f))
              (if language
                  (begin
                    (when instrument?
