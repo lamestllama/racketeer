@@ -50,7 +50,7 @@ function registerLanguageTools(context, debugSources) {
     await stopClient();
     if (disposed || !vscode.workspace.isTrusted) return;
     const folder = vscode.workspace.workspaceFolders?.[0];
-    const config = vscode.workspace.getConfiguration('racketdap', folder?.uri);
+    const config = vscode.workspace.getConfiguration('racketdap');
     if (!config.get('languageServer.enabled', true)) {
       showStatus('Racket: LSP off', 'Enable racketdap.languageServer.enabled for editor language tools.');
       return;
@@ -78,7 +78,9 @@ function registerLanguageTools(context, debugSources) {
         if (action === 'Show Output') output.show();
       });
     }
-    const process = createLanguageProcess(config.get('racketExecutable', 'racket'),
+    const executable = vscode.workspace.getConfiguration('racketdap', folder?.uri)
+      .get('racketExecutable', 'racket');
+    const process = createLanguageProcess(executable,
       installed ? ['-l', 'racket-langserver'] : [context.asAbsolutePath('language-server.rkt')],
       { cwd: folder?.uri.fsPath }, {
         timeout: startupTimeoutSeconds * 1000,
@@ -149,7 +151,7 @@ function registerLanguageTools(context, debugSources) {
     defaultErrorHandler = next.createDefaultErrorHandler();
     client = next;
     const nextIndex = createWorkspaceIndex(context, {
-      executable: config.get('racketExecutable', 'racket'), timeout: startupTimeoutSeconds * 1000, output,
+      executable, timeout: startupTimeoutSeconds * 1000, output,
       onStatus: result => {
         if (client !== next) return;
         if (result.state !== 'indexing') output.appendLine(
