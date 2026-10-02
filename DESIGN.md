@@ -128,10 +128,16 @@ client-specific metadata must leave ordinary DAP operations usable without it.
 The protocol session regression runs a standalone copy of `racketdap/`, without
 the extension, bundled server, user package links, or repository working directory.
 
-A separate repository is a release and ownership decision. Extract the adapter
-when consumers need an independent release cycle; until then, one repository
-allows protocol and editor changes to be reviewed and tested together without
-introducing a dependency between their implementations.
+The adapter will move to its own repository and independently versioned Racket
+package. Keep its runtime, instrumentation, and protocol tests together. Editor
+commands, language analysis, and presentation remain with the extension. The
+extension should bundle a pinned adapter release so users still install one
+extension. Launch options and optional protocol extensions belong to the
+adapter's documented public contract.
+
+Until extraction, enforce the same dependency boundary in this repository and
+retain the standalone protocol regression. The split should change packaging
+and release ownership without changing debugger behavior.
 
 ```mermaid
 flowchart LR
