@@ -90,6 +90,78 @@ test('source-visible locals retain hygiene and mutation affects the actual compu
   assert.equal((await client.request('scopes', { frameId: frame.id })).success, false);
 });
 
+test('unit state keeps source names, lexical shadowing, and live mutation across instances', async t => {
+  const lines = [
+    '#lang racket/base',
+    '(require racket/unit)',
+    '(define worker@',
+    '  (unit (import) (export)',
+    '    (define count 10)',
+    '    (define reserve 90)',
+    '    (define (update n)',
+    '      (let ([count 1000])',
+    '        (displayln (+ count n)))',
+    '      (set! count (+ count n))',
+    '      count)',
+    '    (displayln (update 4))))',
+    '(invoke-unit worker@)',
+    '(invoke-unit worker@)'
+  ];
+  const { client } = await prepare(t, lines, [{ line: 9 }, { line: 10 }]);
+  await ok(client.request('configurationDone'));
+  for (let instance = 0; instance < 2; instance++) {
+    const shadow = await stoppedFrame(client);
+    assert.equal(shadow.frame.line, 9);
+    assert.equal((await ok(client.request('evaluate', { frameId: shadow.frame.id, expression: 'count' }))).result, '1000');
+    await ok(client.request('continue', { threadId: shadow.threadId }));
+    const { threadId, frame } = await stoppedFrame(client);
+    assert.equal(frame.line, 10);
+    const { scopes } = await ok(client.request('scopes', { frameId: frame.id }));
+    const locals = scopes.find(scope => scope.name === 'Locals');
+    const { variables } = await ok(client.request('variables', { variablesReference: locals.variablesReference }));
+    assert.deepEqual(variables.map(variable => variable.name).sort(), ['count', 'n', 'reserve']);
+    assert.equal(variables.find(variable => variable.name === 'count').value, '10');
+    assert.equal(variables.find(variable => variable.name === 'reserve').value, '90');
+    assert.equal((await ok(client.request('evaluate', { frameId: frame.id, expression: 'count' }))).result, '10');
+    if (instance === 0) {
+      await ok(client.request('setVariable', { variablesReference: locals.variablesReference, name: 'count', value: '20' }));
+      assert.equal((await ok(client.request('evaluate', { frameId: frame.id, expression: 'count' }))).result, '20');
+    }
+    await ok(client.request('continue', { threadId }));
+  }
+  assert.equal(await finished(client), '1004\n24\n1004\n14\n');
+});
+
+test('macro-renamed locals use binding identity through nested and hidden same-name bindings', async t => {
+  const lines = [
+    '#lang racket/base',
+    '(require (for-syntax racket/base))',
+    '(define-syntax (with-state stx)',
+    '  (syntax-case stx ()',
+    '    [(_ name initial body ...)',
+    '     (with-syntax ([(cell) (generate-temporaries #\'(name))])',
+    '       #\'(let ([cell initial])',
+    '           (let-syntax ([name (make-rename-transformer #\'cell)]) body ...)))]))',
+    '(define-syntax-rule (hide body) (let ([count \'hidden]) body))',
+    '(with-state count 10',
+    '  (with-state count 20',
+    '    (hide (displayln (+ count 1))))',
+    '  (displayln (+ count 2)))'
+  ];
+  const { client } = await prepare(t, lines, [{ line: 12, column: lines[11].indexOf('(+ count') + 1 }, { line: 13 }]);
+  await ok(client.request('configurationDone'));
+  const inner = await stoppedFrame(client);
+  assert.equal(inner.frame.line, 12);
+  assert.equal((await ok(client.request('evaluate', { frameId: inner.frame.id, expression: 'count' }))).result, '20');
+  assert.equal((await ok(client.request('evaluate', { frameId: inner.frame.id, expression: '(begin (set! count 30) count)' }))).result, '30');
+  await ok(client.request('continue', { threadId: inner.threadId }));
+  const outer = await stoppedFrame(client);
+  assert.equal(outer.frame.line, 13);
+  assert.equal((await ok(client.request('evaluate', { frameId: outer.frame.id, expression: 'count' }))).result, '10');
+  await ok(client.request('continue', { threadId: outer.threadId }));
+  assert.equal(await finished(client), '31\n12\n');
+});
+
 test('both executions of a macro-duplicated source expression hit the breakpoint', async t => {
   const lines = [
     '#lang racket/base',

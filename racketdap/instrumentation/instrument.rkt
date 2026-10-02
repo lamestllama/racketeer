@@ -1,5 +1,5 @@
 #lang racket/base
-(require racket/list racket/path "runtime.rkt")
+(require racket/list racket/path syntax/id-table "runtime.rkt")
 (provide instrument-module
          make-module-binding-context record-module-bindings!
          module-binding-context-identifiers module-binding-context-child!
@@ -14,7 +14,7 @@
   (and (identifier? identifier)
        (for/or ([form (in-list forms)]) (free-identifier=? identifier form))))
 
-;; An environment is a lexical-order list of source-authored identifiers.
+;; An environment pairs source names with runtime identifiers in lexical order.
 ;; Generated bindings never compete with these names merely because they print
 ;; alike. Syntax identifiers retain the expander's binding scopes.
 (define (source-name source)
@@ -85,7 +85,18 @@
   ;; Retain source-facing aliases for module bindings that expansion may rename.
   ;; Lexical evaluation alone cannot reconstruct these names from namespace maps.
   (define module-bindings known-module-bindings)
-  (define (collect-module-bindings stx)
+  ;; Macros such as unit replace source bindings with fresh runtime identifiers.
+  ;; The expander retains their aliases in disappeared-binding metadata. Match
+  ;; their binding identities, never their printed names or source positions.
+  (define lexical-aliases (make-free-id-table))
+  (define (collect-aliases value)
+    (cond
+      [(identifier? value)
+       (when (and (original-binding? value source)
+                  (eq? (identifier-binding value) 'lexical))
+         (free-id-table-set! lexical-aliases value (syntax-e value)))]
+      [(pair? value) (collect-aliases (car value)) (collect-aliases (cdr value))]))
+  (define (collect-bindings stx)
     (cond
       [(identifier? stx)
        (when (and (original-binding? stx source) (list? (identifier-binding stx)))
@@ -94,21 +105,29 @@
        (define parts (syntax->list stx))
        (unless (and (pair? parts) (identifier? (car parts))
                     (bound-form? (car parts) quoted-forms))
-         (collect-module-bindings (syntax-e stx)))]
+         (collect-aliases (syntax-property stx 'disappeared-binding))
+         (collect-bindings (syntax-e stx)))]
       [(pair? stx)
-       (collect-module-bindings (car stx))
-       (collect-module-bindings (cdr stx))]
+       (collect-bindings (car stx))
+       (collect-bindings (cdr stx))]
       [else (void)]))
-  (collect-module-bindings expanded)
+  (collect-bindings expanded)
   (define activation-id (car (generate-temporaries '(activation))))
   (define (literal v) #`(quote #,v))
   (define (extend ids environment)
-    (append (filter (lambda (id) (original-binding? id source)) ids) environment))
+    (append (for/list ([id (in-list ids)]
+                       #:do [(define name (if (original-binding? id source)
+                                              (syntax-e id)
+                                              (free-id-table-ref lexical-aliases id #f)))]
+                       #:when name)
+              (cons name id))
+            environment))
   (define (bindings-expression environment)
     #`(list
-       #,@(for/list ([id (in-list environment)])
+       #,@(for/list ([binding (in-list environment)])
+            (define id (cdr binding))
             #`(make-live-binding
-               '#,(syntax-e id)
+               '#,(car binding)
                (lambda () #,id)
                (lambda (replacement) (set! #,id replacement))))))
   (define (stoppable? expression)
