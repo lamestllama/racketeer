@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.3
+
+- Preview binding-checked renames across workspace files, rejecting incomplete analysis, stale snapshots, and unsupported import transformations.
+
 ## 0.8.2
 
 - Step into function initializers without stopping on generated binding containers that make Step Over skip the remaining body.

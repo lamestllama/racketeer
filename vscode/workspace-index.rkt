@@ -19,11 +19,12 @@
          racket-langserver/workspace/api
          racket-langserver/lsp/compose/references
          racket-langserver/lsp/msg-io
-         racket-langserver/lsp/responses)
+         racket-langserver/lsp/responses
+         "workspace-rename.rkt")
 
 (struct Settings (enabled? excluded max-files max-bytes timeout) #:transparent)
 (define default-excluded '(".git" "compiled" "node_modules" ".test-output" "dist" "build"))
-(struct Run (generation cancel done state indexed failures workspace documents buffers settings roots) #:mutable)
+(struct Run (generation cancel done state indexed failures workspace documents buffers settings roots sources) #:mutable)
 (define current-run #f)
 (define state-lock (make-semaphore 1))
 (define worker-slot (make-semaphore 1))
@@ -88,8 +89,23 @@
               [(list 'discover roots excluded limit)
                (cons 'ok (discover roots excluded limit))]
               [(list 'analyse path max-bytes buffer query)
-               (match-define (list contribution size count references) (analyse path max-bytes buffer query))
-               (list 'ok (contribution->datum contribution) size count references)]))))
+               (match-define (list contribution text count references) (analyse path max-bytes buffer query))
+               (list 'ok (contribution->datum contribution) text count references)]
+              [(list 'rename sources roots excluded limit buffers path position name)
+               (define (check-snapshot!)
+                 (match-define (list paths incomplete?) (discover roots excluded limit))
+                 (unless (and (not incomplete?)
+                              (set=? (list->set (hash-keys sources))
+                                     (set-union (list->set paths) (list->set (hash-keys buffers))))
+                              (for/and ([(file text) (in-hash sources)])
+                                (or (hash-has-key? buffers file)
+                                    (equal? text (call-with-input-file* file
+                                                   (lambda (in) (read-string (add1 (string-length text)) in)))))))
+                   (error 'rename "Workspace files changed. Try Rename again.")))
+               (check-snapshot!)
+               (define result (workspace-rename sources path position name))
+               (check-snapshot!)
+               (list 'ok result)]))))
       (place-channel-put channel result)
       ;; Keep a successful reply distinguishable from an abnormal early exit.
       (place-channel-get channel)))
@@ -151,7 +167,7 @@
                 (equal? bytes (call-with-input-file* path
                                 (lambda (in) (read-bytes (add1 max-bytes) in)))))
       (error 'workspace-analysis "file changed during analysis: ~a" path))
-    (list contribution (bytes-length bytes) facts
+    (list contribution text facts
           (and query
                (let ([result (doc-references doc (car query) (jsexpr->Pos (cadr query)) (caddr query))])
                  (and result
@@ -204,8 +220,8 @@
              (match (compute run (Settings-timeout config)
                              (list 'analyse path (Settings-max-bytes config)
                                    (hash-ref (Run-buffers run) path #f) #f))
-               [(list 'ok contribution size count _)
-                (set! bytes (+ bytes size))
+               [(list 'ok contribution text count _)
+                (set! bytes (+ bytes (bytes-length (string->bytes/utf-8 text))))
                 (set! facts (+ facts count))
                 (cond
                   [(or (> bytes (* 16 1024 1024)) (> facts 200000)) (set! failures (add1 failures))]
@@ -213,6 +229,7 @@
                    ;; Each run has its own store. A retired worker can never
                    ;; populate a replacement run, even if cancellation is late.
                    (workspace-set-contribution! (Run-workspace run) (datum->contribution contribution))
+                   (hash-set! (Run-sources run) path text)
                    (set! indexed (add1 indexed))])]
                [failure
                 (set! failures (add1 failures))
@@ -249,7 +266,7 @@
                            (define run
                              (Run revision (make-semaphore) (make-semaphore)
                                   (if (Settings-enabled? config) "indexing" "disabled") 0 0
-                                  workspace documents buffers config roots))
+                                  workspace documents buffers config roots (make-hash)))
                            (set! current-run run)
                            (notify-client "status" (status run))
                            (if (Settings-enabled? config)
@@ -261,7 +278,7 @@
                                            (run-index run))))
                                (semaphore-post (Run-done run)))))))
 
-(define (references id params cancel)
+(define (query id params cancel method)
   (define uri (hash-ref params 'uri))
   (define path (uri->path uri))
   (define (current-document run)
@@ -272,13 +289,33 @@
     (define run (call-with-semaphore state-lock (lambda () current-run)))
     (define doc (and run (current-document run)))
     (cond
-      [(sync/timeout 0 cancel) (error-response id -32800 "Reference request cancelled")]
-      [(not doc) (error-response id -32801 "Document changed during reference analysis")]
-      [(not (Settings-enabled? (Run-settings run))) (success-response id '())]
+      [(sync/timeout 0 cancel) (error-response id -32800 "Request cancelled")]
+      [(not doc) (error-response id -32801 "Document changed during analysis")]
+      [(not (Settings-enabled? (Run-settings run)))
+       (if (equal? method "references") (success-response id '())
+           (error-response id -32803 "Enable workspace analysis to rename safely across files."))]
       [else
        (sync cancel (semaphore-peek-evt (Run-done run)) (semaphore-peek-evt (Run-cancel run)))
        (cond
          [(or (cancelled? run) (sync/timeout 0 cancel)) (retry)]
+         [(not (equal? method "references"))
+          (define result
+            (if (not (equal? (Run-state run) "ready"))
+                (cons 'failed "Workspace analysis is incomplete. Resolve its errors before renaming.")
+                ;; Rename validates both complete source views. Bound the whole
+                ;; transaction separately from the per-file indexing budget.
+                (compute run (if (equal? method "rename") 90 (Settings-timeout (Run-settings run)))
+                         (list 'rename (make-immutable-hash (hash->list (Run-sources run)))
+                               (Run-roots run) (Settings-excluded (Run-settings run))
+                               (Settings-max-files (Run-settings run)) (Run-buffers run)
+                               path (hash-ref params 'position) (hash-ref params 'newName #f)) cancel)))
+          (or (call-with-semaphore state-lock
+                (lambda ()
+                  (and (eq? run current-run) (not (sync/timeout 0 cancel))
+                       (match result
+                         [(list 'ok edit) (success-response id (hasheq 'revision (Run-generation run) 'result edit))]
+                         [failure (error-response id -32803 (analysis-failure failure))]))))
+              (retry))]
          [else
           (define include? (hash-ref params 'includeDeclaration))
           ;; Local and module references use the same fresh analysis. No global
@@ -320,7 +357,7 @@
           [(or "initialize" "update")
            (update! params)
            (when id (reply (success-response id (hasheq))))]
-          ["references"
+          [(and method (or "references" "prepareRename" "rename"))
            (define cancel (make-semaphore))
            (hash-set! pending id cancel)
            (thread
@@ -328,7 +365,7 @@
                (dynamic-wind void
                              (lambda ()
                                (reply (with-handlers ([exn:fail? (lambda (e) (error-response id -32603 (exn-message e)))])
-                                        (references id params (semaphore-peek-evt cancel)))))
+                                        (query id params (semaphore-peek-evt cancel) method))))
                              (lambda () (hash-remove! pending id)))))]
           ["$/cancelRequest"
            (define cancel (hash-ref pending (hash-ref params 'id) #f))

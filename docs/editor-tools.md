@@ -1,4 +1,29 @@
-# Macro expansion and Rhombus editing
+# Editing and macro expansion
+
+## Rename across files
+
+Use VS Code's **Rename Symbol** command (F2 by default) and its normal edit
+preview. Racketeer's workspace index includes unopened Racket source files and
+uses open buffers as the authoritative text. Rename updates a definition, its
+exports and its ordinary imported uses together. Local bindings stay local.
+
+Before returning edits, Racketeer expands the original and proposed source
+snapshots in memory and checks that source identifiers retain their bindings.
+It rejects capture, conflicting imports, incomplete analysis and files changed
+during the request. Validation is cancellable and bounded to 90 seconds; it
+never applies the proposed edits itself. The existing language-server sources
+are unchanged.
+
+This first version rejects aliases, prefixes and import transformations that
+need additional edits, including `only-in` and `except-in`. Definitions outside
+the analysed workspace cannot be renamed. Workspace exclusions still apply;
+consumers outside that scope must be updated separately. Workspace analysis
+must be enabled for Rename.
+
+Source snapshots use Racket's documented
+[module loading hooks](https://docs.racket-lang.org/syntax/module-helpers.html)
+and the bundled analyser's binding queries. Rename and preview use the standard
+[VS Code RenameProvider API](https://code.visualstudio.com/api/references/vscode-api#RenameProvider).
 
 ## Macro stepper
 

@@ -94,9 +94,44 @@ function createWorkspaceIndex(context, { executable, timeout, output, onStatus }
       if (event.affectsConfiguration('racket-langserver.workspaceAnalysis')) refresh();
     })
   ];
+  const range = value => new vscode.Range(value.start.line, value.start.character, value.end.line, value.end.character);
+  async function renameRequest(method, document, position, token, newName) {
+    if (!enabled()) throw new Error('Enable workspace analysis to rename safely across files.');
+    if (disposed || token.isCancellationRequested) return;
+    const version = document.version, owned = documentIdentity(document);
+    await start();
+    if (disposed || token.isCancellationRequested) return;
+    const response = await connection.sendRequest(method, {
+      uri: document.uri.toString(), identity: owned, version,
+      position: { line: position.line, character: position.character },
+      ...(newName === undefined ? {} : { newName })
+    }, token).catch(error => {
+      if (!disposed && !token.isCancellationRequested) throw error;
+    });
+    if (disposed || token.isCancellationRequested) return;
+    if (response.revision !== revision || version !== document.version ||
+        identities.get(document) !== owned || document.isClosed ||
+        !vscode.workspace.textDocuments.includes(document)) {
+      throw new Error('Workspace changed during rename. Try Rename again.');
+    }
+    return response.result;
+  }
   return {
     start, refresh,
     cancelStart: () => process.cancelStart(),
+    async prepareRename(document, position, token) {
+      const result = await renameRequest('prepareRename', document, position, token);
+      return result && range(result);
+    },
+    async provideRenameEdits(document, position, newName, token) {
+      const result = await renameRequest('rename', document, position, token, newName);
+      if (!result) return;
+      const edit = new vscode.WorkspaceEdit();
+      for (const [uri, changes] of Object.entries(result.changes)) {
+        edit.set(vscode.Uri.parse(uri), changes.map(change => new vscode.TextEdit(range(change.range), change.newText)));
+      }
+      return edit;
+    },
     async provideReferences(document, position, options, token, next) {
       if (!enabled()) return next(document, position, options, token);
       if (disposed || token.isCancellationRequested) return [];

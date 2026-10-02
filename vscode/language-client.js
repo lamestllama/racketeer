@@ -127,7 +127,9 @@ function registerLanguageTools(context, debugSources) {
         provideDocumentRangeFormattingEdits: racketFormattingOnly,
         provideDocumentRangesFormattingEdits: racketFormattingOnly,
         provideOnTypeFormattingEdits: racketFormattingOnly,
-        provideReferences: (...args) => nextIndex.provideReferences(...args)
+        provideReferences: (...args) => nextIndex.provideReferences(...args),
+        prepareRename: (...args) => nextIndex.prepareRename(...args),
+        provideRenameEdits: (...args) => nextIndex.provideRenameEdits(...args)
       },
       outputChannel: output,
       initializationFailedHandler(error) {

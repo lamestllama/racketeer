@@ -86,8 +86,21 @@ exports.run = async (extension, workspace) => {
   assert.ok(syntax.some(token => token.c.includes('(values 1 2)') && token.t.includes('string')));
   const completion = await vscode.commands.executeCommand('vscode.executeCompletionItemProvider', document.uri, call);
   assert.ok(completion.items.some(item => (typeof item.label === 'string' ? item.label : item.label.label) === 'square'), 'Completion includes the local function');
-  const rename = await vscode.commands.executeCommand('vscode.executeDocumentRenameProvider', document.uri, call, 'squared');
-  assert.ok(rename.get(document.uri).length >= 3, 'Rename updates definition, provide, and call');
+  // The package example is deliberately uninstalled until the package suite.
+  // An incomplete index must refuse rename, then honor an explicit scope.
+  await assert.rejects(vscode.commands.executeCommand('vscode.executeDocumentRenameProvider', document.uri, call, 'squared'),
+    /analysis is incomplete/);
+  const excluded = analysisConfig.get('workspaceAnalysis.excludedDirectories');
+  try {
+    await analysisConfig.update('workspaceAnalysis.excludedDirectories', [...excluded, 'packages'], vscode.ConfigurationTarget.Workspace);
+    const rename = await vscode.commands.executeCommand('vscode.executeDocumentRenameProvider', document.uri, call, 'squared');
+    assert.ok(rename.get(document.uri).length >= 3, 'Rename updates definition, provide, and call');
+    assert.equal(rename.get(vscode.Uri.file(unopened)).length, 2, 'Rename includes both calls in the unopened consumer');
+    assert.ok(!vscode.workspace.textDocuments.some(item => item.uri.fsPath === unopened), 'Rename preview leaves the consumer closed');
+    assert.match(fs.readFileSync(unopened, 'utf8'), /\(square 5\)/, 'Producing the preview does not write to disk');
+  } finally {
+    await analysisConfig.update('workspaceAnalysis.excludedDirectories', excluded, vscode.ConfigurationTarget.Workspace);
+  }
   const formatting = await vscode.commands.executeCommand('vscode.executeFormatDocumentProvider', document.uri, { tabSize: 2, insertSpaces: true });
   assert.ok(formatting.length, 'Bundled fixw returns formatting edits');
   const formatEdit = new vscode.WorkspaceEdit();

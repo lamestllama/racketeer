@@ -2,58 +2,9 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
-const { pathToFileURL } = require('node:url');
-const { spawn } = require('node:child_process');
-const { once } = require('node:events');
 const rpc = require('../vscode/node_modules/vscode-jsonrpc/node');
-const root = path.resolve(__dirname, '..');
-const definition = '#lang racket/base\n(provide square)\n(define (square x) (* x x))\n';
-const uses = '#lang racket/base\n(require "definition.rkt")\n(square 3)\n';
-const uri = file => pathToFileURL(file).href;
-const addon = fs.mkdtempSync(path.join(os.tmpdir(), 'racketeer-index-addon-'));
-test.after(() => fs.rmSync(addon, { recursive: true, force: true }));
-
-async function project(t) {
-  const directory = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'racketeer-index-')));
-  const documents = new Map(), notifications = [];
-  let revision = 0, identity = 0, diagnostics = '';
-  const child = spawn('racket', [path.join(root, 'vscode/workspace-index-server.rkt')], {
-    cwd: directory, stdio: 'pipe', env: { ...process.env, PLTADDONDIR: addon }
-  });
-  const closed = once(child, 'close');
-  child.stderr.setEncoding('utf8'); child.stderr.on('data', text => { diagnostics += text; });
-  const connection = rpc.createMessageConnection(new rpc.StreamMessageReader(child.stdout), new rpc.StreamMessageWriter(child.stdin));
-  connection.onNotification('status', status => notifications.push(status));
-  connection.listen();
-  t.after(async () => {
-    connection.dispose(); child.kill('SIGKILL');
-    child.stdin.destroy(); child.stdout.destroy(); child.stderr.destroy();
-    await closed;
-    fs.rmSync(directory, { recursive: true, force: true });
-  });
-  const filename = name => path.join(directory, name);
-  const write = (name, text) => fs.writeFileSync(filename(name), text);
-  const open = (name, text, version = 1) => {
-    const key = name.startsWith('file:') ? name : uri(filename(name));
-    documents.set(key, { uri: key, text, version, identity: ++identity });
-    return key;
-  };
-  const settings = { enabled: true, timeoutSeconds: 20 };
-  const snapshot = () => ({ revision: ++revision, roots: [uri(directory)], documents: [...documents.values()], settings });
-  const update = () => connection.sendNotification('update', snapshot());
-  const references = (key, position = { line: 2, character: 10 }, includeDeclaration = false, token = rpc.CancellationToken.None) => {
-    const document = documents.get(key);
-    return connection.sendRequest('references', { uri: key, identity: document.identity,
-      version: document.version, position, includeDeclaration }, token);
-  };
-  write('definition.rkt', definition); write('uses.rkt', uses);
-  const origin = open('definition.rkt', definition);
-  await connection.sendRequest('initialize', snapshot());
-  return { directory, documents, notifications, filename, write, open, origin, update, references, settings,
-    diagnostics: () => diagnostics };
-}
+const { root, definition, uses, uri, addon, project } = require('./workspace-index-project');
 
 const from = (locations, source) => locations.filter(location => location.uri === source);
 
@@ -202,7 +153,9 @@ function client(t, processFactory) {
   };
   const dependencies = {
     vscode: { workspace, Uri: { parse }, Location: class { constructor(uri, range) { this.uri = uri; this.range = range; } },
-      Range: class { constructor(a, b, c, d) { this.start = { line: a, character: b }; this.end = { line: c, character: d }; } } },
+      Range: class { constructor(a, b, c, d) { this.start = { line: a, character: b }; this.end = { line: c, character: d }; } },
+      TextEdit: class { constructor(range, newText) { this.range = range; this.newText = newText; } },
+      WorkspaceEdit: class extends Map { set(uri, edits) { return super.set(uri.toString(), edits); } } },
     'node:path': path, 'vscode-languageclient/node': rpc,
     './language-process': { createLanguageProcess: processFactory || ((command, args, options, lifecycle) =>
       createLanguageProcess(command, args, { ...options, env: { ...process.env, PLTADDONDIR: addon } }, lifecycle)) }
@@ -238,6 +191,22 @@ test('extension index client watches relative to roots and sends authoritative b
   assert.equal(await count(), 3);
   buffer.isClosed = true; c.closed.emit(buffer);
   assert.equal(await count(), 2, 'Close uses disk even while VS Code still lists the closed document');
+  const position = { line: 2, character: 10 }, token = rpc.CancellationToken.None;
+  const prepared = await c.index.prepareRename(doc, position, token);
+  assert.equal(prepared.start.character, 9);
+  const edit = await c.index.provideRenameEdits(doc, position, 'squared', token);
+  assert.equal(edit.get(uri(consumer)).length, 2);
+  assert.equal(edit.get(doc.uri.toString()).length, 2);
+  assert.equal(fs.readFileSync(consumer, 'utf8'), uses + '(square 4)\n');
+  const cancellation = new rpc.CancellationTokenSource();
+  const pending = c.index.provideRenameEdits(doc, position, 'squared', cancellation.token)
+    .then(value => ({ value }), error => ({ error }));
+  await new Promise(setImmediate); // Let the request enter the RPC connection.
+  cancellation.cancel();
+  const cancelled = await pending;
+  cancellation.dispose();
+  assert.equal(cancelled.error, undefined, 'Cancelling rename must not become an editor error');
+  assert.equal(cancelled.value, undefined);
 });
 
 test('disposing the index cancels and reaps an unresponsive initializing process', { timeout: 10000 }, async t => {
