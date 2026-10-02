@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.5
+
+- Run tests with native VS Code coverage controls and highlight executed expressions across loaded source files, keeping results tied to the source that ran.
+
 ## 0.8.4
 
 - Discover direct named RackUnit cases without running project code, and run or debug a selected case using Test Explorer and editor test controls.

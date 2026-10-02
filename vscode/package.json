@@ -2,7 +2,7 @@
   "name": "racketeer",
   "displayName": "Racketeer: Organised Racket",
   "description": "Racket debugging and REPL, with Racket and Rhombus editing for VS Code.",
-  "version": "0.8.4",
+  "version": "0.8.5",
   "publisher": "lamestllama",
   "author": { "name": "Eric Parsonage", "email": "eric@eparsonage.com", "url": "https://github.com/lamestllama" },
   "icon": "images/racket.png",
@@ -258,7 +258,7 @@
           "type": "array",
           "items": { "type": "string" },
           "default": ["."],
-          "description": "Directories instrumented by Debug Test, relative to the workspace folder (absolute paths also work). The test file is always included. Defaults to the whole workspace."
+          "description": "Directories instrumented by Debug Test and Coverage, relative to the workspace folder (absolute paths also work). The test file is always included. Defaults to the whole workspace."
         },
         "racketdap.debug.packages": {
           "type": "array",

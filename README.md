@@ -9,18 +9,18 @@ set breakpoints, step across modules and packages, and inspect or evaluate
 live lexical bindings. The extension also bundles `racket-langserver`, REPL
 workflows, Test Explorer integration, and package management.
 
-**Status:** development release, version 0.8.2. Tested on Linux ARM64
+**Status:** development release, version 0.8.5. Tested on Linux ARM64
 with Racket 9.1 CS and VS Code 1.98.1. Requires **VS Code 1.90 or newer** and the
 **full Racket 9.1 or newer distribution**. No separate language-server installation, Magic Racket, Node.js,
 or npm is needed to use the extension. It does not automatically install Racket packages.
 
 ## Install and try it
 
-Install `dist/racketeer-0.8.2.vsix` using VS Code's **Extensions: Install from
+Install `dist/racketeer-0.8.5.vsix` using VS Code's **Extensions: Install from
 VSIX…**, or:
 
 ```sh
-code --install-extension dist/racketeer-0.8.2.vsix
+code --install-extension dist/racketeer-0.8.5.vsix
 ```
 
 Open a trusted folder and a saved `.rkt` file: the language tools start
@@ -135,9 +135,9 @@ directory with Python 3 and Xvfb available:
 
 ```sh
 python3 scripts/test-gui.py
-python3 scripts/test-vscode.py --artifact dist/racketeer-0.8.2.vsix
-python3 scripts/test-vscode.py --rhombus --artifact dist/racketeer-0.8.2.vsix
-python3 scripts/test-vscode.py --dogfood --artifact dist/racketeer-0.8.2.vsix
+python3 scripts/test-vscode.py --artifact dist/racketeer-0.8.5.vsix
+python3 scripts/test-vscode.py --rhombus --artifact dist/racketeer-0.8.5.vsix
+python3 scripts/test-vscode.py --dogfood --artifact dist/racketeer-0.8.5.vsix
 ```
 
 Use `--code` and `--xvfb` to select those executables. Each run creates fresh

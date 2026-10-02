@@ -3,7 +3,7 @@
 (require racket/async-channel racket/file racket/list racket/path racket/port
          racket/string racket/tcp
          "../protocol.rkt" "../commands.rkt" "../source.rkt" "../packages.rkt" "../process-group.rkt" "load.rkt" "../instrumentation/instrument.rkt"
-         "inspect.rkt" "stepping.rkt" "expressions.rkt" "cancel.rkt" "images.rkt")
+         "inspect.rkt" "stepping.rkt" "expressions.rkt" "cancel.rkt" "images.rkt" "coverage.rkt")
 
 (define bootstrap (read-message (current-input-port)))
 (join-process-group! (hash-ref bootstrap 'processGroup #f))
@@ -33,6 +33,10 @@
   (call-with-semaphore id-lock (lambda () (set! next-id (add1 next-id)) next-id)))
 (define sources (make-hash))
 (define sites (make-hash))
+(define coverage-hits (make-hasheqv))
+(define (on-coverage-event stop)
+  (when (eq? (stop-kind stop) 'before)
+    (hash-set! coverage-hits (site-id (stop-site stop)) #t)))
 (define breakpoints (make-hash))
 (define frames (make-hasheqv))
 (define variables (make-hasheqv))
@@ -133,6 +137,10 @@
     (hash-set! sources path source)
     (event "loadedSource" (hasheq 'reason "new" 'source (source-json source)))))
 (define (on-test-event result)
+  (when (and (arg config 'coverage #f) (equal? (hash-ref result 'kind) "summary")
+             (not (equal? (hash-ref result 'status) "errored")))
+    (for ([file (in-list (coverage-files sources sites coverage-hits))])
+      (event "racketdap/coverage" file)))
   (when (and (equal? (hash-ref result 'kind) "failure") (arg result 'location))
     (define raw (hash-ref result 'location))
     (define source (hash-ref sources (canonical (hash-ref raw 'path)) #f))
@@ -508,8 +516,9 @@
                          (sync never-evt))]
                       [current-command-line-arguments (list->vector (arg config 'args '()))])
          (run-module (hash-ref config 'program)
-                     #:instrument? (not (arg config 'noDebug #f))
-                     #:on-event on-event #:on-exception (and (not (arg config 'noDebug #f)) on-exception)
+                     #:instrument? (or (arg config 'coverage #f) (not (arg config 'noDebug #f)))
+                     #:on-event (if (arg config 'coverage #f) on-coverage-event on-event)
+                     #:on-exception (and (not (arg config 'noDebug #f)) on-exception)
                      #:on-pause (and (not (arg config 'noDebug #f)) on-pause)
                      #:language (and (arg config 'language) (string->symbol (arg config 'language)))
                      #:on-sites on-sites #:on-source-snapshot on-source-snapshot

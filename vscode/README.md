@@ -18,7 +18,7 @@ VS Code 1.98.1; other operating systems are not yet verified.
 
 ## Install and start
 
-1. In Extensions, choose **Install from VSIX…** and select `racketeer-0.8.2.vsix`.
+1. In Extensions, choose **Install from VSIX…** and select the packaged `racketeer-<version>.vsix`.
 2. Open a trusted folder containing your Racket program and a saved `.rkt` file.
 3. Language tools start automatically; **Racket: ready** appears in the status bar.
 4. Use the **Racket:** commands in the Command Palette to run, test, load a REPL,
@@ -283,8 +283,15 @@ normally, so set a source breakpoint to investigate them.
 Configure `racketdap.testing.include` and `racketdap.testing.exclude` to choose
 files. Generated directories, vendored code, and `info.rkt` are excluded by
 default. These settings govern discovery; **Test Current File** explicitly runs
-the selected file. Package `info.rkt` test policies and coverage are not yet
-integrated. Changes to source invalidate previous results.
+the selected file. Package `info.rkt` test policies are not yet integrated.
+Changes to source invalidate previous results.
+
+Use VS Code's **Run Tests with Coverage** controls to see executed and unexecuted
+expressions in the Test Coverage view and editor. Coverage combines completed
+tests and their loaded dependencies under `racketdap.testing.sourceRoots`.
+It measures debugger expression sites, not branch or function coverage; atomic
+operands, transformer code, and files that were never loaded are not measured.
+Changed sources are omitted. Run coverage again after editing.
 
 ### Debug REPL
 

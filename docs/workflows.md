@@ -74,15 +74,36 @@ Source details are available for direct checks and immediately executed test
 cases. Suites or custom runners that replace RackUnit's hooks still contribute
 logged counts; their detailed failure output remains available in Test Results.
 This does not provide full `raco test` command-line compatibility. Test Explorer does not implement package
-`info.rkt` test policies, arbitrary test frameworks, or coverage. The separate
+`info.rkt` test policies or arbitrary test frameworks. The separate
 [Test Package command](packages.md) delegates package policies to `raco test`.
 Use the include/exclude
 settings to select files; the working directory is the owning workspace.
-`racketdap.testing.sourceRoots` controls source instrumentation for Debug Test,
+`racketdap.testing.sourceRoots` controls source instrumentation for Debug Test and coverage,
 using directories relative to that workspace (or absolute paths). It defaults
 to the whole workspace, and the test file is always selected. This allows
 debugger stress tests to instrument the test harness while the harness manages
 its own target programs.
+
+Use the native **Run Tests with Coverage** controls for a file or selected case.
+The Coverage profile runs tests without pausing and reports executed expressions
+in VS Code's Test Coverage view and editor. Reports from completed test files
+are combined, including their loaded dependencies under the configured source
+roots. Files that are never loaded are not included. Assertion failures still
+produce coverage; cancelled or incomplete processes do not.
+
+Coverage uses the debugger's runtime expression sites, grouped by source range.
+It reports whether each expression ran, not execution counts, branch coverage,
+or function coverage. Atomic operands and transformer execution are not measured.
+Generated expressions sharing a range contribute one result. Edited sources and
+different revisions loaded by separate test processes are omitted rather than
+combined. Run coverage again after editing to refresh the totals.
+
+The adapter accepts `coverage: true` together with `testMode: true` and
+`noDebug: true`. Before the final test summary it emits `racketdap/coverage`
+events containing an absolute `path`, a `sourceHash` of the captured UTF-8 text
+with CRLF normalized to LF, and `statements`. Each statement has zero-based
+UTF-16 `line`, `column`, `endLine`, `endColumn` (exclusive end), and a boolean
+`executed`. The hash uses the same SHA-1 convention as test selection.
 
 ## Session ownership
 

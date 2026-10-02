@@ -5,6 +5,7 @@ const { execFile } = require('node:child_process');
 const { createHash } = require('node:crypto');
 const { targetFor, saveDocument } = require('./execution');
 const { selectTests } = require('./test-selection');
+const { TestCoverage, loadDetailedCoverage } = require('./test-coverage');
 
 function registerTesting(context, sessions) {
   const controller = vscode.tests.createTestController('racketdap.tests', 'Racket');
@@ -117,7 +118,7 @@ function registerTesting(context, sessions) {
     return message;
   }
 
-  async function execute(request, token, debug) {
+  async function execute(request, token, debug, coverage = false) {
     if (!vscode.workspace.isTrusted) throw new Error('Trust this workspace before running tests.');
     if (!request.include) await refresh();
     const selected = selectTests(controller.items, request);
@@ -127,7 +128,8 @@ function registerTesting(context, sessions) {
       if (!groups.has(file)) groups.set(file, []);
       groups.get(file).push(item);
     }
-    const run = controller.createTestRun(request, debug ? 'Debug Racket tests' : 'Run Racket tests');
+    const run = controller.createTestRun(request, coverage ? 'Racket test coverage' : debug ? 'Debug Racket tests' : 'Run Racket tests');
+    const coverageResult = coverage ? new TestCoverage() : undefined;
     const cancellation = new vscode.CancellationTokenSource();
     const cancelProfile = token?.onCancellationRequested(() => cancellation.cancel());
     if (token?.isCancellationRequested) cancellation.cancel();
@@ -143,6 +145,7 @@ function registerTesting(context, sessions) {
         const started = Date.now();
         const failures = [];
         let summary;
+        const coverageFiles = [];
         let activeCase;
         let children = wholeFile ? [] : requested;
         let runError;
@@ -164,10 +167,12 @@ function registerTesting(context, sessions) {
             .get('testing.sourceRoots', ['.']).map(root => path.resolve(target.cwd, root));
           const record = await sessions.start(target, {
             name: `Racket tests: ${item.label}`, testMode: true, stopOnEntry: false, sourceRoots,
+            ...(coverage ? { coverage: true } : {}),
             ...(testSelection ? { testSelection } : {})
           }, { noDebug: !debug, token: cancellation.token,
             onEvent(event) {
               if (event.event === 'output') run.appendOutput(event.body.output.replace(/\r?\n/g, '\r\n'), undefined, item);
+              if (coverage && event.event === 'racketdap/coverage') coverageFiles.push(event.body);
               if (event.event === 'racketdap/test') {
                 if (event.body.kind === 'failure') {
                   failures.push(event.body);
@@ -193,6 +198,9 @@ function registerTesting(context, sessions) {
           if (cancellation.token.isCancellationRequested) { if (wholeFile) run.skipped(item); totals.skipped++; continue; }
           const duration = Date.now() - started;
           if (!summary) throw new Error(`Test process ended before reporting results (exit ${result?.exitCode ?? 'unknown'}).`);
+          if (summary.status !== 'errored' && (result.exitCode === 0 || summary.status === 'failed')) {
+            coverageFiles.forEach(file => coverageResult?.add(file));
+          }
           const messages = failures.map(messageFor);
           if (summary.status === 'errored' || (result.exitCode !== 0 && summary.status === 'passed')) {
             run.errored(item, messages.length ? messages : new vscode.TestMessage('Test execution failed; see test output.'), duration);
@@ -217,6 +225,7 @@ function registerTesting(context, sessions) {
           }
         }
       }
+      await coverageResult?.publish(run, cancellation.token);
       return totals;
     } finally {
       run.end(); cancelRun.dispose(); cancelProfile?.dispose(); activeRuns.delete(cancellation); cancellation.dispose();
@@ -226,6 +235,9 @@ function registerTesting(context, sessions) {
     (request, token) => execute(request, token, false), true);
   const debugProfile = controller.createRunProfile('Debug', vscode.TestRunProfileKind.Debug,
     (request, token) => execute(request, token, true), true);
+  const coverageProfile = controller.createRunProfile('Coverage', vscode.TestRunProfileKind.Coverage,
+    (request, token) => execute(request, token, false, true), true);
+  coverageProfile.loadDetailedCoverage = loadDetailedCoverage;
   const watcher = vscode.workspace.createFileSystemWatcher('**/*.{rkt,rktl,ss,scm,scrbl}');
   let refreshTimer;
   function scheduleRefresh() {

@@ -69,8 +69,9 @@ exports.run = async function (workspace) {
       '  (test-case "same" (check-equal? (twice 7) 14)))\n');
     await settings.update('testing.include', 'workflows/{pass,fail,cases}.rkt', vscode.ConfigurationTarget.Workspace);
     await vscode.commands.executeCommand('testing.refreshTests');
-    individual.selection = new vscode.Selection(6, 5, 6, 5);
-    for (const command of ['testing.runAtCursor', 'testing.debugAtCursor']) {
+    for (const command of ['testing.runAtCursor', 'testing.debugAtCursor', 'testing.coverageAtCursor']) {
+      individual = await vscode.window.showTextDocument(individual.document);
+      individual.selection = new vscode.Selection(6, 5, 6, 5);
       const start = sessions.length;
       const testBreakpoint = new vscode.SourceBreakpoint(new vscode.Location(individual.document.uri, new vscode.Position(3, 0)));
       if (command === 'testing.debugAtCursor') vscode.debug.addBreakpoints([testBreakpoint]);
@@ -80,7 +81,8 @@ exports.run = async function (workspace) {
         await until(() => sessions.length > start, `${command} starts the selected case`);
         const session = sessions[start];
         assert.equal(session.configuration.testSelection.ids.length, 1);
-        assert.equal(!!session.configuration.noDebug, command === 'testing.runAtCursor');
+        assert.equal(!!session.configuration.noDebug, command !== 'testing.debugAtCursor');
+        assert.equal(!!session.configuration.coverage, command === 'testing.coverageAtCursor');
         if (command === 'testing.debugAtCursor') {
           const stopped = await event(session, 'stopped');
           const stack = await session.customRequest('stackTrace', { threadId: stopped.body.threadId });
@@ -93,6 +95,10 @@ exports.run = async function (workspace) {
         assert.deepEqual(summary.body, { kind: 'summary', status: 'passed', failed: 0, total: 1 });
         await event(session, 'terminated');
         await invoked;
+        if (command === 'testing.coverageAtCursor') {
+          const coverage = await event(session, 'racketdap/coverage', message => message.body.path === individual.document.uri.fsPath);
+          assert.ok(coverage.body.statements.some(statement => statement.line === 3 && statement.executed));
+        }
       } finally { vscode.debug.removeBreakpoints([testBreakpoint]); }
     }
     individual = await vscode.window.showTextDocument(individual.document);
@@ -213,7 +219,7 @@ exports.run = async function (workspace) {
     const surviving = owned.at(-1);
     assert.equal((await surviving.session.customRequest('evaluate', { context: 'repl', expression: '(+ 1 2)' })).result, '3');
 
-    return ['Test Explorer discovery and Run All', 'individual Run and Debug Test at Cursor', 'failed checks and source locations', 'early test exit is an error',
+    return ['Test Explorer discovery and Run All', 'individual Run and Debug Test at Cursor', 'native Test Coverage at Cursor', 'failed checks and source locations', 'early test exit is an error',
       'Debug Test command enters a required source file', 'module-specific Debug REPL reuse',
       'selection evaluation hits breakpoints in the owning REPL', 'Debug REPL restart loads saved edits',
       'evaluate multiple selections in the owning Debug REPL in source order',
