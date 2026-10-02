@@ -183,6 +183,66 @@ test('a conditional breakpoint stops once per call across expanded clauses', asy
   assert.equal(await finished(client), 'negative\npositive\n');
 });
 
+test('a generated operation keeps its stop when it borrows an atomic argument range', async t => {
+  const lines = [
+    '#lang racket/base',
+    '(require (for-syntax racket/base))',
+    '(define-syntax (increment stx)',
+    '  (syntax-case stx ()',
+    '    [(_ value) (syntax/loc #\'value (+ 1 value))]))',
+    '(define (run)',
+    '  (displayln (increment 4)))',
+    '(run)'
+  ];
+  const { client } = await prepare(t, lines, [{ line: 7, column: lines[6].indexOf('4') + 1 }]);
+  await ok(client.request('configurationDone'));
+  const { threadId, frame } = await stoppedFrame(client);
+  assert.equal(frame.line, 7);
+  await ok(client.request('continue', { threadId }));
+  assert.equal(await finished(client), '5\n');
+});
+
+for (const expression of ['(set! counter (add1 counter))', '(tick)', '(when #t (set! counter (add1 counter)))']) {
+  for (const phase of ['before', 'after']) {
+    test(`a macro borrowing ${expression}'s range preserves each ${phase} boundary`, async t => {
+      const lines = [
+        '#lang racket/base',
+        '(require (for-syntax racket/base))',
+        '(define-syntax (twice stx)',
+        '  (syntax-case stx ()',
+        '    [(_ expression) (syntax/loc #\'expression (begin0 expression expression))]))',
+        '(define counter 0)',
+        '(define (tick) (set! counter (add1 counter)) counter)',
+        '(define (run)',
+        `  (twice ${expression})`,
+        '  (displayln counter))',
+        '(run)'
+      ];
+      const column = lines[8].indexOf(expression) + (phase === 'after' ? expression.length : 1);
+      const { client } = await prepare(t, lines, [{ line: 9, column }]);
+      await ok(client.request('configurationDone'));
+      for (let iteration = 0; iteration < 2; iteration++) {
+        const stopped = await client.event('stopped');
+        assert.equal(stopped.body.reason, 'breakpoint');
+        assert.equal(stopped.body.racketdapStopKind, phase);
+        const { stackFrames } = await ok(client.request('stackTrace', { threadId: stopped.body.threadId }));
+        assert.equal(stackFrames[0].line, 9);
+        const value = String(iteration + (phase === 'after' ? 1 : 0));
+        assert.equal((await ok(client.request('evaluate', { frameId: stackFrames[0].id, expression: 'counter' }))).result, value);
+        if (phase === 'before') {
+          await ok(client.request('next', { threadId: stopped.body.threadId }));
+          const returned = await client.event('stopped');
+          assert.equal(returned.body.racketdapStopKind, 'after');
+          const stack = await ok(client.request('stackTrace', { threadId: returned.body.threadId }));
+          assert.equal((await ok(client.request('evaluate', { frameId: stack.stackFrames[0].id, expression: 'counter' }))).result, String(iteration + 1));
+        }
+        await ok(client.request('continue', { threadId: stopped.body.threadId }));
+      }
+      assert.equal(await finished(client), '2\n');
+    });
+  }
+}
+
 test('both executions of a macro-duplicated source expression hit the breakpoint', async t => {
   const lines = [
     '#lang racket/base',

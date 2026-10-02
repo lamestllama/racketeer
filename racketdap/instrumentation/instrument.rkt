@@ -21,11 +21,13 @@
   (cond [(path? source) (path->string (simplify-path source #f))]
         [(string? source) (path->string (simplify-path (string->path source) #f))]
         [else source]))
+(define (original-syntax? stx)
+  (or (syntax-original? stx)
+      (and (syntax-transforming?)
+           (syntax-original? (syntax-local-introduce stx)))))
 (define (original-binding? identifier source)
   (and (identifier? identifier)
-       (or (syntax-original? identifier)
-           (and (syntax-transforming?)
-                (syntax-original? (syntax-local-introduce identifier))))
+       (original-syntax? identifier)
        (equal? (source-name (syntax-source identifier)) (source-name source))))
  ;; Metadata is shared across one module expansion, including module+ fragments.
 ;; Parent links remain live so a later parent declaration becomes visible.
@@ -75,6 +77,8 @@
           [(syntax? v) (walk (syntax-e v))]
           [(pair? v) (append (walk (car v)) (walk (cdr v)))]
           [else '()])))
+
+(struct boundary (range authored? [visible? #:mutable]))
 
 (define (instrument-module expanded source fresh-id on-event
                            #:module-bindings [known-module-bindings '()]
@@ -154,10 +158,21 @@
                         tail? (syntax->datum expression))])
            (when visible? (set! descriptors (cons s descriptors)))
            s)))
-  ;; Nested core forms can describe the same source expression (for example,
-  ;; the ifs expanded from cond). Its outer form owns the stepping boundary.
-  ;; Siblings and separately invoked function bodies keep their own boundaries.
-  (define enclosing-range (make-parameter #f))
+  ;; Source syntax or its expansion origin owns a range ahead of a generated
+  ;; wrapper that borrowed it. A child can relinquish the wrapper's boundary
+  ;; before its descriptor is emitted; sibling source executions stay distinct.
+  (define enclosing-boundary (make-parameter #f))
+  (define (authored? expression range)
+    (and range
+         (or (original-syntax? expression)
+             (let walk ([origin (syntax-property expression 'origin)])
+               (cond
+                 [(identifier? origin)
+                  (and (original-binding? origin source) (syntax-position origin)
+                       (<= (car range) (syntax-position origin))
+                       (< (syntax-position origin) (+ (car range) (cdr range))))]
+                 [(pair? origin) (or (walk (car origin)) (walk (cdr origin)))]
+                 [else #f])))))
   (define (body expressions environment act tail?)
     (for/list ([e (in-list expressions)] [i (in-naturals)])
       (walk e environment act (and tail? (= i (sub1 (length expressions)))))))
@@ -166,16 +181,22 @@
     (define env (extend (formal-identifiers formals) environment))
     #`[#,formals
        (let ([#,act (make-activation)])
-         #,@(parameterize ([enclosing-range #f])
+         #,@(parameterize ([enclosing-boundary #f])
               (body expressions env act #t)))])
   (define (walk expression environment act tail?)
     (define range
       (and (syntax-position expression) (syntax-span expression)
            (equal? (source-name source) (source-name (syntax-source expression)))
            (cons (syntax-position expression) (syntax-span expression))))
-    (define visible?
-      (and (not (binding-container? expression))
-           (not (and range (equal? range (enclosing-range))))))
+    (define parent (enclosing-boundary))
+    (define current (boundary range (authored? expression range)
+                              (not (binding-container? expression))))
+    (when (and (boundary-visible? current) range parent
+               (equal? range (boundary-range parent)))
+      (if (and (stoppable? expression) (boundary-authored? current)
+               (not (boundary-authored? parent)))
+          (set-boundary-visible?! parent #f)
+          (set-boundary-visible?! current #f)))
     (define (rewrite)
       (syntax-case* expression (quote quote-syntax #%datum #%top #%variable-reference
                                     lambda #%plain-lambda case-lambda if begin begin0
@@ -241,9 +262,11 @@
          #`(#%expression #,(walk #'expression environment act tail?))]
         [_ (raise-syntax-error 'instrument-module "unsupported expanded runtime form" expression)]))
     (define rewritten
-      (parameterize ([enclosing-range (if (and visible? range (stoppable? expression))
-                                         range (enclosing-range))])
+      (parameterize ([enclosing-boundary
+                      (if (and (boundary-visible? current) range (stoppable? expression))
+                          current parent)])
         (rewrite)))
+    (define visible? (boundary-visible? current))
     (define descriptor (site-for expression tail? visible?))
     (define callback (and visible? on-event))
     (if (not descriptor)

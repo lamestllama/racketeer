@@ -43,7 +43,10 @@ cover the whole function. Those generated containers are not separate stepping
 stops. Step Into enters the first executable initializer, and Step Over advances
 through the remaining initializers and body expressions. Explicit binding forms
 such as `let` and `letrec` retain their own expression stops. Macros can still
-produce several executable expressions with the same source range.
+execute a source expression more than once. Each execution retains its start
+and returned-value stops. When expansion metadata identifies the source
+expression inside a generated wrapper with the same range, that expression
+owns the stop. Step Over then completes one execution, not the whole wrapper.
 
 Structures expand in Variables and Watch. Fields are numbered in visible
 superclass-to-subclass order; Racket's runtime reflection does not provide field
