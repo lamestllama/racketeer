@@ -63,6 +63,55 @@ exports.run = async function (workspace) {
     assert.deepEqual(await vscode.commands.executeCommand('racketdap.testFile'),
       { passed: 0, failed: 0, errored: 1, skipped: 0 }, 'An early exit must not silently pass');
 
+    let individual = await open('cases.rkt', '#lang racket/base\n(require rackunit)\n' +
+      '(define (twice x)\n  (* x 2))\n(module+ test\n' +
+      '  (test-case "same" (error "unselected test ran"))\n' +
+      '  (test-case "same" (check-equal? (twice 7) 14)))\n');
+    await settings.update('testing.include', 'workflows/{pass,fail,cases}.rkt', vscode.ConfigurationTarget.Workspace);
+    await vscode.commands.executeCommand('testing.refreshTests');
+    individual.selection = new vscode.Selection(6, 5, 6, 5);
+    for (const command of ['testing.runAtCursor', 'testing.debugAtCursor']) {
+      const start = sessions.length;
+      const testBreakpoint = new vscode.SourceBreakpoint(new vscode.Location(individual.document.uri, new vscode.Position(3, 0)));
+      if (command === 'testing.debugAtCursor') vscode.debug.addBreakpoints([testBreakpoint]);
+      try {
+        const invoked = vscode.commands.executeCommand(command);
+        invoked.then(undefined, () => {});
+        await until(() => sessions.length > start, `${command} starts the selected case`);
+        const session = sessions[start];
+        assert.equal(session.configuration.testSelection.ids.length, 1);
+        assert.equal(!!session.configuration.noDebug, command === 'testing.runAtCursor');
+        if (command === 'testing.debugAtCursor') {
+          const stopped = await event(session, 'stopped');
+          const stack = await session.customRequest('stackTrace', { threadId: stopped.body.threadId });
+          assert.equal(stack.stackFrames[0].line, 4);
+          assert.equal((await session.customRequest('evaluate', { frameId: stack.stackFrames[0].id, expression: 'x' })).result, '7');
+          vscode.debug.removeBreakpoints([testBreakpoint]);
+          await session.customRequest('continue', { threadId: stopped.body.threadId });
+        }
+        const summary = await event(session, 'racketdap/test', message => message.body.kind === 'summary');
+        assert.deepEqual(summary.body, { kind: 'summary', status: 'passed', failed: 0, total: 1 });
+        await event(session, 'terminated');
+        await invoked;
+      } finally { vscode.debug.removeBreakpoints([testBreakpoint]); }
+    }
+    individual = await vscode.window.showTextDocument(individual.document);
+    await individual.edit(edit => edit.replace(individual.document.lineAt(6).range,
+      '  (test-case "same" (check-equal? (twice 7) 15)))'));
+    assert.equal(individual.document.isDirty, true);
+    await vscode.commands.executeCommand('testing.refreshTests');
+    individual.selection = new vscode.Selection(6, 5, 6, 5);
+    const editedStart = sessions.length;
+    await vscode.commands.executeCommand('testing.runAtCursor');
+    await until(() => sessions.length > editedStart, 'run the edited case');
+    const editedSession = sessions[editedStart];
+    const editedSummary = await event(editedSession, 'racketdap/test', message => message.body.kind === 'summary');
+    assert.deepEqual(editedSummary.body, { kind: 'summary', status: 'failed', failed: 1, total: 1 });
+    assert.equal(individual.document.isDirty, false);
+    const caseFailure = await event(editedSession, 'racketdap/test', message => message.body.kind === 'failure');
+    assert.equal(caseFailure.body.location.line, 7);
+    await event(editedSession, 'terminated');
+
     const helper = await open('helper.rkt', '#lang racket/base\n(provide twice)\n(define (twice x)\n  (* x 2))\n');
     const moduleText = '#lang racket/base\n(require "helper.rkt")\n(define private 6)\n(module+ main (error "main must not run"))\n(module+ test (require rackunit) (check-equal? (twice private) 12))\n; (twice private)\n(define (local-twice value)\n  (* value 2))\n; (local-twice private)\n; (define selected-value 40) ; a trailing comment\n; (+ selected-value 2)\n';
     const moduleEditor = await open('module.rkt', moduleText);
@@ -164,7 +213,7 @@ exports.run = async function (workspace) {
     const surviving = owned.at(-1);
     assert.equal((await surviving.session.customRequest('evaluate', { context: 'repl', expression: '(+ 1 2)' })).result, '3');
 
-    return ['Test Explorer discovery and Run All', 'failed checks and source locations', 'early test exit is an error',
+    return ['Test Explorer discovery and Run All', 'individual Run and Debug Test at Cursor', 'failed checks and source locations', 'early test exit is an error',
       'Debug Test command enters a required source file', 'module-specific Debug REPL reuse',
       'selection evaluation hits breakpoints in the owning REPL', 'Debug REPL restart loads saved edits',
       'evaluate multiple selections in the owning Debug REPL in source order',

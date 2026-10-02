@@ -1,6 +1,8 @@
 'use strict';
 const vscode = require('vscode');
 const path = require('node:path');
+const { execFile } = require('node:child_process');
+const { createHash } = require('node:crypto');
 const { targetFor, saveDocument } = require('./execution');
 const { selectTests } = require('./test-selection');
 
@@ -8,6 +10,8 @@ function registerTesting(context, sessions) {
   const controller = vscode.tests.createTestController('racketdap.tests', 'Racket');
   const files = new Map();
   const activeRuns = new Set();
+  const discoveries = new Map(), cases = new WeakMap();
+  const discoveryPath = context.asAbsolutePath('runtime/racketdap/test-discovery.rkt');
   let disposed = false, refreshPending = Promise.resolve();
 
   function itemFor(uri) {
@@ -27,9 +31,50 @@ function registerTesting(context, sessions) {
     const label = folder ? path.relative(folder.uri.fsPath, uri.fsPath) : path.basename(uri.fsPath);
     const item = controller.createTestItem(id, label, uri);
     item.description = 'test submodule or module body';
+    item.canResolveChildren = true;
     items.add(item);
     files.set(id, item);
     return item;
+  }
+
+  async function resolveCases(item) {
+    if (!vscode.workspace.isTrusted || !item.uri || cases.has(item) || disposed) return;
+    const document = await vscode.workspace.openTextDocument(item.uri);
+    const version = document.version, text = document.getText();
+    const sourceHash = createHash('sha1').update(text).digest('hex');
+    const previous = discoveries.get(item.id);
+    if (previous?.sourceHash === sourceHash) return previous.done;
+    previous?.child?.kill();
+    const target = targetFor(item.uri);
+    const pending = { sourceHash };
+    pending.done = new Promise(resolve => {
+      pending.child = execFile(target.racketExecutable, [discoveryPath],
+        { cwd: target.cwd, timeout: 10000, maxBuffer: 1024 * 1024, windowsHide: true }, (error, stdout) => {
+          if (discoveries.get(item.id) !== pending || disposed) return resolve();
+          item.busy = false;
+          if (document.version !== version) { discoveries.delete(item.id); return resolve(); }
+          try {
+            if (error) throw error;
+            item.children.replace(JSON.parse(stdout).map(test => {
+              const child = controller.createTestItem(`${item.id}#${test.id}`, test.name, item.uri);
+              child.range = new vscode.Range(test.line, test.column, test.endLine, test.endColumn);
+              cases.set(child, { file: item, id: test.id, sourceHash });
+              return child;
+            }));
+            item.error = undefined;
+          } catch (failure) {
+            item.children.replace([]);
+            item.error = `Cannot discover Racket tests: ${failure.message}`;
+            discoveries.delete(item.id);
+          }
+          resolve();
+        });
+      pending.child.stdin.on('error', () => {}); // An early exit is reported by execFile.
+      pending.child.stdin.end(text);
+    });
+    item.busy = true;
+    discoveries.set(item.id, pending);
+    return pending.done;
   }
 
   async function discover() {
@@ -46,16 +91,22 @@ function registerTesting(context, sessions) {
       if (!found.has(id)) {
         (item.parent?.children || controller.items).delete(id);
         files.delete(id);
+        discoveries.get(id)?.child?.kill();
+        discoveries.delete(id);
       }
     }
     for (const uri of uris.sort((a, b) => a.toString().localeCompare(b.toString()))) itemFor(uri);
+    const opened = new Set(vscode.workspace.textDocuments.map(doc => doc.uri.toString()));
+    for (const [id, item] of files) {
+      if (discoveries.has(id) || opened.has(id)) await resolveCases(item);
+    }
     controller.items.forEach(item => { if (!item.uri && item.children.size === 0) controller.items.delete(item.id); });
   }
   function refresh() {
     refreshPending = refreshPending.catch(() => {}).then(discover);
     return refreshPending;
   }
-  controller.resolveHandler = item => item ? undefined : refresh();
+  controller.resolveHandler = item => item ? resolveCases(item) : refresh();
   controller.refreshHandler = refresh;
 
   function messageFor(result) {
@@ -69,7 +120,13 @@ function registerTesting(context, sessions) {
   async function execute(request, token, debug) {
     if (!vscode.workspace.isTrusted) throw new Error('Trust this workspace before running tests.');
     if (!request.include) await refresh();
-    const items = selectTests(controller.items, request);
+    const selected = selectTests(controller.items, request);
+    const groups = new Map();
+    for (const item of selected) {
+      const file = cases.get(item)?.file || item;
+      if (!groups.has(file)) groups.set(file, []);
+      groups.get(file).push(item);
+    }
     const run = controller.createTestRun(request, debug ? 'Debug Racket tests' : 'Run Racket tests');
     const cancellation = new vscode.CancellationTokenSource();
     const cancelProfile = token?.onCancellationRequested(() => cancellation.cancel());
@@ -77,31 +134,63 @@ function registerTesting(context, sessions) {
     const cancelRun = run.token.onCancellationRequested(() => cancellation.cancel());
     activeRuns.add(cancellation);
     const totals = { passed: 0, failed: 0, errored: 0, skipped: 0 };
-    items.forEach(item => run.enqueued(item));
+    selected.forEach(item => run.enqueued(item));
     try {
-      for (const item of items) {
-        if (cancellation.token.isCancellationRequested) { run.skipped(item); totals.skipped++; continue; }
-        run.started(item);
+      for (const [item, requested] of groups) {
+        const wholeFile = requested[0] === item;
+        if (cancellation.token.isCancellationRequested) { requested.forEach(test => run.skipped(test)); totals.skipped++; continue; }
+        if (wholeFile) run.started(item);
         const started = Date.now();
         const failures = [];
         let summary;
+        let activeCase;
+        let children = wholeFile ? [] : requested;
+        let runError;
+        const caseFailures = new Map();
+        const completed = new Set();
         try {
           const target = await saveDocument(await vscode.workspace.openTextDocument(item.uri));
+          const testSelection = wholeFile ? undefined : {
+            sourceHash: cases.get(requested[0]).sourceHash, ids: requested.map(child => cases.get(child).id)
+          };
+          if (testSelection && requested.some(child => cases.get(child).sourceHash !== testSelection.sourceHash)) {
+            throw new Error('Test selection is out of date. Refresh the tests and try again.');
+          }
+          if (!testSelection) await resolveCases(item);
+          children = testSelection ? requested : [...item.children].map(([, child]) => child);
+          const byId = new Map(children.map(child => [cases.get(child).id, child]));
+          children.forEach(child => run.enqueued(child));
           const sourceRoots = vscode.workspace.getConfiguration('racketdap', item.uri)
             .get('testing.sourceRoots', ['.']).map(root => path.resolve(target.cwd, root));
           const record = await sessions.start(target, {
-            name: `Racket tests: ${item.label}`, testMode: true, stopOnEntry: false, sourceRoots
+            name: `Racket tests: ${item.label}`, testMode: true, stopOnEntry: false, sourceRoots,
+            ...(testSelection ? { testSelection } : {})
           }, { noDebug: !debug, token: cancellation.token,
             onEvent(event) {
               if (event.event === 'output') run.appendOutput(event.body.output.replace(/\r?\n/g, '\r\n'), undefined, item);
               if (event.event === 'racketdap/test') {
-                if (event.body.kind === 'failure') failures.push(event.body);
+                if (event.body.kind === 'failure') {
+                  failures.push(event.body);
+                  if (activeCase) {
+                    if (!caseFailures.has(activeCase)) caseFailures.set(activeCase, []);
+                    caseFailures.get(activeCase).push(messageFor(event.body));
+                  }
+                }
+                if (event.body.kind === 'case') {
+                  const child = byId.get(event.body.id);
+                  if (child && event.body.status === 'started') { activeCase = child; run.started(child); }
+                  else if (child) {
+                    if (event.body.status === 'passed') run.passed(child);
+                    else run.failed(child, caseFailures.get(child) || new vscode.TestMessage('Test failed; see test output.'));
+                    completed.add(child); activeCase = undefined;
+                  }
+                }
                 if (event.body.kind === 'summary') summary = event.body;
               }
             }
           });
           const result = record && await record.done;
-          if (cancellation.token.isCancellationRequested) { run.skipped(item); totals.skipped++; continue; }
+          if (cancellation.token.isCancellationRequested) { if (wholeFile) run.skipped(item); totals.skipped++; continue; }
           const duration = Date.now() - started;
           if (!summary) throw new Error(`Test process ended before reporting results (exit ${result?.exitCode ?? 'unknown'}).`);
           const messages = failures.map(messageFor);
@@ -112,12 +201,20 @@ function registerTesting(context, sessions) {
             run.failed(item, messages.length ? messages : new vscode.TestMessage(`${summary.failed} of ${summary.total} checks failed; see test output.`), duration);
             totals.failed++;
           } else {
-            run.passed(item, duration); totals.passed++;
+            if (wholeFile) run.passed(item, duration); totals.passed++;
           }
           run.appendOutput(`${summary.total} checks, ${summary.failed} failures.\r\n`, undefined, item);
         } catch (error) {
-          if (cancellation.token.isCancellationRequested) { run.skipped(item); totals.skipped++; }
+          runError = error;
+          if (cancellation.token.isCancellationRequested) { if (wholeFile) run.skipped(item); totals.skipped++; }
           else { run.errored(item, new vscode.TestMessage(error.message), Date.now() - started); totals.errored++; }
+        } finally {
+          for (const child of children) {
+            if (!completed.has(child)) {
+              if (cancellation.token.isCancellationRequested) run.skipped(child);
+              else run.errored(child, new vscode.TestMessage(runError?.message || failures[0]?.message || 'The test did not finish; see test output.'));
+            }
+          }
         }
       }
       return totals;
@@ -137,15 +234,24 @@ function registerTesting(context, sessions) {
   }
   context.subscriptions.push(controller, watcher,
     watcher.onDidCreate(scheduleRefresh), watcher.onDidDelete(scheduleRefresh),
-    watcher.onDidChange(() => controller.invalidateTestResults()),
+    watcher.onDidChange(() => { controller.invalidateTestResults(); scheduleRefresh(); }),
+    vscode.workspace.onDidOpenTextDocument(document => {
+      const item = files.get(document.uri.toString());
+      if (item) void resolveCases(item).catch(() => {});
+    }),
     vscode.workspace.onDidChangeTextDocument(event => {
       if (event.document.languageId === 'racket' && event.document.uri.scheme === 'file' && event.contentChanges.length) {
         controller.invalidateTestResults();
+        scheduleRefresh();
       }
     }),
     vscode.workspace.onDidChangeWorkspaceFolders(scheduleRefresh),
     vscode.workspace.onDidChangeConfiguration(event => { if (event.affectsConfiguration('racketdap.testing')) scheduleRefresh(); }),
-    { dispose() { disposed = true; clearTimeout(refreshTimer); for (const run of activeRuns) run.cancel(); } });
+    { dispose() {
+      disposed = true; clearTimeout(refreshTimer);
+      for (const pending of discoveries.values()) pending.child?.kill();
+      for (const run of activeRuns) run.cancel();
+    } });
   return {
     async runFile(uri, debug = false) {
       const item = itemFor(targetFor(uri).uri);

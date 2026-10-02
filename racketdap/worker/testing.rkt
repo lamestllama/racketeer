@@ -3,7 +3,19 @@
 ;; Loaded in the program's namespace, so these parameters and counters are the
 ;; same instances used by its tests. All RackUnit access uses public exports.
 (require rackunit raco/testing racket/list)
-(provide make-test-runner)
+(provide make-test-runner call-with-discovered-test)
+
+(define current-test-events (make-parameter void))
+(define current-test-selection (make-parameter #f))
+
+(define (call-with-discovered-test id name thunk)
+  (when (or (not (current-test-selection)) (member id (current-test-selection)))
+    (define emit (current-test-events))
+    (define before (test-report))
+    (emit (hasheq 'kind "case" 'id id 'name name 'status "started"))
+    (begin0 (thunk)
+      (emit (hasheq 'kind "case" 'id id 'name name
+                    'status (if (> (car (test-report)) (car before)) "failed" "passed"))))))
 
 (define (failure-message value)
   (define infos (if (exn:test:check? value) (exn:test:check-stack value) '()))
@@ -27,7 +39,7 @@
                         'position (srcloc-position loc)))
       base))
 
-(define (make-test-runner emit)
+(define (make-test-runner emit [selection #f])
   (define initial (test-report))
   (define reported? #f)
   (define (observe around)
@@ -49,6 +61,8 @@
    (lambda (thunk)
      (parameterize ([current-check-around (observe (current-check-around))]
                     [current-test-case-around (observe (current-test-case-around))]
+                    [current-test-events emit]
+                    [current-test-selection selection]
                     [current-test-invocation-directory (current-directory)])
        (thunk))
      (report "passed"))

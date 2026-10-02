@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.4
+
+- Discover direct named RackUnit cases without running project code, and run or debug a selected case using Test Explorer and editor test controls.
+
 ## 0.8.3
 
 - Preview binding-checked renames across workspace files, rejecting incomplete analysis, stale snapshots, and unsupported import transformations.

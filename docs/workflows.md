@@ -14,8 +14,20 @@ reporting with instrumentation enabled.
 ## Test discovery and reporting
 
 Test Explorer discovers files through configurable workspace-relative globs.
-Discovery performs no reading, expansion, or execution of Racket modules. Items
-represent files, not inferred test cases. At execution time the loader asks
+Expanding a file or opening it in the editor reads its current buffer using the
+standard datum reader, with custom readers disabled. This performs no expansion
+or execution. Direct literal-named RackUnit `test-case` forms in `racket` and
+`racket/base` modules become child items with source ranges. Discovery accepts
+module setup definitions/imports and direct cases, including `begin` and merged
+`module+ test` bodies. Dynamic test generation, suites, mixed checks and cases,
+custom readers, and unfamiliar body forms keep whole-file execution.
+
+Selected cases share one normal file execution, preserving module setup. Their
+source positions distinguish duplicate names; a source hash rejects stale
+selections before user code runs. A small syntax wrapper validates the RackUnit
+binding at the original call site and delegates selected cases unchanged to
+RackUnit. Full file runs report individual results where discovery is supported.
+At execution time the loader asks
 Racket whether the `test` submodule exists, then loads that submodule or the
 root module. It never starts `main` as a fallback or instantiates the parent of
 an independent test submodule unnecessarily.
@@ -50,6 +62,9 @@ The worker emits `racketdap/test` events:
   source text, not a newly read file that may have changed.
 - `kind: "summary"`: `status` (`passed`, `failed`, or `errored`), `failed`, and
   `total` counts. A failed or errored run exits nonzero.
+- `kind: "case"`: source-position `id`, literal `name`, and `status` (`started`,
+  `passed`, or `failed`) for discovered cases. The editor marks incomplete cases
+  as errored, or skipped when cancelled.
 
 Program stdout/stderr remain ordinary output. No terminal text is parsed to
 decide success or extract failures. Missing final reports, including early
@@ -58,8 +73,7 @@ process exits, are errors rather than successful test runs.
 Source details are available for direct checks and immediately executed test
 cases. Suites or custom runners that replace RackUnit's hooks still contribute
 logged counts; their detailed failure output remains available in Test Results.
-This is file-level integration, not individual-case discovery or full `raco
-test` command-line compatibility. Test Explorer does not implement package
+This does not provide full `raco test` command-line compatibility. Test Explorer does not implement package
 `info.rkt` test policies, arbitrary test frameworks, or coverage. The separate
 [Test Package command](packages.md) delegates package policies to `raco test`.
 Use the include/exclude

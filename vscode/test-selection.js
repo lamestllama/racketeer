@@ -9,11 +9,21 @@ function selectTests(roots, request) {
     for (let ancestor = item; ancestor; ancestor = ancestor.parent) {
       if (excluded.has(ancestor.id)) return;
     }
-    if (item.uri) result.set(item.id, item);
-    else item.children.forEach(visit);
+    function excludesChild(parent) {
+      let found = false;
+      parent.children?.forEach(child => { if (excluded.has(child.id) || excludesChild(child)) found = true; });
+      return found;
+    }
+    if (item.uri && !excludesChild(item)) result.set(item.id, item);
+    else item.children?.forEach(visit);
   }
   if (request.include) request.include.forEach(visit); else roots.forEach(visit);
-  return [...result.values()];
+  return [...result.values()].filter(item => {
+    for (let parent = item.parent; parent; parent = parent.parent) {
+      if (result.has(parent.id)) return false;
+    }
+    return true;
+  });
 }
 
 module.exports = { selectTests };

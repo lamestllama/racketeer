@@ -6,6 +6,7 @@
          racket/port
          racket/runtime-path
          syntax/modcode
+         "../test-discovery.rkt"
          "../instrumentation/instrument.rkt")
 (provide run-module make-debug-exception-handler)
 
@@ -50,6 +51,7 @@
                     #:submodule [submodule '()]
                     #:main? [main? #f]
                     #:test? [test? #f]
+                    #:test-selection [test-selection #f]
                     #:on-test-event [on-test-event void]
                     #:on-ready [on-ready #f]
                     #:entry [entry #f])
@@ -102,6 +104,7 @@
   (define (target-registry?)
     (eq? registry (namespace-module-registry (current-namespace))))
   (define next-id 0)
+  (define discovered-tests '())
   (define (fresh-id)
     (begin0 next-id (set! next-id (add1 next-id))))
   (define (instrument-eval selected-source #:top-level? [top-level? language])
@@ -241,6 +244,14 @@
     ;; these same bytes, and source consumers never need to reopen the path.
     (define contents (call-with-input-file resolved port->bytes))
     (define text (string->immutable-string (bytes->string/utf-8 contents #\uFFFD)))
+    (when (and test? (equal? resolved source))
+      (define tests (discover-tests text))
+      (when test-selection
+        (unless (and tests (equal? (hash-ref test-selection 'sourceHash) (test-source-hash text))
+                     (andmap (lambda (id) (findf (lambda (test) (= id (hash-ref test 'id))) tests))
+                             (hash-ref test-selection 'ids)))
+          (error 'test "Test selection is out of date or this file requires a whole-file run.")))
+      (set! discovered-tests (or tests '())))
     (on-source resolved)
     (on-source-snapshot resolved text)
     (open-input-bytes contents resolved))
@@ -265,7 +276,10 @@
                              (open-source-snapshot resolved)
                              (ordinary-open path)))])
          (get-module-code resolved #:sub-path '() #:rkt-try-ss? #f
-                          #:compile evaluate-loaded-form))]
+                          #:compile (lambda (form)
+                                      (evaluate-loaded-form
+                                       (if (and test? (equal? resolved source) (pair? discovered-tests))
+                                           (wrap-discovered-tests form discovered-tests (and test-selection #t)) form)))))]
       [else
        (define input (open-source-snapshot resolved))
        (port-count-lines! input)
@@ -353,7 +367,8 @@
                    ((executable-yield-handler) 0))))
            (if test?
                (let-values ([(run-tests report-error)
-                             ((dynamic-require testing-path 'make-test-runner) on-test-event)])
+                             ((dynamic-require testing-path 'make-test-runner) on-test-event
+                              (and test-selection (hash-ref test-selection 'ids)))])
                  (set! report-test-error report-error)
                  (run-tests execute))
                (execute))))))

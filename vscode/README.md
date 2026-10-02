@@ -260,8 +260,13 @@ also offers testing and both kinds of REPL.
 ### Test Explorer
 
 Open VS Code's Testing view to discover workspace `.rkt` files. Discovery does
-not execute code. Run or Debug one file, a workspace folder, or all discovered
-files. Each file runs its `test` submodule if present, otherwise its module body;
+not execute code. Expand a file or open it in the editor to discover direct,
+literal-named RackUnit `test-case` forms in standard `racket` and `racket/base`
+modules. Run or Debug a case from its gutter control, Test Explorer, or the
+normal **Test at Cursor** commands. Duplicate names remain separate cases.
+Files with dynamically generated tests, suites, other readers, or mixed test
+forms retain whole-file execution. Run or Debug one file, a workspace folder,
+or all discovered files. Each file runs its `test` submodule if present, otherwise its module body;
 it does not automatically run `main`. Each file has a fresh process. Cancel
 stops the current test and skips queued files without stopping other sessions.
 
@@ -269,7 +274,9 @@ Results include logged check counts, test output, and clickable failure
 locations for direct RackUnit checks and immediately executed test cases.
 Explicitly run suites also contribute their RackUnit counts; custom runners
 that replace the reporting hooks may provide details only in test output.
-Tests are selected at file level, not individually within a file. Uncaught
+An individual run preserves module setup and skips the other discovered cases.
+Source changes are checked before execution so a stale selection cannot run a
+different case. Uncaught
 runtime errors can stop in the debugger; handled RackUnit failures are reported
 normally, so set a source breakpoint to investigate them.
 

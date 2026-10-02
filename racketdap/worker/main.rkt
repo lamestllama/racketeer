@@ -520,6 +520,7 @@
                      #:submodule (map string->symbol (arg config 'submodule '()))
                      #:main? (and (not (arg config 'testMode #f)) (not (hash-has-key? config 'submodule)))
                      #:test? (arg config 'testMode #f)
+                     #:test-selection (arg config 'testSelection #f)
                      #:on-test-event
                      (lambda (result)
                        (when (and (equal? (hash-ref result 'kind) "summary")
