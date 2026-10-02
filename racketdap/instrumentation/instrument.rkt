@@ -154,6 +154,10 @@
                         tail? (syntax->datum expression))])
            (when visible? (set! descriptors (cons s descriptors)))
            s)))
+  ;; Nested core forms can describe the same source expression (for example,
+  ;; the ifs expanded from cond). Its outer form owns the stepping boundary.
+  ;; Siblings and separately invoked function bodies keep their own boundaries.
+  (define enclosing-range (make-parameter #f))
   (define (body expressions environment act tail?)
     (for/list ([e (in-list expressions)] [i (in-naturals)])
       (walk e environment act (and tail? (= i (sub1 (length expressions)))))))
@@ -162,9 +166,17 @@
     (define env (extend (formal-identifiers formals) environment))
     #`[#,formals
        (let ([#,act (make-activation)])
-         #,@(body expressions env act #t))])
+         #,@(parameterize ([enclosing-range #f])
+              (body expressions env act #t)))])
   (define (walk expression environment act tail?)
-    (define rewritten
+    (define range
+      (and (syntax-position expression) (syntax-span expression)
+           (equal? (source-name source) (source-name (syntax-source expression)))
+           (cons (syntax-position expression) (syntax-span expression))))
+    (define visible?
+      (and (not (binding-container? expression))
+           (not (and range (equal? range (enclosing-range))))))
+    (define (rewrite)
       (syntax-case* expression (quote quote-syntax #%datum #%top #%variable-reference
                                     lambda #%plain-lambda case-lambda if begin begin0
                                     let-values letrec-values set! with-continuation-mark
@@ -228,7 +240,10 @@
         [(#%expression expression)
          #`(#%expression #,(walk #'expression environment act tail?))]
         [_ (raise-syntax-error 'instrument-module "unsupported expanded runtime form" expression)]))
-    (define visible? (not (binding-container? expression)))
+    (define rewritten
+      (parameterize ([enclosing-range (if (and visible? range (stoppable? expression))
+                                         range (enclosing-range))])
+        (rewrite)))
     (define descriptor (site-for expression tail? visible?))
     (define callback (and visible? on-event))
     (if (not descriptor)

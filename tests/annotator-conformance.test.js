@@ -162,6 +162,27 @@ test('macro-renamed locals use binding identity through nested and hidden same-n
   assert.equal(await finished(client), '31\n12\n');
 });
 
+test('a conditional breakpoint stops once per call across expanded clauses', async t => {
+  const lines = [
+    '#lang racket/base',
+    '(define (classify x)',
+    '  (cond [(zero? x) \'zero]',
+    '        [(negative? x) \'negative]',
+    '        [else \'positive]))',
+    '(displayln (classify -1))',
+    '(displayln (classify 1))'
+  ];
+  const { client } = await prepare(t, lines, [{ line: 3 }]);
+  await ok(client.request('configurationDone'));
+  for (const expected of ['-1', '1']) {
+    const { threadId, frame } = await stoppedFrame(client);
+    assert.equal(frame.line, 3);
+    assert.equal((await ok(client.request('evaluate', { frameId: frame.id, expression: 'x' }))).result, expected);
+    await ok(client.request('continue', { threadId }));
+  }
+  assert.equal(await finished(client), 'negative\npositive\n');
+});
+
 test('both executions of a macro-duplicated source expression hit the breakpoint', async t => {
   const lines = [
     '#lang racket/base',
