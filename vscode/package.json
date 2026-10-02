@@ -245,22 +245,26 @@
           "description": "Enable optional Resyntax suggestions. Requires the separate resyntax Racket package; it is not bundled."
         },
         "racketdap.testing.include": {
+          "scope": "resource",
           "type": "string",
           "default": "**/*.rkt",
           "description": "Workspace-relative glob for Racket test module files. Discovery does not execute modules."
         },
         "racketdap.testing.exclude": {
+          "scope": "resource",
           "type": "string",
           "default": "{**/compiled/**,**/node_modules/**,**/vendor/**,**/.git/**,**/.test-output/**,**/info.rkt}",
           "description": "Workspace-relative glob for files excluded from Test Explorer."
         },
         "racketdap.testing.sourceRoots": {
+          "scope": "resource",
           "type": "array",
           "items": { "type": "string" },
           "default": ["."],
           "description": "Directories instrumented by Debug Test and Coverage, relative to the workspace folder (absolute paths also work). The test file is always included. Defaults to the whole workspace."
         },
         "racketdap.debug.packages": {
+          "scope": "resource",
           "type": "array",
           "items": { "type": "string", "minLength": 1 },
           "default": [],
