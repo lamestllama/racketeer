@@ -23,7 +23,7 @@ exports.run = async function () {
     ['tests/packages.rkt', 3],
     ['tests/parity-languages.rkt', 13],
     ['tests/protocol-inspection.rkt', 12],
-    ['tests/stepping.rkt', 8],
+    ['tests/stepping.rkt', 11],
     ['tests/source-loading.rkt', 10]
   ]);
   const sessions = [], messages = [], checks = [];

@@ -17,6 +17,12 @@ bindings. Input binding identifiers retain their syntax scopes. Literal values,
 identifier reads, variable-reference construction, and function construction
 have no stop sites. Descriptors retain original source coordinates and expanded
 expression data; duplicated macro occurrences receive independent site IDs.
+Binding containers introduced for internal definitions have neither an operator
+source nor an expansion origin. Their inherited enclosing-body range is not a
+separate stop; their initializers and body are still traversed and instrumented.
+Explicit and macro-originated binding forms retain their normal stops.
+The containers retain their frame marks for exception and asynchronous Pause
+inspection, but are omitted from breakpoint sites and expression callbacks.
 
 Non-tail expressions allocate an evaluation identity and preserve all returned
 values through a completion continuation. Tail wrappers retain the original

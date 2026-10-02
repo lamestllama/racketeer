@@ -38,10 +38,12 @@ sources. Navigation opens the current project files. Language-server results
 are used only while the captured source matches the current file; editing that
 file suspends these features until the contents match again or debugging restarts.
 
-The current display has a limitation: expanded forms can share the source range
-of an enclosing function, producing broad or repeated highlights. That does not
-mean the function definition is being executed again. More precise source
-selection for those expanded forms remains a usability improvement.
+Internal definitions expand into binding containers whose source range can
+cover the whole function. Those generated containers are not separate stepping
+stops. Step Into enters the first executable initializer, and Step Over advances
+through the remaining initializers and body expressions. Explicit binding forms
+such as `let` and `letrec` retain their own expression stops. Macros can still
+produce several executable expressions with the same source range.
 
 Structures expand in Variables and Watch. Fields are numbered in visible
 superclass-to-subclass order; Racket's runtime reflection does not provide field

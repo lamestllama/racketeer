@@ -2,6 +2,7 @@
 
 ## 0.8.2
 
+- Step into function initializers without stopping on generated binding containers that make Step Over skip the remaining body.
 - Resolve the Unix cleanup helper through PATH so adapter crashes also stop grandchildren.
 - Own debugger and macro-stepper descendants with Windows Job Objects.
 - Evaluate multiple selections in source order in the plain and Debug REPLs.

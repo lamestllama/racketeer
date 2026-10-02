@@ -9,6 +9,7 @@
 (define atomic-forms
   (syntax->list #'(quote quote-syntax #%datum #%top #%variable-reference
                         lambda #%plain-lambda case-lambda)))
+(define binding-forms (syntax->list #'(let-values letrec-values)))
 (define (bound-form? identifier forms)
   (and (identifier? identifier)
        (for/or ([form (in-list forms)]) (free-identifier=? identifier form))))
@@ -114,7 +115,16 @@
          (let ([parts (syntax->list expression)])
            (and (pair? parts)
                 (not (bound-form? (car parts) atomic-forms))))))
-  (define (site-for expression tail?)
+  (define (binding-container? expression)
+    ;; Internal definitions inherit their body's range without an operator
+    ;; source or expansion origin. Keep their frames for exceptions and Pause,
+    ;; but their initializers and body own the executable stepping stops.
+    (define parts (syntax->list expression))
+    (and (pair? parts)
+         (bound-form? (car parts) binding-forms)
+         (not (syntax-source (car parts)))
+         (not (syntax-property expression 'origin))))
+  (define (site-for expression tail? visible?)
     (and (stoppable? expression)
          (syntax-position expression)
          (equal? (source-name source) (source-name (syntax-source expression)))
@@ -122,7 +132,7 @@
                         (syntax-line expression) (syntax-column expression)
                         (syntax-position expression) (syntax-span expression)
                         tail? (syntax->datum expression))])
-           (set! descriptors (cons s descriptors))
+           (when visible? (set! descriptors (cons s descriptors)))
            s)))
   (define (body expressions environment act tail?)
     (for/list ([e (in-list expressions)] [i (in-naturals)])
@@ -198,7 +208,9 @@
         [(#%expression expression)
          #`(#%expression #,(walk #'expression environment act tail?))]
         [_ (raise-syntax-error 'instrument-module "unsupported expanded runtime form" expression)]))
-    (define descriptor (site-for expression tail?))
+    (define visible? (not (binding-container? expression)))
+    (define descriptor (site-for expression tail? visible?))
+    (define callback (and visible? on-event))
     (if (not descriptor)
         rewritten
         (let* ([token (car (generate-temporaries '(token)))]
@@ -214,7 +226,7 @@
                                  #,(datum->syntax expression (list #'#%variable-reference) expression)))
                               #,(literal descriptor))]
                [before #`(announce-before #,(literal descriptor) #,(if tail? #'#f token)
-                                           #,(literal on-event))])
+                                           #,(literal callback))])
           (if tail?
               #`(with-continuation-mark frame-key #,frame-expression
                   (let ([#,decision #,before])
@@ -228,7 +240,7 @@
                            (if #,decision (apply values #,decision) #,rewritten))
                          (lambda results
                            (announce-after #,(literal descriptor) #,token
-                                           #,(literal on-event) results)))))))))))
+                                           #,(literal callback) results)))))))))))
   (define result (walk expanded '() activation-id initial-tail?))
   (values #`(let ([#,activation-id (make-activation)])
               #,@(if module-context

@@ -227,6 +227,27 @@ exports.run = async function () {
         references.some(item => item.uri.fsPath === unopenedConsumer && item.range.start.line === 2);
     }, 'captured source finds references in unopened files');
     assert.ok(!vscode.workspace.textDocuments.some(item => item.uri.fsPath === unopenedConsumer));
+    let stepStop = multiStop;
+    for (const [command, file, line, kind] of [
+      ['stepOver', multiProgram, 7, 'after'],
+      ['stepOver', multiProgram, 10, 'before'],
+      ['stepInto', multiProgram, 6, 'before'],
+      ['stepInto', ordersPath, 6, 'before'],
+      ['stepOver', ordersPath, 6, 'after'],
+      ['stepOver', ordersPath, 7, 'before'],
+      ['stepOver', ordersPath, 7, 'after'],
+      ['stepOver', ordersPath, 8, 'before'],
+      ['stepOut', multiProgram, 6, 'after']
+    ]) {
+      await selectedFrame(multiSession, stepStop);
+      await vscode.commands.executeCommand(`workbench.action.debug.${command}`);
+      stepStop = await event('stopped', message => message.sessionId === multiSession.id);
+      const { stackFrames } = await multiSession.customRequest('stackTrace', { threadId: stepStop.body.threadId });
+      assert.equal(stackFrames[0].source.path, file, `${command} selects the expected file`);
+      assert.equal(stackFrames[0].line, line, `${command} selects the expected expression`);
+      assert.equal(stackFrames[0].endLine, line, 'A body stop does not highlight the enclosing function');
+      assert.equal(stepStop.body.racketdapStopKind, kind);
+    }
     await vscode.debug.stopDebugging(multiSession);
     await event('terminated');
     await waitUntil(() => vscode.debug.activeDebugSession?.id !== multiSession.id, 'navigation session ends');
@@ -328,6 +349,8 @@ exports.run = async function () {
         'captured source language', 'F9 adds verified breakpoint in captured source', 'F9 removes breakpoint',
         'captured source semantic highlighting', 'captured source language hover', 'stale source excludes language results',
         'captured source definitions and references across unopened files', 'completed session excludes source navigation',
+        'editor Step Into reaches the callee initializer', 'editor Step Over advances through internal definitions',
+        'editor Step Out returns to the caller',
         'return marker and value count distinguish expression completion',
         'editor Step Over to completion exits debugging',
         'live evaluation', 'mutation', 'step over', 'Results scope', 'continue', 'output', 'termination',
