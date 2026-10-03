@@ -41,6 +41,14 @@ exports.run = async (extension, workspace) => {
   fs.writeFileSync(program, source);
   const unopened = path.join(directory, 'unopened consumer.rkt');
   fs.writeFileSync(unopened, `#lang racket/base\n(require (file ${JSON.stringify(path.basename(program))}))\n(square 4)\n`);
+  const imports = new Map([
+    ['alias', [`(rename-in (file ${JSON.stringify(path.basename(program))}) [square sq])`, '(sq 4)', 1]],
+    ['prefix', [`(prefix-in s: (file ${JSON.stringify(path.basename(program))}))`, '(s:square 4)', 1]],
+    ['selected', [`(only-in (file ${JSON.stringify(path.basename(program))}) square)`, '(square 4)', 2]],
+    ['excluded', [`(except-in (file ${JSON.stringify(path.basename(program))}) square)`, '(void)', 1]]
+  ].map(([name, [spec, body, count]]) => [vscode.Uri.file(path.join(directory, `${name} consumer.rkt`)),
+    { text: `#lang racket/base\n(require ${spec})\n${body}\n`, count }]));
+  for (const [uri, { text }] of imports) fs.writeFileSync(uri.fsPath, text);
   const document = await vscode.workspace.openTextDocument(program);
   const editor = await vscode.window.showTextDocument(document);
   await extension.exports.languageServerReady();
@@ -98,6 +106,21 @@ exports.run = async (extension, workspace) => {
     assert.equal(rename.get(vscode.Uri.file(unopened)).length, 2, 'Rename includes both calls in the unopened consumer');
     assert.ok(!vscode.workspace.textDocuments.some(item => item.uri.fsPath === unopened), 'Rename preview leaves the consumer closed');
     assert.match(fs.readFileSync(unopened, 'utf8'), /\(square 5\)/, 'Producing the preview does not write to disk');
+    for (const [uri, { text, count }] of imports) {
+      const edits = rename.get(uri);
+      assert.equal(edits.length, count, uri.fsPath);
+      const lines = text.split('\n');
+      for (const edit of [...edits].sort((a, b) => b.range.start.line - a.range.start.line)) {
+        const { start, end } = edit.range;
+        assert.equal(start.line, end.line);
+        const line = lines[start.line];
+        lines[start.line] = line.slice(0, start.character) + edit.newText + line.slice(end.character);
+      }
+      assert.equal(lines.join('\n'), text.replaceAll('square', 'squared'), uri.fsPath);
+      assert.equal(fs.readFileSync(uri.fsPath, 'utf8'), text, 'Import rename preview leaves disk unchanged');
+      assert.ok(!vscode.workspace.textDocuments.some(item => item.uri.fsPath === uri.fsPath),
+        'Import rename preview leaves consumers closed');
+    }
   } finally {
     await analysisConfig.update('workspaceAnalysis.excludedDirectories', excluded, vscode.ConfigurationTarget.Workspace);
   }
@@ -167,7 +190,7 @@ exports.run = async (extension, workspace) => {
     'workspace references include unopened files without opening editor buffers',
     'workspace references refresh after external writes', 'disable/enable workspace index independently', 'hover documentation',
     'values documentation', 'values semantic function highlighting', 'built-in syntax highlighting preserves strings and comments',
-    'completion', 'rename', 'formatting', 'unsaved diagnostics and repair', 'run task', 'Test Explorer file run',
+    'completion', 'rename', 'rename preserves import aliases and prefixes and updates selectors', 'formatting', 'unsaved diagnostics and repair', 'run task', 'Test Explorer file run',
     'REPL', 'load quoted Unicode file in REPL', 'evaluate selection', 'evaluate multiple selections in the plain REPL',
     'disable/enable language server', 'restart language server', ...replChecks];
 };

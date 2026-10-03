@@ -447,9 +447,13 @@ so save changes to imported modules before relying on dependent analysis.
 
 The status bar shows indexing progress and warns when references are partial.
 Use **Racket: Refresh Workspace References** after external package changes or
-to retry failed analysis. Background diagnostics and project-wide rename are
-not part of this feature. Files that fail analysis make the index partial; failed
-queries report an error instead of using an older analysis.
+to retry failed analysis. **Rename Symbol** uses the same workspace scope and
+previews binding-checked edits across unopened files. It preserves explicit
+import aliases and simple prefixes and updates import selectors. Composed
+transformations, phase-shifted imports and selectors shared by multiple export
+phases may be refused.
+Files that fail analysis make the index partial; rename refuses incomplete or
+stale snapshots. Background diagnostics are not part of this feature.
 
 Settings under `racket-langserver.workspaceAnalysis` control whether analysis
 is enabled, excluded directory names, file count, maximum source size and the

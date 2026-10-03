@@ -4,16 +4,7 @@ const test = require('node:test');
 const fs = require('node:fs');
 const { fileURLToPath } = require('node:url');
 const rpc = require('../vscode/node_modules/vscode-jsonrpc/node');
-const { definition, uses, uri, project } = require('./workspace-index-project');
-
-function edited(text, edits) {
-  const offset = position => text.split('\n').slice(0, position.line).reduce((sum, line) => sum + line.length + 1, 0) + position.character;
-  for (const edit of [...edits].sort((a, b) => offset(b.range.start) - offset(a.range.start))) {
-    const start = offset(edit.range.start), end = offset(edit.range.end);
-    text = text.slice(0, start) + edit.newText + text.slice(end);
-  }
-  return text;
-}
+const { definition, uses, uri, edited, project } = require('./workspace-index-project');
 
 test('workspace rename follows imports and previews edits without changing files', { timeout: 120000 }, async t => {
   const p = await project(t), consumer = p.open('uses.rkt', uses);
@@ -40,7 +31,7 @@ test('workspace rename follows imports and previews edits without changing files
   assert.equal(fs.readFileSync(p.filename('unrelated.rkt'), 'utf8'), untouched);
 });
 
-test('workspace rename rejects capture, incomplete imports, and invalid names', { timeout: 120000 }, async t => {
+test('workspace rename rejects capture, conflicting imports, and invalid names', { timeout: 120000 }, async t => {
   const p = await project(t);
   p.write('other.rkt', '#lang racket/base\n(provide squared)\n(define squared 4)\n');
   await p.update();
@@ -49,11 +40,7 @@ test('workspace rename rejects capture, incomplete imports, and invalid names', 
   }
   for (const [description, text] of [
     ['lexical capture', '#lang racket/base\n(require "definition.rkt")\n(let ([squared 2]) (square squared))\n'],
-    ['conflicting unused import', '#lang racket/base\n(require "definition.rkt" "other.rkt")\n'],
-    ['only-in', '#lang racket/base\n(require (only-in "definition.rkt" square))\n(square 4)\n'],
-    ['except-in', '#lang racket/base\n(require (except-in "definition.rkt" square))\n'],
-    ['rename-in', '#lang racket/base\n(require (rename-in "definition.rkt" [square sq]))\n(sq 4)\n'],
-    ['prefix-in', '#lang racket/base\n(require (prefix-in s: "definition.rkt"))\n(s:square 4)\n']
+    ['conflicting unused import', '#lang racket/base\n(require "definition.rkt" "other.rkt")\n']
   ]) {
     t.diagnostic(`Checking ${description}`);
     p.write('uses.rkt', text); await p.update();

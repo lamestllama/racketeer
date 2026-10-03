@@ -5,7 +5,11 @@
 Use VS Code's **Rename Symbol** command (F2 by default) and its normal edit
 preview. Racketeer's workspace index includes unopened Racket source files and
 uses open buffers as the authoritative text. Rename updates a definition, its
-exports and its ordinary imported uses together. Local bindings stay local.
+exports and imported uses together. Renaming an explicit import alias changes
+its declaration and uses in that file; the exporting module keeps its name.
+Renaming the original definition preserves explicit local aliases and simple
+`prefix-in` prefixes, and updates `only-in`, `except-in` and `rename-in` selectors.
+Local bindings stay local.
 
 Before returning edits, Racketeer expands the original and proposed source
 snapshots in memory and checks that source identifiers retain their bindings.
@@ -14,15 +18,24 @@ during the request. Validation is cancellable and bounded to 90 seconds; it
 never applies the proposed edits itself. The existing language-server sources
 are unchanged.
 
-This first version rejects aliases, prefixes and import transformations that
-need additional edits, including `only-in` and `except-in`. Definitions outside
-the analysed workspace cannot be renamed. Workspace exclusions still apply;
+Composed transformations such as nested prefixes, phase-shifted imported uses,
+generated spellings without
+unambiguous source ranges, and selectors spanning multiple export phases or
+binding spaces can still be refused. Rename checks actual exported identities,
+so a selector is not confused with a hidden definition of the same name.
+Definitions outside the analysed workspace cannot be renamed, but their explicit
+local import aliases can. Workspace exclusions still apply;
 consumers outside that scope must be updated separately. Workspace analysis
 must be enabled for Rename.
 
 Source snapshots use Racket's documented
 [module loading hooks](https://docs.racket-lang.org/syntax/module-helpers.html)
-and the bundled analyser's binding queries. Rename and preview use the standard
+and the bundled analyser's binding queries. Import edits use documented
+callbacks of Racket's check-syntax library,
+[require forms](https://docs.racket-lang.org/reference/require.html),
+and [module export reflection](https://docs.racket-lang.org/reference/Module_Names_and_Loading.html).
+The existing libraries remain dependencies; their rename implementations are
+not used by this workspace rename service. Rename and preview use the standard
 [VS Code RenameProvider API](https://code.visualstudio.com/api/references/vscode-api#RenameProvider).
 
 ## Macro stepper

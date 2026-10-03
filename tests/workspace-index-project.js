@@ -14,6 +14,15 @@ const uri = file => pathToFileURL(file).href;
 const addon = fs.mkdtempSync(path.join(os.tmpdir(), 'racketeer-index-addon-'));
 test.after(() => fs.rmSync(addon, { recursive: true, force: true }));
 
+function edited(text, edits = []) {
+  const offset = position => text.split('\n').slice(0, position.line).reduce((sum, line) => sum + line.length + 1, 0) + position.character;
+  for (const edit of [...edits].sort((a, b) => offset(b.range.start) - offset(a.range.start))) {
+    const start = offset(edit.range.start), end = offset(edit.range.end);
+    text = text.slice(0, start) + edit.newText + text.slice(end);
+  }
+  return text;
+}
+
 async function project(t) {
   const directory = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'racketeer-index-')));
   const documents = new Map(), notifications = [];
@@ -62,4 +71,4 @@ async function project(t) {
     diagnostics: () => diagnostics };
 }
 
-module.exports = { root, definition, uses, uri, addon, project };
+module.exports = { root, definition, uses, uri, addon, edited, project };
