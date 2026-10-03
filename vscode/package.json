@@ -200,6 +200,17 @@
           "scope": "machine-overridable",
           "description": "Full Racket 9.1 or newer installation used by the language server, debugger, REPL, and file commands."
         },
+        "racketdap.repl.sessionScope": {
+          "scope": "resource",
+          "type": "string",
+          "enum": ["workspace", "file"],
+          "default": "workspace",
+          "enumDescriptions": [
+            "Share a plain REPL among files in each workspace folder.",
+            "Keep a separate plain REPL for each saved file."
+          ],
+          "description": "Choose how Start REPL, Load Current File in REPL and Evaluate Selection in REPL share terminals. Changing this leaves existing sessions available. Unsaved files use the workspace session."
+        },
         "racketdap.languageServer.enabled": {
           "type": "boolean",
           "default": true,

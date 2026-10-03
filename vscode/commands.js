@@ -24,18 +24,20 @@ function selectedExpressions(editor) {
 function registerFileCommands(context, sessions, testing, debugRepl) {
   const terminals = new Map();
   const macroStepper = registerMacroStepper(context);
-  const executable = uri => vscode.workspace.getConfiguration('racketdap', uri).get('racketExecutable', 'racket');
 
   function repl(document) {
     const uri = document?.uri || vscode.workspace.workspaceFolders?.[0]?.uri;
     const folder = uri && vscode.workspace.getWorkspaceFolder(uri);
     const cwd = folder?.uri.fsPath || (document && path.dirname(document.uri.fsPath));
-    const command = executable(uri);
-    const key = JSON.stringify([cwd, command]);
+    const config = vscode.workspace.getConfiguration('racketdap', uri);
+    const command = config.get('racketExecutable', 'racket');
+    const source = config.get('repl.sessionScope', 'workspace') === 'file' ? document?.uri : undefined;
+    const key = JSON.stringify([cwd, command, source?.toString()]);
     let terminal = terminals.get(key);
-    if (!terminal) {
+    if (!terminal || terminal.exitStatus !== undefined) {
       terminal = vscode.window.createTerminal({
-        name: 'Racket REPL', shellPath: command,
+        name: source ? `Racket REPL: ${vscode.workspace.asRelativePath(source, true)}` : 'Racket REPL',
+        shellPath: command,
         shellArgs: ['-i', '-l', 'racket/enter'], cwd,
         // Do not let bracketed-paste wrappers turn Racket forms into escape
         // sequences. Racket receives the submitted text directly.

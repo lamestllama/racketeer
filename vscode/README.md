@@ -254,6 +254,17 @@ Explorer compatibility are not established by these checks.
 - **Racket: Evaluate Selection in REPL** sends the selected complete expression
   to the current workspace REPL. Load a file first to use its definitions.
 
+Set `racketdap.repl.sessionScope` to `file` to keep a separate plain REPL for
+each saved file. Start, Load and Evaluate Selection then use that file's terminal,
+named with its workspace-relative path. Load the file before evaluating its
+definitions, and load again after editing to reload it through `racket/enter`.
+Closing or exiting a REPL lets the next command create a fresh session.
+
+The default, `workspace`, shares a REPL within each workspace folder. Unsaved
+files and commands without an active source file use that workspace session in
+either mode. Switching modes leaves existing sessions available; switching back
+reuses them. A renamed file gets a separate session in file mode.
+
 The editor toolbar has Run, Debug, and **File Actions…** controls. File Actions
 also offers testing and both kinds of REPL.
 

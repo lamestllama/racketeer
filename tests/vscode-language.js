@@ -160,6 +160,7 @@ exports.run = async (extension, workspace) => {
   await vscode.commands.executeCommand('racketdap.restartLanguageServer');
   await until(async () => (await vscode.commands.executeCommand('vscode.executeDefinitionProvider', document.uri, call))?.length, 'language server restarted');
 
+  const replChecks = await require('./vscode-repl').run(workspace);
   return [process.env.RACKETDAP_TEST_RHOMBUS === '1'
     ? 'bundled language server with isolated Rhombus runtime addon'
     : 'bundled language server with empty Racket addon directory', 'definition', 'references',
@@ -168,5 +169,5 @@ exports.run = async (extension, workspace) => {
     'values documentation', 'values semantic function highlighting', 'built-in syntax highlighting preserves strings and comments',
     'completion', 'rename', 'formatting', 'unsaved diagnostics and repair', 'run task', 'Test Explorer file run',
     'REPL', 'load quoted Unicode file in REPL', 'evaluate selection', 'evaluate multiple selections in the plain REPL',
-    'disable/enable language server', 'restart language server'];
+    'disable/enable language server', 'restart language server', ...replChecks];
 };
