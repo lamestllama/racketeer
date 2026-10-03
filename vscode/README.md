@@ -210,6 +210,14 @@ defers language-server startup to it to avoid duplicate providers. Disable
 Magic Racket and reload the window to use this extension alone. No other
 extensions or global Racket packages are disabled or changed automatically.
 
+## Lambda insertion
+
+Press **Alt+\\** (**Option+\\** on macOS) in an editable Racket buffer to insert
+`λ`. The **Racket lambda** snippet is also available through **Insert Snippet**
+and the `lmb` completion prefix. Change or remove the shortcut through VS Code's
+**Keyboard Shortcuts** editor or `keybindings.json`; it uses the built-in
+`editor.action.insertSnippet` command.
+
 ## Macro expansion
 
 **Racket: Open Line or Selection in Macro Stepper** (**Alt+Shift+Enter**) opens

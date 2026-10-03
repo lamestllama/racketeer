@@ -417,7 +417,16 @@
         "embeddedLanguages": { "meta.embedded.inline.racket": "racket" }
       }
     ],
+    "snippets": [
+      { "language": "racket", "path": "./snippets/racket.json" }
+    ],
     "keybindings": [
+      {
+        "command": "editor.action.insertSnippet",
+        "key": "alt+\\",
+        "when": "editorTextFocus && editorLangId == racket && !editorReadonly",
+        "args": { "langId": "racket", "name": "Racket lambda" }
+      },
       {
         "command": "racketdap.sendSelectionToDebugRepl",
         "key": "shift+enter",

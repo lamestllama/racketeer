@@ -1,0 +1,7 @@
+{
+  "Racket lambda": {
+    "prefix": "lmb",
+    "body": "λ",
+    "description": "Insert the lambda character."
+  }
+}
