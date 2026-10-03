@@ -208,22 +208,39 @@ test('suite selection validates the public runner binding before setup and prese
   }
 });
 
-test('whole-file suite output and fixture order agree with the native runner', async t => {
-  const source = '#lang racket/base\n(require rackunit rackunit/text-ui)\n' +
-    '(run-tests (test-suite "generated cases"\n' +
-    ' #:before (lambda () (displayln "before"))\n' +
-    ' #:after (lambda () (displayln "after"))\n' +
-    ' (for ([n (in-range 3)])\n' +
-    '  (test-case (number->string n) (displayln n) (check-true (< n 2))))) \'quiet)\n';
-  const { client, program } = await launch(t, source);
-  const native = await promisify(execFile)('racket', [program]);
-  await ok(client.request('configurationDone'));
-  assert.deepEqual((await client.event('racketdap/test', e => e.body.kind === 'summary')).body,
-    { kind: 'summary', status: 'failed', failed: 1, total: 3 });
-  await client.event('terminated');
-  const stdout = client.events.filter(e => e.event === 'output' && e.body.category === 'stdout')
-    .map(e => e.body.output).join('');
-  assert.equal(stdout, native.stdout);
+test('suite output honors quiet mode and native summary streams without hiding Test Explorer failures', async t => {
+  for (const mode of ['quiet', 'normal']) for (const failing of [false, true]) {
+    const source = '#lang racket/base\n(require rackunit rackunit/text-ui)\n' +
+      '(run-tests (test-suite "generated cases"\n' +
+      ' #:before (lambda () (displayln "before"))\n' +
+      ' #:after (lambda () (displayln "after"))\n' +
+      ' (for ([n (in-range 3)])\n' +
+      `  (test-case (number->string n) (displayln n) (check-true (< n ${failing ? 2 : 3}))))) '${mode})\n`;
+    const { client, program } = await launch(t, source);
+    const native = await promisify(execFile)('racket', [program]);
+    await ok(client.request('configurationDone'));
+    assert.deepEqual((await client.event('racketdap/test', e => e.body.kind === 'summary')).body,
+      { kind: 'summary', status: failing ? 'failed' : 'passed', failed: Number(failing), total: 3 });
+    await client.event('terminated');
+    const output = category => client.events.filter(e => e.event === 'output' && e.body.category === category)
+      .map(e => e.body.output).join('');
+    const stdout = output('stdout');
+    const stderr = output('stderr');
+    assert.deepEqual(stdout.match(/before|[012]\n|after/g), native.stdout.match(/before|[012]\n|after/g));
+    assert.equal(client.events.filter(e => e.event === 'racketdap/test' && e.body.kind === 'failure').length,
+      Number(failing));
+    if (mode === 'quiet') {
+      assert.equal(stdout, native.stdout);
+      assert.equal(stderr, native.stderr);
+    } else {
+      const summary = /3 tests, [01] failures\./;
+      assert.match(failing ? stderr : stdout, summary);
+      assert.doesNotMatch(failing ? stdout : stderr, summary);
+      assert.match(failing ? native.stderr : native.stdout, /3 test\(s\) run/);
+      if (failing) assert.match(stderr, /FAILURE[\s\S]*check-true/);
+      else assert.equal(stderr, native.stderr);
+    }
+  }
 });
 
 test('a failing suite fixture never reports a passing suite', async t => {

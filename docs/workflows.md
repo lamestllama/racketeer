@@ -39,6 +39,11 @@ RackUnit. Explicit runner calls use the public `fold-test-results` and
 `run-test-case` APIs to supply nested Test Explorer results. RackUnit retains
 suite construction, fixture order and check semantics. Its public formatter
 supplies failure details; Test Explorer supplies the runner summary.
+Quiet runner calls suppress textual diagnostics while retaining Test Explorer
+failures. Runner summaries use stderr on failure and stdout on success. Both
+normal and verbose calls currently use the public default check formatter's
+normal detail. Use the package-policy profile for RackUnit's native verbose
+reporting.
 
 Nested and generated cases appear after an explicit run, with suite paths and
 separate results. They support Run, Debug and Coverage. Their identities combine

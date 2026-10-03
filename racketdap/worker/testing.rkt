@@ -64,9 +64,11 @@
   (unless (memq mode '(quiet normal verbose))
     (raise-argument-error 'run-tests "(or/c 'quiet 'normal 'verbose)" mode))
   (define emit (current-test-events))
-  (define selected
-    (filter (lambda (item) (= id (hash-ref item 'id))) (current-test-paths)))
-  (define missing (remove-duplicates (map (lambda (item) (hash-ref item 'path)) selected)))
+  (define missing
+    (make-hash (for/list ([item (in-list (current-test-paths))]
+                         #:when (= id (hash-ref item 'id)))
+                 (cons (hash-ref item 'path) #t))))
+  (define restricted? (positive? (hash-count missing)))
   (define parents '())
   (define next 0)
   (define (next-path name)
@@ -91,9 +93,9 @@
        (define event (hasheq 'kind "case" 'id id 'path path 'name (or name "Unnamed test")))
        (define (status value) (emit (hash-set event 'status value)))
        (cond
-         [(and (pair? selected) (not (member path missing))) (status "skipped") 0]
+         [(and restricted? (not (hash-has-key? missing path))) (status "skipped") 0]
          [else
-          (set! missing (remove path missing))
+          (hash-remove! missing path)
           (status "started")
           (define before (car (test-report)))
           (define result (run-test-case name action))
@@ -104,14 +106,16 @@
             (define value (if (test-failure? result) (test-failure-result result) (test-error-result result)))
             (parameterize ([current-test-name name])
               (emit (failure-message value))
-              (display-check-result value)))
+              (unless (eq? mode 'quiet) (display-check-result value))))
           (status (cond [(test-error? result) "errored"]
                         [(or (not passed?) (> (car (test-report)) before)) "failed"]
                         [else "passed"]))
           (if passed? 0 1)]))))
-  (unless (null? missing)
+  (unless (hash-empty? missing)
     (error 'run-tests "Selected tests changed or disappeared. Run the suite again to refresh its results."))
-  (unless (eq? mode 'quiet) (printf "~a tests, ~a failures.\n" total failed))
+  (unless (eq? mode 'quiet)
+    (fprintf (if (positive? failed) (current-error-port) (current-output-port))
+             "~a tests, ~a failures.\n" total failed))
   failed)
 
 (define (make-test-runner emit [selection #f] [paths '()])

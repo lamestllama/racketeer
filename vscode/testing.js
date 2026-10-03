@@ -150,7 +150,7 @@ function registerTesting(context, sessions) {
         let summary;
         const coverageFiles = [];
         let activeCase;
-        let children = wholeFile ? [] : requested;
+        let children = new Set(wholeFile ? [] : requested);
         let runError;
         const caseFailures = new Map();
         const completed = new Set();
@@ -168,7 +168,7 @@ function registerTesting(context, sessions) {
             throw new Error('Test selection is out of date. Refresh the tests and try again.');
           }
           if (!testSelection) await resolveCases(item);
-          children = testSelection ? requested : [...item.children].map(([, child]) => child);
+          children = new Set(testSelection ? requested : [...item.children].map(([, child]) => child));
           const sourceHash = testSelection?.sourceHash || discoveries.get(item.id)?.sourceHash;
           const key = (id, path = []) => JSON.stringify([id, path]);
           const byId = new Map();
@@ -214,7 +214,7 @@ function registerTesting(context, sessions) {
                     }
                     parent.children.add(child);
                   }
-                  if (child && !children.includes(child)) children.push(child);
+                  if (child) children.add(child);
                   if (child && status === 'started') {
                     if (!testPath) child.children.replace([]);
                     activeCase = child; run.started(child);
