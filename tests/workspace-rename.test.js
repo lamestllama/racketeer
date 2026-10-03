@@ -91,3 +91,23 @@ test('rename refuses partial indexes, stale disk snapshots and retired requests'
   cancel.dispose();
   assert.equal((await p.rename(p.origin, 'squared')).changes[uri(p.filename('uses.rkt'))].length, 2);
 });
+
+test('workspace rename releases expansion state within the worker memory limit', { timeout: 180000 }, async t => {
+  const p = await project(t);
+  const consumers = Array.from({ length: 4 }, (_, index) => `shapes-${index}.rkt`);
+  const text = '#lang racket/base\n(require (prefix-in image: 2htdp/image) (prefix-in plot: plot/no-gui) "definition.rkt")\n(image:circle (square 3) "solid" "red")\n';
+  for (const file of consumers) p.write(file, text);
+  for (let index = 0; index < 24; index++) p.write(`consumer-${index}.rkt`, uses);
+  await p.update();
+  for (const name of ['squared', 'area']) {
+    const { changes } = await p.rename(p.origin, name);
+    assert.equal(edited(definition, changes[p.origin]), definition.replaceAll('square', name));
+    for (const file of consumers) {
+      assert.equal(edited(text, changes[uri(p.filename(file))]), text.replace('(square 3)', `(${name} 3)`));
+      assert.equal(fs.readFileSync(p.filename(file), 'utf8'), text);
+    }
+    for (let index = 0; index < 24; index++) {
+      assert.equal(edited(uses, changes[uri(p.filename(`consumer-${index}.rkt`))]), uses.replace('square', name));
+    }
+  }
+});

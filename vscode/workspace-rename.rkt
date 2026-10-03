@@ -93,8 +93,11 @@
       (send trace walk-stx result)
       (send trace walk-log (ExpandResult-logs result))
       (doc-update-trace! doc trace (send trace get-contribution) (Doc-version doc))
-      (Source doc (delay (standard-imports doc (ExpandResult-pre-syntax result)
-                                          (ExpandResult-post-syntax result) path)) arrows imports))))
+      ;; Keep source and origin identifiers, not the whole expansion result
+      ;; and the module namespaces it retains, while other files are analysed.
+      (define original (ExpandResult-pre-syntax result))
+      (define contexts (expansion-contexts (ExpandResult-post-syntax result) path))
+      (Source doc (delay (standard-imports doc original contexts path)) arrows imports))))
 
 (define (absolute-range doc range)
   (cons (doc-pos->abs-pos doc (Range-start range))
@@ -172,16 +175,9 @@
                (if (null? (Module-Binding-submods target)) (Module-Binding-filepath target)
                    `(submod ,(Module-Binding-filepath target) ,@(Module-Binding-submods target))))))
 
-;; Retain original import syntax only for an actual expansion of a standard
-;; transformer. A binding alone can also occur in an unused syntax template.
-(define (standard-imports doc original expanded file)
-  (define found '())
+(define (expansion-contexts expanded file)
   (define contexts (make-hash))
   (define seen (make-hasheq))
-  (define transformers
-    (for/list ([id (in-list (list #'only-in #'except-in #'rename-in #'prefix-in))])
-      (define binding (identifier-binding id))
-      (cons (resolve-module-path-index (car binding) file) (cadr binding))))
   ;; The outer transformer's origin retains its expansion scopes. Transfer
   ;; those scopes to its original operands so nested require transformers can
   ;; be identified even when Check Syntax has no arrow for their keywords.
@@ -203,6 +199,16 @@
          (origins (syntax-e value)))]
       [(pair? value) (origins (car value)) (origins (cdr value))]))
   (origins expanded)
+  contexts)
+
+;; Retain original import syntax only for an actual expansion of a standard
+;; transformer. A binding alone can also occur in an unused syntax template.
+(define (standard-imports doc original contexts file)
+  (define found '())
+  (define transformers
+    (for/list ([id (in-list (list #'only-in #'except-in #'rename-in #'prefix-in))])
+      (define binding (identifier-binding id))
+      (cons (resolve-module-path-index (car binding) file) (cadr binding))))
   (define (walk stx [scoped? #f])
     (when (syntax? stx)
       (define parts (syntax->list stx))
