@@ -93,7 +93,8 @@
       (send trace walk-stx result)
       (send trace walk-log (ExpandResult-logs result))
       (doc-update-trace! doc trace (send trace get-contribution) (Doc-version doc))
-      (Source doc (delay (standard-imports doc (ExpandResult-pre-syntax result) path)) arrows imports))))
+      (Source doc (delay (standard-imports doc (ExpandResult-pre-syntax result)
+                                          (ExpandResult-post-syntax result) path)) arrows imports))))
 
 (define (absolute-range doc range)
   (cons (doc-pos->abs-pos doc (Range-start range))
@@ -119,15 +120,40 @@
                 #:when (and (Arrow-imported? arrow) (contains-range? range (Arrow-to arrow))))
         (define use (Arrow-to arrow))
         (and (equal? (substring text (car use) (cdr use)) name) use))
-      ;; A direct prefix on a (file ...) import can lose its subrange during
-      ;; expansion. Recover it only from the proven standard prefix-in form
-      ;; for this module, with the exact spelling prescribed by that form.
+      ;; Prefix composition and (file ...) imports can lose their subranges.
+      ;; Recover them from standard prefix forms with proven binding identity.
       (for/or ([form (in-list (force (Source-forms source)))])
+        (define file (uri->path (Doc-uri (Source-doc source))))
+        (define (base-name spec)
+          (cond
+            [(same-module? spec file target) name]
+            [else
+             (match (syntax->list spec)
+               [(list head prefix child)
+                #:when (and (identifier? head) (free-identifier=? head #'prefix-in))
+                (define base (base-name child))
+                (and base (string-append (symbol->string (syntax-e prefix)) base))]
+               [(list* (? identifier? head) child selectors)
+                #:when (for/or ([id (in-list (list #'only-in #'except-in #'rename-in))])
+                         (free-identifier=? head id))
+                (define base (base-name child))
+                (define selected
+                  (and base
+                       (findf (lambda (selector)
+                                (define pair (syntax->list selector))
+                                (equal? (syntax-e (if pair (car pair) selector)) (string->symbol base)))
+                              selectors)))
+                ;; Explicit aliases keep their chosen name, including aliases
+                ;; whose spelling happens to equal the original export.
+                (and base (if (free-identifier=? head #'only-in)
+                              (and selected (identifier? selected)) (not selected)) base)]
+               [_ #f])]))
         (match form
           [(list 'prefix-in prefix spec)
-           (and (same-module? spec (uri->path (Doc-uri (Source-doc source))) target)
+           (define base (base-name spec))
+           (and base
                 (equal? (substring text (car range) (cdr range))
-                        (string-append (symbol->string (syntax-e prefix)) name))
+                        (string-append (symbol->string (syntax-e prefix)) base))
                 (cons (- (cdr range) (string-length name)) (cdr range)))]
           [_ #f]))))
 
@@ -146,26 +172,63 @@
                (if (null? (Module-Binding-submods target)) (Module-Binding-filepath target)
                    `(submod ,(Module-Binding-filepath target) ,@(Module-Binding-submods target))))))
 
-;; Retain original import syntax only when its transformer has the actual
-;; standard binding. This excludes quoted data and similarly named macros.
-(define (standard-imports doc original file)
+;; Retain original import syntax only for an actual expansion of a standard
+;; transformer. A binding alone can also occur in an unused syntax template.
+(define (standard-imports doc original expanded file)
   (define found '())
+  (define contexts (make-hash))
+  (define seen (make-hasheq))
   (define transformers
     (for/list ([id (in-list (list #'only-in #'except-in #'rename-in #'prefix-in))])
       (define binding (identifier-binding id))
       (cons (resolve-module-path-index (car binding) file) (cadr binding))))
-  (define (walk stx)
+  ;; The outer transformer's origin retains its expansion scopes. Transfer
+  ;; those scopes to its original operands so nested require transformers can
+  ;; be identified even when Check Syntax has no arrow for their keywords.
+  (define (origin value)
+    (cond
+      [(identifier? value)
+       (define range (source-range value file))
+       (when range
+         (hash-update! contexts range
+                       (lambda (prior) (if (and (identifier? prior) (bound-identifier=? prior value))
+                                           prior 'ambiguous)) value))]
+      [(pair? value) (origin (car value)) (origin (cdr value))]))
+  (define (origins value)
+    (cond
+      [(syntax? value)
+       (unless (hash-ref seen value #f)
+         (hash-set! seen value #t)
+         (origin (syntax-property value 'origin))
+         (origins (syntax-e value)))]
+      [(pair? value) (origins (car value)) (origins (cdr value))]))
+  (origins expanded)
+  (define (walk stx [scoped? #f])
     (when (syntax? stx)
       (define parts (syntax->list stx))
       (when (pair? parts)
         (define head (car parts))
         (define range (source-range head file))
-        (define binding (and range (identifier? head)
+        (define context (and (not scoped?) (hash-ref contexts range #f)))
+        (define binding (and (not scoped?) range (identifier? head)
                              (doc-module-binding-at doc (doc-abs-pos->pos doc (car range)))))
-        (when (and binding (>= (length parts) 2)
-                   (member (cons (Module-Binding-filepath binding) (Module-Binding-id binding)) transformers))
-          (set! found (cons (cons (Module-Binding-id binding) (cdr parts)) found)))
-        (for-each walk parts))))
+        (define identity
+          (if scoped?
+              (let ([binding (and (identifier? head) (identifier-binding head 0))])
+                (and (list? binding) (cons (resolve-module-path-index (car binding) file) (cadr binding))))
+              (and binding (cons (Module-Binding-filepath binding) (Module-Binding-id binding)))))
+        (cond
+          [(and identity (>= (length parts) 2) (member identity transformers) (or scoped? context))
+           (when (eq? context 'ambiguous) (refuse "This import has more than one expansion context."))
+           (define transfer? (and context (equal? (Module-Binding-phase+space binding) 0)))
+           (define operands
+             (cdr (if transfer? (syntax->list ((make-syntax-delta-introducer context head 0) stx)) parts)))
+           (set! found (cons (cons (cdr identity) operands) found))
+           ;; Only a standard transformer's require-spec operand shares this
+           ;; context. An arbitrary transformer may interpret its operands.
+           (walk (if (eq? (cdr identity) 'prefix-in) (cadr operands) (car operands))
+                 (or scoped? transfer?))]
+          [(not scoped?) (for-each walk parts)]))))
   (walk original)
   found)
 

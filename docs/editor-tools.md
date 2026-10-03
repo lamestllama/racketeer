@@ -7,8 +7,9 @@ preview. Racketeer's workspace index includes unopened Racket source files and
 uses open buffers as the authoritative text. Rename updates a definition, its
 exports and imported uses together. Renaming an explicit import alias changes
 its declaration and uses in that file; the exporting module keeps its name.
-Renaming the original definition preserves explicit local aliases and simple
-`prefix-in` prefixes, and updates `only-in`, `except-in` and `rename-in` selectors.
+Renaming the original definition preserves explicit local aliases and
+`prefix-in` prefixes, including nested prefixes and prefixes around `only-in`,
+`except-in` and `rename-in`. Import selectors update with the exported name.
 Local bindings stay local.
 
 Before returning edits, Racketeer expands the original and proposed source
@@ -18,8 +19,7 @@ during the request. Validation is cancellable and bounded to 90 seconds; it
 never applies the proposed edits itself. The existing language-server sources
 are unchanged.
 
-Composed transformations such as nested prefixes, phase-shifted imported uses,
-generated spellings without
+Selectors over composed imports, phase-shifted imported uses, generated spellings without
 unambiguous source ranges, and selectors spanning multiple export phases or
 binding spaces can still be refused. Rename checks actual exported identities,
 so a selector is not confused with a hidden definition of the same name.
@@ -34,6 +34,10 @@ and the bundled analyser's binding queries. Import edits use documented
 callbacks of Racket's check-syntax library,
 [require forms](https://docs.racket-lang.org/reference/require.html),
 and [module export reflection](https://docs.racket-lang.org/reference/Module_Names_and_Loading.html).
+Nested import forms use the outer transformer's documented
+[expansion origin](https://docs.racket-lang.org/reference/stxprops.html) and
+[scope transfer](https://docs.racket-lang.org/reference/stxtrans.html) to resolve
+their bindings. Custom transformers do not inherit standard import semantics.
 The existing libraries remain dependencies; their rename implementations are
 not used by this workspace rename service. Rename and preview use the standard
 [VS Code RenameProvider API](https://code.visualstudio.com/api/references/vscode-api#RenameProvider).

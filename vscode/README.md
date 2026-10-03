@@ -449,8 +449,8 @@ The status bar shows indexing progress and warns when references are partial.
 Use **Racket: Refresh Workspace References** after external package changes or
 to retry failed analysis. **Rename Symbol** uses the same workspace scope and
 previews binding-checked edits across unopened files. It preserves explicit
-import aliases and simple prefixes and updates import selectors. Composed
-transformations, phase-shifted imports and selectors shared by multiple export
+import aliases, nested prefixes and prefixes around selective imports.
+Selectors over composed imports, phase-shifted uses and selectors shared by multiple export
 phases may be refused.
 Files that fail analysis make the index partial; rename refuses incomplete or
 stale snapshots. Background diagnostics are not part of this feature.

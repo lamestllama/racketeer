@@ -66,17 +66,18 @@ test('renaming a local alias from its use leaves the exporting module unchanged'
 
 test('prefixed use prepares only its base name and retains Unicode prefixes', { timeout: 120000 }, async t => {
   const p = await project(t);
-  const text = '#lang racket/base\n(require (prefix-in π: (file "definition.rkt")))\n; 😀\n(π:square 3)\n';
-  p.write('prefix.rkt', text);
+  const text = '#lang racket/base\n(require (prefix-in π: (prefix-in λ: (file "definition.rkt"))))\n; 😀\n(π:λ:square 3)\n';
+  p.write('prefix.rkt', uses);
   const consumer = p.open('prefix.rkt', text);
   await p.update();
-  const position = { line: 3, character: 5 };
+  const position = { line: 3, character: 7 };
   assert.deepEqual(await p.rename(consumer, undefined, position), {
-    start: { line: 3, character: 3 }, end: { line: 3, character: 9 }
+    start: { line: 3, character: 5 }, end: { line: 3, character: 11 }
   });
   const { changes } = await p.rename(consumer, '平方', position);
-  assert.equal(edited(text, changes[consumer]), text.replace('π:square', 'π:平方'));
+  assert.equal(edited(text, changes[consumer]), text.replace('π:λ:square', 'π:λ:平方'));
   assert.equal(edited(definition, changes[p.origin]), definition.replaceAll('square', '平方'));
+  assert.equal(fs.readFileSync(p.filename('prefix.rkt'), 'utf8'), uses);
 });
 
 test('alias and prefix renames retain capture checks and refuse unsupported transformations', { timeout: 120000 }, async t => {
@@ -84,8 +85,7 @@ test('alias and prefix renames retain capture checks and refuse unsupported tran
   for (const [spec, body, target, name] of [
     ['(rename-in "definition.rkt" [square sq])', '(let ([result 1]) (sq result))', 'alias', 'result'],
     ['(prefix-in s: "definition.rkt")', '(let ([s:squared 1]) (s:square s:squared))', 'export', 'squared'],
-    ['(prefix-in p: (rename-in "definition.rkt" [square sq]))', '(p:sq 3)', 'export', 'squared'],
-    ['(prefix-in a: (prefix-in b: "definition.rkt"))', '(a:b:square 3)', 'export', 'squared'],
+    ['(prefix-in a: (prefix-in b: "definition.rkt"))', '(let ([a:b:squared 1]) (a:b:square a:b:squared))', 'export', 'squared'],
     ['(for-syntax racket/base (only-in "definition.rkt" square))', '(begin-for-syntax (square 3))', 'export', 'squared']
   ]) {
     const text = `#lang racket/base\n(require ${spec})\n${body}\n`;
@@ -102,7 +102,7 @@ test('selectors shared by different export phases are refused without changing t
   const p = await project(t);
   for (const compileName of ['square', 'other']) {
     const provider = `#lang racket/base\n(require (for-syntax racket/base))\n(provide square (for-syntax (rename-out [${compileName} square])))\n(define (square x) (* x x))\n(begin-for-syntax (define (${compileName} x) (+ x 1)))\n`;
-    const consumer = '#lang racket/base\n(require (only-in "definition.rkt" square))\n(square 3)\n';
+    const consumer = '#lang racket/base\n(require (prefix-in p: (only-in "definition.rkt" square)))\n(p:square 3)\n';
     p.write('definition.rkt', provider); p.open('definition.rkt', provider, 2);
     p.write('uses.rkt', consumer); await p.update();
     await assert.rejects(p.rename(p.origin, 'squared', { line: 3, character: 10 }), /more than one phase or binding space/);
@@ -150,4 +150,61 @@ test('composed selectors shared by different modules are refused', { timeout: 12
   p.write('uses.rkt', independent); await p.update();
   const { changes } = await p.rename(p.origin, 'squared');
   assert.equal(edited(independent, changes[uri(p.filename('uses.rkt'))]), independent.replace('(square 3)', '(squared 3)'));
+});
+
+test('export rename composes nested prefixes and preserves aliases inside prefixes', { timeout: 120000 }, async t => {
+  const p = await project(t);
+  const provider = definition.replace('(provide square)', '(provide square other)') + '(define other 1)\n';
+  p.write('definition.rkt', provider); p.open('definition.rkt', provider, 2);
+  const consumers = {
+    'nested.rkt': ['(prefix-in a: (prefix-in b: "definition.rkt"))', '(a:b:square 3)', '(a:b:squared 3)'],
+    'nested-file.rkt': ['(prefix-in π: (prefix-in square (file "definition.rkt")))', '(π:squaresquare 3)', '(π:squaresquared 3)'],
+    'renamed-transformer.rkt': ['(only-in racket/base [prefix-in pfx]) (pfx a: (pfx b: "definition.rkt"))', '(a:b:square 3)', '(a:b:squared 3)'],
+    'alias.rkt': ['(prefix-in p: (rename-in "definition.rkt" [square sq]))', '(p:sq 3)', '(p:sq 3)'],
+    'same-alias.rkt': ['(prefix-in p: (rename-in "definition.rkt" [square square]))', '(p:square 3)', '(p:square 3)'],
+    'selected-alias.rkt': ['(prefix-in p: (only-in (file "definition.rkt") [square sq]))', '(p:sq 3)', '(p:sq 3)'],
+    'selected.rkt': ['(prefix-in p: (only-in "definition.rkt" square))', '(p:square 3)', '(p:squared 3)'],
+    'excluded.rkt': ['(prefix-in p: (except-in (file "definition.rkt") square))', '(display 9)', '(display 9)'],
+    'excluded-other.rkt': ['(prefix-in p: (except-in (file "definition.rkt") other))', '(p:square 3)', '(p:squared 3)'],
+    'renamed-other.rkt': ['(prefix-in p: (rename-in (file "definition.rkt") [other spare]))', '(p:square 3)', '(p:squared 3)']
+  };
+  for (const [file, [spec, body]] of Object.entries(consumers)) {
+    p.write(file, `#lang racket/base\n(require ${spec})\n${body}\n`);
+  }
+  await p.update();
+  const { changes } = await p.rename(p.origin, 'squared');
+  for (const [file, [spec, body, expectedBody]] of Object.entries(consumers)) {
+    const expectedSpec = file.startsWith('nested') || file === 'renamed-transformer.rkt' ? spec : spec.replace('square', 'squared');
+    const text = fs.readFileSync(p.filename(file), 'utf8');
+    assert.equal(edited(text, changes[uri(p.filename(file))]), `#lang racket/base\n(require ${expectedSpec})\n${expectedBody}\n`, file);
+    assert.equal(text, `#lang racket/base\n(require ${spec})\n${body}\n`);
+  }
+  for (const [key, edits] of Object.entries(changes)) {
+    const file = fileURLToPath(key);
+    fs.writeFileSync(file, edited(fs.readFileSync(file, 'utf8'), edits));
+  }
+  for (const file of Object.keys(consumers)) {
+    const result = spawnSync('racket', [p.filename(file)], { encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout.trim(), '9', file);
+  }
+});
+
+test('nested import discovery does not interpret a custom transformer or quoted data', { timeout: 120000 }, async t => {
+  const p = await project(t);
+  const text = '#lang racket/base\n(require (only-in racket/base [prefix-in standard-prefix])\n'
+    + '         (for-syntax racket/base racket/require-transform))\n'
+    + '(define-syntax prefix-in (make-require-transformer\n'
+    + '  (lambda (stx) (syntax-case stx () [(_ ignored spec) (expand-import #\'spec)]))))\n'
+    + '(require (standard-prefix a: (prefix-in b: "definition.rkt")))\n(a:square 3)\n';
+  p.write('consumer.rkt', text); await p.update();
+  await assert.rejects(p.rename(p.origin, 'squared'), /another binding|Cannot analyse|unsupported/);
+  assert.equal(fs.readFileSync(p.filename('consumer.rkt'), 'utf8'), text);
+  const quoted = '#lang racket/base\n(require (prefix-in a: (prefix-in b: "definition.rkt")))\n'
+    + '(a:b:square 3)\n\'(prefix-in a: (only-in "definition.rkt" square))\n'
+    + '(define template #\'(only-in "definition.rkt" square))\n'
+    + '(define incomplete-template #\'(prefix-in p:))\n';
+  p.write('consumer.rkt', quoted); await p.update();
+  const { changes } = await p.rename(p.origin, 'squared');
+  assert.equal(edited(quoted, changes[uri(p.filename('consumer.rkt'))]), quoted.replace('(a:b:square 3)', '(a:b:squared 3)'));
 });

@@ -42,10 +42,10 @@ exports.run = async (extension, workspace) => {
   const unopened = path.join(directory, 'unopened consumer.rkt');
   fs.writeFileSync(unopened, `#lang racket/base\n(require (file ${JSON.stringify(path.basename(program))}))\n(square 4)\n`);
   const imports = new Map([
-    ['alias', [`(rename-in (file ${JSON.stringify(path.basename(program))}) [square sq])`, '(sq 4)', 1]],
-    ['prefix', [`(prefix-in s: (file ${JSON.stringify(path.basename(program))}))`, '(s:square 4)', 1]],
-    ['selected', [`(only-in (file ${JSON.stringify(path.basename(program))}) square)`, '(square 4)', 2]],
-    ['excluded', [`(except-in (file ${JSON.stringify(path.basename(program))}) square)`, '(void)', 1]]
+    ['alias', [`(prefix-in p: (rename-in (file ${JSON.stringify(path.basename(program))}) [square sq]))`, '(p:sq 4)', 1]],
+    ['prefix', [`(prefix-in a: (prefix-in b: (file ${JSON.stringify(path.basename(program))})))`, '(a:b:square 4)', 1]],
+    ['selected', [`(prefix-in s: (only-in (file ${JSON.stringify(path.basename(program))}) square))`, '(s:square 4)', 2]],
+    ['excluded', [`(prefix-in e: (except-in (file ${JSON.stringify(path.basename(program))}) square))`, '(void)', 1]]
   ].map(([name, [spec, body, count]]) => [vscode.Uri.file(path.join(directory, `${name} consumer.rkt`)),
     { text: `#lang racket/base\n(require ${spec})\n${body}\n`, count }]));
   for (const [uri, { text }] of imports) fs.writeFileSync(uri.fsPath, text);
