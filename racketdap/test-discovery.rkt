@@ -54,9 +54,19 @@
           [else (reject)]))
       (for/list ([form (in-list body)] #:unless (setup? form))
         (define xs (parts form))
-        (unless (and (eq? (head form) 'test-case) (>= (length xs) 3)
-                     (string? (syntax-e (cadr xs)))) (reject))
-        (hasheq 'id (syntax-position form) 'name (syntax-e (cadr xs))
+        ;; A suite is one selectable invocation. Its own runner retains control
+        ;; of nested tests and fixtures; discovery never constructs the suite.
+        (define name
+          (cond
+            [(and (eq? (head form) 'test-case) (>= (length xs) 3)) (cadr xs)]
+            [(and (eq? (head form) 'run-tests) (memv (length xs) '(2 3)))
+             (define suite (parts (cadr xs)))
+             (unless (and (>= (length suite) 2) (eq? (head (cadr xs)) 'test-suite))
+               (reject))
+             (cadr suite)]
+            [else (reject)]))
+        (unless (string? (syntax-e name)) (reject))
+        (hasheq 'id (syntax-position form) 'name (syntax-e name)
                 'position (syntax-position form) 'span (syntax-span form))))))
 
 (define-runtime-path test-case-path "worker/test-case.rkt")

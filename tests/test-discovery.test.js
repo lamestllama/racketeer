@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const { execFile } = require('node:child_process');
 const { createHash } = require('node:crypto');
+const { promisify } = require('node:util');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
@@ -50,9 +51,118 @@ test('source discovery handles comments, Unicode, duplicate names and merged tes
   for (const source of ['', '#lang unknown/reader\n(error "no")', '#lang racket\n#reader "missing.rkt"',
     '#lang racket\n(module+ test (test-case "unfinished"',
     '#lang racket\n(require rackunit)\n(for ([i 3]) (test-case "dynamic" (check-true #t)))',
-    '#lang racket\n(require rackunit rackunit/text-ui)\n(run-tests (test-suite "suite" (test-case "case" (check-true #t))))']) {
+    '#lang racket\n(require rackunit rackunit/text-ui)\n(define suite (test-suite "suite"))\n(run-tests suite)']) {
     assert.deepEqual(await discover(source), [], source);
   }
+});
+
+test('inline suite discovery uses the runner range and never evaluates names, fixtures or tests', async () => {
+  const source = '#lang racket/base\n(require rackunit rackunit/text-ui)\n' +
+    '(define setup (error "discovery must not evaluate setup"))\n' +
+    '(module+ test\n (run-tests (test-suite "same λ😀"\n' +
+    '  #:before (error "must not evaluate fixture")\n' +
+    '  (test-case "inner" (error "must not run"))) \'quiet))\n' +
+    '(module+ test (test-case "same λ😀" (check-true #t)))\n';
+  const found = await discover(source);
+  assert.deepEqual(found.map(item => item.name), ['same λ😀', 'same λ😀']);
+  assert.notEqual(found[0].id, found[1].id);
+  assert.equal(found[0].position, source.indexOf('(run-tests') + 1);
+  assert.equal(found[0].line, 4);
+  assert.equal(found[0].column, 1);
+  assert.equal(found[0].endLine, 6);
+  assert.equal(found[0].endColumn, source.split('\n')[6].length - 1);
+  for (const body of ['(test-suite "unrun" (test-case "case" (error "no")))',
+    '(run-tests (test-suite (error "dynamic name") (check-true #t)))',
+    '(run-tests (test-suite "suite")) (displayln "mixed")',
+    '(custom-runner (test-suite "suite"))']) {
+    assert.deepEqual(await discover('#lang racket/base\n' + body), [], body);
+  }
+});
+
+test('selected suites retain nested execution, fixtures, counts and continued execution after failure', async t => {
+  const source = '#lang racket/base\n(require rackunit rackunit/text-ui)\n' +
+    '(module+ test\n (define value 0)\n' +
+    ' (run-tests (test-suite "same" #:before (lambda () (error "unselected suite ran"))))\n' +
+    ' (test-case "skip" (error "unselected case ran"))\n' +
+    ' (run-tests (test-suite "same"\n' +
+    '  #:before (lambda () (set! value 7) (displayln "suite-before"))\n' +
+    '  #:after (lambda () (displayln "suite-after"))\n' +
+    '  (test-suite "nested"\n' +
+    '   (test-case "fails" (check-equal? value 8))\n' +
+    '   (test-case "passes" (check-equal? value 7) (displayln "suite-continued")))) \'quiet))\n';
+  const found = await discover(source);
+  assert.deepEqual(found.map(item => item.name), ['same', 'skip', 'same']);
+  for (const noDebug of [true, false]) {
+    const { client } = await launch(t, source, [found[2].id], { noDebug });
+    await ok(client.request('configurationDone'));
+    assert.deepEqual((await client.event('racketdap/test', e => e.body.kind === 'summary')).body,
+      { kind: 'summary', status: 'failed', failed: 1, total: 2 });
+    await client.event('terminated');
+    assert.deepEqual(client.events.filter(e => e.event === 'racketdap/test' && e.body.kind === 'case')
+      .map(e => [e.body.id, e.body.status]), [[found[2].id, 'started'], [found[2].id, 'failed']]);
+    const output = client.events.filter(e => e.event === 'output').map(e => e.body.output).join('');
+    assert.deepEqual(output.match(/suite-(?:before|continued|after)/g),
+      ['suite-before', 'suite-continued', 'suite-after']);
+    assert.doesNotMatch(output, /unselected .* ran/);
+  }
+});
+
+test('suite selection validates both public bindings before setup and preserves custom whole-file calls', async t => {
+  for (const definition of [
+    '(define (run-tests suite) (displayln "custom runner"))',
+    '(define (test-suite name . tests) (displayln "custom suite") (make-test-suite name null))'
+  ]) {
+    const source = '#lang racket/base\n(require rackunit rackunit/text-ui)\n' + definition + '\n' +
+      '(define setup (begin (displayln "setup executed") 1))\n(run-tests (test-suite "suite"))\n';
+    const found = await discover(source);
+    assert.equal(found.length, 1);
+    const { client } = await launch(t, source, [found[0].id]);
+    await ok(client.request('configurationDone'));
+    assert.equal((await client.event('racketdap/test', e => e.body.kind === 'summary')).body.status, 'errored');
+    await client.event('terminated');
+    const output = client.events.filter(e => e.event === 'output').map(e => e.body.output).join('');
+    assert.match(output, /not RackUnit run-tests and test-suite/);
+    assert.doesNotMatch(output, /setup executed|custom runner|custom suite/);
+    const whole = await launch(t, source);
+    await ok(whole.client.request('configurationDone'));
+    assert.equal((await whole.client.event('racketdap/test', e => e.body.kind === 'summary')).body.status, 'passed');
+    await whole.client.event('terminated');
+    assert.match(whole.client.events.filter(e => e.event === 'output').map(e => e.body.output).join(''), /setup executed/);
+    assert.equal(whole.client.events.filter(e => e.event === 'racketdap/test' && e.body.kind === 'case').length, 0);
+  }
+});
+
+test('whole-file suite output and fixture order agree with the native runner', async t => {
+  const source = '#lang racket/base\n(require rackunit rackunit/text-ui)\n' +
+    '(run-tests (test-suite "generated cases"\n' +
+    ' #:before (lambda () (displayln "before"))\n' +
+    ' #:after (lambda () (displayln "after"))\n' +
+    ' (for ([n (in-range 3)])\n' +
+    '  (test-case (number->string n) (displayln n) (check-true (< n 2))))) \'quiet)\n';
+  const { client, program } = await launch(t, source);
+  const native = await promisify(execFile)('racket', [program]);
+  await ok(client.request('configurationDone'));
+  assert.deepEqual((await client.event('racketdap/test', e => e.body.kind === 'summary')).body,
+    { kind: 'summary', status: 'failed', failed: 1, total: 3 });
+  await client.event('terminated');
+  const stdout = client.events.filter(e => e.event === 'output' && e.body.category === 'stdout')
+    .map(e => e.body.output).join('');
+  assert.equal(stdout, native.stdout);
+});
+
+test('a failing suite fixture never reports a passing suite', async t => {
+  const source = '#lang racket/base\n(require rackunit rackunit/text-ui)\n' +
+    '(run-tests (test-suite "fixture error" #:before (lambda () (error "fixture failed"))\n' +
+    ' (test-case "never" (error "case ran"))))\n';
+  const found = await discover(source);
+  const { client } = await launch(t, source, [found[0].id]);
+  await ok(client.request('configurationDone'));
+  assert.equal((await client.event('racketdap/test', e => e.body.kind === 'summary')).body.status, 'errored');
+  await client.event('terminated');
+  assert.ok(!client.events.some(e => e.event === 'racketdap/test' && e.body.status === 'passed'));
+  const output = client.events.filter(e => e.event === 'output').map(e => e.body.output).join('');
+  assert.match(output, /fixture failed/);
+  assert.doesNotMatch(output, /case ran/);
 });
 
 test('individual runs preserve setup and skip other cases even when names coincide', async t => {
@@ -72,22 +182,33 @@ test('individual runs preserve setup and skip other cases even when names coinci
 });
 
 test('individual Debug Test retains live source breakpoints and RackUnit failure reporting', async t => {
-  const text = '#lang racket/base\n(require rackunit)\n(define (twice x)\n (* x 2))\n(module+ test\n' +
-    ' (test-case "skip" (error "not selected"))\n (test-case "selected" (check-equal? (twice 7) 15)))\n';
-  const cases = await discover(text);
-  const { client, program } = await launch(t, text, [cases[1].id], { noDebug: false });
-  await ok(client.request('setBreakpoints', { source: { path: program }, breakpoints: [{ line: 4 }] }));
-  await ok(client.request('configurationDone'));
-  const stop = await client.event('stopped');
-  const { stackFrames } = await ok(client.request('stackTrace', { threadId: stop.body.threadId }));
-  assert.equal(stackFrames[0].line, 4);
-  assert.equal((await ok(client.request('evaluate', { frameId: stackFrames[0].id, expression: 'x' }))).result, '7');
-  await ok(client.request('continue', { threadId: stop.body.threadId }));
-  const failure = await client.event('racketdap/test', e => e.body.kind === 'failure');
-  assert.equal(failure.body.location.line, 7);
-  assert.equal((await client.event('racketdap/test', e => e.body.kind === 'summary')).body.failed, 1);
-  await client.event('terminated');
-  assert.equal(client.events.filter(e => e.event === 'racketdap/test' && e.body.status === 'failed' && e.body.kind === 'case').length, 1);
+  for (const [selected, individual] of [
+    ['(test-case "selected" (check-equal? (twice 7) 15))', true],
+    ['(run-tests (test-suite "selected" (test-case "inner" (check-equal? (twice 7) 15))))', false]]) {
+    const source = '#lang racket/base\n(require rackunit rackunit/text-ui)\n(define (twice x)\n (* x 2))\n(module+ test\n' +
+      ' (test-case "skip" (error "not selected"))\n ' + selected + ')\n';
+    const cases = await discover(source);
+    const { client, program } = await launch(t, source, [cases[1].id], { noDebug: false });
+    await ok(client.request('setBreakpoints', { source: { path: program }, breakpoints: [{ line: 4 }] }));
+    await ok(client.request('configurationDone'));
+    const stop = await client.event('stopped');
+    const { stackFrames } = await ok(client.request('stackTrace', { threadId: stop.body.threadId }));
+    assert.equal(stackFrames[0].line, 4);
+    assert.equal((await ok(client.request('evaluate', { frameId: stackFrames[0].id, expression: 'x' }))).result, '7');
+    await ok(client.request('continue', { threadId: stop.body.threadId }));
+    if (individual) {
+      const failure = await client.event('racketdap/test', e => e.body.kind === 'failure');
+      assert.equal(failure.body.location.line, 7);
+    }
+    assert.equal((await client.event('racketdap/test', e => e.body.kind === 'summary')).body.failed, 1);
+    await client.event('terminated');
+    if (!individual) {
+      const output = client.events.filter(e => e.event === 'output').map(e => e.body.output).join('');
+      assert.match(output, /FAILURE/);
+      assert.match(output, /cases[.]rkt:7:/);
+    }
+    assert.equal(client.events.filter(e => e.event === 'racketdap/test' && e.body.status === 'failed' && e.body.kind === 'case').length, 1);
+  }
 });
 
 test('selection validates source and RackUnit binding before executing user code', async t => {

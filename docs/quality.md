@@ -101,8 +101,9 @@ encoding with Node's strict unhandled-rejection handling. See the
 
 Known product boundaries remain explicit:
 
-- Test Explorer discovers direct named RackUnit cases and reports RackUnit and
-  teaching-language failures. Dynamic cases, suites, mixed forms and teaching
+- Test Explorer discovers direct named RackUnit cases and inline literal-named
+  suites invoked with `run-tests`. Each suite runs as one item through RackUnit.
+  Suites referenced through variables, dynamic cases, mixed forms and teaching
   checks retain file-level execution. Package `info.rkt` policies are not fully
   integrated; Test Package uses the native runner in the task terminal.
 - The language client uses one Racket installation per window, selected by the

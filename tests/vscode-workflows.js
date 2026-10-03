@@ -86,60 +86,74 @@ exports.run = async function (workspace) {
     assert.ok(literalReport.body.statements.some(s => s.line === 2 && s.column === branchColumn &&
       s.endLine === 2 && s.endColumn === branchColumn + 6 && s.executed === false));
 
-    let individual = await open('cases.rkt', '#lang racket/base\n(require rackunit)\n' +
-      '(define (twice x)\n  (* x 2))\n(module+ test\n' +
-      '  (test-case "same" (error "unselected test ran"))\n' +
-      '  (test-case "same" (check-equal? (twice 7) 14)))\n');
-    await settings.update('testing.include', 'workflows/{pass,fail,cases}.rkt', vscode.ConfigurationTarget.Workspace);
-    await vscode.commands.executeCommand('testing.refreshTests');
-    for (const command of ['testing.runAtCursor', 'testing.debugAtCursor', 'testing.coverageAtCursor']) {
+    for (const suite of [false, true]) {
+      const selected = expected => suite
+        ? `(run-tests (test-suite "same" (test-case "inner" (check-equal? (twice 7) ${expected}))))`
+        : `(test-case "same" (check-equal? (twice 7) ${expected}))`;
+      let individual = await open(suite ? 'suites.rkt' : 'cases.rkt', '#lang racket/base\n(require rackunit rackunit/text-ui)\n' +
+        '(define (twice x)\n  (* x 2))\n(module+ test\n' +
+        '  (test-case "same" (error "unselected test ran"))\n' +
+        '  ' + selected(14) + ')\n');
+      await settings.update('testing.include', 'workflows/{pass,fail,cases,suites}.rkt', vscode.ConfigurationTarget.Workspace);
+      await vscode.commands.executeCommand('testing.refreshTests');
+      for (const command of ['testing.runAtCursor', 'testing.debugAtCursor', 'testing.coverageAtCursor']) {
+        individual = await vscode.window.showTextDocument(individual.document);
+        individual.selection = new vscode.Selection(6, 5, 6, 5);
+        const start = sessions.length;
+        const testBreakpoint = new vscode.SourceBreakpoint(new vscode.Location(individual.document.uri, new vscode.Position(3, 0)));
+        if (command === 'testing.debugAtCursor') vscode.debug.addBreakpoints([testBreakpoint]);
+        try {
+          const invoked = vscode.commands.executeCommand(command);
+          invoked.then(undefined, () => {});
+          await until(() => sessions.length > start, `${command} starts the selected case`);
+          const session = sessions[start];
+          assert.deepEqual(session.configuration.testSelection.ids,
+            [individual.document.getText().indexOf(selected(14)) + 1]);
+          assert.equal(!!session.configuration.noDebug, command !== 'testing.debugAtCursor');
+          assert.equal(!!session.configuration.coverage, command === 'testing.coverageAtCursor');
+          if (command === 'testing.debugAtCursor') {
+            const stopped = await event(session, 'stopped');
+            const stack = await session.customRequest('stackTrace', { threadId: stopped.body.threadId });
+            assert.equal(stack.stackFrames[0].line, 4);
+            assert.equal((await session.customRequest('evaluate', { frameId: stack.stackFrames[0].id, expression: 'x' })).result, '7');
+            vscode.debug.removeBreakpoints([testBreakpoint]);
+            await session.customRequest('continue', { threadId: stopped.body.threadId });
+          }
+          const summary = await event(session, 'racketdap/test', message => message.body.kind === 'summary');
+          assert.deepEqual(summary.body, { kind: 'summary', status: 'passed', failed: 0, total: 1 });
+          await event(session, 'terminated');
+          await invoked;
+          if (command === 'testing.coverageAtCursor') {
+            const coverage = await event(session, 'racketdap/coverage', message => message.body.path === individual.document.uri.fsPath);
+            assert.ok(coverage.body.statements.some(statement => statement.line === 3 && statement.executed));
+          }
+        } finally { vscode.debug.removeBreakpoints([testBreakpoint]); }
+      }
       individual = await vscode.window.showTextDocument(individual.document);
+      await individual.edit(edit => edit.replace(individual.document.lineAt(6).range,
+        '  ' + selected(15) + ')'));
+      assert.equal(individual.document.isDirty, true);
+      await vscode.commands.executeCommand('testing.refreshTests');
       individual.selection = new vscode.Selection(6, 5, 6, 5);
-      const start = sessions.length;
-      const testBreakpoint = new vscode.SourceBreakpoint(new vscode.Location(individual.document.uri, new vscode.Position(3, 0)));
-      if (command === 'testing.debugAtCursor') vscode.debug.addBreakpoints([testBreakpoint]);
-      try {
-        const invoked = vscode.commands.executeCommand(command);
-        invoked.then(undefined, () => {});
-        await until(() => sessions.length > start, `${command} starts the selected case`);
-        const session = sessions[start];
-        assert.equal(session.configuration.testSelection.ids.length, 1);
-        assert.equal(!!session.configuration.noDebug, command !== 'testing.debugAtCursor');
-        assert.equal(!!session.configuration.coverage, command === 'testing.coverageAtCursor');
-        if (command === 'testing.debugAtCursor') {
-          const stopped = await event(session, 'stopped');
-          const stack = await session.customRequest('stackTrace', { threadId: stopped.body.threadId });
-          assert.equal(stack.stackFrames[0].line, 4);
-          assert.equal((await session.customRequest('evaluate', { frameId: stack.stackFrames[0].id, expression: 'x' })).result, '7');
-          vscode.debug.removeBreakpoints([testBreakpoint]);
-          await session.customRequest('continue', { threadId: stopped.body.threadId });
-        }
-        const summary = await event(session, 'racketdap/test', message => message.body.kind === 'summary');
-        assert.deepEqual(summary.body, { kind: 'summary', status: 'passed', failed: 0, total: 1 });
-        await event(session, 'terminated');
-        await invoked;
-        if (command === 'testing.coverageAtCursor') {
-          const coverage = await event(session, 'racketdap/coverage', message => message.body.path === individual.document.uri.fsPath);
-          assert.ok(coverage.body.statements.some(statement => statement.line === 3 && statement.executed));
-        }
-      } finally { vscode.debug.removeBreakpoints([testBreakpoint]); }
+      const editedStart = sessions.length;
+      await vscode.commands.executeCommand('testing.runAtCursor');
+      await until(() => sessions.length > editedStart, 'run the edited case');
+      const editedSession = sessions[editedStart];
+      const editedSummary = await event(editedSession, 'racketdap/test', message => message.body.kind === 'summary');
+      assert.deepEqual(editedSummary.body, { kind: 'summary', status: 'failed', failed: 1, total: 1 });
+      assert.equal(individual.document.isDirty, false);
+      if (!suite) {
+        const caseFailure = await event(editedSession, 'racketdap/test', message => message.body.kind === 'failure');
+        assert.equal(caseFailure.body.location.line, 7);
+      }
+      await event(editedSession, 'terminated');
+      if (suite) {
+        const output = messages.filter(m => m.session.id === editedSession.id && m.event === 'output')
+          .map(m => m.body.output).join('');
+        assert.match(output, /FAILURE/);
+        assert.match(output, /suites[.]rkt:7:/);
+      }
     }
-    individual = await vscode.window.showTextDocument(individual.document);
-    await individual.edit(edit => edit.replace(individual.document.lineAt(6).range,
-      '  (test-case "same" (check-equal? (twice 7) 15)))'));
-    assert.equal(individual.document.isDirty, true);
-    await vscode.commands.executeCommand('testing.refreshTests');
-    individual.selection = new vscode.Selection(6, 5, 6, 5);
-    const editedStart = sessions.length;
-    await vscode.commands.executeCommand('testing.runAtCursor');
-    await until(() => sessions.length > editedStart, 'run the edited case');
-    const editedSession = sessions[editedStart];
-    const editedSummary = await event(editedSession, 'racketdap/test', message => message.body.kind === 'summary');
-    assert.deepEqual(editedSummary.body, { kind: 'summary', status: 'failed', failed: 1, total: 1 });
-    assert.equal(individual.document.isDirty, false);
-    const caseFailure = await event(editedSession, 'racketdap/test', message => message.body.kind === 'failure');
-    assert.equal(caseFailure.body.location.line, 7);
-    await event(editedSession, 'terminated');
 
     const helper = await open('helper.rkt', '#lang racket/base\n(provide twice)\n(define (twice x)\n  (* x 2))\n');
     const moduleText = '#lang racket/base\n(require "helper.rkt")\n(define private 6)\n(module+ main (error "main must not run"))\n(module+ test (require rackunit) (check-equal? (twice private) 12))\n; (twice private)\n(define (local-twice value)\n  (* value 2))\n; (local-twice private)\n; (define selected-value 40) ; a trailing comment\n; (+ selected-value 2)\n';
@@ -246,6 +260,7 @@ exports.run = async function (workspace) {
     assert.equal((await surviving.session.customRequest('evaluate', { context: 'repl', expression: '(+ 1 2)' })).result, '3');
 
     return ['Test Explorer discovery and Run All', 'individual Run and Debug Test at Cursor', 'native Test Coverage at Cursor',
+      'inline named suites use native Run, Debug and Coverage with RackUnit failure output',
       'teaching-language check counts and failure locations', 'coverage marks an untaken literal branch',
       'failed checks and source locations', 'early test exit is an error',
       'Debug Test command enters a required source file', 'module-specific Debug REPL reuse',

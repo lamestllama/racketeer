@@ -283,8 +283,13 @@ not execute code. Expand a file or open it in the editor to discover direct,
 literal-named RackUnit `test-case` forms in standard `racket` and `racket/base`
 modules. Run or Debug a case from its gutter control, Test Explorer, or the
 normal **Test at Cursor** commands. Duplicate names remain separate cases.
-Files with dynamically generated tests, suites, other readers, or mixed test
-forms retain whole-file execution. Run or Debug one file, a workspace folder,
+An inline `(run-tests (test-suite "name" ...))` is also discoverable as one
+selectable item. Its nested tests run together through RackUnit, preserving
+suite setup and cleanup. The optional `run-tests` verbosity argument is supported.
+A suite reports its overall result and check counts; nested failure details
+remain in RackUnit's output, governed by that verbosity setting.
+Suites referenced through variables, dynamically named tests, other readers,
+and mixed test forms retain whole-file execution. Run or Debug one file, a workspace folder,
 or all discovered files. Each file runs its `test` submodule if present, otherwise its module body;
 it does not automatically run `main`. Each file has a fresh process. Cancel
 stops the current test and skips queued files without stopping other sessions.
