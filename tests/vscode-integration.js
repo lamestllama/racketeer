@@ -212,7 +212,8 @@ exports.run = async function () {
     const multiSession = vscode.debug.activeDebugSession;
     const multiFrames = (await multiSession.customRequest('stackTrace', { threadId: multiStop.body.threadId })).stackFrames;
     const multiUri = vscode.debug.asDebugSourceUri(multiFrames[0].source, multiSession);
-    await vscode.workspace.openTextDocument(multiUri);
+    const multiCaptured = await vscode.workspace.openTextDocument(multiUri);
+    await vscode.window.showTextDocument(multiCaptured, { preview: false });
     const orderCall = new vscode.Position(5, 35);
     const ordersPath = path.join(workspace.uri.fsPath, 'multi-file/app/orders.rkt');
     await waitUntil(async () => {
@@ -252,6 +253,7 @@ exports.run = async function () {
     await vscode.debug.stopDebugging(multiSession);
     await event('terminated');
     await waitUntil(() => vscode.debug.activeDebugSession?.id !== multiSession.id, 'navigation session ends');
+    assert.equal(multiCaptured.isClosed, false, 'Keep captured source open to test navigation after termination');
     assert.deepEqual(await vscode.commands.executeCommand('vscode.executeDefinitionProvider', multiUri, orderCall), [],
       'A completed session no longer supplies navigation from its captured sources');
     messages.length = 0;
