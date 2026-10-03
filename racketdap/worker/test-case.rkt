@@ -1,6 +1,6 @@
 #lang racket/base
 
-(require (for-syntax racket/base) (only-in rackunit test-case test-suite)
+(require (for-syntax racket/base) (only-in rackunit test-case)
          (only-in rackunit/text-ui run-tests) "testing.rkt")
 (provide discovered-test-case)
 
@@ -8,14 +8,14 @@
 ;; definitions have their normal scopes. Discovery alone cannot establish it.
 (define-syntax (discovered-test-case stx)
   (syntax-case stx ()
-    [(_ id selected? (runner (suite name test ...) argument ...))
-     (if (and (free-identifier=? #'runner #'run-tests)
-              (free-identifier=? #'suite #'test-suite))
-         #'(call-with-discovered-test id name
-             (lambda () (runner (suite name test ...) argument ...)))
+    [(_ id selected? (runner test argument ...))
+     (and (identifier? #'runner) (eq? (syntax-e #'runner) 'run-tests))
+     (if (free-identifier=? #'runner #'run-tests)
+         #'(call-with-discovered-test id "RackUnit tests"
+             (lambda () (run-discovered-tests id test argument ...)) #t)
          (if (syntax-e #'selected?)
-             (raise-syntax-error #f "The selected form is not RackUnit run-tests and test-suite" #'runner)
-             #'(runner (suite name test ...) argument ...)))]
+             (raise-syntax-error #f "The selected form is not RackUnit run-tests" #'runner)
+             #'(runner test argument ...)))]
     [(_ id selected? (operator name body ...))
      (if (free-identifier=? #'operator #'test-case)
          #'(call-with-discovered-test id name (lambda () (operator name body ...)))

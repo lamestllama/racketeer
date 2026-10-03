@@ -6,9 +6,11 @@ const { createHash } = require('node:crypto');
 const { targetFor, saveDocument } = require('./execution');
 const { selectTests } = require('./test-selection');
 const { TestCoverage, loadDetailedCoverage } = require('./test-coverage');
+const { runPackageTask } = require('./packages');
 
 function registerTesting(context, sessions) {
   const controller = vscode.tests.createTestController('racketdap.tests', 'Racket');
+  const fileTag = new vscode.TestTag('racket-file');
   const files = new Map();
   const activeRuns = new Set();
   const discoveries = new Map(), cases = new WeakMap();
@@ -31,6 +33,7 @@ function registerTesting(context, sessions) {
     }
     const label = folder ? path.relative(folder.uri.fsPath, uri.fsPath) : path.basename(uri.fsPath);
     const item = controller.createTestItem(id, label, uri);
+    item.tags = [fileTag];
     item.description = 'test submodule or module body';
     item.canResolveChildren = true;
     items.add(item);
@@ -154,14 +157,29 @@ function registerTesting(context, sessions) {
         try {
           const target = await saveDocument(await vscode.workspace.openTextDocument(item.uri));
           const testSelection = wholeFile ? undefined : {
-            sourceHash: cases.get(requested[0]).sourceHash, ids: requested.map(child => cases.get(child).id)
+            sourceHash: cases.get(requested[0]).sourceHash,
+            ids: [...new Set(requested.map(child => cases.get(child).id))],
+            cases: requested.filter(child => cases.get(child).path).map(child => {
+              const { id, path } = cases.get(child);
+              return { id, path };
+            })
           };
           if (testSelection && requested.some(child => cases.get(child).sourceHash !== testSelection.sourceHash)) {
             throw new Error('Test selection is out of date. Refresh the tests and try again.');
           }
           if (!testSelection) await resolveCases(item);
           children = testSelection ? requested : [...item.children].map(([, child]) => child);
-          const byId = new Map(children.map(child => [cases.get(child).id, child]));
+          const sourceHash = testSelection?.sourceHash || discoveries.get(item.id)?.sourceHash;
+          const key = (id, path = []) => JSON.stringify([id, path]);
+          const byId = new Map();
+          function remember(parent) {
+            parent.children.forEach(child => {
+              const metadata = cases.get(child);
+              byId.set(key(metadata.id, metadata.path), child);
+              remember(child);
+            });
+          }
+          remember(item);
           children.forEach(child => run.enqueued(child));
           const sourceRoots = vscode.workspace.getConfiguration('racketdap', item.uri)
             .get('testing.sourceRoots', ['.']).map(root => path.resolve(target.cwd, root));
@@ -182,12 +200,34 @@ function registerTesting(context, sessions) {
                   }
                 }
                 if (event.body.kind === 'case') {
-                  const child = byId.get(event.body.id);
-                  if (child && event.body.status === 'started') { activeCase = child; run.started(child); }
+                  const { id, path: testPath, status } = event.body;
+                  const parent = byId.get(key(id));
+                  let child = byId.get(key(id, testPath));
+                  if (testPath && parent) {
+                    if (!child) {
+                      const label = testPath.slice(testPath.length > 1 ? 1 : 0)
+                        .map(part => part[1] || 'Unnamed test').join(' / ');
+                      child = controller.createTestItem(`${parent.id}/${JSON.stringify(testPath)}`, label, item.uri);
+                      child.description = 'discovered during execution';
+                      cases.set(child, { file: item, id, path: testPath, sourceHash });
+                      byId.set(key(id, testPath), child);
+                    }
+                    parent.children.add(child);
+                  }
+                  if (child && !children.includes(child)) children.push(child);
+                  if (child && status === 'started') {
+                    if (!testPath) child.children.replace([]);
+                    activeCase = child; run.started(child);
+                  }
                   else if (child) {
-                    if (event.body.status === 'passed') run.passed(child);
-                    else run.failed(child, caseFailures.get(child) || new vscode.TestMessage('Test failed; see test output.'));
-                    completed.add(child); activeCase = undefined;
+                    if (status === 'passed') run.passed(child);
+                    else if (status === 'skipped') run.skipped(child);
+                    else {
+                      const messages = caseFailures.get(child) || new vscode.TestMessage('Test failed; see test output.');
+                      if (status === 'errored') run.errored(child, messages);
+                      else run.failed(child, messages);
+                    }
+                    completed.add(child); activeCase = testPath ? parent : undefined;
                   }
                 }
                 if (event.body.kind === 'summary') summary = event.body;
@@ -238,6 +278,45 @@ function registerTesting(context, sessions) {
   const coverageProfile = controller.createRunProfile('Coverage', vscode.TestRunProfileKind.Coverage,
     (request, token) => execute(request, token, false, true), true);
   coverageProfile.loadDetailedCoverage = loadDetailedCoverage;
+  const packageProfile = controller.createRunProfile('Run with package policies (raco test)', vscode.TestRunProfileKind.Run,
+    async (request, token) => {
+      if (!vscode.workspace.isTrusted) throw new Error('Trust this workspace before running tests.');
+      if (!request.include) await refresh();
+      const selected = selectTests(controller.items, request);
+      const run = controller.createTestRun(request, 'Racket package tests');
+      const cancellation = new vscode.CancellationTokenSource();
+      const cancelProfile = token.onCancellationRequested(() => cancellation.cancel());
+      const cancelRun = run.token.onCancellationRequested(() => cancellation.cancel());
+      if (token.isCancellationRequested) cancellation.cancel();
+      activeRuns.add(cancellation);
+      try {
+        for (const item of selected) {
+          if (cancellation.token.isCancellationRequested) { run.skipped(item); continue; }
+          if (cases.has(item)) {
+            run.errored(item, new vscode.TestMessage('raco test runs files. Select a file or workspace folder for package policies.'));
+            continue;
+          }
+          run.started(item);
+          try {
+            const target = await saveDocument(await vscode.workspace.openTextDocument(item.uri));
+            run.appendOutput('Running raco test with package policies. Output is in the dedicated task terminal.\r\n', undefined, item);
+            const result = await runPackageTask({ folder: vscode.workspace.getWorkspaceFolder(item.uri),
+              cwd: target.cwd, executable: target.racketExecutable }, `Test ${item.label}`,
+              ['test', '--process', '--modules', '--timeout', '+inf.0', '--', item.uri.fsPath], cancellation.token);
+            if (cancellation.token.isCancellationRequested) run.skipped(item);
+            else if (result.exitCode === 0) run.passed(item);
+            else if (result.exitCode === undefined) run.errored(item, new vscode.TestMessage('raco test did not finish; see its task terminal.'));
+            else run.failed(item, new vscode.TestMessage('raco test failed; see its task terminal.'));
+          } catch (error) {
+            if (cancellation.token.isCancellationRequested) run.skipped(item);
+            else run.errored(item, new vscode.TestMessage(error.message));
+          }
+        }
+      } finally {
+        run.end(); cancelRun.dispose(); cancelProfile.dispose(); activeRuns.delete(cancellation); cancellation.dispose();
+      }
+    });
+  packageProfile.tag = fileTag;
   const watcher = vscode.workspace.createFileSystemWatcher('**/*.{rkt,rktl,ss,scm,scrbl}');
   let refreshTimer;
   function scheduleRefresh() {

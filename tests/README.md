@@ -31,8 +31,16 @@ and is explicitly included in both workflows.
 To debug a real test, open `tests/protocol-inspection.rkt`, set a breakpoint on
 `(define in (open-input-bytes ...))`, and run **Racket: Debug Tests in Current
 File**. Inspect `message`, step, or continue to finish the suite. **Debug Test**
-in the Testing view uses the same profile. Results are currently per file;
-RackUnit case names and failed source locations appear in failure details.
+in the Testing view uses the same profile. Direct named cases and `run-tests`
+calls appear under their files. Running a suite adds its nested cases with
+separate results and failure locations. Select a nested case to Run, Debug or
+collect Coverage; suite construction and fixtures still run. Generated cases
+are discovered during execution, never by opening a file.
+
+For package policies, choose **Run with package policies (raco test)** on files.
+Racket applies omissions, arguments, timeouts and other native policies; results
+are per file and output appears in the dedicated task terminal. **Racket: Test
+Package** remains available for an entire installed package.
 
 This workspace sets `racketdap.testing.sourceRoots` to `tests` and `experiments`.
 That makes Debug Test instrument the test code; the debugger tests themselves

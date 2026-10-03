@@ -54,16 +54,19 @@
           [else (reject)]))
       (for/list ([form (in-list body)] #:unless (setup? form))
         (define xs (parts form))
-        ;; A suite is one selectable invocation. Its own runner retains control
-        ;; of nested tests and fixtures; discovery never constructs the suite.
+        ;; Record runner calls without constructing their tests. Bound suites
+        ;; and generated cases are resolved only during an explicit test run.
         (define name
           (cond
             [(and (eq? (head form) 'test-case) (>= (length xs) 3)) (cadr xs)]
             [(and (eq? (head form) 'run-tests) (memv (length xs) '(2 3)))
-             (define suite (parts (cadr xs)))
-             (unless (and (>= (length suite) 2) (eq? (head (cadr xs)) 'test-suite))
-               (reject))
-             (cadr suite)]
+             (define argument (cadr xs))
+             (define suite (syntax->list argument))
+             (cond [(and suite (>= (length suite) 2)
+                         (eq? (syntax-e (car suite)) 'test-suite)
+                         (string? (syntax-e (cadr suite)))) (cadr suite)]
+                   [(identifier? argument) (datum->syntax argument (symbol->string (syntax-e argument)))]
+                   [else #'"RackUnit tests"])]
             [else (reject)]))
         (unless (string? (syntax-e name)) (reject))
         (hasheq 'id (syntax-position form) 'name (syntax-e name)

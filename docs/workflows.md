@@ -26,15 +26,29 @@ Expanding a file or opening it in the editor reads its current buffer using the
 standard datum reader, with custom readers disabled. This performs no expansion
 or execution. Direct literal-named RackUnit `test-case` forms in `racket` and
 `racket/base` modules become child items with source ranges. Discovery accepts
-module setup definitions/imports and direct cases, including `begin` and merged
-`module+ test` bodies. Dynamic test generation, suites, mixed checks and cases,
-custom readers, and unfamiliar body forms keep whole-file execution.
+module setup definitions/imports, direct cases and `run-tests` calls, including
+`begin` and merged `module+ test` bodies. Suites can be inline, held in variables,
+imported or computed. Custom readers, mixed checks and cases, and unfamiliar
+body forms keep whole-file execution.
 
 Selected cases share one normal file execution, preserving module setup. Their
 source positions distinguish duplicate names; a source hash rejects stale
 selections before user code runs. A small syntax wrapper validates the RackUnit
 binding at the original call site and delegates selected cases unchanged to
-RackUnit. Full file runs report individual results where discovery is supported.
+RackUnit. Explicit runner calls use the public `fold-test-results` and
+`run-test-case` APIs to supply nested Test Explorer results. RackUnit retains
+suite construction, fixture order and check semantics. Its public formatter
+supplies failure details; Test Explorer supplies the runner summary.
+
+Nested and generated cases appear after an explicit run, with suite paths and
+separate results. They support Run, Debug and Coverage. Their identities combine
+sibling ordinals and names; selection rejects a changed source file or a missing
+runtime path. Selecting a case still traverses the suite and runs its construction
+and fixtures, but skips other case bodies. Generated tests should have stable
+names and ordering for individual reruns. Run the suite to refresh changed
+dynamic inventories. Automatic discovery never constructs or executes tests.
+
+Full file runs report individual results where discovery is supported.
 At execution time the loader asks
 Racket whether the `test` submodule exists, then loads that submodule or the
 root module. It never starts `main` as a fallback or instantiates the parent of
@@ -85,20 +99,31 @@ The worker emits `racketdap/test` events:
   source text, not a newly read file that may have changed.
 - `kind: "summary"`: `status` (`passed`, `failed`, or `errored`), `failed`, and
   `total` counts. A failed or errored run exits nonzero.
-- `kind: "case"`: source-position `id`, literal `name`, and `status` (`started`,
-  `passed`, or `failed`) for discovered cases. The editor marks incomplete cases
-  as errored, or skipped when cancelled.
+- `kind: "case"`: source-position `id`, `name`, and `status` (`started`,
+  `passed`, `failed`, `errored`, or `skipped`). Nested cases add a `path` array of
+  `[siblingOrdinal, name]` components, including the outer suite; unnamed cases
+  use `false`. `testSelection` retains `sourceHash` and root `ids`, with optional
+  `cases: [{id, path}]` to restrict those roots to particular nested cases.
+  Roots absent from `cases` run completely. Incomplete cases become errored,
+  or skipped when cancelled.
 
 Program stdout/stderr remain ordinary output. No terminal text is parsed to
 decide success or extract failures. Missing final reports, including early
 process exits, are errors rather than successful test runs.
 
-Source details are available for direct checks and immediately executed test
-cases. Suites or custom runners that replace RackUnit's hooks still contribute
-logged counts; their detailed failure output remains available in Test Results.
-This does not provide full `raco test` command-line compatibility. Test Explorer does not implement package
-`info.rkt` test policies or arbitrary test frameworks. The separate
-[Test Package command](packages.md) delegates package policies to `raco test`.
+Source details are available for direct checks, immediately executed test cases
+and cases within supported runner calls. Other custom runners still contribute
+logged counts and their own output.
+
+Choose **Run with package policies (raco test)** in Test Explorer to delegate
+selected files to `raco test --process --modules --timeout +inf.0`. This enables
+per-file timeouts while leaving the default unlimited. Racket handles `info.rkt`
+omissions, arguments, timeouts and locks. Standard error retains native behavior. Results reflect each
+native process's exit status, including a successful omission; native output
+appears in the task terminal. This profile runs files and supports cancellation.
+The ordinary Run, Debug and Coverage profiles provide individual results and
+instrumentation, without imposing package runner policies. Use
+[Test Package](packages.md) to traverse an entire installed package.
 Use the include/exclude
 settings to select files; the working directory is the owning workspace.
 `racketdap.testing.sourceRoots` controls source instrumentation for Debug Test and coverage,

@@ -283,19 +283,20 @@ not execute code. Expand a file or open it in the editor to discover direct,
 literal-named RackUnit `test-case` forms in standard `racket` and `racket/base`
 modules. Run or Debug a case from its gutter control, Test Explorer, or the
 normal **Test at Cursor** commands. Duplicate names remain separate cases.
-An inline `(run-tests (test-suite "name" ...))` is also discoverable as one
-selectable item. Its nested tests run together through RackUnit, preserving
-suite setup and cleanup. The optional `run-tests` verbosity argument is supported.
-A suite reports its overall result and check counts; nested failure details
-remain in RackUnit's output, governed by that verbosity setting.
-Suites referenced through variables, dynamically named tests, other readers,
-and mixed test forms retain whole-file execution. Run or Debug one file, a workspace folder,
+Calls to `run-tests` are also discoverable, including suites held in variables
+or built dynamically. Run a suite to see its nested cases and individual results.
+Each nested case supports Run, Debug and Coverage. Suite construction and
+fixtures still run when selecting a case; other case bodies are skipped.
+Generated tests need stable names and ordering for individual reruns. Run the
+suite again to refresh its inventory. Opening or refreshing files never executes
+their tests. Other readers, custom runners and mixed test forms retain
+whole-file execution. Run or Debug one file, a workspace folder,
 or all discovered files. Each file runs its `test` submodule if present, otherwise its module body;
 it does not automatically run `main`. Each file has a fresh process. Cancel
 stops the current test and skips queued files without stopping other sessions.
 
 Results include logged check counts, test output, and clickable failure
-locations for direct RackUnit checks and immediately executed test cases.
+locations for direct RackUnit checks and cases inside discovered suites.
 Explicitly run suites also contribute their RackUnit counts; custom runners
 that replace the reporting hooks may provide details only in test output.
 Teaching-language checks such as `check-expect` also report counts and failure
@@ -311,8 +312,12 @@ normally, so set a source breakpoint to investigate them.
 Configure `racketdap.testing.include` and `racketdap.testing.exclude` to choose
 files. Generated directories, vendored code, and `info.rkt` are excluded by
 default. These settings govern discovery; **Test Current File** explicitly runs
-the selected file. Package `info.rkt` test policies are not yet integrated.
-Changes to source invalidate previous results.
+the selected file. Choose **Run with package policies (raco test)** on files to
+apply omissions, arguments, timeouts and other native policies. This profile
+reports file results and shows native output in its task terminal; cancellation
+stops its task. Ordinary Run, Debug and Coverage retain individual results and
+instrumentation without imposing package policies. **Racket: Test Package**
+runs an entire installed package. Changes to source invalidate previous results.
 
 Use VS Code's **Run Tests with Coverage** controls to see executed and unexecuted
 expressions in the Test Coverage view and editor. Coverage combines completed

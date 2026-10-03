@@ -63,10 +63,15 @@ adds execution overhead. Package selection is explicit and is not transitive.
 
 **Test Package** delegates to Racket's package runner, preserving metadata such
 as `test-omit-paths` and `test-command-line-arguments`. Results appear in its
-task terminal. Test Explorer continues to provide file-level RackUnit Run and
-Debug profiles with structured failures; it does not yet interpret all package
-test metadata. To inspect a package test, open its source and use Debug Test,
-or use a launch configuration with the required arguments and environment.
+task terminal. Test Explorer's **Run with package policies (raco test)** profile
+uses the same task mechanism for selected files, with `--process --modules` so
+Racket applies file policies. Cancelling its Test Explorer run terminates its
+own task. It reports native exit results and keeps output in the task terminal.
+
+The ordinary Run, Debug and Coverage profiles support individual RackUnit cases
+and structured failures. To inspect a package test, use Debug Test or a launch
+configuration with its required arguments and environment; these instrumented
+runs do not reproduce the native package runner's policies.
 
 The package API returns structured data through a small Racket helper, using
 `pkg/lib` and `pkg/path`. The editor never parses `raco pkg show` tables.

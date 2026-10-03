@@ -91,6 +91,11 @@ def prepare_run(root, dogfood=False):
                         ignore=shutil.ignore_patterns('compiled', '__pycache__'))
     shutil.copytree(root / 'tests', output / 'harness',
                     ignore=shutil.ignore_patterns('compiled', '__pycache__'))
+    # Keep controller-level checks on the same source snapshot as the verified artifact.
+    extension_source = output / 'harness' / 'extension'
+    extension_source.mkdir()
+    for source in (root / 'vscode').glob('*.js'):
+        shutil.copyfile(source, extension_source / source.name)
     for name in ('user', 'extensions', 'empty-racket-addon'):
         (output / name).mkdir()
     settings = output / 'user/User/settings.json'

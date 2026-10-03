@@ -10,6 +10,7 @@ exports.run = async function () {
   assert.ok(extension, 'Packaged extension is available');
   await extension.activate();
   const workspace = vscode.workspace.workspaceFolders[0];
+  const testExplorerChecks = await require('./vscode-test-explorer').run(extension, workspace);
   const languageChecks = await require('./vscode-language').run(extension, workspace);
   const macroChecks = await require('./vscode-macro-stepper').run(extension, workspace);
   const rhombusChecks = process.env.RACKETDAP_TEST_RHOMBUS === '1'
@@ -345,7 +346,7 @@ exports.run = async function () {
       for (const owner of ownershipSessions) await vscode.debug.stopDebugging(owner);
     }
     const report = { passed: true, extension: extension.id, version: extension.packageJSON.version,
-      vscode: vscode.version, checks: [...languageChecks, ...macroChecks, ...rhombusChecks, ...workflowChecks, ...packageChecks, ...imageChecks, 'activation', 'language registration', 'gutter breakpoint', 'stack',
+      vscode: vscode.version, checks: [...languageChecks, ...macroChecks, ...rhombusChecks, ...workflowChecks, ...testExplorerChecks, ...packageChecks, ...imageChecks, 'activation', 'language registration', 'gutter breakpoint', 'stack',
         'captured source language', 'F9 adds verified breakpoint in captured source', 'F9 removes breakpoint',
         'captured source semantic highlighting', 'captured source language hover', 'stale source excludes language results',
         'captured source definitions and references across unopened files', 'completed session excludes source navigation',

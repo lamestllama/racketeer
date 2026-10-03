@@ -6,6 +6,31 @@ const { promisify } = require('node:util');
 const { randomUUID } = require('node:crypto');
 const execute = promisify(execFile);
 
+// Shared task ownership keeps package commands and Test Explorer cancellation aligned.
+async function runPackageTask(selected, label, args, token) {
+  const id = randomUUID();
+  const operation = new vscode.Task({ type: 'racket-package', id }, selected.folder || vscode.TaskScope.Workspace, label, 'Racket',
+    new vscode.ProcessExecution(selected.executable, ['-l', 'raco', '--', ...args], { cwd: selected.cwd }), []);
+  operation.presentationOptions = { reveal: vscode.TaskRevealKind.Always, panel: vscode.TaskPanelKind.Dedicated };
+  const subscriptions = [];
+  let execution;
+  subscriptions.push(token?.onCancellationRequested(() => execution?.terminate()));
+  const done = new Promise(resolve => {
+    subscriptions.push(vscode.tasks.onDidEndTaskProcess(event => {
+      if (event.execution.task.definition.id === id) resolve({ exitCode: event.exitCode });
+    }), vscode.tasks.onDidEndTask(event => {
+      // Tasks that fail to start a process have no process-exit event.
+      if (event.execution.task.definition.id === id) resolve({ exitCode: undefined });
+    }));
+  });
+  try {
+    if (token?.isCancellationRequested) return { exitCode: undefined };
+    execution = await vscode.tasks.executeTask(operation);
+    if (token?.isCancellationRequested) execution.terminate();
+    return await done;
+  } finally { subscriptions.forEach(subscription => subscription?.dispose()); }
+}
+
 function registerPackages(context) {
   async function target() {
     const uri = vscode.window.activeTextEditor?.document.uri;
@@ -50,31 +75,15 @@ function registerPackages(context) {
     return choice?.pkg;
   }
   async function task(selected, label, args, changesPackages = false) {
-    const id = randomUUID();
-    const operation = new vscode.Task({ type: 'racket-package', id }, selected.folder, label, 'Racket',
-      new vscode.ProcessExecution(selected.executable, ['-l', 'raco', '--', ...args], { cwd: selected.cwd }), []);
-    operation.presentationOptions = { reveal: vscode.TaskRevealKind.Always, panel: vscode.TaskPanelKind.Dedicated };
-    const subscriptions = [];
-    const done = new Promise(resolve => {
-      subscriptions.push(vscode.tasks.onDidEndTaskProcess(event => {
-        if (event.execution.task.definition.id === id) resolve({ exitCode: event.exitCode });
-      }), vscode.tasks.onDidEndTask(event => {
-        // Tasks that fail to start a process have no process-exit event.
-        if (event.execution.task.definition.id === id) resolve({ exitCode: undefined });
-      }));
-    });
-    try {
-      await vscode.tasks.executeTask(operation);
-      const result = await done;
-      if (result.exitCode !== 0) throw new Error(`${label} did not complete successfully; see its task terminal.`);
-      if (changesPackages) {
-        try { await vscode.commands.executeCommand('racketdap.restartLanguageServer'); }
-        catch (error) {
-          void vscode.window.showWarningMessage(`Package change succeeded, but language analysis could not restart: ${error.message}`);
-        }
+    const result = await runPackageTask(selected, label, args);
+    if (result.exitCode !== 0) throw new Error(`${label} did not complete successfully; see its task terminal.`);
+    if (changesPackages) {
+      try { await vscode.commands.executeCommand('racketdap.restartLanguageServer'); }
+      catch (error) {
+        void vscode.window.showWarningMessage(`Package change succeeded, but language analysis could not restart: ${error.message}`);
       }
-      return result;
-    } finally { subscriptions.forEach(subscription => subscription.dispose()); }
+    }
+    return result;
   }
   const actions = {
     async listPackages(selected) { return inventory(selected); },
@@ -115,7 +124,7 @@ function registerPackages(context) {
     },
     async testPackage(selected, name) {
       const pkg = await choosePackage(selected, 'Test Racket Package', name);
-      if (pkg) return task(selected, `Test package ${pkg.name}`, ['test', '--package', '--', pkg.name]);
+      if (pkg) return task(selected, `Test package ${pkg.name}`, ['test', '--package', '--timeout', '+inf.0', '--', pkg.name]);
     },
     async setupPackage(selected, name) {
       const pkg = await choosePackage(selected, 'Build Racket Package', name, { userOnly: true });
@@ -157,4 +166,4 @@ function registerPackages(context) {
   }
 }
 
-module.exports = { registerPackages };
+module.exports = { registerPackages, runPackageTask };

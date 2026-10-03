@@ -4,18 +4,24 @@
 ;; same instances used by its tests. Framework access uses public exports.
 (require rackunit raco/testing racket/list
          (prefix-in teaching: test-engine/test-engine))
-(provide make-test-runner call-with-discovered-test)
+(provide make-test-runner call-with-discovered-test run-discovered-tests)
 
 (define current-test-events (make-parameter void))
 (define current-test-selection (make-parameter #f))
+(define current-test-paths (make-parameter '()))
+;; Retain RackUnit's public default formatter before project code configures
+;; check handlers. Rendering a suite result must not invoke project handlers.
+(define display-check-result (current-check-handler))
 
 (define (teaching-failures)
   (define teaching (teaching:current-test-object))
   (append (teaching:test-object-failed-checks teaching)
           (teaching:test-object-signature-violations teaching)))
 
-(define (call-with-discovered-test id name thunk)
+(define (call-with-discovered-test id name thunk [suite? #f])
   (when (or (not (current-test-selection)) (member id (current-test-selection)))
+    (when (and (not suite?) (ormap (lambda (item) (= id (hash-ref item 'id))) (current-test-paths)))
+      (error 'test-selection "Nested selections require a RackUnit runner call."))
     (define emit (current-test-events))
     (define before (car (test-report)))
     (define previous (teaching-failures))
@@ -51,7 +57,64 @@
                         'position (srcloc-position loc)))
       base))
 
-(define (make-test-runner emit [selection #f])
+;; RackUnit's public fold owns suite construction, fixtures and check semantics.
+;; Paths include sibling ordinals and names so duplicate names remain distinct.
+;; Traversal still occurs during selection; only unselected case bodies are skipped.
+(define (run-discovered-tests id tests [mode 'normal])
+  (unless (memq mode '(quiet normal verbose))
+    (raise-argument-error 'run-tests "(or/c 'quiet 'normal 'verbose)" mode))
+  (define emit (current-test-events))
+  (define selected
+    (filter (lambda (item) (= id (hash-ref item 'id))) (current-test-paths)))
+  (define missing (remove-duplicates (map (lambda (item) (hash-ref item 'path)) selected)))
+  (define parents '())
+  (define next 0)
+  (define (next-path name)
+    (begin0 (append (map car (reverse parents)) (list (list next (or name #f))))
+      (set! next (add1 next))))
+  (define total 0)
+  (define failed
+    (fold-test-results
+     (lambda (failure count) (+ count failure)) 0 tests
+     #:fdown (lambda (name count)
+               (define path (next-path name))
+               (set! parents (cons (cons (last path) next) parents))
+               (set! next 0)
+               count)
+     #:fup (lambda (_ count)
+             (set! next (cdar parents))
+             (set! parents (cdr parents))
+             count)
+     #:run
+     (lambda (name action)
+       (define path (next-path name))
+       (define event (hasheq 'kind "case" 'id id 'path path 'name (or name "Unnamed test")))
+       (define (status value) (emit (hash-set event 'status value)))
+       (cond
+         [(and (pair? selected) (not (member path missing))) (status "skipped") 0]
+         [else
+          (set! missing (remove path missing))
+          (status "started")
+          (define before (car (test-report)))
+          (define result (run-test-case name action))
+          (define passed? (test-success? result))
+          (test-log! passed?)
+          (set! total (add1 total))
+          (unless passed?
+            (define value (if (test-failure? result) (test-failure-result result) (test-error-result result)))
+            (parameterize ([current-test-name name])
+              (emit (failure-message value))
+              (display-check-result value)))
+          (status (cond [(test-error? result) "errored"]
+                        [(or (not passed?) (> (car (test-report)) before)) "failed"]
+                        [else "passed"]))
+          (if passed? 0 1)]))))
+  (unless (null? missing)
+    (error 'run-tests "Selected tests changed or disappeared. Run the suite again to refresh its results."))
+  (unless (eq? mode 'quiet) (printf "~a tests, ~a failures.\n" total failed))
+  failed)
+
+(define (make-test-runner emit [selection #f] [paths '()])
   (define initial (test-report))
   (define reported? #f)
   (define (observe around)
@@ -100,6 +163,7 @@
                     [current-test-case-around (observe (current-test-case-around))]
                     [current-test-events emit]
                     [current-test-selection selection]
+                    [current-test-paths paths]
                     [current-test-invocation-directory (current-directory)])
        (thunk))
      (report "passed"))

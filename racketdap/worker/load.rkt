@@ -397,7 +397,8 @@
            (if test?
                (let-values ([(run-tests report-error)
                              ((dynamic-require testing-path 'make-test-runner) on-test-event
-                              (and test-selection (hash-ref test-selection 'ids)))])
+                              (and test-selection (hash-ref test-selection 'ids))
+                              (if test-selection (hash-ref test-selection 'cases '()) '()))])
                  (set! report-test-error report-error)
                  (run-tests execute))
                (execute))))))

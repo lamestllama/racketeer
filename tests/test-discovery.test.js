@@ -50,8 +50,7 @@ test('source discovery handles comments, Unicode, duplicate names and merged tes
   assert.equal(cases[0].endColumn, ' (test-case "same λ😀" (check-true #t))'.length);
   for (const source of ['', '#lang unknown/reader\n(error "no")', '#lang racket\n#reader "missing.rkt"',
     '#lang racket\n(module+ test (test-case "unfinished"',
-    '#lang racket\n(require rackunit)\n(for ([i 3]) (test-case "dynamic" (check-true #t)))',
-    '#lang racket\n(require rackunit rackunit/text-ui)\n(define suite (test-suite "suite"))\n(run-tests suite)']) {
+    '#lang racket\n(require rackunit)\n(for ([i 3]) (test-case "dynamic" (check-true #t)))']) {
     assert.deepEqual(await discover(source), [], source);
   }
 });
@@ -72,11 +71,89 @@ test('inline suite discovery uses the runner range and never evaluates names, fi
   assert.equal(found[0].endLine, 6);
   assert.equal(found[0].endColumn, source.split('\n')[6].length - 1);
   for (const body of ['(test-suite "unrun" (test-case "case" (error "no")))',
-    '(run-tests (test-suite (error "dynamic name") (check-true #t)))',
     '(run-tests (test-suite "suite")) (displayln "mixed")',
     '(custom-runner (test-suite "suite"))']) {
     assert.deepEqual(await discover('#lang racket/base\n' + body), [], body);
   }
+});
+
+test('bound and computed suites are discovered without evaluating their construction', async () => {
+  const source = '#lang racket/base\n(require rackunit rackunit/text-ui)\n' +
+    '(define suite (error "must not evaluate"))\n(run-tests suite)\n' +
+    '(run-tests (test-suite (error "dynamic name") (check-true #t)))\n' +
+    '(run-tests (build-tests))\n';
+  assert.deepEqual((await discover(source)).map(item => item.name), ['suite', 'RackUnit tests', 'RackUnit tests']);
+});
+
+test('runtime suite results distinguish duplicate and generated cases and preserve selective fixtures', async t => {
+  const source = '#lang racket/base\n(require rackunit rackunit/text-ui)\n' +
+    '(define suite (test-suite "outer λ"\n' +
+    ' #:before (lambda () (displayln "before")) #:after (lambda () (displayln "after"))\n' +
+    ' (test-suite "same" (test-case "duplicate" (displayln "first") (check-true #f)))\n' +
+    ' (test-suite "same" (test-case "duplicate" (displayln "second") (check-true #t)))\n' +
+    ' (for ([n (in-range 2)]) (test-case (format "dynamic ~a" n) (check-equal? n n)))))\n' +
+    '(run-tests suite \'quiet)\n';
+  const found = await discover(source);
+  const full = await launch(t, source);
+  await ok(full.client.request('configurationDone'));
+  assert.deepEqual((await full.client.event('racketdap/test', e => e.body.kind === 'summary')).body,
+    { kind: 'summary', status: 'failed', failed: 1, total: 4 });
+  await full.client.event('terminated');
+  const cases = full.client.events.filter(e => e.event === 'racketdap/test' && e.body.path && e.body.status === 'started').map(e => e.body);
+  assert.deepEqual(cases.map(item => item.name), ['duplicate', 'duplicate', 'dynamic 0', 'dynamic 1']);
+  assert.notDeepEqual(cases[0].path, cases[1].path);
+  const failure = full.client.events.find(e => e.event === 'racketdap/test' && e.body.kind === 'failure');
+  assert.equal(failure.body.location.line, 5);
+  for (const mode of [{}, { noDebug: false }, { coverage: true }]) {
+    const selected = await launch(t, source, undefined, { ...mode, testSelection: {
+      sourceHash: createHash('sha1').update(source).digest('hex'), ids: [found[0].id],
+      cases: [{ id: found[0].id, path: cases[1].path }]
+    } });
+    await ok(selected.client.request('configurationDone'));
+    assert.deepEqual((await selected.client.event('racketdap/test', e => e.body.kind === 'summary')).body,
+      { kind: 'summary', status: 'passed', failed: 0, total: 1 });
+    await selected.client.event('terminated');
+    const output = selected.client.events.filter(e => e.event === 'output').map(e => e.body.output).join('');
+    assert.deepEqual(output.match(/before|first|second|after/g), ['before', 'second', 'after']);
+    const results = selected.client.events.filter(e => e.event === 'racketdap/test' && e.body.path && e.body.status !== 'started');
+    assert.deepEqual(results.map(e => e.body.status), ['skipped', 'passed', 'skipped', 'skipped']);
+  }
+});
+
+test('changed dynamic names and missing cases error without running another case', async t => {
+  const source = '#lang racket/base\n(require rackunit rackunit/text-ui)\n' +
+    '(run-tests (test-suite "suite" (test-case "current" (error "wrong case executed"))))\n';
+  const [{ id }] = await discover(source);
+  for (const target of [[[0, 'suite'], [0, 'old']], [[0, 'suite'], [1, 'current']]]) {
+    const { client } = await launch(t, source, undefined, { testSelection: {
+      sourceHash: createHash('sha1').update(source).digest('hex'), ids: [id], cases: [{ id, path: target }]
+    } });
+    await ok(client.request('configurationDone'));
+    assert.deepEqual((await client.event('racketdap/test', e => e.body.kind === 'summary')).body,
+      { kind: 'summary', status: 'errored', failed: 0, total: 0 });
+    await client.event('terminated');
+    const output = client.events.filter(e => e.event === 'output').map(e => e.body.output).join('');
+    assert.match(output, /Selected tests changed or disappeared/);
+    assert.doesNotMatch(output, /wrong case executed/);
+  }
+});
+
+test('public suite constructors and case errors preserve native logging', async t => {
+  const source = '#lang racket/base\n(require rackunit rackunit/text-ui)\n' +
+    '(define suite (make-test-suite "custom" (list\n' +
+    ' (make-test-case "error" (lambda () (error "case error")))\n' +
+    ' (make-test-case "passes" (lambda () (check-true #t))))))\n(run-tests suite)\n';
+  const { client, program } = await launch(t, source);
+  const native = await promisify(execFile)('racket', ['-e',
+    `(require raco/testing) (dynamic-require (string->path ${JSON.stringify(program)}) #f) (displayln (test-report))`]);
+  assert.match(native.stdout, /\(1 \. 3\)/);
+  await ok(client.request('configurationDone'));
+  assert.deepEqual((await client.event('racketdap/test', e => e.body.kind === 'summary')).body,
+    { kind: 'summary', status: 'failed', failed: 1, total: 3 });
+  await client.event('terminated');
+  assert.deepEqual(client.events.filter(e => e.event === 'racketdap/test' && e.body.path && e.body.status !== 'started')
+    .map(e => e.body.status), ['errored', 'passed']);
+  assert.equal(client.events.filter(e => e.event === 'racketdap/test' && e.body.kind === 'failure').length, 1);
 });
 
 test('selected suites retain nested execution, fixtures, counts and continued execution after failure', async t => {
@@ -98,7 +175,7 @@ test('selected suites retain nested execution, fixtures, counts and continued ex
     assert.deepEqual((await client.event('racketdap/test', e => e.body.kind === 'summary')).body,
       { kind: 'summary', status: 'failed', failed: 1, total: 2 });
     await client.event('terminated');
-    assert.deepEqual(client.events.filter(e => e.event === 'racketdap/test' && e.body.kind === 'case')
+    assert.deepEqual(client.events.filter(e => e.event === 'racketdap/test' && e.body.kind === 'case' && !e.body.path)
       .map(e => [e.body.id, e.body.status]), [[found[2].id, 'started'], [found[2].id, 'failed']]);
     const output = client.events.filter(e => e.event === 'output').map(e => e.body.output).join('');
     assert.deepEqual(output.match(/suite-(?:before|continued|after)/g),
@@ -107,10 +184,9 @@ test('selected suites retain nested execution, fixtures, counts and continued ex
   }
 });
 
-test('suite selection validates both public bindings before setup and preserves custom whole-file calls', async t => {
+test('suite selection validates the public runner binding before setup and preserves custom whole-file calls', async t => {
   for (const definition of [
-    '(define (run-tests suite) (displayln "custom runner"))',
-    '(define (test-suite name . tests) (displayln "custom suite") (make-test-suite name null))'
+    '(define (run-tests suite) (displayln "custom runner"))'
   ]) {
     const source = '#lang racket/base\n(require rackunit rackunit/text-ui)\n' + definition + '\n' +
       '(define setup (begin (displayln "setup executed") 1))\n(run-tests (test-suite "suite"))\n';
@@ -121,14 +197,14 @@ test('suite selection validates both public bindings before setup and preserves 
     assert.equal((await client.event('racketdap/test', e => e.body.kind === 'summary')).body.status, 'errored');
     await client.event('terminated');
     const output = client.events.filter(e => e.event === 'output').map(e => e.body.output).join('');
-    assert.match(output, /not RackUnit run-tests and test-suite/);
+    assert.match(output, /not RackUnit run-tests/);
     assert.doesNotMatch(output, /setup executed|custom runner|custom suite/);
     const whole = await launch(t, source);
     await ok(whole.client.request('configurationDone'));
     assert.equal((await whole.client.event('racketdap/test', e => e.body.kind === 'summary')).body.status, 'passed');
     await whole.client.event('terminated');
     assert.match(whole.client.events.filter(e => e.event === 'output').map(e => e.body.output).join(''), /setup executed/);
-    assert.equal(whole.client.events.filter(e => e.event === 'racketdap/test' && e.body.kind === 'case').length, 0);
+    assert.equal(whole.client.events.filter(e => e.event === 'racketdap/test' && e.body.kind === 'case' && !e.body.path).length, 0);
   }
 });
 
@@ -177,7 +253,7 @@ test('individual runs preserve setup and skip other cases even when names coinci
   assert.deepEqual((await client.event('racketdap/test', e => e.body.kind === 'summary')).body,
     { kind: 'summary', status: 'passed', failed: 0, total: 1 });
   await client.event('terminated');
-  assert.deepEqual(client.events.filter(e => e.event === 'racketdap/test' && e.body.kind === 'case')
+  assert.deepEqual(client.events.filter(e => e.event === 'racketdap/test' && e.body.kind === 'case' && !e.body.path)
     .map(e => [e.body.id, e.body.status]), [[cases[1].id, 'started'], [cases[1].id, 'passed']]);
 });
 
@@ -207,7 +283,7 @@ test('individual Debug Test retains live source breakpoints and RackUnit failure
       assert.match(output, /FAILURE/);
       assert.match(output, /cases[.]rkt:7:/);
     }
-    assert.equal(client.events.filter(e => e.event === 'racketdap/test' && e.body.status === 'failed' && e.body.kind === 'case').length, 1);
+    assert.equal(client.events.filter(e => e.event === 'racketdap/test' && e.body.status === 'failed' && e.body.kind === 'case' && !e.body.path).length, 1);
   }
 });
 
@@ -264,6 +340,6 @@ test('whole-file runs report separate case outcomes and retain RackUnit check co
   assert.deepEqual((await client.event('racketdap/test', e => e.body.kind === 'summary')).body,
     { kind: 'summary', status: 'failed', failed: 1, total: 2 });
   await client.event('terminated');
-  assert.deepEqual(client.events.filter(e => e.event === 'racketdap/test' && e.body.kind === 'case')
+  assert.deepEqual(client.events.filter(e => e.event === 'racketdap/test' && e.body.kind === 'case' && !e.body.path)
     .map(e => [e.body.name, e.body.status]), [['pass', 'started'], ['pass', 'passed'], ['fail', 'started'], ['fail', 'failed']]);
 });
