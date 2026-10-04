@@ -27,12 +27,6 @@ exports.run = async function (_extension, workspace) {
     assert.deepEqual(fs.readFileSync(file), bytes);
     assert.equal(custom()[0].isDirty, false);
     checks.push('Saving a read-only WXME view leaves its bytes unchanged');
-    if (process.env.RACKETDAP_WXME_SCREENSHOT_READY) {
-      fs.writeFileSync(process.env.RACKETDAP_WXME_SCREENSHOT_READY, 'ready');
-      const deadline = Date.now() + 15000;
-      while (!fs.existsSync(process.env.RACKETDAP_WXME_SCREENSHOT_READY + '.done') && Date.now() < deadline)
-        await new Promise(r => setTimeout(r, 100));
-    }
     await open(vscode.ViewColumn.Beside);
     assert.equal(custom().length, 2);
     await vscode.window.tabGroups.close(custom()[0]);
@@ -45,6 +39,23 @@ exports.run = async function (_extension, workspace) {
     assert.equal(custom()[0].isDirty, false);
     await vscode.window.tabGroups.close(custom());
     checks.push('WXME closes and reopens after a file replacement');
+    fs.copyFileSync(path.join(__dirname, 'fixtures/wxme/boxes.wxme'), file);
+    const boxes = fs.readFileSync(file);
+    await open(vscode.ViewColumn.One);
+    await vscode.commands.executeCommand('workbench.action.files.save');
+    assert.equal(custom()[0].isDirty, false); assert.deepEqual(fs.readFileSync(file), boxes);
+    checks.push('Nested WXME editors and comment boxes open read-only with unchanged bytes');
+    if (process.env.RACKETDAP_WXME_SCREENSHOT_READY) {
+      fs.writeFileSync(process.env.RACKETDAP_WXME_SCREENSHOT_READY, 'ready');
+      const deadline = Date.now() + 15000;
+      while (!fs.existsSync(process.env.RACKETDAP_WXME_SCREENSHOT_READY + '.done') && Date.now() < deadline)
+        await new Promise(r => setTimeout(r, 100));
+    }
+    await vscode.window.tabGroups.close(custom());
+    await open(vscode.ViewColumn.One);
+    assert.deepEqual(fs.readFileSync(file), boxes);
+    await vscode.window.tabGroups.close(custom());
+    checks.push('Nested WXME views close and reopen without changing their objects');
     const ordinary = path.join(directory, 'ordinary.rkt');
     fs.writeFileSync(ordinary, '#lang racket/base\n42\n');
     await vscode.commands.executeCommand('vscode.open', vscode.Uri.file(ordinary));

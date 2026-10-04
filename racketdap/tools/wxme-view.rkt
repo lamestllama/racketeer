@@ -1,7 +1,7 @@
 #lang racket/base
 
 (require file/sha1 json net/base64 racket/class racket/draw racket/list racket/port
-         wxme wxme/image wxme/editor)
+         wxme wxme/image wxme/editor wxme/comment)
 
 (provide decode-wxme)
 
@@ -40,46 +40,56 @@
   (when (> (bytes-length bytes) limit) (error 'wxme "File exceeds the viewer limit (32 MiB)."))
   (unless (is-wxme-stream? (open-input-bytes bytes))
     (error 'wxme "This is not a WXME document. Use the Text Editor to view ordinary source."))
-  ;; Inspect class names before decoding; never load readers named by a document.
+  ;; Inspect class names before decoding; admit only the built-in readers and
+  ;; the documented comment reader. Other document-supplied readers stay unloaded.
   (define-values (snips data) (extract-used-classes (open-input-bytes bytes)))
-  (define unknown (filter (lambda (s) (not (member s '("wxtext" "wxtab" "wximage" "wxmedia")))) snips))
+  (define (supported? s)
+    (or (member s '("wxtext" "wxtab" "wximage" "wxmedia"))
+        (member (string->lib-path s #f)
+                '((lib "comment.ss" "wxme") (lib "comment.rkt" "wxme")))))
+  (define unknown (filter (lambda (s) (not (supported? s))) snips))
   (unless (and (null? unknown) (null? data))
     (error 'wxme "Unsupported WXME object classes: ~a. The file has not been changed."
            (append unknown data)))
   ;; Wrapping specials prevents the codec from invoking readable<%> methods.
-  (define in (wxme-port->port (open-input-bytes bytes) #t vector))
-  (define text (open-output-string))
-  (define parts '())
   (define count 0)
   (define size 0)
   (define (charge! n)
     (set! size (+ size n))
     (when (> size limit) (error 'wxme "Decoded content exceeds the viewer limit (32 MiB).")))
-  (define (push! part)
-    (when (>= count 10000) (error 'wxme "Too many embedded objects."))
-    (set! count (add1 count))
-    (set! parts (cons part parts)))
-  (define (flush-text!)
-    (define s (get-output-string text))
-    (unless (equal? s "") (push! (hasheq 'kind "text" 'text s)))
-    (set! text (open-output-string)))
-  (let loop ()
-    (define v (read-char-or-special in))
-    (cond
-      [(eof-object? v) (flush-text!)]
-      [(char? v) (charge! (char-utf-8-length v)) (write-char v text) (loop)]
-      [else
-       (flush-text!)
-       (define object (vector-ref v 0))
-       (define part
-         (cond [(is-a? object image%) (image-part object)]
-               [(is-a? object editor%) (unsupported "Nested editor (not displayed)")]
-               [else (unsupported "Embedded object (not displayed)")]))
-       (charge! (string-length (hash-ref part 'data "")))
-       (push! part)
-       (loop)]))
-  (close-input-port in)
-  (hasheq 'parts (reverse parts) 'sourceHash (bytes->hex-string (sha256-bytes bytes))))
+  (define (read-parts in depth)
+    (when (> depth 32) (error 'wxme "Nested editors exceed the viewer limit (32 levels)."))
+    (define text (open-output-string))
+    (define parts '())
+    (define (push! part)
+      (when (>= count 10000) (error 'wxme "Too many embedded objects."))
+      (set! count (add1 count))
+      (set! parts (cons part parts)))
+    (define (flush-text!)
+      (define s (get-output-string text))
+      (unless (equal? s "") (push! (hasheq 'kind "text" 'text s)))
+      (set! text (open-output-string)))
+    (let loop ()
+      (define v (read-char-or-special in))
+      (cond
+        [(eof-object? v) (flush-text!)]
+        [(char? v) (charge! (char-utf-8-length v)) (write-char v text) (loop)]
+        [else
+         (flush-text!)
+         (define object (vector-ref v 0))
+         (define part
+           (cond [(is-a? object image%) (image-part object)]
+                 [(is-a? object editor%)
+                  (hasheq 'kind (if (is-a? object comment-editor%) "comment" "editor")
+                          'parts (read-parts (send object get-content-port) (add1 depth)))]
+                 [else (unsupported "Embedded object (not displayed)")]))
+         (charge! (string-length (hash-ref part 'data "")))
+         (push! part)
+         (loop)]))
+    (close-input-port in)
+    (reverse parts))
+  (hasheq 'parts (read-parts (wxme-port->port (open-input-bytes bytes) #t vector) 0)
+          'sourceHash (bytes->hex-string (sha256-bytes bytes))))
 
 (module+ main
   (with-handlers ([exn:fail? (lambda (e) (write-json (hasheq 'error (exn-message e))) (newline) (exit 1))])

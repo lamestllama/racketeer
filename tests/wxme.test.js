@@ -76,13 +76,46 @@ test('public codec preserves Unicode, tabs, text/image order, crop dimensions an
   assert.deepEqual(fs.readFileSync(fixture('images')), before);
 });
 
-test('empty and text-only WXME documents decode and nested editors remain visible placeholders', async () => {
+test('empty, text-only and nested WXME documents preserve their text and boundaries', async () => {
   assert.deepEqual((await decode(fixture('empty'))).parts, []);
   assert.deepEqual((await decode(fixture('text'))).parts, [{ kind: 'text', text: '#lang racket/base\n(define λ "😀")\n' }]);
   assert.deepEqual((await decode(fixture('nested'))).parts, [
-    { kind: 'text', text: 'before ' }, { kind: 'unsupported', label: 'Nested editor (not displayed)' },
+    { kind: 'text', text: 'before ' }, { kind: 'editor', parts: [{ kind: 'text', text: 'hidden text' }] },
     { kind: 'text', text: ' after\n' }
   ]);
+});
+
+test('nested comment boxes preserve text, Unicode, images and source bytes without evaluation', async t => {
+  const before = fs.readFileSync(fixture('boxes')), result = await decode(fixture('boxes'));
+  assert.equal(result.parts[0].text, 'before ');
+  const editor = result.parts[1]; assert.equal(editor.kind, 'editor');
+  assert.equal(editor.parts[0].text, 'inside ');
+  const comment = editor.parts[1]; assert.equal(comment.kind, 'comment');
+  assert.equal(comment.parts[0].text, 'comment λ 😀 <script>&\n(error "not executable")\n');
+  assert.deepEqual(comment.parts[1], (await decode(fixture('images'))).parts[1]);
+  assert.equal(editor.parts[2].text, ' after\n'); assert.equal(result.parts[2].text, ' after\n');
+  const html = harness(t).render(result, '<document>');
+  assert.match(html, /aria-label="Nested editor"/); assert.match(html, /aria-label="Comment box"/);
+  assert.match(html, /comment λ 😀 &lt;script&gt;&amp;/); assert.doesNotMatch(html, /<script/);
+  assert.ok(html.indexOf('Nested editor') < html.indexOf('Comment box'));
+  assert.equal((html.match(/<img /g) || []).length, 1);
+  assert.deepEqual(fs.readFileSync(fixture('boxes')), before);
+});
+
+test('an empty comment remains an explicit box between its surrounding text', async t => {
+  const result = await decode(fixture('empty-comment'));
+  assert.deepEqual(result.parts, [{ kind: 'text', text: 'left ' }, { kind: 'comment', parts: [] },
+    { kind: 'text', text: ' right\n' }]);
+  assert.match(harness(t).render(result, 'empty'), /aria-label="Comment box"/);
+});
+
+test('decoder and renderer accept 32 editor levels and refuse a deeper document without modifying it', async t => {
+  const h = harness(t), result = await decode(fixture('depth-limit'));
+  assert.equal((h.render(result, 'limit').match(/aria-label="Nested editor"/g) || []).length, 32);
+  assert.throws(() => h.render({ parts: [{ kind: 'editor', parts: result.parts }] }, 'too deep'), /32 levels/);
+  const before = fs.readFileSync(fixture('deep'));
+  await assert.rejects(decode(fixture('deep')), /32 levels/);
+  assert.deepEqual(fs.readFileSync(fixture('deep')), before);
 });
 
 test('custom readers are refused before module loading and bytes are preserved', async t => {
@@ -92,10 +125,12 @@ test('custom readers are refused before module loading and bytes are preserved',
   fs.writeFileSync(path.join(collection, 'reader.rkt'), `#lang racket/base\n(call-with-output-file ${JSON.stringify(marker)} (lambda (out) (display "loaded" out)))\n(error "CUSTOM READER WAS LOADED")\n`);
   const before = fs.readFileSync(fixture('custom')), old = process.env.PLTCOLLECTS;
   process.env.PLTCOLLECTS = directory + path.delimiter + (old || '');
-  try { await assert.rejects(decode(fixture('custom')), error => {
-    assert.match(error.message, /Unsupported WXME object classes/);
-    assert.doesNotMatch(error.message, /CUSTOM READER WAS LOADED/); return true;
-  }); } finally { if (old === undefined) delete process.env.PLTCOLLECTS; else process.env.PLTCOLLECTS = old; }
+  try {
+    for (const name of ['custom', 'nested-custom']) await assert.rejects(decode(fixture(name)), error => {
+      assert.match(error.message, /Unsupported WXME object classes/);
+      assert.doesNotMatch(error.message, /CUSTOM READER WAS LOADED/); return true;
+    });
+  } finally { if (old === undefined) delete process.env.PLTCOLLECTS; else process.env.PLTCOLLECTS = old; }
   assert.equal(fs.existsSync(marker), false, 'No custom reader side effects occurred');
   assert.deepEqual(fs.readFileSync(fixture('custom')), before);
 });

@@ -357,9 +357,10 @@ Debug REPL program input uses its associated integrated terminal.
 For a saved WXME source file, use **Open With → Racketeer WXME Viewer** to read
 text and embedded bitmap images in source order. The viewer is read-only and
 does not run the program. Ordinary Racket files still open in the text editor.
-Nested editors appear as labelled placeholders; other object classes are
-reported as unsupported. A changed file is marked in the view; close and reopen
-it to refresh. Unsaved text edits must be saved or reverted before viewing.
+Nested editors and comment boxes retain their boundaries, text and embedded
+images. Other object classes are reported as unsupported. A changed file is
+marked in the view; close and reopen it to refresh. Unsaved text edits must be
+saved or reverted before viewing.
 
 After an expression returns an image, choose **Racket: View Image** from the
 Command Palette or the preview button on the debug toolbar.
