@@ -226,6 +226,23 @@ test('index skips a duplicate startup snapshot', async t => {
   assert.equal(c.snapshots.length, 1, 'Initialization already supplies the current workspace');
 });
 
+test('only document open and close events permit verified index reuse', async t => {
+  const c = indexPeer(t), doc = c.open('definition.rkt', definition);
+  await c.index.start(); await c.refs(doc);
+  assert.equal(c.snapshots.at(-1).documentsOnly, false);
+  const consumer = c.open('uses.rkt', uses); await c.refs(doc);
+  assert.equal(c.snapshots.at(-1).documentsOnly, true);
+  consumer.isClosed = true; c.closed.emit(consumer); await c.refs(doc);
+  assert.equal(c.snapshots.at(-1).documentsOnly, true);
+  doc.version++; c.changed.emit({ document: doc, contentChanges: [{ text: definition }] });
+  await c.refs(doc);
+  assert.equal(c.snapshots.at(-1).documentsOnly, false);
+  c.disk.emit(doc.uri); await c.refs(doc);
+  assert.equal(c.snapshots.at(-1).documentsOnly, false);
+  c.index.refresh({ added: [] }); await c.refs(doc);
+  assert.equal(c.snapshots.at(-1).documentsOnly, false, 'Event payloads must not enable reuse');
+});
+
 test('index skips unchanged document notifications but synchronizes versions and content', async t => {
   const c = indexPeer(t), doc = c.open('definition.rkt', definition);
   await c.index.start(); await c.refs(doc);

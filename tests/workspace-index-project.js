@@ -51,7 +51,7 @@ async function project(t) {
   };
   const settings = { enabled: true, timeoutSeconds: 20 };
   const snapshot = () => ({ revision: ++revision, roots: [uri(directory)], documents: [...documents.values()], settings });
-  const update = () => connection.sendNotification('update', snapshot());
+  const update = (documentsOnly = false) => connection.sendNotification('update', { ...snapshot(), documentsOnly });
   const references = (key, position = { line: 2, character: 10 }, includeDeclaration = false, token = rpc.CancellationToken.None) => {
     const document = documents.get(key);
     return connection.sendRequest('references', { uri: key, identity: document.identity,

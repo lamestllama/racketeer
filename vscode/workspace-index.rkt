@@ -24,7 +24,7 @@
 
 (struct Settings (enabled? excluded max-files max-bytes timeout) #:transparent)
 (define default-excluded '(".git" "compiled" "node_modules" ".test-output" "dist" "build"))
-(struct Run (generation cancel done state indexed failures workspace documents buffers settings roots sources) #:mutable)
+(struct Run (generation cancel done state indexed failures workspace documents buffers settings roots sources reusable?) #:mutable)
 (define current-run #f)
 (define state-lock (make-semaphore 1))
 (define worker-slot (make-semaphore 1))
@@ -89,18 +89,15 @@
               [(list 'discover roots excluded limit)
                (cons 'ok (discover roots excluded limit))]
               [(list 'analyse path max-bytes buffer query)
-               (match-define (list contribution text count references) (analyse path max-bytes buffer query))
-               (if contribution (list 'ok (contribution->datum contribution) text count references) '(changed))]
+               (match-define (list contribution text count references disk-current?) (analyse path max-bytes buffer query))
+               (if contribution (list 'ok (contribution->datum contribution) text count references disk-current?) '(changed))]
+              [(list 'verify sources roots excluded limit buffers)
+               (list 'ok (and (for/and ([(file text) (in-hash buffers)])
+                               (and text (equal? text (hash-ref sources file #f))))
+                             (snapshot-current? sources roots excluded limit (hash))))]
               [(list 'rename sources roots excluded limit buffers path position name)
                (define (check-snapshot!)
-                 (match-define (list paths incomplete?) (discover roots excluded limit))
-                 (unless (and (not incomplete?)
-                              (set=? (list->set (hash-keys sources))
-                                     (set-union (list->set paths) (list->set (hash-keys buffers))))
-                              (for/and ([(file text) (in-hash sources)])
-                                (or (hash-has-key? buffers file)
-                                    (equal? text (call-with-input-file* file
-                                                   (lambda (in) (read-string (add1 (string-length text)) in)))))))
+                 (unless (snapshot-current? sources roots excluded limit buffers)
                    (error 'rename "Workspace files changed. Try Rename again.")))
                (check-snapshot!)
                (define result (workspace-rename sources path position name))
@@ -143,12 +140,24 @@
             (set-add! found path))))))
   (list (sort (set->list found) path<?) incomplete?))
 
+(define (snapshot-current? sources roots excluded limit buffers)
+  (with-handlers ([exn:fail:filesystem? (lambda (_) #f)])
+    (match-define (list paths incomplete?) (discover roots excluded limit))
+    (and (not incomplete?)
+         (set=? (list->set (hash-keys sources))
+                (set-union (list->set paths) (list->set (hash-keys buffers))))
+         (for/and ([(file text) (in-hash sources)])
+           (equal? text
+                   (if (hash-has-key? buffers file) (hash-ref buffers file)
+                       (call-with-input-file* file
+                         (lambda (in) (read-string (add1 (string-length text)) in)))))))))
+
 (define (analyse path max-bytes buffer query)
   (let/ec changed
     (define captured-text (and query (cadddr query)))
     (define bytes
       (with-handlers ([exn:fail:filesystem?
-                       (lambda (e) (if captured-text (changed (list #f #f 0 #f)) (raise e)))])
+                       (lambda (e) (if captured-text (changed (list #f #f 0 #f #f)) (raise e)))])
         (if buffer (string->bytes/utf-8 buffer)
             (call-with-input-file* path (lambda (in) (read-bytes (add1 max-bytes) in))))))
     (unless (and (bytes? bytes) (<= (bytes-length bytes) max-bytes))
@@ -157,7 +166,7 @@
     (when (and captured-text
                (not (equal? (regexp-replace* #rx"\r\n" captured-text "\n")
                             (regexp-replace* #rx"\r\n" text "\n"))))
-      (changed (list #f text 0 #f)))
+      (changed (list #f text 0 #f #f)))
     ;; Trace construction and queries use a fresh namespace as well as expansion.
     ;; A previously loaded dependency must not survive a watched change.
     (parameterize ([current-namespace (make-base-namespace)]
@@ -170,11 +179,14 @@
         (+ (hash-count (Doc-Contribution-definitions contribution))
            (for/sum ([locations (in-hash-values (Doc-Contribution-references contribution))])
              (length locations))))
-      ;; Detect a primary-file write even if its watcher notification is delayed.
-      (unless (or buffer
-                  (equal? bytes (call-with-input-file* path
-                                  (lambda (in) (read-bytes (add1 max-bytes) in)))))
-        (if captured-text (changed (list #f text 0 #f))
+      ;; Imports use disk text, so analysis with an unsaved buffer cannot be
+      ;; reused after that buffer is saved, even if its text stays unchanged.
+      (define disk-current?
+        (with-handlers ([exn:fail:filesystem? (lambda (_) #f)])
+          (equal? bytes (call-with-input-file* path
+                          (lambda (in) (read-bytes (add1 max-bytes) in))))))
+      (unless (or buffer disk-current?)
+        (if captured-text (changed (list #f text 0 #f #f))
             (error 'workspace-analysis "file changed during analysis: ~a" path)))
       (list contribution text facts
             (and query
@@ -182,7 +194,8 @@
                    (and result
                         (list (map ->jsexpr (Reference-Source-locations (Document-Reference-Result-source result)))
                               (and (Document-Reference-Result-module-binding result)
-                                   (binding->datum (Document-Reference-Result-module-binding result)))))))))))
+                                   (binding->datum (Document-Reference-Result-module-binding result)))))))
+            disk-current?))))
 
 (define (binding->datum binding)
   (list (Module-Binding-filepath binding) (Module-Binding-submods binding)
@@ -203,7 +216,7 @@
                     (for/hash ([entry (in-list definitions)])
                       (values (apply Module-Binding (car entry)) (jsexpr->Location (cdr entry))))))
 
-(define (run-index run)
+(define (run-index run previous)
   (define config (Run-settings run))
   (define indexed 0)
   (define failures (count not (hash-values (Run-buffers run))))
@@ -212,7 +225,21 @@
   (dynamic-wind
     void
     (lambda ()
-      (unless (sync/timeout 0.3 (semaphore-peek-evt (Run-cancel run)))
+      (define stopped? (sync/timeout 0.3 (semaphore-peek-evt (Run-cancel run))))
+      ;; Only document lifetime changes may reuse a complete index. Verify
+      ;; the new buffer/disk view in a cancellable worker before sharing it.
+      (define reuse?
+        (and (not stopped?) previous
+             (equal? '(ok #t)
+                     (compute run 10
+                              (list 'verify (make-immutable-hash (hash->list (Run-sources previous)))
+                                    (Run-roots run) (Settings-excluded config)
+                                    (Settings-max-files config) (Run-buffers run))))))
+      (when reuse?
+        (set-Run-workspace! run (Run-workspace previous))
+        (set-Run-sources! run (Run-sources previous))
+        (report! run "ready" (Run-indexed previous) 0))
+      (unless (or stopped? reuse?)
         (match (compute run 10 (list 'discover (Run-roots run) (Settings-excluded config)
                                      (Settings-max-files config)))
           [(list 'ok paths incomplete?)
@@ -229,7 +256,8 @@
              (match (compute run (Settings-timeout config)
                              (list 'analyse path (Settings-max-bytes config)
                                    (hash-ref (Run-buffers run) path #f) #f))
-               [(list 'ok contribution text count _)
+               [(list 'ok contribution text count _ disk-current?)
+                (unless disk-current? (set-Run-reusable?! run #f))
                 (set! bytes (+ bytes (bytes-length (string->bytes/utf-8 text))))
                 (set! facts (+ facts count))
                 (cond
@@ -271,11 +299,18 @@
   (call-with-semaphore state-lock
                        (lambda ()
                          (when (or (not current-run) (> revision (Run-generation current-run)))
+                           (define previous
+                             (and (eq? #t (hash-ref params 'documentsOnly #f)) current-run
+                                  (equal? "ready" (Run-state current-run))
+                                  (Run-reusable? current-run)
+                                  (equal? config (Run-settings current-run))
+                                  (equal? roots (Run-roots current-run))
+                                  current-run))
                            (when current-run (semaphore-post (Run-cancel current-run)))
                            (define run
                              (Run revision (make-semaphore) (make-semaphore)
                                   (if (Settings-enabled? config) "indexing" "disabled") 0 0
-                                  workspace documents buffers config roots (make-hash)))
+                                  workspace documents buffers config roots (make-hash) #t))
                            (set! current-run run)
                            (notify-client "status" (status run))
                            (if (Settings-enabled? config)
@@ -284,7 +319,7 @@
                                                                       (eprintf "Workspace analysis failed: ~a\n" (exn-message e))
                                                                       (report! run "partial" (Run-indexed run) (add1 (Run-failures run)))
                                                                       (semaphore-post (Run-done run)))])
-                                           (run-index run))))
+                                           (run-index run previous))))
                                (semaphore-post (Run-done run)))))))
 
 (define (query id params cancel method)
@@ -350,8 +385,8 @@
                                         (match result
                                           ['(changed)
                                            (error-response id -32801 "Captured source differs from the current file")]
-                                          [(list 'ok _ _ _ #f) (success-response id '())]
-                                          [(list 'ok _ _ _ (list locations binding))
+                                          [(list 'ok _ _ _ #f _) (success-response id '())]
+                                          [(list 'ok _ _ _ (list locations binding) _)
                                            (define live
                                              (Document-Reference-Result
                                                (Reference-Source path (map jsexpr->Location locations))

@@ -29,9 +29,9 @@ function createWorkspaceIndex(context, { executable, timeout, output, onStatus }
   const process = createLanguageProcess(executable, [context.asAbsolutePath('workspace-index-server.rkt')],
     { cwd: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath },
     { timeout, name: 'Workspace index', onTimeout: failure });
-  function snapshot() {
+  function snapshot(documentsOnly = false) {
     return {
-      revision, settings: settings(),
+      revision, documentsOnly, settings: settings(),
       roots: (vscode.workspace.workspaceFolders || []).map(folder => folder.uri.toString()),
       documents: vscode.workspace.textDocuments.filter(document => isSource(document) && !document.isClosed).map(document => {
         versions.set(document, document.version);
@@ -67,10 +67,10 @@ function createWorkspaceIndex(context, { executable, timeout, output, onStatus }
     })();
     return starting;
   }
-  function refresh() {
+  function refresh(documentsOnly = false) {
     if (disposed) return;
     revision++;
-    if (synchronized) void connection.sendNotification('update', snapshot()).catch(failure);
+    if (synchronized) void connection.sendNotification('update', snapshot(documentsOnly === true)).catch(failure);
     else if (requested && enabled()) void start().catch(failure);
   }
   function relevant(uri) {
@@ -86,7 +86,7 @@ function createWorkspaceIndex(context, { executable, timeout, output, onStatus }
   const changedFile = uri => { if (relevant(uri)) refresh(); };
   const subscriptions = [watcher,
     watcher.onDidCreate(changedFile), watcher.onDidChange(changedFile), watcher.onDidDelete(changedFile),
-    vscode.workspace.onDidOpenTextDocument(document => { if (isSource(document)) refresh(); }),
+    vscode.workspace.onDidOpenTextDocument(document => { if (isSource(document)) refresh(true); }),
     vscode.workspace.onDidChangeTextDocument(event => {
       // Dirty-state events can leave both content and version unchanged.
       if (isSource(event.document) &&
@@ -95,7 +95,7 @@ function createWorkspaceIndex(context, { executable, timeout, output, onStatus }
     vscode.workspace.onDidCloseTextDocument(document => {
       identities.delete(document);
       versions.delete(document);
-      if (isSource(document)) refresh();
+      if (isSource(document)) refresh(true);
     }),
     vscode.workspace.onDidChangeWorkspaceFolders(refresh),
     vscode.workspace.onDidRenameFiles(refresh),
