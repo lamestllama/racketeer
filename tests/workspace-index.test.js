@@ -193,7 +193,31 @@ function indexPeer(t, initialize = () => ({}), starting = Promise.resolve()) {
       for (const stream of Object.values(child)) stream.destroy();
     }
   }));
-  return { ...c, snapshots };
+  return { ...c, snapshots, connection, disconnect: () => child.stdout.destroy() };
+}
+
+for (const method of ['initialize', 'references', 'prepareRename', 'rename']) {
+  test(`index rejects pending ${method} when its transport closes`, { timeout: 5000 }, async t => {
+    const c = indexPeer(t), doc = c.open('definition.rkt', definition);
+    if (method !== 'initialize') await c.index.start();
+    let entered, timer;
+    const received = new Promise(resolve => { entered = resolve; });
+    c.connection.onRequest(method, () => { entered(); return new Promise(() => {}); });
+    const position = { line: 2, character: 10 }, token = rpc.CancellationToken.None;
+    const request = method === 'initialize' ? c.index.start()
+      : method === 'references' ? c.refs(doc)
+      : method === 'prepareRename' ? c.index.prepareRename(doc, position, token)
+      : c.index.provideRenameEdits(doc, position, 'squared', token);
+    const rejected = assert.rejects(request, { code: rpc.ErrorCodes.PendingResponseRejected });
+    await received;
+    c.disconnect();
+    try {
+      await Promise.race([rejected, new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error('Request remained pending after transport closure')), 1000);
+      })]);
+    } finally { clearTimeout(timer); }
+    assert.equal(c.statuses.at(-1).state, 'failed');
+  });
 }
 
 test('index skips a duplicate startup snapshot', async t => {

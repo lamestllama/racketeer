@@ -54,6 +54,7 @@ function createWorkspaceIndex(context, { executable, timeout, output, onStatus }
       connection.onError(([error]) => failure(error));
       connection.onClose(() => {
         synchronized = false;
+        connection.dispose();
         if (!disposed) failure(new Error('Process stopped. Run Racket: Restart Language Server to restart language tools.'));
       });
       connection.listen();
