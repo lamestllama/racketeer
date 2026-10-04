@@ -6,6 +6,7 @@
          racket/contract
          "../common/interfaces.rkt"
          "../common/json-util.rkt"
+         "../common/source-document.rkt"
          "responses.rkt"
          "safedoc.rkt"
          "../common/settings.rkt"
@@ -36,6 +37,8 @@
 (define (did-close! params [notify-client void])
   (match-define (hash-table ['textDocument (DocItem-js #:uri uri)]) params)
   (lsp-close-doc! uri)
+  (when (untitled-uri? uri)
+    (notify-client "textDocument/publishDiagnostics" (hasheq 'uri uri 'diagnostics '())))
   (lsp-refresh-analysis! notify-client uri))
 
 (define (did-change! notify-client params)

@@ -18,6 +18,7 @@
          "../common/json-util.rkt"
          "../common/path-util.rkt"
          "../common/source-snapshot.rkt"
+         "../common/source-document.rkt"
          "../common/settings.rkt"
          racket/class
          racket/contract)
@@ -36,26 +37,23 @@
 ;; Exported field accessors: SafeDoc-doc, SafeDoc-check-syntax-status.
 ;; Access fields only inside an eliminator that acquired the lock.
 (struct SafeDoc
-  (doc rwlock token check-syntax-status closed? analysis sources roots dependencies)
+  (doc rwlock token check-syntax-status closed? analysis sources roots dependencies paths)
   #:mutable
   #:transparent)
 
 (define (new-safedoc uri text version)
-  (define doc (make-doc uri text version))
+  (define paths (make-source-documents (list uri) (workspace-folders current-workspace)))
+  (define doc (parameterize ([current-source-documents paths]) (make-doc uri text version)))
   ;; Token identifies this opened document instance in scheduler/query state.
   (define token (gensym 'doc-token))
   (scheduler-register-doc! token)
-  (SafeDoc doc (make-rwlock) token #f #f #f (hash) '() #f))
+  (SafeDoc doc (make-rwlock) token #f #f #f (hash) '() #f paths))
 
 (define (with-read-doc safe-doc proc)
-  (call-with-read-lock
-    (SafeDoc-rwlock safe-doc)
-    (λ () (proc (SafeDoc-doc safe-doc)))))
+  (with-read-safedoc safe-doc (lambda (sd) (proc (SafeDoc-doc sd)))))
 
 (define (with-write-doc safe-doc proc)
-  (call-with-write-lock
-    (SafeDoc-rwlock safe-doc)
-    (λ () (proc (SafeDoc-doc safe-doc)))))
+  (with-write-safedoc safe-doc (lambda (sd) (proc (SafeDoc-doc sd)))))
 
 (define (with-read-analysis safe-doc proc)
   (with-read-safedoc safe-doc
@@ -76,12 +74,12 @@
 (define (with-read-safedoc safe-doc proc)
   (call-with-read-lock
     (SafeDoc-rwlock safe-doc)
-    (λ () (proc safe-doc))))
+    (λ () (parameterize ([current-source-documents (SafeDoc-paths safe-doc)]) (proc safe-doc)))))
 
 (define (with-write-safedoc safe-doc proc)
   (call-with-write-lock
     (SafeDoc-rwlock safe-doc)
-    (λ () (proc safe-doc))))
+    (λ () (parameterize ([current-source-documents (SafeDoc-paths safe-doc)]) (proc safe-doc)))))
 
 ;; Retirement and publication use the same lock, so work from a closed
 ;; document cannot restore diagnostics or workspace contributions.
@@ -138,7 +136,8 @@
 
 ;; The only place that actually runs check-syntax.
 (define (safedoc-run-check-syntax! notify-client safe-doc
-                                  #:sources [sources (hash)] #:roots [roots '()])
+                                  #:sources [sources (hash)] #:roots [roots '()]
+                                  #:paths [paths (SafeDoc-paths safe-doc)])
   (define-values (uri working-version text-buffer-copy token)
     (with-read-safedoc safe-doc
       (lambda (sd)
@@ -153,6 +152,11 @@
   (define dependencies (make-hash))
   (with-current-safedoc safe-doc working-version
                         (lambda (sd)
+                          (define old-path (uri->path uri))
+                          (define new-path (parameterize ([current-source-documents paths]) (uri->path uri)))
+                          (unless (equal? old-path new-path)
+                            (workspace-remove-path! current-workspace old-path))
+                          (set-SafeDoc-paths! sd paths)
                           (doc-invalidate-analysis! (SafeDoc-doc sd))
                           (set-SafeDoc-analysis! sd running-status)
                           (set-SafeDoc-check-syntax-status! sd running-status)))
@@ -176,6 +180,7 @@
                               (send-doc-diagnostics notify-client doc)))))
 
   (define (check-syntax-task)
+    (parameterize ([current-source-documents paths])
     (call-with-source-snapshot (uri->path uri) sources
       #:source? (lambda (file) (for/or ([root (in-list roots)]) (directory-contains? root file)))
       #:on-load (lambda (file) (hash-set! dependencies file #t))
@@ -189,7 +194,7 @@
         (define contribution
           (and (CSResult-succeed? result)
                (send trace get-contribution)))
-        (values result contribution (set->list (send trace get-warn-diags))))))
+        (values result contribution (set->list (send trace get-warn-diags)))))))
 
   (define (publish-check-syntax result contribution diags)
     (define trace (CSResult-trace result))
@@ -205,7 +210,7 @@
                            (set-SafeDoc-roots! sd roots)
                            (doc-update-trace! doc trace contribution working-version)
                            (workspace-set-contribution! current-workspace contribution)
-                           (when (and (get-resyntax-enabled) (resyntax-available?))
+                           (when (and (not (untitled-uri? uri)) (get-resyntax-enabled) (resyntax-available?))
                              (scheduler-push-task! token 'resyntax resyntax-task
                                                    #:publish publish-resyntax))))))
 

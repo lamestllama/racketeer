@@ -121,9 +121,8 @@ function registerLanguageTools(context, debugSources) {
     }
     let defaultErrorHandler;
     const next = new OwnedLanguageClient('racketDevelopment', 'Racket Language Server', () => process.start(), {
-      // The upstream server resolves documents as filesystem paths. Save new
-      // documents before requesting semantic analysis.
-      documentSelector: languageIds.map(language => ({ language, scheme: 'file' })),
+      documentSelector: languageIds.flatMap(language =>
+        (installed ? ['file'] : ['file', 'untitled']).map(scheme => ({ language, scheme }))),
       middleware: {
         provideDocumentFormattingEdits: racketFormattingOnly,
         provideDocumentRangeFormattingEdits: racketFormattingOnly,

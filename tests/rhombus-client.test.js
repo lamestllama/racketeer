@@ -70,14 +70,17 @@ function fixture(initialDocuments = [], source = 'bundled') {
     setEnabled(value) { enabled = value; changed.emit({ affectsConfiguration: key => key === 'racketdap.languageServer' }); } };
 }
 
-for (const source of ['bundled', 'installed']) test(`Rhombus-only startup registers file analysis, starts its index and shows status (${source})`, async t => {
+for (const source of ['bundled', 'installed']) test(`Rhombus-only startup registers language analysis, starts its index and shows status (${source})`, async t => {
   const instance = fixture([{ languageId: 'rhombus' }], source);
   t.after(() => instance.language.dispose());
   await instance.language.whenReady();
   assert.equal(instance.clients.length, 1);
   const { options } = instance.clients[0];
   assert.deepEqual(JSON.parse(JSON.stringify(options.documentSelector)),
-    [{ language: 'racket', scheme: 'file' }, { language: 'rhombus', scheme: 'file' }]);
+    source === 'bundled'
+      ? [{ language: 'racket', scheme: 'file' }, { language: 'racket', scheme: 'untitled' },
+        { language: 'rhombus', scheme: 'file' }, { language: 'rhombus', scheme: 'untitled' }]
+      : [{ language: 'racket', scheme: 'file' }, { language: 'rhombus', scheme: 'file' }]);
   assert.equal(instance.indexes[0].starts, 1);
   assert.equal(options.synchronize.fileEvents, undefined, 'The index owns file watching');
   assert.equal(instance.status.visible, true);

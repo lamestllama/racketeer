@@ -18,15 +18,19 @@ verifies the archive and then applies these patches:
   resolve definitions against the accepted snapshot. Project modules load from
   source to avoid retaining earlier macro expansions in compiled intermediates.
 
+- `untitled-documents.patch`: retain untitled document URIs while analysing
+  in-memory source identities, select an explicit import base, and retire
+  analysis when documents close or workspace folders change.
+
 These patches do not introduce closed-file retention rules or
 URI-alias restoration. Rename ownership is provided by upstream
 [PR #244](https://github.com/jeapostrophe/racket-langserver/pull/244).
 
-Workspace indexing belongs to Racketeer, in `vscode/workspace-index.rkt` and
-its client. The separate process reuses the pinned analyser and workspace store
+Workspace indexing belongs to Racketeer, in `vscode/workspace-analysis.rkt`,
+its request adapter `vscode/workspace-index.rkt`, and the VS Code client. The separate process reuses the pinned analyser and workspace store
 as libraries. No indexing hooks or index state are added to the language server.
 
-Regression tests exercise both patches. Reproduction fails if either no longer
+Regression tests exercise these patches. Reproduction fails if any no longer
 applies. It does not change debugger instrumentation. The JavaScript
 client patch below is applied by npm installation and the extension build.
 

@@ -12,6 +12,7 @@
          racket/port
          racket/set
          racket-langserver/common/path-util
+         racket-langserver/common/source-document
          racket-langserver/common/source-snapshot
          racket-langserver/common/interfaces
          racket-langserver/common/json-util
@@ -23,7 +24,7 @@
 
 (struct Settings (enabled? excluded max-files max-bytes timeout) #:transparent)
 (define default-excluded '(".git" "compiled" "node_modules" ".test-output" "dist" "build"))
-(struct Run (generation cancel done state indexed failures workspace documents buffers settings roots sources reusable?) #:mutable)
+(struct Run (generation cancel done state indexed failures workspace documents buffers settings roots sources reusable? paths) #:mutable)
 (struct WorkspaceAnalysis (lock slot notify current-run closed? active-runs) #:mutable)
 (struct AnalysisResult (revision value) #:transparent)
 (struct AnalysisFailure (reason message) #:transparent)
@@ -104,7 +105,9 @@
                          [current-error-port (open-output-nowhere)]
                          [current-input-port (open-input-string "")]
                          [exit-handler (lambda (_) (error 'workspace-analysis "worker exited"))])
-            (match (place-channel-get channel)
+            (match-define (list paths request) (place-channel-get channel))
+            (parameterize ([current-source-documents paths])
+            (match request
               [(list 'discover roots excluded limit)
                (cons 'ok (discover roots excluded limit))]
               [(list 'analyse path max-bytes buffer query buffers roots)
@@ -121,7 +124,7 @@
                (check-snapshot!)
                (define result (workspace-rename sources path position name))
                (check-snapshot!)
-               (list 'ok result)]))))
+               (list 'ok result)])))))
       (place-channel-put channel result)
       ;; Keep a successful reply distinguishable from an abnormal early exit.
       (place-channel-get channel)))
@@ -129,7 +132,7 @@
   (dynamic-wind
     void
     (lambda ()
-      (place-channel-put worker request)
+      (place-channel-put worker (list (Run-paths run) request))
       (define finished
         (sync/timeout seconds worker dead
                       (semaphore-peek-evt (Run-cancel run)) cancel))
@@ -307,12 +310,13 @@
   (define roots (map uri->path (hash-ref params 'roots)))
   (define workspace (make-workspace))
   (for ([root (in-list roots)]) (workspace-add-folder! workspace root))
+  (define paths (make-source-documents (map (lambda (doc) (hash-ref doc 'uri)) (hash-ref params 'documents)) roots))
   (define documents
     (for/hash ([doc (in-list (hash-ref params 'documents))]) (values (hash-ref doc 'uri) doc)))
   (define buffers
     (for/fold ([buffers (hash)]) ([(uri doc) (in-hash documents)])
-      (define path (uri->path uri))
-      (if (workspace-contains? workspace path)
+      (define path (parameterize ([current-source-documents paths]) (uri->path uri)))
+      (if (or (untitled-uri? uri) (workspace-contains? workspace path))
           (hash-set buffers path (and (not (hash-has-key? buffers path)) (hash-ref doc 'text)))
           buffers)))
   (call-with-semaphore (WorkspaceAnalysis-lock engine)
@@ -329,7 +333,7 @@
         (define run
           (Run revision (make-semaphore) (make-semaphore)
                (if (Settings-enabled? config) "indexing" "disabled") 0 0
-               workspace documents buffers config roots (make-hash) #t))
+               workspace documents buffers config roots (make-hash) #t paths))
         (set-WorkspaceAnalysis-current-run! engine run)
         ((WorkspaceAnalysis-notify engine) (status run))
         (if (Settings-enabled? config)
@@ -355,9 +359,8 @@
   (unless (memq operation '(references prepare-rename rename))
     (raise-argument-error 'workspace-analysis-query "analysis operation" operation))
   (define uri (hash-ref params 'uri))
-  (define path (uri->path uri))
   (define captured-text (and (eq? operation 'references) (hash-ref params 'text #f)))
-  (define (current-document run)
+  (define (current-document run path)
     (define doc (hash-ref (Run-documents run) uri #f))
     (cond
       [captured-text
@@ -372,7 +375,8 @@
             (equal? (hash-ref doc 'version) (hash-ref params 'version)) doc)]))
   (let retry ()
     (define run (call-with-semaphore (WorkspaceAnalysis-lock engine) (lambda () (WorkspaceAnalysis-current-run engine))))
-    (define doc (and run (current-document run)))
+    (define path (and run (parameterize ([current-source-documents (Run-paths run)]) (uri->path uri))))
+    (define doc (and run (current-document run path)))
     (cond
       [(sync/timeout 0 cancel) (AnalysisFailure 'cancelled "Request cancelled")]
       [(WorkspaceAnalysis-closed? engine) (AnalysisFailure 'closed "Workspace analysis closed")]

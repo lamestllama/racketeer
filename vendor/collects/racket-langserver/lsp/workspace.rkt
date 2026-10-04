@@ -11,6 +11,7 @@
          racket/match)
 (require "../common/json-util.rkt"
          "../common/path-util.rkt"
+         "../common/source-document.rkt"
          "../common/interfaces.rkt"
          "lsp.rkt"
          "safedoc.rkt"
@@ -36,7 +37,7 @@
     (match-define (FileRename #:oldUri old-uri #:newUri _) f)
     (workspace-remove-path! current-workspace (uri->path old-uri))))
 
-(define (didChangeWorkspaceFolders params)
+(define (didChangeWorkspaceFolders params [notify-client void])
   (match-define (^DidChangeWorkspaceFoldersParams #:event event) params)
   (match-define (WorkspaceFoldersChangeEvent #:added added #:removed removed) event)
   (for ([f added])
@@ -46,7 +47,11 @@
     (match-define (WorkspaceFolder #:uri uri #:name _) f)
     (workspace-remove-folder! current-workspace (uri->path uri)))
   (when (pair? added)
-    (republish-open-doc-contributions!)))
+    (republish-open-doc-contributions!))
+  (lsp-for-each-open-doc
+    (lambda (sd)
+      (define uri (with-read-doc sd Doc-uri))
+      (when (untitled-uri? uri) (lsp-refresh-analysis! notify-client uri)))))
 
 (define (didChangeWatchedFiles params)
   (void))

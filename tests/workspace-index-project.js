@@ -45,12 +45,13 @@ async function project(t) {
   const filename = name => path.join(directory, name);
   const write = (name, text) => fs.writeFileSync(filename(name), text);
   const open = (name, text, version = 1) => {
-    const key = name.startsWith('file:') ? name : uri(filename(name));
+    const key = /^(file|untitled):/.test(name) ? name : uri(filename(name));
     documents.set(key, { uri: key, text, version, identity: ++identity });
     return key;
   };
   const settings = { enabled: true, timeoutSeconds: 20 };
-  const snapshot = () => ({ revision: ++revision, roots: [uri(directory)], documents: [...documents.values()], settings });
+  const roots = [uri(directory)];
+  const snapshot = () => ({ revision: ++revision, roots, documents: [...documents.values()], settings });
   const update = (documentsOnly = false) => connection.sendNotification('update', { ...snapshot(), documentsOnly });
   const references = (key, position = { line: 2, character: 10 }, includeDeclaration = false, token = rpc.CancellationToken.None) => {
     const document = documents.get(key);
@@ -67,7 +68,7 @@ async function project(t) {
   write('definition.rkt', definition); write('uses.rkt', uses);
   const origin = open('definition.rkt', definition);
   await connection.sendRequest('initialize', snapshot());
-  return { directory, documents, notifications, filename, write, open, origin, update, references, rename, settings,
+  return { directory, documents, notifications, filename, write, open, origin, update, references, rename, settings, roots,
     diagnostics: () => diagnostics };
 }
 

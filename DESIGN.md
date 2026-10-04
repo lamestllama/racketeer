@@ -225,10 +225,13 @@ not re-enter the engine. Instances have separate runs, locks and worker slots.
 
 `workspace-analysis-update!` accepts a complete immutable snapshot containing
 `revision`, `roots`, `documents` and optional `settings`. Each document has a
-file URI, an opaque lifetime identity, a version and its text. Revisions increase
+file or untitled URI, an opaque lifetime identity, a version and its text. Revisions increase
 within one instance. The adapter owns incremental changes and assigns a new
 identity when a document closes and reopens. The optional `documentsOnly` hint
 permits reuse only after the engine verifies the new source view against disk.
+Untitled source identities and import bases belong to the analysis snapshot.
+The engine creates no placeholder source files; returned locations retain the
+original document URI.
 
 `workspace-analysis-query` accepts `references`, `prepare-rename` or `rename`,
 the source URI and position, and an optional cancellation event. Ordinary

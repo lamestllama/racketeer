@@ -1,6 +1,8 @@
 #lang racket/base
 
-(require racket/path
+(require "source-document.rkt"
+         racket/match
+         racket/path
          syntax/modcode)
 
 (provide call-with-source-snapshot source-snapshot-text)
@@ -19,6 +21,26 @@
 (define (call-with-source-snapshot path sources proc
                                    #:source? [source? (lambda (_) #f)]
                                    #:on-load [on-load void])
+  (define ordinary-resolve (current-module-name-resolver))
+  (define (relative-import? module)
+    (match module
+      [(? path-string?) (relative-path? module)]
+      [(list 'file (? path-string? file)) (relative-path? file)]
+      [(list* 'submod (and parent (not (or "." ".."))) _) (relative-import? parent)]
+      [_ #f]))
+  (define (primary-module? relative-to)
+    (define name (and relative-to (resolved-module-path-name relative-to)))
+    (equal? path (if (pair? name) (car name) name)))
+  (define resolve
+    (case-lambda
+      [(name namespace) (ordinary-resolve name namespace)]
+      [(module relative-to stx load?)
+       (when (and (source-document-unbased? path) (relative-import? module)
+                  (or (primary-module? relative-to)
+                      (and stx (equal? (syntax-source stx) path))))
+         (raise-syntax-error #f
+           "Relative imports need a save location or a single workspace folder. Save this document or open its workspace." stx))
+       (ordinary-resolve module relative-to stx load?)]))
   (define ordinary-load (current-load/use-compiled))
   (define ordinary-open (moddep-current-open-input-file))
   (define (load-snapshot file expected)
@@ -42,6 +64,7 @@
       [else (ordinary-load file expected)]))
   (parameterize ([current-namespace (make-base-namespace)]
                  [current-sources sources]
+                 [current-module-name-resolver resolve]
                  [current-directory (path-only path)]
                  [current-load-relative-directory (path-only path)]
                  [current-load/use-compiled load-snapshot]

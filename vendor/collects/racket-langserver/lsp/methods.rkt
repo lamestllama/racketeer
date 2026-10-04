@@ -185,7 +185,8 @@
         ["workspace/didRenameFiles"
          (workspace/didRenameFiles params)]
         ["workspace/didChangeWorkspaceFolders"
-         (workspace/didChangeWorkspaceFolders params)]
+         (workspace/didChangeWorkspaceFolders params
+           (lambda (method params) (send-notification method params)))]
         ["workspace/didChangeWatchedFiles"
          (workspace/didChangeWatchedFiles params)]
         ["workspace/didChangeConfiguration"
@@ -255,6 +256,9 @@
      ;; If both `rootPath` and `rootUri` are set, then `rootUri` wins.
      ;; null is there are no folder is open.
      (cond
+       [(list? (hash-ref params 'workspaceFolders #f))
+        (for ([folder (in-list (hash-ref params 'workspaceFolders))])
+          (workspace-add-folder! current-workspace (uri->path (hash-ref folder 'uri))))]
        [(not (equal? root-uri (json-null)))
         (workspace-add-folder! current-workspace (uri->path root-uri))]
        [(not (equal? root-path (json-null)))

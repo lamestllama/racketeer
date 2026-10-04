@@ -8,6 +8,23 @@ VS Code closes or reopens the underlying file document during indexing. Open
 buffers remain authoritative; changed source text, cancellation and session
 termination prevent stale results from appearing.
 
+## New documents before saving
+
+The bundled language server supports untitled Racket documents: completion,
+diagnostics, definitions, references and rename use the current editor text.
+Locations and edit previews keep the document's untitled URI. Saving creates a
+new file-document lifetime; closing or replacing the draft retires its analysis.
+No placeholder source files are written.
+
+Relative imports use an associated save location when the document has one.
+Otherwise, a single open workspace folder supplies the base. With no folder or
+multiple folders, local analysis and collection imports still work; relative
+imports report that a save location or one workspace folder is required.
+Changing workspace folders refreshes affected untitled analysis.
+
+Resyntax refactorings require a saved file. An externally installed language
+server retains its existing file-only document selection.
+
 ## Unsaved workspace imports
 
 Open workspace buffers supply the source used for imported modules, including

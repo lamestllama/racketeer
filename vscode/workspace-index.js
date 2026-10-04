@@ -4,7 +4,7 @@ const vscode = require('vscode');
 const { createMessageConnection, StreamMessageReader, StreamMessageWriter } = require('vscode-languageclient/node');
 const { createLanguageProcess } = require('./language-process');
 
-const isSource = document => document.uri.scheme === 'file' && ['racket', 'rhombus'].includes(document.languageId);
+const isSource = document => ['file', 'untitled'].includes(document.uri.scheme) && ['racket', 'rhombus'].includes(document.languageId);
 const excludedDefaults = ['.git', 'compiled', 'node_modules', '.test-output', 'dist', 'build'];
 
 // The index has its own document snapshots and transport. It never sends fake
