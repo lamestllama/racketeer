@@ -13,6 +13,7 @@ function createWorkspaceIndex(context, { executable, timeout, output, onStatus }
   let connection, starting, disposed = false, requested = false, synchronized = false;
   let revision = 0, identity = 0;
   const identities = new WeakMap();
+  const versions = new WeakMap();
   const documentIdentity = document => {
     if (!identities.has(document)) identities.set(document, ++identity);
     return identities.get(document);
@@ -32,10 +33,11 @@ function createWorkspaceIndex(context, { executable, timeout, output, onStatus }
     return {
       revision, settings: settings(),
       roots: (vscode.workspace.workspaceFolders || []).map(folder => folder.uri.toString()),
-      documents: vscode.workspace.textDocuments.filter(document => isSource(document) && !document.isClosed).map(document => ({
-        uri: document.uri.toString(), identity: documentIdentity(document),
-        version: document.version, text: document.getText()
-      }))
+      documents: vscode.workspace.textDocuments.filter(document => isSource(document) && !document.isClosed).map(document => {
+        versions.set(document, document.version);
+        return { uri: document.uri.toString(), identity: documentIdentity(document),
+          version: document.version, text: document.getText() };
+      })
     };
   }
   async function start() {
@@ -55,11 +57,12 @@ function createWorkspaceIndex(context, { executable, timeout, output, onStatus }
         if (!disposed) failure(new Error('Process stopped. Run Racket: Restart Language Server to restart language tools.'));
       });
       connection.listen();
-      await connection.sendRequest('initialize', snapshot());
+      const initial = snapshot();
+      await connection.sendRequest('initialize', initial);
       if (disposed) return;
       process.ready();
       synchronized = true;
-      refresh(); // Include edits made while the process was initializing.
+      if (revision !== initial.revision) refresh();
     })();
     return starting;
   }
@@ -83,9 +86,14 @@ function createWorkspaceIndex(context, { executable, timeout, output, onStatus }
   const subscriptions = [watcher,
     watcher.onDidCreate(changedFile), watcher.onDidChange(changedFile), watcher.onDidDelete(changedFile),
     vscode.workspace.onDidOpenTextDocument(document => { if (isSource(document)) refresh(); }),
-    vscode.workspace.onDidChangeTextDocument(event => { if (isSource(event.document)) refresh(); }),
+    vscode.workspace.onDidChangeTextDocument(event => {
+      // Dirty-state events can leave both content and version unchanged.
+      if (isSource(event.document) &&
+          (event.contentChanges.length || versions.get(event.document) !== event.document.version)) refresh();
+    }),
     vscode.workspace.onDidCloseTextDocument(document => {
       identities.delete(document);
+      versions.delete(document);
       if (isSource(document)) refresh();
     }),
     vscode.workspace.onDidChangeWorkspaceFolders(refresh),

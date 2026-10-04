@@ -177,6 +177,87 @@ function client(t, processFactory) {
   return { index, directory, open, refs, closed, changed, disk, parse, workspace, statuses, vscode: dependencies.vscode };
 }
 
+function indexPeer(t, initialize = () => ({}), starting = Promise.resolve()) {
+  const { PassThrough } = require('node:stream');
+  const child = { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough() };
+  const connection = rpc.createMessageConnection(new rpc.StreamMessageReader(child.stdin), new rpc.StreamMessageWriter(child.stdout));
+  const snapshots = [];
+  connection.onRequest('initialize', params => { snapshots.push(params); return initialize(); });
+  connection.onNotification('update', params => snapshots.push(params));
+  connection.onRequest('references', () => []);
+  connection.listen();
+  const c = client(t, () => ({
+    async start() { await starting; return child; }, ready() {}, cancelStart() {},
+    async dispose() {
+      connection.dispose();
+      for (const stream of Object.values(child)) stream.destroy();
+    }
+  }));
+  return { ...c, snapshots };
+}
+
+test('index skips a duplicate startup snapshot', async t => {
+  const c = indexPeer(t), doc = c.open('definition.rkt', definition);
+  await c.index.start(); await c.refs(doc);
+  assert.equal(c.snapshots.length, 1, 'Initialization already supplies the current workspace');
+});
+
+test('index skips unchanged document notifications but synchronizes versions and content', async t => {
+  const c = indexPeer(t), doc = c.open('definition.rkt', definition);
+  await c.index.start(); await c.refs(doc);
+  const initial = c.snapshots.length;
+  doc.isDirty = true; c.changed.emit({ document: doc, contentChanges: [] });
+  doc.isDirty = false; c.changed.emit({ document: doc, contentChanges: [] });
+  await c.refs(doc);
+  assert.equal(c.snapshots.length, initial, 'Dirty-state notifications must not restart unchanged analysis');
+  doc.version++; c.changed.emit({ document: doc, contentChanges: [] });
+  await c.refs(doc);
+  assert.equal(c.snapshots.length, initial + 1, 'A new version must still reach the index');
+  assert.equal(c.snapshots.at(-1).documents[0].version, doc.version);
+  doc.version++; doc.getText = () => definition + '(square 4)\n';
+  c.changed.emit({ document: doc, contentChanges: [{ text: doc.getText() }] });
+  await c.refs(doc);
+  assert.equal(c.snapshots.length, initial + 2);
+  assert.equal(c.snapshots.at(-1).documents[0].text, doc.getText());
+  c.disk.emit(doc.uri); await c.refs(doc);
+  assert.equal(c.snapshots.length, initial + 3, 'Disk events must invalidate analysis even with unchanged buffers');
+});
+
+test('index synchronizes edits and document replacement during initialization', async t => {
+  let doc, reopened;
+  const c = indexPeer(t, () => {
+    doc.version++; doc.getText = () => definition + '(square 4)\n';
+    c.changed.emit({ document: doc, contentChanges: [{ text: doc.getText() }] });
+    doc.isClosed = true; c.closed.emit(doc);
+    c.workspace.textDocuments.splice(c.workspace.textDocuments.indexOf(doc), 1);
+    reopened = c.open('definition.rkt', doc.getText());
+    c.disk.emit(reopened.uri);
+    return {};
+  });
+  doc = c.open('definition.rkt', definition);
+  await c.index.start(); await c.refs(reopened);
+  assert.equal(c.snapshots.length, 2, 'Send the latest snapshot once initialization completes');
+  const before = c.snapshots[0].documents[0], after = c.snapshots[1].documents[0];
+  assert.equal(before.text, definition);
+  assert.equal(after.text, reopened.getText());
+  assert.notEqual(before.identity, after.identity, 'Reopening the URI creates a new document lifetime');
+  assert.equal(after.version, reopened.version);
+  assert.ok(c.snapshots[1].revision > c.snapshots[0].revision);
+});
+
+test('index includes edits made before its initialization snapshot without rescanning', async t => {
+  let ready;
+  const c = indexPeer(t, undefined, new Promise(resolve => { ready = resolve; }));
+  const doc = c.open('definition.rkt', definition);
+  const starting = c.index.start();
+  doc.version++; doc.getText = () => definition + '(square 5)\n';
+  c.changed.emit({ document: doc, contentChanges: [{ text: doc.getText() }] });
+  ready(); await starting; await c.refs(doc);
+  assert.equal(c.snapshots.length, 1);
+  assert.equal(c.snapshots[0].documents[0].text, doc.getText());
+  assert.equal(c.snapshots[0].documents[0].version, doc.version);
+});
+
 test('extension index client watches relative to roots and sends authoritative buffer snapshots', { timeout: 120000 }, async t => {
   const c = client(t);
   fs.writeFileSync(path.join(c.directory, 'definition.rkt'), definition);
@@ -295,17 +376,19 @@ test('captured references survive source document replacement and reject changed
   fs.writeFileSync(source, definition + '; disk has changed\n'); c.disk.emit(c.parse(uri(source)));
   const buffer = c.open('definition.rkt', definition);
   assert.equal(count(await refs()), 1, 'A matching unsaved buffer takes precedence over disk');
-  buffer.version++; buffer.getText = () => '('; c.changed.emit({ document: buffer });
+  buffer.version++; buffer.getText = () => '(';
+  c.changed.emit({ document: buffer, contentChanges: [{ text: buffer.getText() }] });
   assert.ok(!(await refs())?.length, 'Stale captured source cannot use changed buffer text');
   const cancel = new rpc.CancellationTokenSource();
   const cancelled = refs(cancel.token); cancel.cancel();
   assert.ok(!(await cancelled)?.length); cancel.dispose();
-  buffer.version++; buffer.getText = () => definition; c.changed.emit({ document: buffer });
+  buffer.version++; buffer.getText = () => definition;
+  c.changed.emit({ document: buffer, contentChanges: [{ text: buffer.getText() }] });
   const openDocument = vscode.workspace.openTextDocument;
   vscode.workspace.openTextDocument = async () => {
     captured.version++; captured.getText = () => '\n' + definition;
     buffer.version++; buffer.getText = captured.getText;
-    c.changed.emit({ document: buffer });
+    c.changed.emit({ document: buffer, contentChanges: [{ text: buffer.getText() }] });
     return openDocument();
   };
   assert.ok(!(await refs())?.length, 'Source changes during final validation discard earlier locations');
