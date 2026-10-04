@@ -1,0 +1,40 @@
+#lang racket/base
+
+(require racket/class racket/gui/base racket/file)
+
+;; Generate original documents through the public editor API. Tests decode the
+;; saved fixtures headlessly; this generator requires a graphical display.
+(define directory (vector-ref (current-command-line-arguments) 0))
+(make-directory* directory)
+(define (save name contents)
+  (define editor (new text%))
+  (for ([content (in-list contents)]) (send editor insert content))
+  (unless (send editor save-file (build-path directory name) 'standard)
+    (error 'fixture "Could not save ~a" name)))
+(define bitmap (make-bitmap 48 32))
+(define dc (new bitmap-dc% [bitmap bitmap]))
+(send dc set-background "royalblue")
+(send dc clear)
+(send dc set-pen "gold" 1 'solid)
+(send dc set-brush "gold" 'solid)
+(send dc draw-rectangle 12 8 20 16)
+(send dc set-bitmap #f)
+(define crop (make-object image-snip% bitmap))
+(send crop resize 16 12)
+(send crop set-offset 12 8)
+(save "images.wxme" (list "#lang racket/base\n; λ 😀 <script>&\n(define first "
+                          (make-object image-snip% bitmap) ")\n(define cropped " crop ")\n\t(list first cropped)\n"))
+(save "text.wxme" (list "#lang racket/base\n(define λ \"😀\")\n"))
+(save "empty.wxme" '())
+(define nested (new text%))
+(send nested insert "hidden text")
+(save "nested.wxme" (list "before " (make-object editor-snip% nested) " after\n"))
+(define custom-class (new snip-class%))
+(send custom-class set-classname "((lib \"reader.rkt\" \"racketeer-fixture\") (lib \"reader.rkt\" \"racketeer-fixture\"))")
+(send (get-the-snip-class-list) add custom-class)
+(define custom% (class snip%
+                  (super-new)
+                  (send this set-snipclass custom-class)
+                  (define/override (write stream) (send stream put 42))))
+(save "custom.wxme" (list "before " (new custom%) " after\n"))
+(exit)

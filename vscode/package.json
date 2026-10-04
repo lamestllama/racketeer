@@ -49,6 +49,12 @@
     "vscode:prepublish": "npm run build"
   },
   "contributes": {
+    "customEditors": [{
+      "viewType": "racketeer.wxme",
+      "displayName": "Racketeer WXME Viewer",
+      "selector": [{ "filenamePattern": "*.rkt" }, { "filenamePattern": "*.rktl" }, { "filenamePattern": "*.wxme" }],
+      "priority": "option"
+    }],
     "languages": [
       {
         "id": "racket",

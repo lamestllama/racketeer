@@ -15,12 +15,14 @@ const { registerSessions } = require('./sessions');
 const { registerTesting } = require('./testing');
 const { registerDebugRepl } = require('./debug-repl');
 const { registerPackages } = require('./packages');
+const { registerWxmeViewer } = require('./wxme-viewer');
 let languageTools;
 
 function activate(context) {
   const sessions = registerSessions(context);
   const testing = registerTesting(context, sessions);
   registerPackages(context);
+  registerWxmeViewer(context);
   registerFileCommands(context, sessions, testing, registerDebugRepl(sessions));
   const debugSources = registerDebugSources(context);
   registerDebugActions(context, debugSources);

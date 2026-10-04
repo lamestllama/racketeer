@@ -19,4 +19,6 @@ debug-repl.js
 packages.js
 macro-stepper.js
 macro-process.js
+wxme-process.js
+wxme-viewer.js
 workspace-index.js
