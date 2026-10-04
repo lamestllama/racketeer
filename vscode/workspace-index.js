@@ -132,15 +132,19 @@ function createWorkspaceIndex(context, { executable, timeout, output, onStatus }
       }
       return edit;
     },
-    async provideReferences(document, position, options, token, next) {
+    // A captured source supplies its file URI separately; its own document
+    // owns the request even if VS Code closes the underlying file document.
+    async provideReferences(document, position, options, token, next, sourceUri) {
       if (!enabled()) return next(document, position, options, token);
       if (disposed || token.isCancellationRequested) return [];
       const version = document.version, owned = documentIdentity(document);
+      const text = sourceUri && document.getText();
       try {
         await start();
         if (disposed || token.isCancellationRequested) return [];
         const locations = await connection.sendRequest('references', {
-          uri: document.uri.toString(), identity: owned, version,
+          uri: (sourceUri || document.uri).toString(),
+          ...(sourceUri ? { text } : { identity: owned, version }),
           position: { line: position.line, character: position.character },
           includeDeclaration: options.includeDeclaration
         }, token);

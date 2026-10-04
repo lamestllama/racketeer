@@ -90,7 +90,7 @@
                (cons 'ok (discover roots excluded limit))]
               [(list 'analyse path max-bytes buffer query)
                (match-define (list contribution text count references) (analyse path max-bytes buffer query))
-               (list 'ok (contribution->datum contribution) text count references)]
+               (if contribution (list 'ok (contribution->datum contribution) text count references) '(changed))]
               [(list 'rename sources roots excluded limit buffers path position name)
                (define (check-snapshot!)
                  (match-define (list paths incomplete?) (discover roots excluded limit))
@@ -144,36 +144,45 @@
   (list (sort (set->list found) path<?) incomplete?))
 
 (define (analyse path max-bytes buffer query)
-  (define bytes
-    (if buffer (string->bytes/utf-8 buffer)
-        (call-with-input-file* path (lambda (in) (read-bytes (add1 max-bytes) in)))))
-  (unless (and (bytes? bytes) (<= (bytes-length bytes) max-bytes))
-    (error 'workspace-analysis "file exceeds analysis limit: ~a" path))
-  (define text (bytes->string/utf-8 bytes))
-  ;; Trace construction and queries use a fresh namespace as well as expansion.
-  ;; A previously loaded dependency must not survive a watched change.
-  (parameterize ([current-namespace (make-base-namespace)]
-                 [current-directory (path-only path)]
-                 [current-load-relative-directory (path-only path)])
-    (define doc (make-doc (path->uri path) text 0))
-    (unless (doc-expand! doc) (error 'workspace-analysis "analysis failed: ~a" path))
-    (define contribution (Doc-contribution doc))
-    (define facts
-      (+ (hash-count (Doc-Contribution-definitions contribution))
-         (for/sum ([locations (in-hash-values (Doc-Contribution-references contribution))])
-           (length locations))))
-    ;; Detect a primary-file write even if its watcher notification is delayed.
-    (unless (or buffer
-                (equal? bytes (call-with-input-file* path
-                                (lambda (in) (read-bytes (add1 max-bytes) in)))))
-      (error 'workspace-analysis "file changed during analysis: ~a" path))
-    (list contribution text facts
-          (and query
-               (let ([result (doc-references doc (car query) (jsexpr->Pos (cadr query)) (caddr query))])
-                 (and result
-                      (list (map ->jsexpr (Reference-Source-locations (Document-Reference-Result-source result)))
-                            (and (Document-Reference-Result-module-binding result)
-                                 (binding->datum (Document-Reference-Result-module-binding result))))))))))
+  (let/ec changed
+    (define captured-text (and query (cadddr query)))
+    (define bytes
+      (with-handlers ([exn:fail:filesystem?
+                       (lambda (e) (if captured-text (changed (list #f #f 0 #f)) (raise e)))])
+        (if buffer (string->bytes/utf-8 buffer)
+            (call-with-input-file* path (lambda (in) (read-bytes (add1 max-bytes) in))))))
+    (unless (and (bytes? bytes) (<= (bytes-length bytes) max-bytes))
+      (error 'workspace-analysis "file exceeds analysis limit: ~a" path))
+    (define text (bytes->string/utf-8 bytes))
+    (when (and captured-text
+               (not (equal? (regexp-replace* #rx"\r\n" captured-text "\n")
+                            (regexp-replace* #rx"\r\n" text "\n"))))
+      (changed (list #f text 0 #f)))
+    ;; Trace construction and queries use a fresh namespace as well as expansion.
+    ;; A previously loaded dependency must not survive a watched change.
+    (parameterize ([current-namespace (make-base-namespace)]
+                   [current-directory (path-only path)]
+                   [current-load-relative-directory (path-only path)])
+      (define doc (make-doc (path->uri path) text 0))
+      (unless (doc-expand! doc) (error 'workspace-analysis "analysis failed: ~a" path))
+      (define contribution (Doc-contribution doc))
+      (define facts
+        (+ (hash-count (Doc-Contribution-definitions contribution))
+           (for/sum ([locations (in-hash-values (Doc-Contribution-references contribution))])
+             (length locations))))
+      ;; Detect a primary-file write even if its watcher notification is delayed.
+      (unless (or buffer
+                  (equal? bytes (call-with-input-file* path
+                                  (lambda (in) (read-bytes (add1 max-bytes) in)))))
+        (if captured-text (changed (list #f text 0 #f))
+            (error 'workspace-analysis "file changed during analysis: ~a" path)))
+      (list contribution text facts
+            (and query
+                 (let ([result (doc-references doc (car query) (jsexpr->Pos (cadr query)) (caddr query))])
+                   (and result
+                        (list (map ->jsexpr (Reference-Source-locations (Document-Reference-Result-source result)))
+                              (and (Document-Reference-Result-module-binding result)
+                                   (binding->datum (Document-Reference-Result-module-binding result)))))))))))
 
 (define (binding->datum binding)
   (list (Module-Binding-filepath binding) (Module-Binding-submods binding)
@@ -281,10 +290,20 @@
 (define (query id params cancel method)
   (define uri (hash-ref params 'uri))
   (define path (uri->path uri))
+  (define captured-text (and (equal? method "references") (hash-ref params 'text #f)))
   (define (current-document run)
     (define doc (hash-ref (Run-documents run) uri #f))
-    (and doc (equal? (hash-ref doc 'identity) (hash-ref params 'identity))
-         (equal? (hash-ref doc 'version) (hash-ref params 'version)) doc))
+    (cond
+      [captured-text
+       ;; Captured sources own their request lifetime. File documents can close
+       ;; while indexing; use their current buffer or read the file afresh.
+       (cond [(hash-has-key? (Run-buffers run) path)
+              (define text (hash-ref (Run-buffers run) path))
+              (and text (hasheq 'text text))]
+             [else (or doc (hasheq 'text #f))])]
+      [else
+       (and doc (equal? (hash-ref doc 'identity) (hash-ref params 'identity))
+            (equal? (hash-ref doc 'version) (hash-ref params 'version)) doc)]))
   (let retry ()
     (define run (call-with-semaphore state-lock (lambda () current-run)))
     (define doc (and run (current-document run)))
@@ -323,12 +342,14 @@
           (define result
             (compute run (Settings-timeout (Run-settings run))
                      (list 'analyse path (Settings-max-bytes (Run-settings run))
-                           (hash-ref doc 'text) (list uri (hash-ref params 'position) include?)) cancel))
+                           (hash-ref doc 'text) (list uri (hash-ref params 'position) include? captured-text)) cancel))
           (define answer
             (call-with-semaphore state-lock
                                  (lambda ()
                                    (and (eq? run current-run) (not (sync/timeout 0 cancel))
                                         (match result
+                                          ['(changed)
+                                           (error-response id -32801 "Captured source differs from the current file")]
                                           [(list 'ok _ _ _ #f) (success-response id '())]
                                           [(list 'ok _ _ _ (list locations binding))
                                            (define live

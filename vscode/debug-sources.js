@@ -60,19 +60,18 @@ function registerDebugSources(context) {
     }));
     providers.push(vscode.languages.registerReferenceProvider(selector, {
       async provideReferences(document, position, options, token) {
-        const file = await matchingFile(document, token);
-        if (!file) return;
-        const version = file.version;
+        const path = pathFor(document.uri);
+        if (!path || token.isCancellationRequested) return;
+        const version = document.version;
         const next = async () => {
-          const result = await client.sendRequest('textDocument/references', {
-            textDocument: { uri: file.uri.toString() },
+          const result = await query(client, document, token, 'textDocument/references', {
             position: client.code2ProtocolConverter.asPosition(position), context: options
-          }, token);
+          });
           return client.protocol2CodeConverter.asReferences(result, token);
         };
-        const result = provideReferences ? await provideReferences(file, position, options, token, next) : await next();
-        if (!token.isCancellationRequested && version === file.version && pathFor(document.uri) &&
-            normalize(file.getText()) === normalize(document.getText())) return result;
+        const result = provideReferences
+          ? await provideReferences(document, position, options, token, next, vscode.Uri.file(path)) : await next();
+        if (await matchingFile(document, token) && version === document.version && pathFor(document.uri) === path) return result;
       }
     }));
     changed.fire();

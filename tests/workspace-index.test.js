@@ -174,7 +174,7 @@ function client(t, processFactory) {
   };
   const refs = document => index.provideReferences(document, { line: 2, character: 10 },
     { includeDeclaration: false }, rpc.CancellationToken.None, () => { throw new Error('Unexpected LSP fallback'); });
-  return { index, directory, open, refs, closed, disk, parse, workspace, statuses };
+  return { index, directory, open, refs, closed, changed, disk, parse, workspace, statuses, vscode: dependencies.vscode };
 }
 
 test('extension index client watches relative to roots and sends authoritative buffer snapshots', { timeout: 120000 }, async t => {
@@ -221,4 +221,97 @@ test('disposing the index cancels and reaps an unresponsive initializing process
   await entered;
   await c.index.dispose(); await starting;
   assert.ok(child.exitCode !== null || child.signalCode !== null);
+});
+
+test('captured references survive source document replacement and reject changed text', { timeout: 120000 }, async t => {
+  const c = client(t);
+  const source = path.join(c.directory, 'definition.rkt');
+  const consumer = path.join(c.directory, 'uses.rkt');
+  fs.writeFileSync(source, definition);
+  fs.writeFileSync(consumer, uses);
+  const file = c.open('definition.rkt', definition);
+  const captured = { ...file, uri: { scheme: 'debug', toString: () => 'debug:captured-definition' },
+    getText: () => definition.replace(/\n/g, '\r\n') };
+  c.workspace.textDocuments.push(captured);
+  let provider, tracker;
+  const terminated = event();
+  const vscode = c.vscode;
+  const disposable = () => ({ dispose() {} });
+  vscode.Uri.file = filename => c.parse(uri(filename));
+  vscode.EventEmitter = class { event = event().listen; fire() {} dispose() {} };
+  vscode.debug = {
+    registerDebugAdapterTrackerFactory(_type, factory) { tracker = factory.createDebugAdapterTracker({ id: 'session' }); return disposable(); },
+    asDebugSourceUri: () => captured.uri, onDidTerminateDebugSession: terminated.listen
+  };
+  vscode.languages = {
+    onDidChangeDiagnostics: event().listen,
+    registerHoverProvider: disposable, registerDefinitionProvider: disposable,
+    registerReferenceProvider(_selector, value) { provider = value; return disposable(); }
+  };
+  vscode.workspace.openTextDocument = async () => c.workspace.textDocuments.find(document =>
+    !document.isClosed && document.uri.scheme === 'file' && document.uri.fsPath === source) ||
+    { getText: () => fs.readFileSync(source, 'utf8') };
+  const loaded = { exports: {} };
+  const bridge = path.join(root, 'vscode/debug-sources.js');
+  require('node:vm').runInNewContext(fs.readFileSync(bridge, 'utf8'), {
+    module: loaded, require: () => vscode
+  }, { filename: bridge });
+  const subscriptions = [];
+  const sources = loaded.exports.registerDebugSources({ subscriptions });
+  t.after(() => subscriptions.forEach(item => item.dispose()));
+  tracker.onDidSendMessage({ type: 'event', event: 'loadedSource',
+    body: { reason: 'new', source: { path: source, sourceReference: 1 } } });
+  sources.setLanguageClient({}, (...args) => c.index.provideReferences(...args));
+  const marker = path.join(c.directory, 'entered');
+  const blocker = path.join(c.directory, 'blocked.rkt');
+  fs.writeFileSync(blocker, `#lang racket/base
+(require (for-syntax racket/base))
+(begin-for-syntax
+  (call-with-output-file ${JSON.stringify(marker)} #:exists 'truncate
+    (lambda (out) (display "entered" out)))
+  (sync never-evt))\n`);
+  const position = { line: 2, character: 10 };
+  const refs = (token = rpc.CancellationToken.None) => provider.provideReferences(captured, position,
+    { includeDeclaration: false }, token);
+  const pending = refs();
+  const deadline = Date.now() + 20000;
+  while (!fs.existsSync(marker)) {
+    assert.ok(Date.now() < deadline, 'Index enters blocked expansion');
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  file.isClosed = true; c.closed.emit(file);
+  c.workspace.textDocuments.splice(c.workspace.textDocuments.indexOf(file), 1);
+  const reopened = c.open('definition.rkt', definition);
+  fs.unlinkSync(blocker); c.disk.emit(c.parse(uri(blocker)));
+  const count = locations => locations.filter(location => location.uri.fsPath === consumer).length;
+  assert.equal(count(await pending), 1, 'The request belongs to the captured source, not the replaced file document');
+  reopened.isClosed = true; c.closed.emit(reopened);
+  c.workspace.textDocuments.splice(c.workspace.textDocuments.indexOf(reopened), 1);
+  assert.equal(count(await refs()), 1, 'Closed files can supply references for matching captured source');
+  fs.writeFileSync(source, '('); c.disk.emit(c.parse(uri(source)));
+  assert.ok(!(await refs())?.length, 'Changed disk text is rejected before expansion');
+  fs.unlinkSync(source); c.disk.emit(c.parse(uri(source)));
+  assert.ok(!(await refs())?.length, 'Deleted source cannot supply references');
+  fs.writeFileSync(source, definition + '; disk has changed\n'); c.disk.emit(c.parse(uri(source)));
+  const buffer = c.open('definition.rkt', definition);
+  assert.equal(count(await refs()), 1, 'A matching unsaved buffer takes precedence over disk');
+  buffer.version++; buffer.getText = () => '('; c.changed.emit({ document: buffer });
+  assert.ok(!(await refs())?.length, 'Stale captured source cannot use changed buffer text');
+  const cancel = new rpc.CancellationTokenSource();
+  const cancelled = refs(cancel.token); cancel.cancel();
+  assert.ok(!(await cancelled)?.length); cancel.dispose();
+  buffer.version++; buffer.getText = () => definition; c.changed.emit({ document: buffer });
+  const openDocument = vscode.workspace.openTextDocument;
+  vscode.workspace.openTextDocument = async () => {
+    captured.version++; captured.getText = () => '\n' + definition;
+    buffer.version++; buffer.getText = captured.getText;
+    c.changed.emit({ document: buffer });
+    return openDocument();
+  };
+  assert.ok(!(await refs())?.length, 'Source changes during final validation discard earlier locations');
+  vscode.workspace.openTextDocument = openDocument;
+  const ending = refs();
+  terminated.emit({ id: 'session' });
+  assert.equal(await ending, undefined, 'Ending the session discards pending source references');
+  assert.equal(await refs(), undefined, 'Completed sessions cannot supply source references');
 });

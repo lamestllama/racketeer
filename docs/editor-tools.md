@@ -1,5 +1,13 @@
 # Editing and macro expansion
 
+## References from debugger sources
+
+Find All References works from captured debugger sources, including references
+in unopened workspace files. The request stays with the captured source if
+VS Code closes or reopens the underlying file document during indexing. Open
+buffers remain authoritative; changed source text, cancellation and session
+termination prevent stale results from appearing.
+
 ## Rename across files
 
 Use VS Code's **Rename Symbol** command (F2 by default) and its normal edit
