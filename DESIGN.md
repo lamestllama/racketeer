@@ -208,6 +208,46 @@ debugger-backend plugin framework, a second expression interpreter, or an
 editor-specific core. Introduce further abstractions when a second concrete
 use requires them.
 
+### Workspace analysis boundaries
+
+Workspace analysis runs in a separate service with three ownership boundaries:
+
+| Layer | Responsibility |
+| --- | --- |
+| `vscode/workspace-index.js` | Observe VS Code document lifetimes, settings and file events; submit source views; convert results to editor locations and edit previews. |
+| `vscode/workspace-index.rkt` | Frame private requests, map request IDs and cancellation messages, translate domain outcomes, and close the engine when the connection ends. |
+| `vscode/workspace-analysis.rkt` and `vscode/workspace-rename.rkt` | Discover files, analyse immutable source views, combine binding references, validate rename, and own bounded worker places. |
+
+The engine has no editor connection, request IDs or wire-protocol errors.
+`make-workspace-analysis` creates an independent instance. Its optional
+`#:on-status` callback receives progress records; it is an output sink and must
+not re-enter the engine. Instances have separate runs, locks and worker slots.
+
+`workspace-analysis-update!` accepts a complete immutable snapshot containing
+`revision`, `roots`, `documents` and optional `settings`. Each document has a
+file URI, an opaque lifetime identity, a version and its text. Revisions increase
+within one instance. The adapter owns incremental changes and assigns a new
+identity when a document closes and reopens. The optional `documentsOnly` hint
+permits reuse only after the engine verifies the new source view against disk.
+
+`workspace-analysis-query` accepts `references`, `prepare-rename` or `rename`,
+the source URI and position, and an optional cancellation event. Ordinary
+requests identify the document lifetime and version; captured-source reference
+requests instead supply the captured text. Results are `AnalysisResult` values
+containing the accepted revision and value, or `AnalysisFailure` values with a
+symbolic reason and message. Adapters choose their protocol's representation.
+
+`workspace-analysis-close!` is idempotent. It cancels active runs, waits for
+their completion and reaps worker places. Further updates have no effect;
+queries return a closed-engine outcome. Closing one instance leaves other
+instances usable.
+
+An LSP host can use the same engine by constructing snapshots from its document
+registry and mapping standard reference and rename requests to the query API.
+VS Code document events, commands, status presentation and edit application
+remain editor responsibilities. That integration changes the adapters while
+retaining the analysis and rename implementation.
+
 ## 4. Instrumentation and module loading
 
 ### Implemented core

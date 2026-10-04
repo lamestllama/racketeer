@@ -9,7 +9,7 @@
          racket/path
          racket/promise
          drracket/check-syntax
-         syntax/modcode
+         racket-langserver/common/source-snapshot
          syntax/modresolve
          racket-langserver/common/interfaces
          racket-langserver/common/path-util
@@ -38,26 +38,7 @@
          (equal? text (format "~s" value)) value)))
 
 (define (in-snapshot path sources proc)
-  (define ordinary-load (current-load/use-compiled))
-  (define ordinary-open (moddep-current-open-input-file))
-  (define (load-snapshot file expected)
-    (define full (simple-form-path file))
-    (cond
-      [(and expected (hash-has-key? sources full))
-       (unless (and (pair? expected) (not (car expected)))
-         (parameterize ([current-load-relative-directory (path-only full)]
-                        [current-module-declare-source full])
-           (get-module-code full #:sub-path '() #:rkt-try-ss? #f #:compile eval)))]
-      [else (ordinary-load file expected)]))
-  (parameterize ([current-namespace (make-base-namespace)]
-                 [current-directory (path-only path)]
-                 [current-load-relative-directory (path-only path)]
-                 [current-load/use-compiled load-snapshot]
-                 [moddep-current-open-input-file
-                  (lambda (file)
-                    (define text (hash-ref sources (simple-form-path file) #f))
-                    (if text (open-input-string text file) (ordinary-open file)))])
-    (proc)))
+  (call-with-source-snapshot path sources proc))
 
 (define (analyse path sources)
   (in-snapshot path sources

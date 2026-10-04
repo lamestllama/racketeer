@@ -8,13 +8,17 @@ the manifest, and the license texts. No Racket package is installed globally.
 The server is pinned to upstream commit
 `5029bdb7d22b4ce7848fbd74d34224c450e2da16`, which includes the watched-file,
 diagnostic logging and rename notification fixes. The reproduction script
-verifies the archive and then applies one patch:
+verifies the archive and then applies these patches:
 
 - `analysis-completion.patch`: complete requests after analysis failure and reject
   results from superseded or closed documents. Changes four production files;
   document analysis does not inspect disk state or track index generations.
+- `open-buffer-imports.patch`: analyse imports using immutable snapshots of
+  open documents, refresh affected consumers when buffers change or close, and
+  resolve definitions against the accepted snapshot. Project modules load from
+  source to avoid retaining earlier macro expansions in compiled intermediates.
 
-The patch does not introduce disk verification, closed-file retention rules, or
+These patches do not introduce closed-file retention rules or
 URI-alias restoration. Rename ownership is provided by upstream
 [PR #244](https://github.com/jeapostrophe/racket-langserver/pull/244).
 
@@ -22,7 +26,7 @@ Workspace indexing belongs to Racketeer, in `vscode/workspace-index.rkt` and
 its client. The separate process reuses the pinned analyser and workspace store
 as libraries. No indexing hooks or index state are added to the language server.
 
-The patch includes regression tests. Reproduction fails if it no longer
+Regression tests exercise both patches. Reproduction fails if either no longer
 applies. It does not change debugger instrumentation. The JavaScript
 client patch below is applied by npm installation and the extension build.
 

@@ -8,6 +8,18 @@ VS Code closes or reopens the underlying file document during indexing. Open
 buffers remain authoritative; changed source text, cancellation and session
 termination prevent stale results from appearing.
 
+## Unsaved workspace imports
+
+Open workspace buffers supply the source used for imported modules, including
+compile-time imports. Diagnostics and definition navigation refresh affected
+open consumers when a dependency changes or closes. Workspace references and
+rename previews use the same source-loading rules. Closing a buffer returns
+its imports to the saved file's contents.
+
+Project dependencies load from source during analysis, so a compiled
+intermediate module cannot retain an earlier macro expansion. Analysis leaves
+source files and existing bytecode unchanged.
+
 ## Rename across files
 
 Use VS Code's **Rename Symbol** command (F2 by default) and its normal edit
@@ -24,8 +36,7 @@ Before returning edits, Racketeer expands the original and proposed source
 snapshots in memory and checks that source identifiers retain their bindings.
 It rejects capture, conflicting imports, incomplete analysis and files changed
 during the request. Validation is cancellable and bounded to 90 seconds; it
-never applies the proposed edits itself. The existing language-server sources
-are unchanged.
+never applies the proposed edits itself.
 
 Selectors over composed imports, phase-shifted imported uses, generated spellings without
 unambiguous source ranges, and selectors spanning multiple export phases or

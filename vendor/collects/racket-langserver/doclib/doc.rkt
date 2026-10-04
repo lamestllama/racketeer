@@ -8,6 +8,7 @@
 (require "../common/interfaces.rkt"
          "editor.rkt"
          "../common/path-util.rkt"
+         "../common/source-snapshot.rkt"
          "lazy-cache.rkt"
          "doc-trace.rkt"
          "check-syntax-compat.rkt"
@@ -246,6 +247,10 @@
   (-> Doc? boolean?)
   (equal? (Doc-version doc) (Doc-trace-version doc)))
 
+(define (doc-invalidate-analysis! doc)
+  (set-Doc-trace-version! doc #f)
+  (invalidate-resyntax-results! doc))
+
 (define/contract (doc-expand! doc)
   (-> Doc? boolean?)
   (define result
@@ -386,7 +391,8 @@
 (define/contract (doc-get-definition-by-id path submods id)
   (-> path? (listof symbol?) symbol? (or/c Range? #f))
   (define doc-text (new lsp-editor%))
-  (send doc-text load-file path)
+  (define source (source-snapshot-text path))
+  (if source (send doc-text insert source 0) (send doc-text load-file path))
   (match (get-def path doc-text submods id)
     [(cons start end)
      (Range (abs-pos->Pos doc-text start)
@@ -1243,6 +1249,7 @@
          doc-expand
          doc-update-trace!
          doc-trace-latest?
+         doc-invalidate-analysis!
          doc-expand!
          doc-resyntax
          doc-resyntax!

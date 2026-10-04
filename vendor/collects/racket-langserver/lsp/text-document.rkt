@@ -31,11 +31,12 @@
   (match-define (hash-table ['textDocument (^DocItem #:uri uri #:version version #:text text)]) params)
   (fetch-configuration request-client uri)
   (define safe-doc (lsp-open-doc! uri text version))
-  (safedoc-run-check-syntax! notify-client safe-doc))
+  (lsp-refresh-analysis! notify-client uri))
 
-(define (did-close! params)
+(define (did-close! params [notify-client void])
   (match-define (hash-table ['textDocument (DocItem-js #:uri uri)]) params)
-  (lsp-close-doc! uri))
+  (lsp-close-doc! uri)
+  (lsp-refresh-analysis! notify-client uri))
 
 (define (did-change! notify-client params)
   (match-define (hash-table ['textDocument (^DocIdentifier #:version version #:uri uri)]
@@ -60,7 +61,7 @@
 
       (doc-update-version! doc version)))
 
-  (safedoc-run-check-syntax! notify-client safe-doc))
+  (lsp-refresh-analysis! notify-client uri))
 
 ;; Hover request
 ;; Returns an object conforming to the Hover interface, to
@@ -135,7 +136,7 @@
                  ['position (as-Pos pos)])
      (define safe-doc (lsp-get-doc uri))
      (define result
-       (with-read-doc safe-doc
+       (with-read-analysis safe-doc
          (λ (doc) (doc-definition doc uri pos))))
      (success/enc id result)]
     [_
@@ -388,7 +389,7 @@
   did-open!
   did-change!
   (contract-out
-    [did-close! (jsexpr? . -> . void?)]
+    [did-close! (->* (jsexpr?) ((-> string? jsexpr? void?)) void?)]
     [hover (exact-nonnegative-integer? jsexpr? . -> . jsexpr?)]
     [code-action (exact-nonnegative-integer? jsexpr? . -> . jsexpr?)]
     [completion (exact-nonnegative-integer? jsexpr? . -> . jsexpr?)]

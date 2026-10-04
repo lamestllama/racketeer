@@ -199,7 +199,9 @@
                                     (send-notification method params))
                                   params)]
         ["textDocument/didClose"
-         (text-document/did-close! params)]
+         (text-document/did-close! params
+                                   (lambda (method params)
+                                     (send-notification method params)))]
         ["textDocument/didChange"
          (text-document/did-change! (λ (method params)
                                       (send-notification method params))

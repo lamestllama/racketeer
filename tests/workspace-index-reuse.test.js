@@ -66,7 +66,7 @@ test('saving an unsaved module refreshes dependents even when closing leaves ide
   const buffer = p.open('dependency.rkt', dependency('new'));
   await p.update(); await p.references(p.origin);
   assert.equal(p.notifications.at(-1).state, 'ready', p.diagnostics());
-  assert.equal(fs.readFileSync(marker, 'utf8'), 'old');
+  assert.equal(fs.readFileSync(marker, 'utf8'), 'new', 'Import expansion must use the unsaved dependency');
   p.write('dependency.rkt', dependency('new'));
   p.documents.delete(buffer); await p.update(true); await p.references(p.origin);
   assert.equal(fs.readFileSync(marker, 'utf8'), 'new', 'Import expansion must use the saved dependency');
