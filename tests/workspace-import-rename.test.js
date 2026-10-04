@@ -80,13 +80,12 @@ test('prefixed use prepares only its base name and retains Unicode prefixes', { 
   assert.equal(fs.readFileSync(p.filename('prefix.rkt'), 'utf8'), uses);
 });
 
-test('alias and prefix renames retain capture checks and refuse unsupported transformations', { timeout: 120000 }, async t => {
+test('alias and prefix renames retain capture checks', { timeout: 120000 }, async t => {
   const p = await project(t);
   for (const [spec, body, target, name] of [
     ['(rename-in "definition.rkt" [square sq])', '(let ([result 1]) (sq result))', 'alias', 'result'],
     ['(prefix-in s: "definition.rkt")', '(let ([s:squared 1]) (s:square s:squared))', 'export', 'squared'],
-    ['(prefix-in a: (prefix-in b: "definition.rkt"))', '(let ([a:b:squared 1]) (a:b:square a:b:squared))', 'export', 'squared'],
-    ['(for-syntax racket/base (only-in "definition.rkt" square))', '(begin-for-syntax (square 3))', 'export', 'squared']
+    ['(prefix-in a: (prefix-in b: "definition.rkt"))', '(let ([a:b:squared 1]) (a:b:square a:b:squared))', 'export', 'squared']
   ]) {
     const text = `#lang racket/base\n(require ${spec})\n${body}\n`;
     p.write('consumer.rkt', text);
@@ -144,7 +143,7 @@ test('composed selectors shared by different modules are refused', { timeout: 12
   p.write('other.rkt', '#lang racket/base\n(provide square)\n(define square 3)\n');
   const consumer = '#lang racket/base\n(require (except-in (combine-in "definition.rkt" "other.rkt") square))\n';
   p.write('uses.rkt', consumer); await p.update();
-  await assert.rejects(p.rename(p.origin, 'squared'), /another binding|Cannot analyse|unsupported|composed/);
+  await assert.rejects(p.rename(p.origin, 'squared'), /more than one binding/);
   assert.equal(fs.readFileSync(p.filename('uses.rkt'), 'utf8'), consumer);
   const independent = '#lang racket/base\n(require "definition.rkt" (except-in (combine-in "other.rkt") square))\n(square 3)\n';
   p.write('uses.rkt', independent); await p.update();
@@ -198,7 +197,7 @@ test('nested import discovery does not interpret a custom transformer or quoted 
     + '  (lambda (stx) (syntax-case stx () [(_ ignored spec) (expand-import #\'spec)]))))\n'
     + '(require (standard-prefix a: (prefix-in b: "definition.rkt")))\n(a:square 3)\n';
   p.write('consumer.rkt', text); await p.update();
-  await assert.rejects(p.rename(p.origin, 'squared'), /another binding|Cannot analyse|unsupported/);
+  await assert.rejects(p.rename(p.origin, 'squared'), /custom import transformer/);
   assert.equal(fs.readFileSync(p.filename('consumer.rkt'), 'utf8'), text);
   const quoted = '#lang racket/base\n(require (prefix-in a: (prefix-in b: "definition.rkt")))\n'
     + '(a:b:square 3)\n\'(prefix-in a: (only-in "definition.rkt" square))\n'

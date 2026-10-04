@@ -42,12 +42,15 @@ source files and existing bytecode unchanged.
 Use VS Code's **Rename Symbol** command (F2 by default) and its normal edit
 preview. Racketeer's workspace index includes unopened Racket source files and
 uses open buffers as the authoritative text. Rename updates a definition, its
-exports and imported uses together. Renaming an explicit import alias changes
-its declaration and uses in that file; the exporting module keeps its name.
+exports and imported uses together. Renaming an explicit import alias from one
+of its uses changes its declaration and uses in that file; the exporting module
+keeps its name, including when the alias is inside nested prefixes.
 Renaming the original definition preserves explicit local aliases and
 `prefix-in` prefixes, including nested prefixes and prefixes around `only-in`,
-`except-in` and `rename-in`. Import selectors update with the exported name.
-Local bindings stay local.
+`except-in` and `rename-in`. Selectors outside composed standard imports update
+with the exported name. Compile-time uses follow the defining binding's phase;
+relative submodule imports retain their enclosing module. Local bindings stay
+local.
 
 Before returning edits, Racketeer expands the original and proposed source
 snapshots in memory and checks that source identifiers retain their bindings.
@@ -55,9 +58,9 @@ It rejects capture, conflicting imports, incomplete analysis and files changed
 during the request. Validation is cancellable and bounded to 90 seconds; it
 never applies the proposed edits itself.
 
-Selectors over composed imports, phase-shifted imported uses, generated spellings without
-unambiguous source ranges, and selectors spanning multiple export phases or
-binding spaces can still be refused. Rename checks actual exported identities,
+Custom import transformers, generated spellings without unambiguous source
+ranges, and selectors spanning multiple bindings, export phases or binding
+spaces can still be refused. Rename checks actual exported identities,
 so a selector is not confused with a hidden definition of the same name.
 Definitions outside the analysed workspace cannot be renamed, but their explicit
 local import aliases can. Workspace exclusions still apply;

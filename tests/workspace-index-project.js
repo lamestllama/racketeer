@@ -6,6 +6,7 @@ const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { spawn } = require('node:child_process');
 const { once } = require('node:events');
+const { edited } = require('./text-edits');
 const rpc = require('../vscode/node_modules/vscode-jsonrpc/node');
 const root = path.resolve(__dirname, '..');
 const definition = '#lang racket/base\n(provide square)\n(define (square x) (* x x))\n';
@@ -14,14 +15,6 @@ const uri = file => pathToFileURL(file).href;
 const addon = fs.mkdtempSync(path.join(os.tmpdir(), 'racketeer-index-addon-'));
 test.after(() => fs.rmSync(addon, { recursive: true, force: true }));
 
-function edited(text, edits = []) {
-  const offset = position => text.split('\n').slice(0, position.line).reduce((sum, line) => sum + line.length + 1, 0) + position.character;
-  for (const edit of [...edits].sort((a, b) => offset(b.range.start) - offset(a.range.start))) {
-    const start = offset(edit.range.start), end = offset(edit.range.end);
-    text = text.slice(0, start) + edit.newText + text.slice(end);
-  }
-  return text;
-}
 
 async function project(t) {
   const directory = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'racketeer-index-')));
