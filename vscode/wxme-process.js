@@ -2,9 +2,13 @@
 const { spawn } = require('node:child_process');
 const path = require('node:path');
 
-// A single headless decoder owns no child processes. Its input pipe is a lease:
+// Each codec worker owns no child processes. Its input pipe is a lease:
 // closing it also stops a worker whose extension host has exited unexpectedly.
 function decodeWxme(command, helper, file, { signal, timeout = 60000 } = {}) {
+  return requestWxme(command, helper, file, { path: file }, { signal, timeout });
+}
+
+function requestWxme(command, helper, file, request, { signal, timeout = 60000, outputLimit = 48 * 1024 * 1024 } = {}) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) { reject(signal.reason); return; }
     let child, deadline, fallback, failure, length = 0, stderr = '';
@@ -24,7 +28,7 @@ function decodeWxme(command, helper, file, { signal, timeout = 60000 } = {}) {
     child.stdin.on('error', error => { if (error.code !== 'EPIPE') stop(error); });
     child.stdout.on('data', chunk => {
       length += chunk.length;
-      if (length > 48 * 1024 * 1024) stop(new Error('WXME viewer output exceeds 48 MiB.'));
+      if (length > outputLimit) stop(new Error('WXME worker output exceeds its limit.'));
       else if (!failure) chunks.push(chunk);
     });
     child.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(-8192); });
@@ -41,9 +45,9 @@ function decodeWxme(command, helper, file, { signal, timeout = 60000 } = {}) {
     });
     signal?.addEventListener('abort', cancelled, { once: true });
     deadline = setTimeout(() => stop(new Error('WXME viewer timed out after 60 seconds.')), timeout);
-    child.stdin.write(JSON.stringify({ path: file }) + '\n');
+    child.stdin.write(JSON.stringify(request) + '\n');
     if (signal?.aborted) cancelled();
   });
 }
 
-module.exports = { decodeWxme };
+module.exports = { decodeWxme, requestWxme };

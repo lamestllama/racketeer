@@ -21,4 +21,6 @@ macro-stepper.js
 macro-process.js
 wxme-process.js
 wxme-viewer.js
+wxme-editor.js
+wxme-document.js
 workspace-index.js

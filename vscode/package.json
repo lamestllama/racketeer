@@ -54,6 +54,11 @@
       "displayName": "Racketeer WXME Viewer",
       "selector": [{ "filenamePattern": "*.rkt" }, { "filenamePattern": "*.rktl" }, { "filenamePattern": "*.wxme" }],
       "priority": "option"
+    }, {
+      "viewType": "racketeer.wxmeEditor",
+      "displayName": "Racketeer WXME Editor",
+      "selector": [{ "filenamePattern": "*.rkt" }, { "filenamePattern": "*.rktl" }, { "filenamePattern": "*.wxme" }],
+      "priority": "option"
     }],
     "languages": [
       {

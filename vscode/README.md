@@ -362,6 +362,20 @@ images. Other object classes are reported as unsupported. A changed file is
 marked in the view; close and reopen it to refresh. Unsaved text edits must be
 saved or reverted before viewing.
 
+Choose **Open With → Racketeer WXME Editor** to edit text around embedded
+images and inside nested editors or comment boxes. It supports VS Code's
+Undo, Redo, Save, Save As, Revert and unsaved-document recovery. Images and box
+boundaries stay in place; adding or removing objects is not supported. Other
+object classes and linked or missing images cannot be edited.
+
+Editing requires the full Racket installation's GUI libraries and a working
+graphical display on the extension host. It opens inside VS Code; no separate
+Racket window is shown. The read-only viewer also works without a display.
+Saving preserves supported objects through Racket's editor codec and can change
+the file's binary representation. If the file changes externally, use Revert
+to reload it or Save As to keep the edited version. Language services and debug
+source locations are not yet available inside the WXME editor.
+
 After an expression returns an image, choose **Racket: View Image** from the
 Command Palette or the preview button on the debug toolbar.
 It opens a PNG snapshot in VS Code's built-in image editor. Use **Racket: Save

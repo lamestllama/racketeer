@@ -62,6 +62,12 @@ exports.run = async function (_extension, workspace) {
     assert.ok(vscode.window.tabGroups.activeTabGroup.activeTab.input instanceof vscode.TabInputText);
     assert.equal(vscode.window.activeTextEditor.document.languageId, 'racket');
     checks.push('Ordinary Racket files retain the default text editor');
+    await vscode.commands.executeCommand('vscode.openWith', uri, 'racketeer.wxmeEditor', { preview: false });
+    assert.equal(custom()[0].input.viewType, 'racketeer.wxmeEditor');
+    assert.equal(custom()[0].isDirty, false);
+    await vscode.commands.executeCommand('workbench.action.files.save');
+    assert.deepEqual(fs.readFileSync(file), boxes);
+    checks.push('Editable WXME opens through the custom-editor API and an unchanged save preserves bytes');
     return checks;
   } finally { if (custom().length) await vscode.window.tabGroups.close(custom()); }
 };

@@ -112,7 +112,9 @@ display. Package identities and provisioning logs accompany the Rhombus report.
 
 The headless command discovers top-level `tests/*.rkt`, the lexical-evaluation
 experiment, and every `tests/*.test.js` except the explicit GUI suites
-`gui-parity.test.js` and `macro-stepper-gui.test.js`. It is also
+`gui-parity.test.js`, `macro-stepper-gui.test.js`, and the display-dependent
+cases in `wxme-edit.test.js`. The WXME cases cover object-preserving saves,
+reader refusal and evaluation of original fixtures. It is also
 the implementation of `npm test --prefix vscode` and the headless workspace task.
 The harness regression tests use Python 3; no editor or display is needed.
 
