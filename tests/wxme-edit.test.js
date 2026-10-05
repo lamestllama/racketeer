@@ -47,8 +47,10 @@ function harness(t) {
   provider.onDidChangeCustomDocument(e => events.push(e));
   t.after(() => context.subscriptions.forEach(s => s.dispose()));
   function panel(doc) {
-    const received = new EventEmitter(), closed = new EventEmitter(), messages = [];
+    const received = new EventEmitter(), closed = new EventEmitter(), visibility = new EventEmitter(), messages = [];
     const p = { webview: { onDidReceiveMessage: received.event, postMessage: m => { messages.push(m); return Promise.resolve(true); } }, onDidDispose: closed.event,
+      visible: true, onDidChangeViewState: visibility.event,
+      show: visible => { p.visible = visible; visibility.fire({ webviewPanel: p }); },
       edit: async (id, text, before = doc.fields.get(id).part.text) => { received.fire({ type: 'edit', generation: doc.generation, id, text, before }); await new Promise(r => setImmediate(r)); },
       message: async message => { received.fire({ generation: doc.generation, ...message }); await new Promise(r => setImmediate(r)); },
       close: () => closed.fire(), messages };
@@ -78,6 +80,18 @@ test('provider sends undoable edits to VS Code and synchronizes split views', as
   await b.edit('1/0', 'stale edit', ''); assert.equal(h.errors.length, 1); assert.equal(h.events.length, 1);
   assert.equal(doc.fields.get('1/0').part.text, 'inside λ 😀');
   a.close(); assert.equal(doc.panels.size, 1); doc.dispose(); assert.equal(doc.panels.size, 0);
+});
+
+test('revealed editors render current text without changing the document or undo history', async t => {
+  const h = harness(t), doc = await h.provider.openCustomDocument(h.uri, {}, token), a = h.panel(doc), b = h.panel(doc);
+  await a.edit('0', 'saved text'); await h.provider.saveCustomDocument(doc, token);
+  a.show(false); a.show(true); assert.match(a.webview.html, /saved text/);
+  a.show(false); await b.edit('0', 'edited in another view');
+  const tree = doc.tree, revision = doc.revision;
+  a.show(true); assert.match(a.webview.html, /edited in another view/);
+  assert.strictEqual(doc.tree, tree); assert.equal(doc.revision, revision); assert.equal(h.events.length, 2);
+  a.show(false); h.events[1].undo(); a.show(true); assert.match(a.webview.html, /saved text/);
+  const html = a.webview.html; a.close(); a.show(false); a.show(true); assert.equal(a.webview.html, html);
 });
 
 test('save, undo after save, Save As, revert and backup restore retain content', async t => {

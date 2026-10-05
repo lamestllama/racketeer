@@ -84,3 +84,7 @@ does not change a running session's captured source. Breakpoints and stepping
 are available in the native debug source view for surrounding executable text;
 the custom editor has no breakpoint gutter. Locations within embedded editors
 and LSP services for WXME remain unsupported.
+
+Returning to a hidden editor renders its current document model. Webviews can
+be recreated from their initial HTML, so transient webview state never owns
+the saved text, undo history or edits made in another view.

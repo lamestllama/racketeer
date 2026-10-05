@@ -130,7 +130,14 @@ function registerWxmeEditor(context) {
           void vscode.window.showErrorMessage(error.message);
         }
       });
-      const closed = panel.onDidDispose(() => { document.panels.delete(panel); messages.dispose(); closed.dispose(); });
+      let visible = panel.visible;
+      const visibility = panel.onDidChangeViewState(() => {
+        // Hidden webviews can be recreated from their initial HTML. The
+        // document model remains authoritative across editor tab changes.
+        if (panel.visible && !visible && !document.disposed) panel.webview.html = renderEditor(document);
+        visible = panel.visible;
+      });
+      const closed = panel.onDidDispose(() => { document.panels.delete(panel); messages.dispose(); visibility.dispose(); closed.dispose(); });
     },
     saveCustomDocument: (document, token) => save(document, document.uri, token),
     saveCustomDocumentAs: save,
