@@ -507,6 +507,26 @@ are licensed under Apache-2.0 OR MIT, at your choice. The extension includes
 `LICENSE`, `LICENSE-APACHE`, `LICENSE-MIT`, and `COPYRIGHT`. Bundled dependencies
 retain their own copyright and licence notices.
 
+### Building applications
+
+Use **Racket: Create Launcher…** or **Racket: Build Executable…** with a source
+module open, choose Console or GUI mode, and select the output path. Use
+**Racket: Create Distribution…** on an executable to collect its runtime
+dependencies. Builds run as native VS Code tasks; **Tasks: Terminate Task**
+cancels them. A launcher needs its original source and Racket installation;
+an executable embeds code but can still need runtime files. Distributions
+target compatible operating systems and architectures and may need system libraries.
+
+The `racket-build` task type supports `action` (`launcher`, `executable` or
+`distribution`), `source`, `output`, `gui`, and additional `libraries`/`languages`
+for embedded executables. Paths are relative to the task's workspace folder;
+native task variables and `dependsOn` are supported. The selected folder's
+`racketdap.racketExecutable` setting supplies the build tools. Try
+`examples/application/console.rkt` and `examples/application/gui.rkt` in the
+source checkout. Declare data files with `define-runtime-path` for distribution.
+The public tools control overwrite and partial-output behavior; check task
+completion before using a build.
+
 ### Workspace references
 
 Racketeer analyses unopened Racket module files in trusted workspaces using a

@@ -15,6 +15,7 @@ const { registerSessions } = require('./sessions');
 const { registerTesting } = require('./testing');
 const { registerDebugRepl } = require('./debug-repl');
 const { registerPackages } = require('./packages');
+const { registerApplicationBuilds } = require('./application-builds');
 const { registerWxmeViewer } = require('./wxme-viewer');
 const { registerWxmeEditor } = require('./wxme-editor');
 const { registerDependencies } = require('./dependencies');
@@ -24,6 +25,7 @@ function activate(context) {
   const sessions = registerSessions(context);
   const testing = registerTesting(context, sessions);
   registerPackages(context);
+  registerApplicationBuilds(context);
   registerWxmeViewer(context);
   registerWxmeEditor(context);
   registerDependencies(context);

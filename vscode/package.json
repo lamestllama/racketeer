@@ -27,6 +27,7 @@
   ],
   "activationEvents": [
     "onDebugResolve:racketdap",
+    "onTaskType:racket-build",
     "onDebugInitialConfigurations:racketdap",
     "onLanguage:racket",
     "onLanguage:rhombus",
@@ -91,7 +92,22 @@
         "language": "racket"
       }
     ],
+    "taskDefinitions": [{
+      "type": "racket-build", "required": ["action", "source", "output"],
+      "when": "processExecutionSupported",
+      "properties": {
+        "action": { "type": "string", "enum": ["launcher", "executable", "distribution"], "description": "Build a source module or distribute an existing executable." },
+        "source": { "type": "string", "description": "Source module for a build, or existing executable for a distribution. Relative to the workspace folder; task variables are supported." },
+        "output": { "type": "string", "description": "Executable path or distribution directory, relative to the workspace folder. Task variables are supported." },
+        "gui": { "type": "boolean", "default": false, "description": "Build a graphical launcher or executable. Distributions inherit their executable's mode." },
+        "libraries": { "type": "array", "items": { "type": "string" }, "description": "Additional module paths to embed with raco exe ++lib, for dynamic loading." },
+        "languages": { "type": "array", "items": { "type": "string" }, "description": "Additional languages to embed with raco exe ++lang." }
+      }
+    }],
     "commands": [
+      { "command": "racketdap.createLauncher", "title": "Racket: Create Launcher…" },
+      { "command": "racketdap.buildExecutable", "title": "Racket: Build Executable…" },
+      { "command": "racketdap.createDistribution", "title": "Racket: Create Distribution…" },
       { "command": "racketdap.browseDependencies", "title": "Racket: Browse Module Dependencies" },
       { "command": "racketdap.refreshDependencies", "title": "Racket: Refresh Module Dependencies", "icon": "$(refresh)" },
       { "command": "racketdap.viewImage", "title": "Racket: View Image", "enablement": "racketdap.viewImage.enabled || debugProtocolVariableMenuContext == 'racketdap.image' || debugProtocolVariableMenuContext == 'racketdap.plot'", "icon": "$(preview)" },

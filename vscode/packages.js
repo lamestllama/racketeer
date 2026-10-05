@@ -3,32 +3,12 @@ const vscode = require('vscode');
 const path = require('node:path');
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
-const { randomUUID } = require('node:crypto');
+const { racoTask, runTask } = require('./raco-task');
 const execute = promisify(execFile);
 
 // Shared task ownership keeps package commands and Test Explorer cancellation aligned.
 async function runPackageTask(selected, label, args, token) {
-  const id = randomUUID();
-  const operation = new vscode.Task({ type: 'racket-package', id }, selected.folder || vscode.TaskScope.Workspace, label, 'Racket',
-    new vscode.ProcessExecution(selected.executable, ['-l', 'raco', '--', ...args], { cwd: selected.cwd }), []);
-  operation.presentationOptions = { reveal: vscode.TaskRevealKind.Always, panel: vscode.TaskPanelKind.Dedicated };
-  const subscriptions = [];
-  let execution;
-  subscriptions.push(token?.onCancellationRequested(() => execution?.terminate()));
-  const done = new Promise(resolve => {
-    subscriptions.push(vscode.tasks.onDidEndTaskProcess(event => {
-      if (event.execution.task.definition.id === id) resolve({ exitCode: event.exitCode });
-    }), vscode.tasks.onDidEndTask(event => {
-      // Tasks that fail to start a process have no process-exit event.
-      if (event.execution.task.definition.id === id) resolve({ exitCode: undefined });
-    }));
-  });
-  try {
-    if (token?.isCancellationRequested) return { exitCode: undefined };
-    execution = await vscode.tasks.executeTask(operation);
-    if (token?.isCancellationRequested) execution.terminate();
-    return await done;
-  } finally { subscriptions.forEach(subscription => subscription?.dispose()); }
+  return runTask(racoTask(selected, label, args), token);
 }
 
 function registerPackages(context) {

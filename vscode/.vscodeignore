@@ -29,3 +29,6 @@ wxme-storage.js
 workspace-index.js
 dependencies.js
 dependency-process.js
+application-build.js
+application-builds.js
+raco-task.js
