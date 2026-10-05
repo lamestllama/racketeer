@@ -138,6 +138,7 @@ function client(t, processFactory) {
   const vm = require('node:vm');
   const { fileURLToPath } = require('node:url');
   const { createLanguageProcess } = require('../vscode/language-process');
+  fs.mkdirSync(path.join(root, '.test-output'), { recursive: true });
   const directory = fs.mkdtempSync(path.join(root, '.test-output', 'separate-index-'));
   const changed = event(), opened = event(), closed = event(), disk = event();
   const statuses = [];

@@ -14,6 +14,7 @@ function run() {
   const suites = inventory();
   if (process.argv.includes('--list')) { console.log(JSON.stringify(suites, null, 2)); return; }
   for (const [command, args] of [
+    [process.execPath, ['scripts/stage-extension.js']],
     ['raco', ['test', '--timeout', '180', ...suites.racket]],
     [process.execPath, ['--test', '--test-concurrency=1', '--test-timeout=180000', ...suites.node]]
   ]) {

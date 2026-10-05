@@ -111,10 +111,17 @@ directories without these extra language packages. Macro-stepper command
 acceptance runs with the ordinary installed-editor checks on the isolated
 display. Package identities and provisioning logs accompany the Rhombus report.
 
-The headless command discovers top-level `tests/*.rkt`, the lexical-evaluation
+The GUI command includes callback debugging, macro-stepper windows, interactive
+plots and WXME text, object and XML/Racket-box editing. Pass `--timeout 600` on a
+busy host to increase its whole-suite time limit; individual test deadlines
+remain unchanged.
+
+The headless command stages the bundled runtime and analysis dependencies before
+running tests, so a fresh checkout does not need an earlier package build. It
+discovers top-level `tests/*.rkt`, the lexical-evaluation
 experiment, and every `tests/*.test.js` except the explicit GUI suites
-`gui-parity.test.js`, `macro-stepper-gui.test.js`, and the display-dependent
-cases in `wxme-edit.test.js` and `wxme-structure.test.js`. The WXME cases cover
+`gui-parity.test.js`, `macro-stepper-gui.test.js`, `plots-gui.test.js`, and the display-dependent
+cases in `wxme-edit.test.js`, `wxme-structure.test.js` and `wxme-xml-edit.test.js`. The WXME cases cover
 object insertion and removal, structural undo, versioned recovery, source spans,
 styled Unicode and tabs, object-preserving saves, reader refusal and evaluation
 of original fixtures. It is also

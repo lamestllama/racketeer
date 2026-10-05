@@ -47,6 +47,29 @@ test('editor orchestration uses fresh state and sanitized collection paths', () 
   assert.equal(result.status, 0, result.stderr || String(result.error));
 });
 
+test('headless entry point prepares bundled dependencies in a fresh checkout', async t => {
+  const { directory } = await fixture(t);
+  for (const name of ['test-headless.js', 'stage-extension.js']) {
+    fs.copyFileSync(path.join(root, 'scripts', name), path.join(directory, 'scripts', name));
+  }
+  fs.writeFileSync(path.join(directory, 'experiments/lexical-eval.rkt'), '#lang racket/base\n');
+  fs.writeFileSync(path.join(directory, 'vendor/dependency.rkt'), '#lang racket/base\n');
+  fs.writeFileSync(path.join(directory, 'tests/staged.test.js'), `
+    const assert = require('node:assert/strict'), fs = require('node:fs');
+    assert.equal(fs.readFileSync('vscode/language-server/dependency.rkt', 'utf8'),
+      fs.readFileSync('vendor/dependency.rkt', 'utf8'));
+    assert.equal(fs.readFileSync('vscode/runtime/racketdap/main.rkt', 'utf8'),
+      fs.readFileSync('racketdap/main.rkt', 'utf8'));
+    fs.writeFileSync('probe-passed', 'yes');
+  `);
+  const env = { ...process.env };
+  delete env.NODE_TEST_CONTEXT;
+  const result = spawnSync(process.execPath, ['scripts/test-headless.js'],
+    { cwd: directory, env, encoding: 'utf8', timeout: 30000 });
+  assert.equal(result.status, 0, result.stdout + result.stderr || String(result.error));
+  assert.equal(fs.readFileSync(path.join(directory, 'probe-passed'), 'utf8'), 'yes');
+});
+
 test('a same-version artifact is rejected when a source or test input changes', async t => {
   const { directory, artifact } = await fixture(t);
   const verified = await verifyArtifact(artifact, { directory });
