@@ -66,6 +66,7 @@ function registerFileCommands(context, sessions, testing, debugRepl) {
     testFile: target => testing.runFile(target.uri),
     debugTestFile: target => testing.runFile(target.uri, true),
     startDebugRepl: target => debugRepl.open(target),
+    runInteractions: target => debugRepl.open(target, true),
     restartDebugRepl: target => debugRepl.open(target, true),
     loadFile: target => {
       const terminal = repl(target);
@@ -98,6 +99,7 @@ function registerFileCommands(context, sessions, testing, debugRepl) {
     const target = await activeTarget({ allowWxme: true });
     const choices = [
       ['Run file', 'runFile'], ['Debug file', 'debugFile'],
+      ['Run in Interactions', 'runInteractions'],
       ['Run tests', 'testFile'], ['Debug tests', 'debugTestFile'],
       ['Load in REPL', 'loadFile'], ['Load in Debug REPL', 'startDebugRepl'],
       ['Restart Debug REPL', 'restartDebugRepl']

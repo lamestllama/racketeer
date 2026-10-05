@@ -3,7 +3,7 @@
 (require racket/async-channel racket/file racket/list racket/path racket/port
          racket/string racket/tcp
          "../protocol.rkt" "../commands.rkt" "../source.rkt" "../packages.rkt" "../process-group.rkt" "load.rkt" "../instrumentation/instrument.rkt"
-         "inspect.rkt" "stepping.rkt" "expressions.rkt" "cancel.rkt" "images.rkt" "plots.rkt" "coverage.rkt")
+         "inspect.rkt" "stepping.rkt" "expressions.rkt" "cancel.rkt" "images.rkt" "plots.rkt" "coverage.rkt" "interactions.rkt")
 
 (define bootstrap (read-message (current-input-port)))
 (join-process-group! (hash-ref bootstrap 'processGroup #f))
@@ -217,6 +217,11 @@
                           (set! image-count (add1 image-count))
                           (describe pause (format "value ~a" i) value)))]))
   (hash-set (hash-remove (hash-remove display-result 'name) 'value) 'result (hash-ref display-result 'value)))
+(define (interaction-results request pause result)
+  (when (and (arg config 'racketdapRichInteractions #f)
+             (equal? (arg (arg request 'arguments (hasheq)) 'context) "repl"))
+    (for ([value (in-list result)]) ((current-print) value)))
+  (describe-results pause result))
 (define (owned table id pause)
   (define entry (hash-ref table id #f))
   (unless (and entry (eq? (car entry) pause)) (error 'debugger "Expired or invalid reference; refresh the paused frame."))
@@ -337,7 +342,7 @@
        (if (equal? (arg a 'context) "hover")
            (list (stop-binding-value stop expression index))
            (call-with-values (lambda () (stop-evaluate stop (read-expression expression) index)) list)))
-     (describe-results pause result)]
+     (interaction-results request pause result)]
     [(setVariable)
      (define descriptor (owned variables (hash-ref a 'variablesReference) pause))
      (unless (eq? (car descriptor) 'locals) (error 'setVariable "Only lexical locals can be assigned here."))
@@ -484,8 +489,8 @@
        (cond
          [(equal? (hash-ref request 'command) "evaluate")
           (invalidate! interaction)
-          (describe-results
-           interaction
+          (interaction-results
+           request interaction
            (call-with-values
             (lambda ()
               (call-with-exception-handler
@@ -495,6 +500,11 @@
          [else (inspect-request request interaction)])))
     (flush-program-output)
     (loop)))
+(define (rich-port original category)
+  (if (arg config 'racketdapRichInteractions #f)
+      (interaction-output-port original category
+                               (lambda (body) (event "racketdap/interactionOutput" body)))
+      original))
 (define (start-program)
   (set! started? #t)
   (set! target-thread
@@ -510,6 +520,8 @@
                         (set! exit-code 1)
                         ((error-display-handler) (error-text e) e))])
        (parameterize ([current-input-port program-input]
+                      [current-output-port (rich-port (current-output-port) "stdout")]
+                      [current-error-port (rich-port (current-error-port) "stderr")]
                       [current-inspector (if (arg config 'noDebug #f)
                                              (current-inspector) (make-inspector))]
                       [current-subprocess-custodian-mode 'kill]

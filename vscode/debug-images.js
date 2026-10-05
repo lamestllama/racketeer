@@ -54,20 +54,23 @@ function registerDebugImages(context) {
           title: 'Rendering Racket image (Racket: Cancel Evaluation to interrupt)' }, () =>
           record.session.customRequest('racketdap/renderImage', { variablesReference: selected.variablesReference }));
       } finally { record.rendering = false; }
-      if (rendered?.mimeType !== 'image/png' || typeof rendered.data !== 'string' || rendered.data.length > 12 * 1024 * 1024) {
-        throw new Error('The debugger returned an invalid image response.');
-      }
-      const data = Buffer.from(rendered.data, 'base64');
-      if (data.length > 8 * 1024 * 1024 || !data.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) {
-        throw new Error('The debugger returned an invalid PNG image.');
-      }
-      const uri = vscode.Uri.from({ scheme, path: `/Racket image ${++nextImage}.png` });
-      images.set(uri.toString(), { data, time: Date.now() });
-      const group = vscode.window.tabGroups.all.find(group => group.tabs.some(tab => tab.input?.uri?.scheme === scheme));
-      try { await vscode.commands.executeCommand('vscode.open', uri, { viewColumn: group?.viewColumn ?? vscode.ViewColumn.Beside, preview: false }); }
-      catch (error) { images.delete(uri.toString()); throw error; }
-      return uri;
+      return await openSnapshot(rendered);
     } catch (error) { vscode.window.showErrorMessage(error.message); throw error; }
+  }
+  async function openSnapshot(rendered) {
+    if (rendered?.mimeType !== 'image/png' || typeof rendered.data !== 'string' || rendered.data.length > 12 * 1024 * 1024) {
+      throw new Error('The debugger returned an invalid image response.');
+    }
+    const data = Buffer.from(rendered.data, 'base64');
+    if (data.length > 8 * 1024 * 1024 || !data.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) {
+      throw new Error('The debugger returned an invalid PNG image.');
+    }
+    const uri = vscode.Uri.from({ scheme, path: `/Racket image ${++nextImage}.png` });
+    images.set(uri.toString(), { data, time: Date.now() });
+    const group = vscode.window.tabGroups.all.find(group => group.tabs.some(tab => tab.input?.uri?.scheme === scheme));
+    try { await vscode.commands.executeCommand('vscode.open', uri, { viewColumn: group?.viewColumn ?? vscode.ViewColumn.Beside, preview: false }); }
+    catch (error) { images.delete(uri.toString()); throw error; }
+    return uri;
   }
   context.subscriptions.push(
     changes,
@@ -131,5 +134,6 @@ function registerDebugImages(context) {
     new vscode.Disposable(() => { sessions.clear(); images.clear(); })
   );
   updateContext();
+  return { openSnapshot };
 }
 module.exports = { registerDebugImages };

@@ -5,14 +5,17 @@ const fs = require('node:fs/promises');
 const vscode = require('vscode');
 
 exports.run = async function (workspace) {
-  const events = [], sessions = [], previews = [], requests = [], breakpoints = [];
+  const events = [], sessions = [], previews = [], requests = [], breakpoints = [], ended = new Set();
   const variableProgram = path.join(workspace.uri.fsPath, 'image-variables.rkt');
   const tracker = vscode.debug.registerDebugAdapterTrackerFactory('racketdap', {
     createDebugAdapterTracker(session) {
       sessions.push(session);
       return {
         onWillReceiveMessage(message) { requests.push({ session, ...message }); },
-        onDidSendMessage(message) { events.push({ session, ...message }); }
+        onDidSendMessage(message) {
+          events.push({ session, ...message });
+          if (message.type === 'event' && message.event === 'terminated') ended.add(session.id);
+        }
       };
     }
   });
@@ -144,7 +147,7 @@ exports.run = async function (workspace) {
       'local, nested and returned image values without evaluation', 'image variables expire with their session',
       'image previews share an editor group'];
   } finally {
-    for (const session of sessions) await vscode.debug.stopDebugging(session);
+    for (const session of sessions) if (!ended.has(session.id)) await vscode.debug.stopDebugging(session);
     vscode.debug.removeBreakpoints(breakpoints);
     await fs.rm(variableProgram, { force: true });
     const tabs = vscode.window.tabGroups.all.flatMap(group => group.tabs)

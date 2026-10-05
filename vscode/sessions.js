@@ -80,7 +80,8 @@ function registerSessions(context) {
     try {
       const started = await vscode.debug.startDebugging(target.folder,
         launchConfiguration(target, { ...configuration, racketdapWorkflowId: record.id }),
-        { noDebug, suppressDebugToolbar: noDebug, suppressDebugStatusbar: noDebug, suppressDebugView: noDebug });
+        { noDebug, suppressDebugToolbar: noDebug || !!configuration.racketdapRichInteractions,
+          suppressDebugStatusbar: noDebug, suppressDebugView: noDebug || !!configuration.racketdapRichInteractions });
       if (!started) throw new Error('Racket launch was cancelled or failed. See the debug output for details.');
       if (record.cancelled) await record.stop();
       return record;

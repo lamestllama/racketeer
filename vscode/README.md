@@ -343,9 +343,24 @@ Changed sources are omitted. Run coverage again after editing.
 
 ### Debug REPL
 
-**Racket: Load Current File in Debug REPL** loads the saved root module into a
-persistent debugging session. It does not execute `main` or `test`. Enter
-expressions in the Debug Console, or select an expression in the source and
+**Racket: Run in Interactions** loads the saved root module into a fresh session
+and opens its Interactions view beside the source. Text and image results appear
+automatically, including expressions at the top level of the file. Try
+`examples/images.rkt`: its three pictures appear as soon as the file loads.
+Click a picture to open it full-size, or use **Save image…** beneath it.
+
+Enter expressions at the prompt and press Enter; Shift+Enter inserts a newline.
+Up/Down recalls previous expressions. **Interrupt** cancels evaluation or image
+conversion. **Run again** saves the file and starts a fresh session; **Stop**
+leaves its output visible. **Program input** supplies lines or EOF to `read-line`
+and other input operations. Closing the Interactions tab stops its session.
+Output is retained until cleared, restarted or closed, within a 32 MiB/1,000-entry
+limit. It is not saved across editor reloads. Image conversion runs as part of
+printing and can execute the value's converter; failures appear in the output.
+
+**Racket: Load Current File in Debug REPL** reuses this file's session and
+Interactions view. These commands do not execute `main` or `test`. The native
+Debug Console remains available. You can also select an expression in the source and
 press **Shift+Enter** or choose **Racket: Evaluate Selection in Debug REPL**. Calls can hit breakpoints
 in any instrumented workspace file. At a stop, the selected stack frame supplies
 the lexical environment; at the interaction prompt, the module's namespace
@@ -409,7 +424,8 @@ executes from the original WXME bytes; the snapshot remains fixed if you edit
 the file during a stop. Language services, breakpoints in the custom editor and
 locations inside embedded boxes are not yet available.
 
-After an expression returns an image, choose **Racket: View Image** from the
+The Interactions view draws returned and printed image values automatically.
+For the native Debug Console, after an expression returns an image, choose **Racket: View Image** from the
 Command Palette or the preview button on the debug toolbar.
 It opens a PNG snapshot in VS Code's built-in image editor. Use **Racket: Save
 Image As…** from that editor to keep a copy. Try `tile`, `drawing`, and `chart`
@@ -430,8 +446,8 @@ Viewing converts the retained value; it does not evaluate the expression again.
 Conversion can execute the value's code: use **Racket: Cancel Evaluation** to
 interrupt it. The live result expires when another interaction starts or the
 program resumes. A rendered snapshot remains available until its last tab is
-closed or the editor reloads. PNG previews are limited to 8 MiB; inline rich
-output is not yet supported.
+closed or the editor reloads. PNG previews are limited to 8 MiB. Inline image
+output is provided by the Interactions view; the native Debug Console remains textual.
 
 For a live value returned by `plot`, `plot3d`, `plot-snip` or `plot3d-snip`, choose
 **Racket: Open Interactive Plot** from the Command Palette, debug toolbar or

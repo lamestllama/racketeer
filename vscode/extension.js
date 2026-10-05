@@ -14,6 +14,7 @@ const { registerDebugSources } = require('./debug-sources');
 const { registerSessions } = require('./sessions');
 const { registerTesting } = require('./testing');
 const { registerDebugRepl } = require('./debug-repl');
+const { registerInteractions } = require('./interactions');
 const { registerPackages } = require('./packages');
 const { registerApplicationBuilds } = require('./application-builds');
 const { registerWxmeViewer } = require('./wxme-viewer');
@@ -29,10 +30,11 @@ function activate(context) {
   registerWxmeViewer(context);
   registerWxmeEditor(context);
   registerDependencies(context);
-  registerFileCommands(context, sessions, testing, registerDebugRepl(sessions));
+  const images = registerDebugImages(context);
+  const interactions = registerInteractions(context, images);
+  registerFileCommands(context, sessions, testing, registerDebugRepl(sessions, interactions));
   const debugSources = registerDebugSources(context);
   registerDebugActions(context, debugSources);
-  registerDebugImages(context);
   languageTools = registerLanguageTools(context, debugSources);
   const provider = {
     provideDebugConfigurations() {
@@ -86,7 +88,7 @@ function activate(context) {
     }),
     vscode.debug.registerDebugAdapterTrackerFactory('racketdap', {
       createDebugAdapterTracker(session) {
-        if (session.configuration.console !== 'integratedTerminal') return undefined;
+        if (session.configuration.console !== 'integratedTerminal' || session.configuration.racketdapRichInteractions) return undefined;
         const terminal = createProgramTerminal(session);
         context.subscriptions.push(terminal);
         return {

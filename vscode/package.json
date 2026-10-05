@@ -105,6 +105,7 @@
       }
     }],
     "commands": [
+      { "command": "racketdap.runInteractions", "title": "Racket: Run in Interactions", "icon": "$(run-all)" },
       { "command": "racketdap.createLauncher", "title": "Racket: Create Launcher…" },
       { "command": "racketdap.buildExecutable", "title": "Racket: Build Executable…" },
       { "command": "racketdap.createDistribution", "title": "Racket: Create Distribution…" },
@@ -482,6 +483,7 @@
         { "command": "racketdap.openPlot", "when": "racketdap.openPlot.enabled", "group": "navigation@21" }
       ],
       "editor/title": [
+        { "command": "racketdap.runInteractions", "when": "resourceLangId == racket && resourceScheme == file", "group": "navigation@0" },
         { "command": "racketdap.saveImage", "when": "resourceScheme == racketeer-image", "group": "navigation@1" },
         {
           "command": "racketdap.runFile",
