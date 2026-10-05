@@ -5,11 +5,24 @@ actions share a target resolver: saved program URI, owning workspace, working
 directory, and Racket executable. The File Actions picker retains its selected
 target while the picker is open.
 
-Normal Run uses a process task. Plain REPL terminals retain Racket's ordinary
-`racket/enter` behavior. Debug, Debug REPL, and both test profiles share the
-existing adapter and worker. A test Run sets DAP `noDebug`; the loader disables
-instrumentation and exception stops. Debug uses the same module selection and
-reporting with instrumentation enabled.
+Run, Debug, Debug REPL, and both test profiles share the existing adapter and
+worker. File and test Run set DAP `noDebug`; the loader disables instrumentation
+and exception stops. Debug uses the same module selection with instrumentation
+enabled. Run in Terminal uses a process task. Plain REPL terminals retain
+Racket's ordinary `racket/enter` behavior.
+
+Run Current File and Debug Current File save the source and execute its root
+module and optional `main` submodule. A Results view retains text, images and
+available error locations after exit. It has no expression prompt. Debug keeps
+VS Code's native toolbar, Call Stack, Variables and source stepping. Existing
+launch configurations retain their configured console behavior.
+
+Results uses the same output capture as Interactions. Image conversion shares
+the public `file/convertible` property with the program even when instrumentation
+is disabled. A custom output port captures Racket printing; program input uses
+lines and EOF. Run in Terminal remains available for native streams and terminal
+applications. Run's error locations may be absent or approximate; Debug also
+has exact instrumented expression locations.
 
 Module launches apply the language's documented
 [runtime configuration](https://docs.racket-lang.org/reference/running-sa.html)
@@ -183,6 +196,12 @@ Repeated opens reuse a session; lifecycle operations for one key are serialized.
 Restart terminates that session, waits for termination, and loads a fresh saved
 module. Other REPLs remain usable. Loading chooses only the root module and
 does not run `main` or `test`.
+
+File Run and Debug share a separate owner for each program, executable and
+working directory. Reruns save before stopping the previous execution, then
+wait for its termination before launching. Results and Interactions for the
+same file retain separate output and ownership. Run again and Debug again
+preserve their execution mode; closing Results stops only its execution.
 
 Selection evaluation uses DAP `evaluate` in the owning session. While paused it
 uses the explicitly selected frame from that session; otherwise it uses the

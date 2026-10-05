@@ -1,7 +1,7 @@
 {
   "name": "racketeer",
   "displayName": "Racketeer: Organised Racket",
-  "description": "Racket debugging and REPL, with Racket and Rhombus editing for VS Code.",
+  "description": "Racket source debugging and execution, with Racket and Rhombus editing for VS Code.",
   "version": "0.8.7",
   "publisher": "lamestllama",
   "author": { "name": "Eric Parsonage", "email": "eric@eparsonage.com", "url": "https://github.com/lamestllama" },
@@ -143,6 +143,7 @@
         "title": "Racket: Run Current File",
         "icon": "$(play)"
       },
+      { "command": "racketdap.runFileInTerminal", "title": "Racket: Run Current File in Terminal" },
       {
         "command": "racketdap.testFile",
         "title": "Racket: Test Current File"
@@ -496,7 +497,6 @@
         { "command": "racketdap.openPlot", "when": "racketdap.openPlot.enabled", "group": "navigation@21" }
       ],
       "editor/title": [
-        { "command": "racketdap.runInteractions", "when": "resourceLangId == racket && resourceScheme == file", "group": "navigation@0" },
         { "command": "racketdap.saveImage", "when": "resourceScheme == racketeer-image", "group": "navigation@1" },
         {
           "command": "racketdap.runFile",

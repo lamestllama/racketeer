@@ -12,6 +12,7 @@ debug-actions.js
 debug-images.js
 debug-sources.js
 execution.js
+file-runs.js
 sessions.js
 testing.js
 test-selection.js

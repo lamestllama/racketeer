@@ -39,6 +39,7 @@
 ;; target thread; selected modules bypass bytecode without writing caches.
 (define (run-module path
                     #:instrument? [instrument? #t]
+                    #:images? [images? #f]
                     #:coverage? [coverage? #f]
                     #:language [language #f]
                     #:on-sites [on-sites void]
@@ -86,7 +87,7 @@
   (define target (if (null? submodule) source `(submod ,source ,@submodule)))
   (define namespace (make-base-namespace))
   ;; Image values and the debugger must share the conversion property identity.
-  (when instrument?
+  (when (or instrument? images?)
     (namespace-attach-module (namespace-anchor->namespace anchor) 'file/convertible namespace))
   (when language
     (unless (symbol? language) (raise-argument-error 'run-module "language module-path symbol" language))

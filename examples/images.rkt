@@ -12,5 +12,5 @@ tile
 drawing
 chart
 
-;; In the Debug Console, try (values tile "caption" drawing chart).
-;; View Image lets you choose value 1, value 3, or value 4.
+;; Click Run Current File to see these images beside the source.
+;; Click a picture in Results to enlarge it, or choose Save image….

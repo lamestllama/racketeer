@@ -8,6 +8,7 @@ function webviewMain() {
   output.addEventListener('scroll', () => { followTail = output.scrollHeight - output.scrollTop - output.clientHeight < 60; });
   const send = (action, extra = {}) => vscode.postMessage({ action, ...extra });
   function submit() {
+    if (!prompt) return;
     const expression = prompt.value;
     if (busy || !expression.trim()) return;
     busy = true; document.getElementById('evaluate').disabled = true;
@@ -63,20 +64,28 @@ function webviewMain() {
     }
     if (data.type === 'status') {
       busy = !['Ready', 'Paused'].includes(data.text); status.textContent = data.text;
-      document.getElementById('evaluate').disabled = busy;
-      document.getElementById('cancel').disabled = ['Ready', 'Stopped'].includes(data.text);
-      document.getElementById('stop').disabled = data.text === 'Stopped';
+      if (prompt) {
+        document.getElementById('evaluate').disabled = busy;
+        document.getElementById('cancel').disabled = ['Ready', 'Stopped'].includes(data.text);
+      }
+      document.getElementById('stop').disabled = data.ended;
+      document.getElementById('sendInput').disabled = data.ended;
+      document.getElementById('eof').disabled = data.ended;
+      document.getElementById('restart').disabled = !data.canRestart;
+      document.getElementById('restart').textContent = data.restartLabel;
       document.getElementById('continue').hidden = data.text !== 'Paused';
     }
     if (atBottom) requestAnimationFrame(() => { output.scrollTop = output.scrollHeight; followTail = true; });
   });
-  document.getElementById('evaluate').onclick = submit;
-  for (const action of ['restart', 'cancel', 'stop', 'clear', 'continue', 'logs']) document.getElementById(action).onclick = () => send(action);
+  if (prompt) document.getElementById('evaluate').onclick = submit;
+  for (const action of ['restart', 'cancel', 'stop', 'clear', 'continue', 'logs']) {
+    const button = document.getElementById(action); if (button) button.onclick = () => send(action);
+  }
   document.getElementById('sendInput').onclick = () => {
     const input = document.getElementById('stdin'); send('input', { text: input.value + '\n' }); input.value = '';
   };
   document.getElementById('eof').onclick = () => send('input', { eof: true });
-  prompt.addEventListener('keydown', event => {
+  prompt?.addEventListener('keydown', event => {
     if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); submit(); }
     if (event.key === 'ArrowUp' && prompt.selectionStart === 0 && history.length) {
       event.preventDefault(); if (position === history.length) draft = prompt.value;
@@ -88,9 +97,9 @@ function webviewMain() {
       prompt.setSelectionRange(prompt.value.length, prompt.value.length);
     }
   });
-  send('ready'); prompt.focus();
+  send('ready'); prompt?.focus();
 }
-function interactionsHtml() {
+function interactionsHtml({ interactive = true } = {}) {
   const nonce = randomBytes(24).toString('base64');
   return `<!doctype html><html><head><meta charset="UTF-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'nonce-${nonce}'; script-src 'nonce-${nonce}';">
@@ -104,11 +113,11 @@ figure{margin:8px 0;display:flex;flex-direction:column;align-items:flex-start;ga
 .error{color:var(--vscode-errorForeground);margin:4px 0 10px}.error-locations{display:flex;flex-wrap:wrap;gap:6px;margin:4px 0}.error-locations button{background:transparent;color:var(--vscode-textLink-foreground);padding:2px 0;margin-right:8px;text-decoration:underline}
 textarea,input{box-sizing:border-box;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border,transparent);font-family:var(--vscode-editor-font-family);font-size:var(--vscode-editor-font-size);padding:6px}textarea{width:100%;resize:vertical;min-height:65px}footer{padding-top:10px;border-top:1px solid var(--vscode-panel-border)}.hint{color:var(--vscode-descriptionForeground);font-size:12px;margin:5px 0}details{margin-top:8px}summary{cursor:pointer}#trimmed{color:var(--vscode-descriptionForeground)}
 </style></head><body>
-<header><strong>Interactions</strong><span id="status" role="status">Loading…</span><button id="restart">Run again</button><button id="continue" hidden>Continue</button><button id="cancel">Interrupt</button><button id="stop">Stop</button><button id="clear">Clear output</button><button id="logs">Logs</button></header>
+<header><strong>${interactive ? 'Interactions' : 'Results'}</strong><span id="status" role="status">Loading…</span><button id="restart">Run again</button><button id="continue" hidden>Continue</button>${interactive ? '<button id="cancel">Interrupt</button>' : ''}<button id="stop">Stop</button><button id="clear">Clear output</button><button id="logs">Logs</button></header>
 <p id="trimmed" hidden>Earlier output was removed to keep the view within its memory limit.</p>
-<div id="output" role="log" aria-label="Racket interaction output" aria-live="polite"></div>
-<footer><label for="expression">Expression</label><textarea id="expression" rows="2" spellcheck="false" aria-label="Racket expression"></textarea>
-<div class="hint">Enter evaluates · Shift+Enter adds a line · Up/Down recalls previous expressions</div><button id="evaluate" disabled>Evaluate</button>
+<div id="output" role="log" aria-label="Racket program output" aria-live="polite"></div>
+<footer>${interactive ? `<label for="expression">Expression</label><textarea id="expression" rows="2" spellcheck="false" aria-label="Racket expression"></textarea>
+<div class="hint">Enter evaluates · Shift+Enter adds a line · Up/Down recalls previous expressions</div><button id="evaluate" disabled>Evaluate</button>` : ''}
 <details><summary>Program input</summary><input id="stdin" aria-label="Program input"><button id="sendInput">Send line</button><button id="eof">End input</button></details></footer>
 <script nonce="${nonce}">(${webviewMain})();</script></body></html>`;
 }

@@ -1,13 +1,13 @@
 # Racketeer: Organised Racket
 
-*Racket debugging, editing and REPL for VS Code.*
+*Racket source debugging and editing for VS Code.*
 
 By [Eric Parsonage](https://github.com/lamestllama).
 
 Racketeer's DAP server provides expression breakpoints, stepping across files
-and packages, live lexical inspection and evaluation, and source debugging in
-persistent REPL sessions. Bundled language tools, testing, and package commands
-complete the development workflow.
+and packages, live lexical inspection and evaluation. Run a source file to see
+text and images beside the editor, or debug it with breakpoints and stepping.
+Bundled language tools, testing, and package commands complete the development workflow.
 
 Requires the **full Racket 9.1 or newer distribution**. Minimal Racket alone
 does not include all the standard libraries and documentation used by the
@@ -21,8 +21,9 @@ VS Code 1.98.1; other operating systems are not yet verified.
 1. In Extensions, choose **Install from VSIX…** and select the packaged `racketeer-<version>.vsix`.
 2. Open a trusted folder containing your Racket program and a saved `.rkt` file.
 3. Language tools start automatically; **Racket: ready** appears in the status bar.
-4. Use the **Racket:** commands in the Command Palette to run, test, load a REPL,
-   or debug. Debugging uses F5/F10/F11/Shift+F11 for Continue/Over/Into/Out.
+4. Click **Run Current File** above the source to see its Results, or choose
+   **Debug Current File** to stop and inspect it. Debugging uses
+   F5/F10/F11/Shift+F11 for Continue/Over/Into/Out.
 
 If Racket is not on PATH, set `racketdap.racketExecutable` in Settings.
 Debugger and language-server startup errors offer **Open Settings** to take you
@@ -264,7 +265,24 @@ Explorer compatibility are not established by these checks.
 
 ## Running, testing, and REPL
 
-- **Racket: Run Current File** saves and runs the file as a VS Code process task.
+- **Racket: Run Current File** saves and runs the root module and its `main`
+  submodule once. Text and images appear in **Results** beside the source.
+  The program exits after its work completes; Results remains available.
+- **Racket: Debug Current File** opens the same Results view with native
+  breakpoints, stepping, Call Stack and Variables. It stops on entry.
+- Click an image to enlarge it, or use **Save image…**. Click an error location
+  to inspect its source when a location is available; changed files open the
+  captured source read-only. Run uses Racket's error locations, which can be
+  absent or approximate; Debug can identify instrumented expressions precisely.
+- **Run again** or **Debug again** saves the file and starts a fresh execution,
+  replacing that file's output. **Stop** retains output; closing Results stops
+  its execution. Results is bounded to 32 MiB / 1,000 entries and is not saved
+  when the view closes. Program input accepts lines and EOF.
+- **Racket: Run Current File in Terminal** runs a VS Code process task. Use it
+  for terminal applications or programs requiring native process streams.
+  Results captures Racket output through a custom port and provides line input,
+  rather than a full terminal. Existing `launch.json` configurations keep their
+  configured console behavior.
 - **Racket: Test Current File** saves and runs the file through Test Explorer.
 - **Racket: Debug Tests in Current File** runs the same tests with source
   breakpoints and stepping enabled.

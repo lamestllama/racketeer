@@ -8,22 +8,26 @@ const { registerErrorSources } = require('./error-sources');
 function registerInteractions(context, images) {
   const errorSources = registerErrorSources(context);
   const views = new Map(), sessions = new Map();
-  const keyFor = session => JSON.stringify([session.configuration.program, session.configuration.racketExecutable, session.configuration.cwd]);
+  const keyFor = session => JSON.stringify([session.configuration.program, session.configuration.racketExecutable, session.configuration.cwd, !!session.configuration.interactive]);
   function status(view) {
     const inspecting = [...view.pending.values()].some(frame => frame !== undefined);
-    const text = view.ended ? 'Stopped' : view.phase === 'Paused' && !inspecting ? 'Paused' : view.pending.size ? 'Evaluating…' : view.phase;
-    void view.panel.webview.postMessage({ type: 'status', text });
+    const completed = view.interactive || view.stopped || view.exitCode === undefined ? 'Stopped' :
+      view.exitCode === 0 ? 'Finished' : `Failed (exit ${view.exitCode})`;
+    const text = view.ended ? completed : view.phase === 'Paused' && !inspecting ? 'Paused' : view.pending.size ? 'Evaluating…' : view.phase;
+    void view.panel.webview.postMessage({ type: 'status', text, ended: view.ended, canRestart: !!view.restart && !view.restarting,
+      restartLabel: !view.interactive && !view.session.configuration.noDebug ? 'Debug again' : 'Run again' });
   }
   function create(session) {
     const key = keyFor(session);
+    const interactive = !!session.configuration.interactive;
     let view = views.get(key);
     if (!view || view.closed) {
-      const panel = vscode.window.createWebviewPanel('racketeer.interactions', `Interactions: ${path.basename(session.configuration.program)}`,
+      const panel = vscode.window.createWebviewPanel('racketeer.interactions', `${interactive ? 'Interactions' : 'Results'}: ${path.basename(session.configuration.program)}`,
         { viewColumn: vscode.ViewColumn.Beside, preserveFocus: true },
         { enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [] });
-      view = { panel, key };
+      view = { panel, key, interactive };
       view.output = new InteractionOutput(message => { if (!view.closed) void panel.webview.postMessage(message); });
-      panel.webview.html = interactionsHtml();
+      panel.webview.html = interactionsHtml({ interactive });
       panel.onDidDispose(() => {
         view.closed = true; views.delete(key); sessions.delete(view.session.id); view.output.clear();
         void (view.owner ? view.owner.stop() : vscode.debug.stopDebugging(view.session)).catch(() => {});
@@ -34,22 +38,25 @@ function registerInteractions(context, images) {
           if (message.action === 'ready') {
             await panel.webview.postMessage({ type: 'snapshot', entries: view.output.snapshot() }); status(view);
           } else if (message.action === 'evaluate') {
+            if (!view.interactive) return;
             if (!vscode.workspace.isTrusted || typeof message.expression !== 'string' || !message.expression.trim() || message.expression.length > 1024 * 1024) return;
             if (!view.evaluate || view.ended) throw new Error('Run the file before evaluating an expression.');
             await view.evaluate(message.expression);
           } else if (message.action === 'restart') {
             if (view.restarting || !view.restart) return;
-            view.restarting = true;
+            view.restarting = true; status(view);
             try {
-              const document = await vscode.workspace.openTextDocument(view.session.configuration.program);
-              if (document.isDirty && !await document.save()) throw new Error('The file could not be saved.');
+              if (view.interactive) {
+                const document = await vscode.workspace.openTextDocument(view.session.configuration.program);
+                if (document.isDirty && !await document.save()) throw new Error('The file could not be saved.');
+              }
               await view.restart();
-            } finally { view.restarting = false; }
+            } finally { view.restarting = false; status(view); }
           } else if (message.action === 'clear') view.output.clear();
           else if (message.action === 'logs') await vscode.commands.executeCommand('racketdap.showApplicationLog', view.session.id);
           else if (message.action === 'continue' && !view.ended && view.phase === 'Paused')
             await view.session.customRequest('continue', { threadId: view.threadId });
-          else if (message.action === 'stop') await view.owner?.stop();
+          else if (message.action === 'stop' && !view.ended) { view.stopped = true; await view.owner?.stop(); }
           else if (message.action === 'cancel' && !view.ended) await view.session.customRequest('racketdap/interrupt');
           else if (message.action === 'input' && !view.ended) {
             if (message.eof === true) await view.session.customRequest('racketdap/input', { eof: true });
@@ -79,7 +86,8 @@ function registerInteractions(context, images) {
     } else {
       sessions.delete(view.session.id); view.output.clear();
     }
-    Object.assign(view, { session, owner: undefined, ended: false, phase: 'Loading…', pending: new Map(), lastError: undefined, threadId: undefined });
+    Object.assign(view, { session, owner: undefined, evaluate: undefined, restart: undefined, ended: false,
+      exitCode: undefined, stopped: false, phase: 'Loading…', pending: new Map(), lastError: undefined, threadId: undefined });
     sessions.set(session.id, view); status(view);
     return view;
   }
@@ -90,7 +98,10 @@ function registerInteractions(context, images) {
       const current = () => !view.closed && view.session.id === session.id;
       return {
         onWillReceiveMessage(message) {
-          if (!current() || message.type !== 'request' || message.command !== 'evaluate' || message.arguments?.context !== 'repl') return;
+          if (!current() || message.type !== 'request') return;
+          if (message.command === 'configurationDone' && !view.interactive) { view.phase = 'Running…'; status(view); }
+          if (['disconnect', 'terminate'].includes(message.command) && view.exitCode === undefined) view.stopped = true;
+          if (message.command !== 'evaluate' || message.arguments?.context !== 'repl') return;
           view.pending.set(message.seq, message.arguments.frameId); view.lastError = undefined;
           view.output.append('input', message.arguments.expression); status(view);
         },
@@ -108,6 +119,7 @@ function registerInteractions(context, images) {
           if (message.event === 'racketdap/ready') view.phase = 'Ready';
           if (message.event === 'stopped') { view.phase = 'Paused'; view.threadId = message.body.threadId; }
           if (message.event === 'continued') view.phase = 'Running…';
+          if (message.event === 'exited') view.exitCode = message.body.exitCode;
           if (message.event === 'terminated') { view.ended = true; view.output.finish(); }
           status(view);
         }

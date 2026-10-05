@@ -68,6 +68,50 @@ function event() {
 const disposable = () => ({ dispose() {} });
 const target = { program: '/workspace/example.rkt', cwd: '/workspace', racketExecutable: 'racket' };
 
+test('file debugging retains native controls while Run and Interactions suppress them', async () => {
+  const started = event(), terminated = event(), launches = [];
+  const vscode = { workspace: { isTrusted: true }, debug: {
+    registerDebugAdapterTrackerFactory: disposable,
+    onDidStartDebugSession: started.subscribe, onDidTerminateDebugSession: terminated.subscribe,
+    async startDebugging(_folder, configuration, options) {
+      const session = { id: String(launches.length), configuration };
+      launches.push(options); started.fire(session); return true;
+    },
+    async stopDebugging(session) { terminated.fire(session); }
+  } };
+  const context = { subscriptions: [] };
+  const sessions = load('sessions.js', { vscode, './execution': { launchConfiguration: (_target, config) => config } }).registerSessions(context);
+  for (const [interactive, noDebug] of [[false, false], [false, true], [true, false]]) {
+    const record = await sessions.start(target, { interactive, racketdapRichInteractions: true }, { noDebug });
+    const options = launches.at(-1);
+    assert.equal(options.suppressDebugToolbar, interactive || noDebug);
+    assert.equal(options.suppressDebugView, interactive || noDebug);
+    assert.equal(options.suppressDebugStatusbar, noDebug);
+    await record.stop(); await record.done;
+  }
+  context.subscriptions.forEach(item => item.dispose());
+});
+
+test('Results reruns save dirty source and custom WXME editors without text-editor conversion', async () => {
+  const uri = { toString: () => 'file:///workspace/picture.rkt' };
+  const tab = { input: new (class {})(), isDirty: true }; let saved = 0, opened = 0;
+  const vscode = { TabInputCustom: tab.input.constructor,
+    window: { tabGroups: { all: [{ tabs: [tab] }] } },
+    workspace: { textDocuments: [],
+      async save(actual) { assert.equal(actual, uri); saved++; tab.isDirty = false; return uri; },
+      async openTextDocument() { opened++; return { isDirty: true, save: async () => { saved++; return true; } }; }
+    }
+  };
+  Object.assign(tab.input, { uri, viewType: 'racketeer.wxmeEditor' });
+  const { saveTarget } = load('execution.js', { vscode });
+  await saveTarget({ ...target, uri, format: 'wxme' }); assert.equal(saved, 1); assert.equal(opened, 0);
+  await saveTarget({ ...target, uri }); assert.equal(saved, 2); assert.equal(opened, 1);
+  tab.isDirty = true; vscode.workspace.save = async () => uri;
+  await assert.rejects(saveTarget({ ...target, uri, format: 'wxme' }), /could not be saved/);
+  vscode.workspace.textDocuments = [{ uri, isDirty: true }];
+  await assert.rejects(saveTarget({ ...target, uri, format: 'wxme' }), /text editor has unsaved changes/);
+});
+
 test('disposal retains ownership until a pending workflow starts and terminates', async () => {
   const started = event(), terminated = event(), launch = deferred();
   let configuration, factory, factoryDisposed = false;

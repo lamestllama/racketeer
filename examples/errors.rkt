@@ -6,6 +6,7 @@
 (define (broken)
   (reciprocal 0))
 
-;; Run in Interactions and evaluate (broken). Continue if execution pauses,
-;; then click the error's source location.
-;; Edit the definition and click again to inspect the source used by that run.
+;; Debug Current File stops at the failing expression for inspection.
+;; Continue to report the error in Results, then click its source location.
+;; Run Current File reports the error without stopping.
+(module+ main (broken))

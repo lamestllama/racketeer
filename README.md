@@ -1,6 +1,6 @@
 # Racketeer: Organised Racket
 
-*Racket debugging, editing and REPL for VS Code.*
+*Racket source debugging and editing for VS Code.*
 
 By [Eric Parsonage](https://github.com/lamestllama).
 
@@ -24,8 +24,9 @@ code --install-extension dist/racketeer-0.8.6.vsix
 ```
 
 Open a trusted folder and a saved `.rkt` file: the language tools start
-automatically. Run **Racket: Run Current File**, **Test Current File**,
-**Load Current File in REPL**, or **Debug Current File** from the Command Palette.
+automatically. Click **Run Current File** to see text and images in Results
+beside the source. Choose **Debug Current File** for breakpoints, stepping and
+Variables. Testing and optional REPL commands are available in the Command Palette.
 Set `racketdap.racketExecutable` if Racket is not on PATH. The extension ID is
 `lamestllama.racketeer`; the debugger type and settings prefix are `racketdap`.
 Remove the earlier `lamestllama.racketdap` development extension before
@@ -74,7 +75,8 @@ the execution model and current limits.
   language is installed in the selected Racket environment.
 - Macro expansion through Racket's macro stepper, for selected expressions or
   complete modules. See [editor tools](docs/editor-tools.md).
-- Run tasks and Test Explorer with Run/Debug profiles, failure locations, and cancellation.
+- File execution with retained text, images and error links in Results.
+- Test Explorer with Run/Debug profiles, failure locations, and cancellation.
 - Plain and debugging REPLs, file loading/reloading, selection evaluation, and
   module-specific Debug REPL restart.
 - A File Actions menu connecting Run, Debug, Test, and REPL workflows.

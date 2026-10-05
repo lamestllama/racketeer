@@ -15,6 +15,7 @@ const { registerSessions } = require('./sessions');
 const { registerTesting } = require('./testing');
 const { registerDebugRepl } = require('./debug-repl');
 const { registerInteractions } = require('./interactions');
+const { registerFileRuns } = require('./file-runs');
 const { registerPackages } = require('./packages');
 const { registerApplicationBuilds } = require('./application-builds');
 const { registerApplicationLogs, filterError } = require('./application-logs');
@@ -34,7 +35,7 @@ function activate(context) {
   registerDependencies(context);
   const images = registerDebugImages(context);
   const interactions = registerInteractions(context, images);
-  registerFileCommands(context, sessions, testing, registerDebugRepl(sessions, interactions));
+  registerFileCommands(context, sessions, testing, registerDebugRepl(sessions, interactions), registerFileRuns(sessions, interactions));
   const debugSources = registerDebugSources(context);
   registerDebugActions(context, debugSources);
   languageTools = registerLanguageTools(context, debugSources);
