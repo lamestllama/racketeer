@@ -64,7 +64,8 @@ python3 scripts/test-vscode.py --dogfood
 On Linux this needs VS Code and Xvfb; pass `--code` and `--xvfb` when their
 executables are not on PATH. It uses a disposable copy of the actual suites,
 source, and workspace discovery settings under `.test-output/dogfood/run-*/`. It
-drives **Run All Tests** and **Debug All Tests**, verifies every suite's RackUnit count, stops inside a
+drives **Run All Tests**, **Debug All Tests** and **Run All Tests with Coverage**,
+verifies every suite's RackUnit count, stops inside a
 real test and reads a local, then changes an assertion in the copy to prove
 failure reporting and source locations work. Finally it restores the assertion
 and reruns the suite. It also checks the four-file Debug REPL example, including

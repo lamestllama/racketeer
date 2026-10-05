@@ -22,9 +22,12 @@ exports.run = async function () {
     ['tests/macro-stepper.rkt', 10],
     ['tests/packages.rkt', 3],
     ['tests/parity-languages.rkt', 13],
+    ['tests/predicted-bindings.rkt', 7],
     ['tests/protocol-inspection.rkt', 12],
+    ['tests/source-positions.rkt', 4],
     ['tests/stepping.rkt', 11],
-    ['tests/source-loading.rkt', 10]
+    ['tests/source-loading.rkt', 10],
+    ['tests/wxme-source.rkt', 9]
   ]);
   const sessions = [], messages = [], checks = [];
   const active = new Set();

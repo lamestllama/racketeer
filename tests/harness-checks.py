@@ -73,13 +73,15 @@ class EditorIsolation(unittest.TestCase):
             root = Path(temporary)
             for relative in ('tests/vscode-integration.js', 'tests/vscode-dogfood.js',
                              'racketdap/main.rkt', 'examples/demo.rkt',
+                             'vendor/collects/example/reader.rkt',
                              '.vscode/settings.json', 'experiments/lexical-eval.rkt'):
                 file = root / relative
                 file.parent.mkdir(parents=True, exist_ok=True)
                 file.write_text('fixture')
             for relative in ('examples/nested/compiled/demo_rkt.zo',
                              'examples/__pycache__/helper.pyc',
-                             'tests/compiled/check_rkt.zo'):
+                             'tests/compiled/check_rkt.zo',
+                             'vendor/collects/example/compiled/reader_rkt.zo'):
                 file = root / relative
                 file.parent.mkdir(parents=True, exist_ok=True)
                 file.write_text('checkout cache')
@@ -93,6 +95,10 @@ class EditorIsolation(unittest.TestCase):
                     self.assertFalse((second / name / 'contamination').exists())
                     self.assertTrue((first / name / 'contamination').exists())
                 self.assertTrue((second / 'harness/vscode-integration.js').is_file())
+                dependency = second / 'workspace/vendor/collects/example/reader.rkt'
+                self.assertEqual(dependency.exists(), dogfood)
+                if dogfood:
+                    self.assertEqual(dependency.read_text(), 'fixture')
                 for directory in ('workspace', 'harness'):
                     self.assertFalse(list((second / directory).rglob('compiled')))
                     self.assertFalse(list((second / directory).rglob('__pycache__')))

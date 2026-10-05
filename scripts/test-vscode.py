@@ -79,7 +79,7 @@ def prepare_run(root, dogfood=False):
     output = Path(tempfile.mkdtemp(prefix='run-', dir=parent))
     workspace = output / 'workspace'
     if dogfood:
-        for directory in ('racketdap', 'tests', 'examples'):
+        for directory in ('racketdap', 'tests', 'examples', 'vendor'):
             shutil.copytree(root / directory, workspace / directory,
                             ignore=shutil.ignore_patterns('compiled', '__pycache__'))
         for relative in ('.vscode/settings.json', 'experiments/lexical-eval.rkt'):
