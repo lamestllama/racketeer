@@ -7,7 +7,7 @@ function inventory(directory = root) {
   const tests = fs.readdirSync(path.join(directory, 'tests')).sort();
   return {
     racket: [...tests.filter(name => name.endsWith('.rkt')).map(name => `tests/${name}`), 'experiments/lexical-eval.rkt'],
-    node: tests.filter(name => name.endsWith('.test.js') && !['gui-parity.test.js', 'macro-stepper-gui.test.js'].includes(name)).map(name => `tests/${name}`)
+    node: tests.filter(name => name.endsWith('.test.js') && !['gui-parity.test.js', 'macro-stepper-gui.test.js', 'plots-gui.test.js'].includes(name)).map(name => `tests/${name}`)
   };
 }
 function run() {

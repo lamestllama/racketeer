@@ -94,7 +94,8 @@
     "commands": [
       { "command": "racketdap.browseDependencies", "title": "Racket: Browse Module Dependencies" },
       { "command": "racketdap.refreshDependencies", "title": "Racket: Refresh Module Dependencies", "icon": "$(refresh)" },
-      { "command": "racketdap.viewImage", "title": "Racket: View Image", "enablement": "racketdap.viewImage.enabled || debugProtocolVariableMenuContext == 'racketdap.image'", "icon": "$(preview)" },
+      { "command": "racketdap.viewImage", "title": "Racket: View Image", "enablement": "racketdap.viewImage.enabled || debugProtocolVariableMenuContext == 'racketdap.image' || debugProtocolVariableMenuContext == 'racketdap.plot'", "icon": "$(preview)" },
+      { "command": "racketdap.openPlot", "title": "Racket: Open Interactive Plot", "enablement": "racketdap.openPlot.enabled || debugProtocolVariableMenuContext == 'racketdap.plot'", "icon": "$(graph)" },
       { "command": "racketdap.saveImage", "title": "Racket: Save Image As…", "enablement": "resourceScheme == racketeer-image", "icon": "$(save-as)" },
       {"command": "racketdap.refreshWorkspaceReferences", "title": "Racket: Refresh Workspace References"},
       { "command": "racketdap.openMacroStepper", "title": "Racket: Open Line or Selection in Macro Stepper" },
@@ -457,10 +458,12 @@
       "view/title": [{ "command": "racketdap.refreshDependencies", "when": "view == racketeer.dependencies", "group": "navigation" }],
       "explorer/context": [{ "command": "racketdap.browseDependencies", "when": "resourceExtname == .rkt || resourceExtname == .rhm || resourceExtname == .wxme", "group": "racket" }],
       "debug/variables/context": [
-        { "command": "racketdap.viewImage", "when": "debugType == racketdap && debugProtocolVariableMenuContext == 'racketdap.image'", "group": "1_view@1" }
+        { "command": "racketdap.viewImage", "when": "debugType == racketdap && (debugProtocolVariableMenuContext == 'racketdap.image' || debugProtocolVariableMenuContext == 'racketdap.plot')", "group": "1_view@1" },
+        { "command": "racketdap.openPlot", "when": "debugType == racketdap && debugProtocolVariableMenuContext == 'racketdap.plot'", "group": "1_view@2" }
       ],
       "debug/toolBar": [
-        { "command": "racketdap.viewImage", "when": "racketdap.viewImage.enabled", "group": "navigation@20" }
+        { "command": "racketdap.viewImage", "when": "racketdap.viewImage.enabled", "group": "navigation@20" },
+        { "command": "racketdap.openPlot", "when": "racketdap.openPlot.enabled", "group": "navigation@21" }
       ],
       "editor/title": [
         { "command": "racketdap.saveImage", "when": "resourceScheme == racketeer-image", "group": "navigation@1" },

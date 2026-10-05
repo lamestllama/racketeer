@@ -50,15 +50,15 @@ function harness(t) {
   t.after(() => context.subscriptions.forEach(value => value.dispose()));
   const tracker = factory.createDebugAdapterTracker(session);
   const result = { type: 'values', variablesReference: 10, racketdapImages: [
-    { name: 'value 1', type: 'image', variablesReference: 11 },
-    { name: 'value 3', type: 'pict', variablesReference: 12 }
+    { name: 'value 1', type: 'image', racketdapImage: true, variablesReference: 11 },
+    { name: 'value 3', type: 'pict', racketdapImage: true, variablesReference: 12 }
   ] };
   function evaluate(seq, body) {
     tracker.onWillReceiveMessage({ type: 'request', command: 'evaluate', seq, arguments: { context: 'repl' } });
     tracker.onDidSendMessage({ type: 'response', request_seq: seq, success: true, body });
   }
   evaluate(1, result);
-  return { view: commands.get('racketdap.viewImage'), choose, pickerOpened, requests, opened, contexts,
+  return { plot: commands.get('racketdap.openPlot'), view: commands.get('racketdap.viewImage'), choose, pickerOpened, requests, opened, contexts,
     tracker, evaluate, result, terminate: () => terminated(session), vscode };
 }
 
@@ -132,4 +132,40 @@ test('invalid or ended variable contexts never fall back to the active session',
   h.tracker.onDidSendMessage({ type: 'event', event: 'terminated' });
   await assert.rejects(h.view({ sessionId: 'owner', variable: { variablesReference: 11 } }), /session.*ended|unavailable/);
   assert.equal(h.requests.length, 0);
+});
+
+test('interactive plot picker filters static images and keeps the owning session', async t => {
+  const h = harness(t);
+  h.evaluate(2, { racketdapImages: [
+    { name: 'value 1', racketdapImage: true, variablesReference: 20 },
+    { name: 'value 3', racketdapImage: true, racketdapPlot: true, variablesReference: 21 },
+    { name: 'value 4', racketdapPlot: true, variablesReference: 22 }
+  ] });
+  const opening = h.plot();
+  const choices = await h.pickerOpened;
+  assert.deepEqual(Array.from(choices, item => item.label), ['value 3', 'value 4']);
+  h.vscode.debug.activeDebugSession = { id: 'other', customRequest() { assert.fail('Wrong session'); } };
+  h.choose(choices[1]);
+  await opening;
+  assert.deepEqual(h.requests, [{ command: 'racketdap/openPlot', variablesReference: 22 }]);
+  assert.equal(h.opened.length, 0);
+});
+
+test('interactive plots reject stale selections and static image results', async t => {
+  const h = harness(t);
+  await assert.rejects(h.plot(), /plot or plot3d/);
+  h.evaluate(2, { racketdapImages: [21, 22].map(id => ({ name: String(id), racketdapPlot: true, variablesReference: id })) });
+  const opening = h.plot();
+  const choices = await h.pickerOpened;
+  h.evaluate(3, { result: '42' });
+  h.choose(choices[0]);
+  await assert.rejects(opening, /expired/);
+  assert.equal(h.requests.length, 0);
+});
+
+test('interactive variable plots use their menu owner without evaluating an expression', async t => {
+  const h = harness(t);
+  h.vscode.debug.activeDebugSession = { id: 'other' };
+  await h.plot({ sessionId: 'owner', variable: { variablesReference: 42 } });
+  assert.deepEqual(h.requests, [{ command: 'racketdap/openPlot', variablesReference: 42 }]);
 });

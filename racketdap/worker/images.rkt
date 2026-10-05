@@ -1,10 +1,11 @@
 #lang racket/base
-(require file/convertible net/base64)
+(require file/convertible net/base64 "plots.rkt")
 (provide image-value? render-image)
 
-;; Detect the protocol without invoking a value's converter or wrapper hooks.
+;; Detect the protocol without invoking a value's converter. Contract-wrapped
+;; plot objects also support conversion through their public interface.
 (define (image-value? value)
-  (and (not (impersonator? value)) (convertible? value)))
+  (and (or (not (impersonator? value)) (plot-value? value)) (convertible? value)))
 
 ;; Conversion runs only on explicit request, inside the existing cancellable
 ;; evaluation on the value's owning thread.

@@ -15,6 +15,7 @@
            (exceptionInfo . (paused exception))
            (evaluate . (paused evaluate interactive))
            (racketdap/renderImage . (paused evaluate))
+           (racketdap/openPlot . (paused evaluate))
            (setVariable . (paused evaluate))
            (continue . (paused resume all-threads))
            (next . (paused resume all-threads step))

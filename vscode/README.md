@@ -431,7 +431,24 @@ Conversion can execute the value's code: use **Racket: Cancel Evaluation** to
 interrupt it. The live result expires when another interaction starts or the
 program resumes. A rendered snapshot remains available until its last tab is
 closed or the editor reloads. PNG previews are limited to 8 MiB; inline rich
-output and interactive plot controls are not yet supported.
+output is not yet supported.
+
+For a live value returned by `plot`, `plot3d`, `plot-snip` or `plot3d-snip`, choose
+**Racket: Open Interactive Plot** from the Command Palette, debug toolbar or
+Variables context menu. It opens an independent copy in a Racket GUI window.
+Drag within a 2D plot to zoom; click to undo a zoom. Drag a 3D plot to rotate it.
+Mouse overlays installed through the plot API remain active. **Save PNG…** saves
+the current view. Try `curve` and `surface` in `examples/interactive-plots.rkt`.
+Static values from `plot/pict`, `plot/bitmap` or `plot/no-gui` remain snapshots.
+
+Opening a view uses the retained value without reevaluating the expression.
+Copying may execute user code; **Racket: Cancel Evaluation** interrupts opening.
+Close a plot window to release that view. Stopping or restarting its debug
+session closes all its plot windows. Subsequent REPL evaluations leave open
+windows available. Racket GUI libraries and a working display on the Racket
+host are required; these windows are separate from VS Code's image editor.
+In a plain terminal REPL, `(require plot)` and `(plot-new-window? #t)` make later
+`plot` and `plot3d` calls open their own windows using Racket's public plot API.
 
 The workflow follows Racket's [picture-value model](https://docs.racket-lang.org/quick/)
 using the public [conversion protocol](https://docs.racket-lang.org/file/convertible.html).

@@ -3,7 +3,7 @@
 (require racket/async-channel racket/file racket/list racket/path racket/port
          racket/string racket/tcp
          "../protocol.rkt" "../commands.rkt" "../source.rkt" "../packages.rkt" "../process-group.rkt" "load.rkt" "../instrumentation/instrument.rkt"
-         "inspect.rkt" "stepping.rkt" "expressions.rkt" "cancel.rkt" "images.rkt" "coverage.rkt")
+         "inspect.rkt" "stepping.rkt" "expressions.rkt" "cancel.rkt" "images.rkt" "plots.rkt" "coverage.rkt")
 
 (define bootstrap (read-message (current-input-port)))
 (join-process-group! (hash-ref bootstrap 'processGroup #f))
@@ -191,13 +191,16 @@
     (reply (cdr entry) (hasheq) "The paused thread resumed or ended.")))
 (define (describe pause name value)
   (define image? (image-value? value))
+  (define plot? (plot-value? value))
   (define result
-    (hasheq 'name name 'value (value-preview value) 'type (value-type value)
-            'variablesReference (if (or image? (expandable? value))
+    (hasheq 'name name 'value (if plot? "#<interactive plot>" (value-preview value))
+            'type (if plot? "plot" (value-type value))
+            'variablesReference (if (or image? plot? (expandable? value))
                                     (new-handle variables pause (cons 'value value)) 0)))
-  (if image?
-      (hash-set (hash-set result 'racketdapImage #t) '__vscodeVariableMenuContext "racketdap.image")
-      result))
+  (define visual (if image? (hash-set result 'racketdapImage #t) result))
+  (cond [plot? (hash-set (hash-set visual 'racketdapPlot #t) '__vscodeVariableMenuContext "racketdap.plot")]
+        [image? (hash-set visual '__vscodeVariableMenuContext "racketdap.image")]
+        [else visual]))
 (define (describe-results pause result)
   (define display-result
     (cond [(null? result) (hasheq 'value "#<zero values>" 'type "values" 'variablesReference 0)]
@@ -210,7 +213,7 @@
                         'racketdapImages
                         (for/list ([value (in-list result)] [i (in-naturals 1)]
                                    #:break (= image-count 200)
-                                   #:when (image-value? value))
+                                   #:when (or (image-value? value) (plot-value? value)))
                           (set! image-count (add1 image-count))
                           (describe pause (format "value ~a" i) value)))]))
   (hash-set (hash-remove (hash-remove display-result 'name) 'value) 'result (hash-ref display-result 'value)))
@@ -228,6 +231,10 @@
              (not (zero? (owned frames (arg a 'frameId) pause))))
     (error 'debugger "Expression actions apply to the executing frame."))
   (case (string->symbol command)
+    [(racketdap/openPlot)
+     (define descriptor (owned variables (hash-ref a 'variablesReference) pause))
+     (unless (eq? (car descriptor) 'value) (error 'plot "Select a single interactive plot."))
+     (open-plot (cdr descriptor))]
     [(racketdap/renderImage)
      (define descriptor (owned variables (hash-ref a 'variablesReference) pause))
      (unless (eq? (car descriptor) 'value) (error 'image "Select a single image value."))

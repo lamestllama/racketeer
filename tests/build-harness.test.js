@@ -34,7 +34,7 @@ async function fixture(t) {
 test('headless entry point discovers every native and Node suite except explicit GUI tests', () => {
   const suites = inventory();
   const names = fs.readdirSync(path.join(root, 'tests'));
-  assert.deepEqual(suites.node, names.filter(n => n.endsWith('.test.js') && !['gui-parity.test.js', 'macro-stepper-gui.test.js'].includes(n)).sort().map(n => `tests/${n}`));
+  assert.deepEqual(suites.node, names.filter(n => n.endsWith('.test.js') && !['gui-parity.test.js', 'macro-stepper-gui.test.js', 'plots-gui.test.js'].includes(n)).sort().map(n => `tests/${n}`));
   assert.deepEqual(suites.racket, [...names.filter(n => n.endsWith('.rkt')).sort().map(n => `tests/${n}`), 'experiments/lexical-eval.rkt']);
   assert.equal(require('../vscode/package.json').scripts.test, 'node ../scripts/test-headless.js');
   const task = JSON.parse(fs.readFileSync(path.join(root, '.vscode/tasks.json'))).tasks.find(t => t.label === 'Racket: Check adapter protocol and extension logic');
