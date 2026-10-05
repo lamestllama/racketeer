@@ -143,17 +143,11 @@ exports.run = async (extension, workspace) => {
   await until(() => !vscode.languages.getDiagnostics(document.uri).some(diagnostic => /unknown-racket-name/.test(diagnostic.message)), 'diagnostic cleared after repair');
   await document.save();
 
-  for (const name of ['run']) {
-    const ended = [];
-    const listener = vscode.tasks.onDidEndTaskProcess(event => ended.push(event));
-    try {
-      const execution = await vscode.commands.executeCommand(`racketdap.${name}File`);
-      assert.ok(execution, `${name} command starts a task`);
-      const result = await until(() => ended.find(event => event.execution === execution), `${name} task exits`);
-      assert.equal(result.exitCode, 0);
-      assert.equal(fs.readFileSync(marker(name), 'utf8'), '49');
-    } finally { listener.dispose(); }
-  }
+  const execution = await vscode.commands.executeCommand('racketdap.runFile');
+  assert.ok(execution?.session, 'Run starts an owned file execution');
+  assert.equal(execution.session.configuration.noDebug, true);
+  assert.equal((await execution.done).exitCode, 0);
+  assert.equal(fs.readFileSync(marker('run'), 'utf8'), '49');
   assert.deepEqual(await vscode.commands.executeCommand('racketdap.testFile'),
     { passed: 1, failed: 0, errored: 0, skipped: 0 });
   assert.equal(fs.readFileSync(marker('test'), 'utf8'), '49');
@@ -193,7 +187,7 @@ exports.run = async (extension, workspace) => {
     'workspace references include unopened files without opening editor buffers',
     'workspace references refresh after external writes', 'disable/enable workspace index independently', 'hover documentation',
     'values documentation', 'values semantic function highlighting', 'built-in syntax highlighting preserves strings and comments',
-    'completion', 'rename', 'rename preserves import aliases and prefixes and updates selectors', 'formatting', 'unsaved diagnostics and repair', 'run task', 'Test Explorer file run',
+    'completion', 'rename', 'rename preserves import aliases and prefixes and updates selectors', 'formatting', 'unsaved diagnostics and repair', 'Run Current File', 'Test Explorer file run',
     'REPL', 'load quoted Unicode file in REPL', 'evaluate selection', 'evaluate multiple selections in the plain REPL',
     'disable/enable language server', 'restart language server', ...replChecks, ...importChecks, ...untitledChecks, ...renameChecks];
 };

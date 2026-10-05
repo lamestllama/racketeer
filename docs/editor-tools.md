@@ -1,5 +1,29 @@
 # Editing and macro expansion
 
+## Tail positions and imports
+
+Hover an expression's opening delimiter or operator to see its tail-position
+relationships. The language server reports the containing expression and any
+immediate expressions in tail position relative to it, with line and column
+numbers. A branch may be in tail position within an `if` that is itself an
+argument to another call; this does not make that branch a tail call of the
+enclosing function. Try [the tail-position example](../examples/tail-positions.rkt).
+
+These facts come from expansion through the documented
+analysis callback of Racket's check-syntax library,
+including macros that preserve source positions. They are hidden after an edit
+until analysis succeeds again. Generated expressions without usable source
+positions may have no hover information. Each direction shows up to eight
+related locations. Existing type, binding and documentation information remains
+in the same hover.
+
+Unused imports appear as informational **unused require** diagnostics. Using
+an imported binding clears that diagnostic after analysis. Go to Definition on
+an imported alias follows its defining module; hover provides binding information
+and documentation when available. Outline uses the native document-symbol
+view. These services use the editor's current source without running the file's
+ordinary body; compile-time code can execute during analysis.
+
 ## References from debugger sources
 
 Find All References works from captured debugger sources, including references

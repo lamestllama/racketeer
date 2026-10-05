@@ -188,6 +188,9 @@ The bundled upstream [racket-langserver](https://github.com/jeapostrophe/racket-
 provides completion, hover documentation, definition, references, rename,
 diagnostics, symbols, semantic tokens, signature help, inlay hints, and code
 actions. Support varies with the program's `#lang` and available documentation.
+Hover an expression's opening delimiter or operator for its relative tail
+positions. This information clears after edits until fresh analysis succeeds.
+Unused imports appear as informational **unused require** diagnostics.
 Formatting uses bundled `fixw`; choose the other value through the
 `racket-langserver.formatting.documentFormatter` or `indentationFormatter` settings.
 Basic syntax highlighting, bracket pairing, and commenting also work before

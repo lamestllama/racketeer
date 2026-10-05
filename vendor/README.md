@@ -22,6 +22,12 @@ verifies the archive and then applies these patches:
   in-memory source identities, select an explicit import base, and retire
   analysis when documents close or workspace folders change.
 
+- `tail-position-hover.patch`: expose relative tail-position relationships from
+  the documented analysis callback through standard LSP hover. Suppress those
+  facts after edits until a fresh expansion succeeds. Convert between UTF-16
+  protocol columns and Racket character offsets at the shared editor boundary,
+  including semantic-token lengths and diagnostic ranges.
+
 These patches do not introduce closed-file retention rules or
 URI-alias restoration. Rename ownership is provided by upstream
 [PR #244](https://github.com/jeapostrophe/racket-langserver/pull/244).

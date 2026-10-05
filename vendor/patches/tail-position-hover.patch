@@ -1,0 +1,348 @@
+diff --git a/common/interfaces.rkt b/common/interfaces.rkt
+index b9c4022..8915c6b 100644
+--- a/common/interfaces.rkt
++++ b/common/interfaces.rkt
+@@ -357,7 +357,7 @@
+   (list SemanticTokenModifier-definition))
+ 
+ (define (abs-pos->Pos editor pos)
+-  (match-define (list line char) (send editor pos->line/char pos))
++  (match-define (list line char) (send editor pos->lsp-position pos))
+   (Pos #:line line #:char char))
+ 
+ ;; Resyntax-Result: result of a resyntax refactoring suggestion
+@@ -367,4 +367,3 @@
+   [message string?]
+   [rule-name symbol?]
+   [new-text string?])
+-
+diff --git a/doclib/doc-trace.rkt b/doclib/doc-trace.rkt
+index f635fc1..4973c30 100644
+--- a/doclib/doc-trace.rkt
++++ b/doclib/doc-trace.rkt
+@@ -15,6 +15,7 @@
+          "service/declaration.rkt"
+          "service/highlight.rkt"
+          "service/inlay-hint.rkt"
++         "service/tail.rkt"
+          "service/tooltip-log.rkt"
+          "service/typed-racket/service.rkt"
+          "../common/interfaces.rkt"
+@@ -52,6 +53,7 @@
+         [lexer-state lexer-state]
+         [declaration decls]
+         [typed-racket typed-racket]))
++    (define tails (new tail% [src src] [lexer-state lexer-state]))
+ 
+     (define services
+       (list hovers
+@@ -62,7 +64,8 @@
+             typed-racket
+             decls
+             semantic-tokens
+-            inlay-hints))
++            inlay-hints
++            tails))
+ 
+     (define/public (reset)
+       (for ([s services])
+@@ -114,12 +117,13 @@
+     (define/public (get-declaration) decls)
+     (define/public (get-typed-racket) typed-racket)
+     (define/public (get-inlay-hints) inlay-hints)
++    (define/public (get-tails) tails)
+ 
+     ;; Derive accepted cross-file state from this trace's frozen editor.
+     (define/public (get-contribution)
+       (define (abs->pos pos)
+         (match-define (list line char)
+-          (send doc-text pos->line/char pos))
++          (send doc-text pos->lsp-position pos))
+         (Pos line char))
+ 
+       (define (range->location range)
+@@ -228,6 +232,9 @@
+               _actual? _phase-level
+               require-arrow? _name-dup?)))
+ 
++    (define/override (syncheck:add-tail-arrow from-source from to-source to)
++      (send tails syncheck:add-tail-arrow from-source from to-source to))
++
+     ;; Unused requires
+     (define/override (syncheck:add-unused-require src left right)
+       (for ([s services])
+diff --git a/doclib/doc.rkt b/doclib/doc.rkt
+index 2c57e95..00613d6 100644
+--- a/doclib/doc.rkt
++++ b/doclib/doc.rkt
+@@ -269,11 +269,11 @@
+ 
+ (define/contract (doc-pos->abs-pos doc pos)
+   (-> Doc? Pos? exact-nonnegative-integer?)
+-  (send (Doc-text doc) line/char->pos (Pos-line pos) (Pos-char pos)))
++  (send (Doc-text doc) lsp-position->pos (Pos-line pos) (Pos-char pos)))
+ 
+ (define/contract (doc-abs-pos->pos doc pos)
+   (-> Doc? exact-nonnegative-integer? Pos?)
+-  (match-define (list line char) (send (Doc-text doc) pos->line/char pos))
++  (match-define (list line char) (send (Doc-text doc) pos->lsp-position pos))
+   (Pos line char))
+ 
+ (define/contract (doc-line-start-abs-pos doc line)
+@@ -732,6 +732,31 @@
+   (define typed-racket-service
+     (send doc-trace get-typed-racket))
+   (define pos* (doc-pos->abs-pos doc pos))
++  (define-values (tail-start tail-end tail-parents tail-children)
++    (if (doc-trace-latest? doc)
++        (send (send doc-trace get-tails) at pos*)
++        (values #f #f '() '())))
++  (define (tail-locations positions)
++    (define shown (take positions (min 8 (length positions))))
++    (string-append
++     (string-join
++      (for/list ([position (in-list shown)])
++        (define point (doc-abs-pos->pos doc position))
++        (format "line ~a, column ~a" (add1 (Pos-line point)) (add1 (Pos-char point))))
++      "; ")
++     (if (> (length positions) 8) (format "; and ~a more" (- (length positions) 8)) "")))
++  (define tail-text
++    (and tail-start
++         (string-join
++          (filter values
++                  (list "**Tail position**"
++                        (and (pair? tail-parents)
++                             (string-append "In tail position relative to the expression at "
++                                            (tail-locations tail-parents) "."))
++                        (and (pair? tail-children)
++                             (string-append "Expressions in tail position relative to this one: "
++                                            (tail-locations tail-children) "."))))
++          "\n\n")))
+   (define-values (start end annotation)
+     (send hover-service annotation-at pos*))
+   (define-values (type-start type-end type-text)
+@@ -750,7 +775,7 @@
+     ;; Docs alone do not open a card. Type text, an annotation, or
+     ;; same-file source summary each can. Stored source detail may still
+     ;; supply summary and range when check-syntax produced no hover text.
+-    [(and (not type-text) (not annotation) (not source-summary)) #f]
++    [(and (not type-text) (not annotation) (not source-summary) (not tail-text)) #f]
+     [else
+      (match-define (list link tag)
+        (interval-map-ref (send doc-trace get-docs) pos* (list #f #f)))
+@@ -766,13 +791,15 @@
+                          #:signature signature
+                          #:source-summary source-summary
+                          #:documentation-text documentation-text))
+-     (Hover #:contents (render-hover-card hover-card)
++     (Hover #:contents (string-join (filter non-empty-string?
++                                           (list (or tail-text "") (render-hover-card hover-card)))
++                                   "\n\n")
+             ;; Prefer inferred-type intervals, including literal and expression
+             ;; delimiter spans Typed Racket can publish without an annotation.
+             ;; Fall back to the winning annotation or kept source-detail range.
+             #:range (abs-range->range doc
+-                                      (or type-start start use-start)
+-                                      (or type-end end use-end)))]))
++                                      (or type-start start use-start tail-start)
++                                      (or type-end end use-end tail-end)))]))
+ 
+ ;; Some clients spell a viewport end as a line past the last one. The range is
+ ;; only a filter bound here, so clamp instead of failing the request.
+diff --git a/doclib/service/diagnostic.rkt b/doclib/service/diagnostic.rkt
+index ce30da5..a19cbae 100644
+--- a/doclib/service/diagnostic.rkt
++++ b/doclib/service/diagnostic.rkt
+@@ -198,11 +198,17 @@
+      (define srclocs ((exn:srclocs-accessor exn) exn))
+      (for/list ([sl (in-list srclocs)])
+        (match-define (srcloc src line col pos span) sl)
+-       (if (and (number? line) (number? col) (number? span))
++       (define start
++         (or (and (exact-positive-integer? pos) (sub1 pos))
++             (and (exact-positive-integer? line) (exact-nonnegative-integer? col)
++                  (with-handlers ([exn:fail? (lambda (_) #f)])
++                    (+ (send doc-text line-start-pos (sub1 line)) col)))))
++       (if (and start (exact-nonnegative-integer? span)
++                (<= (+ start span) (send doc-text end-pos)))
+            (Diagnostic #:range (nonempty-diagnostic-range
+                                  doc-text
+-                                 (Range #:start (Pos #:line (sub1 line) #:char col)
+-                                        #:end (Pos #:line (sub1 line) #:char (+ col span))))
++                                 (Range #:start (abs-pos->Pos doc-text start)
++                                        #:end (abs-pos->Pos doc-text (+ start span))))
+                        #:severity DiagnosticSeverity-Error
+                        #:source "Racket"
+                        #:message diagnostic-msg)
+diff --git a/doclib/textbuffer/editor-rope.rkt b/doclib/textbuffer/editor-rope.rkt
+index c5f2f76..26c5cd0 100644
+--- a/doclib/textbuffer/editor-rope.rkt
++++ b/doclib/textbuffer/editor-rope.rkt
+@@ -11,9 +11,11 @@
+     (init [initial-buffer (rope-from-string "")])
+ 
+     (define rope initial-buffer)
++    (define unicode-lines (make-hash))
+ 
+     (define/private (replace-range str start-pos end-pos)
+-      (set! rope (rope-replace rope start-pos end-pos str)))
++      (set! rope (rope-replace rope start-pos end-pos str))
++      (hash-clear! unicode-lines))
+ 
+     (define/private (line-count)
+       (add1 (rope-offset->line rope (rope-chars rope))))
+@@ -44,10 +46,12 @@
+ 
+     ;; remove all content
+     (define/public (erase)
+-      (set! rope (rope-from-string "")))
++      (set! rope (rope-from-string ""))
++      (hash-clear! unicode-lines))
+ 
+     (define/public (load-file path)
+-      (set! rope (rope-from-string (file->string path))))
++      (set! rope (rope-from-string (file->string path)))
++      (hash-clear! unicode-lines))
+ 
+     ;; return current content in editor as string
+     (define/public (get-text [start 0] [end 'eof])
+@@ -63,8 +67,41 @@
+ 
+     (define/public (pos->line/char pos)
+       (define line (rope-offset->line rope pos))
+-      (list line
+-            (- pos (send this line-start-pos line))))
++      (list line (- pos (send this line-start-pos line))))
++
++    ;; Cache only astral-character offsets. ASCII/BMP lines need no per-position
++    ;; storage, and repeated protocol queries do not rescan long source lines.
++    (define/private (astral-offsets line)
++      (hash-ref! unicode-lines line
++                 (lambda ()
++                   (list->vector
++                    (for/list ([character (in-string (send this get-line line))]
++                               [offset (in-naturals)]
++                               #:when (> (char->integer character) #xffff))
++                      offset)))))
++
++    (define/private (before offsets column utf16?)
++      (let loop ([low 0] [high (vector-length offsets)])
++        (if (= low high)
++            low
++            (let* ([middle (quotient (+ low high) 2)]
++                   [position (+ (vector-ref offsets middle) (if utf16? middle 0))])
++              (if (< position column)
++                  (loop (add1 middle) high)
++                  (loop low middle))))))
++
++    (define/public (lsp-position->pos line char)
++      ;; LSP columns count UTF-16 code units; the rope and Racket syntax
++      ;; positions count characters. Preserve the scalar editor API above.
++      (define start (line-start-pos/raw line))
++      (define end (send this line-end-pos line))
++      (define offsets (astral-offsets line))
++      (min end (+ start (- char (before offsets char #t)))))
++
++    (define/public (pos->lsp-position pos)
++      (define line (rope-offset->line rope pos))
++      (define column (- pos (send this line-start-pos line)))
++      (list line (+ column (before (astral-offsets line) column #f))))
+ 
+     (define/public (line-start-pos line)
+       (rope-line-start-offset rope line))
+@@ -86,4 +123,3 @@
+       (send this get-text (send this line-start-pos line) (send this line-end-pos line)))
+ 
+     (super-new)))
+-
+diff --git a/lsp/semantic-token-lsp.rkt b/lsp/semantic-token-lsp.rkt
+index 4291987..2af0ce0 100644
+--- a/lsp/semantic-token-lsp.rkt
++++ b/lsp/semantic-token-lsp.rkt
+@@ -51,7 +51,8 @@
+     (if (= line prev-line)
+         (- char prev-char)
+         char))
+-  (define len (- (SemanticToken-end token) (SemanticToken-start token)))
++  (define end (abs-pos->pos (SemanticToken-end token)))
++  (define len (- (Pos-char end) char))
+   (define type (token-type-encoding token))
+   (define modifier (token-modifier-encoding token))
+   (values delta-line delta-start len type modifier))
+@@ -70,4 +71,3 @@
+             (SemanticToken-start token))))
+ 
+ (provide encode-semantic-tokens)
+-
+--- /dev/null
++++ b/doclib/service/tail.rkt
+@@ -0,0 +1,69 @@
++#lang racket/base
++
++(require racket/class racket/list racket/set data/interval-map
++         drracket/check-syntax "interface.rkt" "../lexer.rkt"
++         "../../common/interfaces.rkt")
++(provide tail%)
++
++;; Keep the public analysis callback's relative relationship. A branch can be
++;; tail-positioned within an `if` whose result is an argument to another call.
++;; That does not make the branch a tail call of its enclosing function.
++(define tail%
++  (class base-service%
++    (init-field src lexer-state)
++    (super-new)
++    (define anchors (make-hash))
++    (define ranges (make-interval-map))
++    (define parents (make-hash))
++    (define children (make-hash))
++
++    (define/override (reset)
++      (hash-clear! anchors)
++      (hash-clear! parents)
++      (hash-clear! children)
++      (set! ranges (make-interval-map)))
++
++    ;; Any edit can change tail context outside the edited span. Suppress the
++    ;; old facts until expansion supplies a fresh trace; never shift guesses.
++    (define/override (text-replaced _start _end) (send this reset))
++
++    (define/private (anchor-end pos)
++      (hash-ref!
++       anchors pos
++       (lambda ()
++         (define token (lexer-state-token-at lexer-state pos))
++         (and token (= pos (LexerEntry-start token))
++              (let ([end (LexerEntry-end token)])
++                ;; Include the operator after an opening delimiter, but no
++                ;; arguments or nested forms. Comments stop the extension.
++                (if (member (LexerEntry-text token) '("(" "[" "{"))
++                    (let loop ([next end])
++                      (define head (lexer-state-token-at lexer-state next))
++                      (cond
++                        [(not head) end]
++                        [(eq? (LexerEntry-type head) 'white-space)
++                         (loop (LexerEntry-end head))]
++                        [(eq? (LexerEntry-type head) 'symbol) (LexerEntry-end head)]
++                        [else end]))
++                    end))))))
++
++    (define/override (syncheck:add-tail-arrow from-source from to-source to)
++      (when (and (equal? from-source src) (equal? to-source src)
++                 (exact-nonnegative-integer? from) (exact-nonnegative-integer? to)
++                 (not (= from to)))
++        (define from-end (anchor-end from))
++        (define to-end (anchor-end to))
++        (when (and from-end to-end)
++          (interval-map-set! ranges from from-end from)
++          (interval-map-set! ranges to to-end to)
++          (set-add! (hash-ref! parents to mutable-set) from)
++          (set-add! (hash-ref! children from mutable-set) to))))
++
++    ;; Bounds and source positions belong to the same accepted snapshot.
++    (define/public (at pos)
++      (define key (interval-map-ref ranges pos #f))
++      (if key
++          (values key (hash-ref anchors key)
++                  (sort (set->list (hash-ref parents key (set))) <)
++                  (sort (set->list (hash-ref children key (set))) <))
++          (values #f #f '() '())))))
