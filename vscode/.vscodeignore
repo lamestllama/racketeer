@@ -27,3 +27,5 @@ wxme-render.js
 wxme-editor-view.js
 wxme-storage.js
 workspace-index.js
+dependencies.js
+dependency-process.js

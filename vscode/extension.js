@@ -17,6 +17,7 @@ const { registerDebugRepl } = require('./debug-repl');
 const { registerPackages } = require('./packages');
 const { registerWxmeViewer } = require('./wxme-viewer');
 const { registerWxmeEditor } = require('./wxme-editor');
+const { registerDependencies } = require('./dependencies');
 let languageTools;
 
 function activate(context) {
@@ -25,6 +26,7 @@ function activate(context) {
   registerPackages(context);
   registerWxmeViewer(context);
   registerWxmeEditor(context);
+  registerDependencies(context);
   registerFileCommands(context, sessions, testing, registerDebugRepl(sessions));
   const debugSources = registerDebugSources(context);
   registerDebugActions(context, debugSources);

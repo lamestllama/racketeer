@@ -49,6 +49,8 @@
     "vscode:prepublish": "npm run build"
   },
   "contributes": {
+    "views": { "explorer": [{ "id": "racketeer.dependencies", "name": "Racket Dependencies", "visibility": "collapsed" }] },
+    "viewsWelcome": [{ "view": "racketeer.dependencies", "contents": "[Browse the current module](command:racketdap.browseDependencies)\nInspect imports and submodules using the current Racket installation." }],
     "customEditors": [{
       "viewType": "racketeer.wxme",
       "displayName": "Racketeer WXME Viewer",
@@ -90,6 +92,8 @@
       }
     ],
     "commands": [
+      { "command": "racketdap.browseDependencies", "title": "Racket: Browse Module Dependencies" },
+      { "command": "racketdap.refreshDependencies", "title": "Racket: Refresh Module Dependencies", "icon": "$(refresh)" },
       { "command": "racketdap.viewImage", "title": "Racket: View Image", "enablement": "racketdap.viewImage.enabled || debugProtocolVariableMenuContext == 'racketdap.image'", "icon": "$(preview)" },
       { "command": "racketdap.saveImage", "title": "Racket: Save Image As…", "enablement": "resourceScheme == racketeer-image", "icon": "$(save-as)" },
       {"command": "racketdap.refreshWorkspaceReferences", "title": "Racket: Refresh Workspace References"},
@@ -450,6 +454,8 @@
       }
     ],
     "menus": {
+      "view/title": [{ "command": "racketdap.refreshDependencies", "when": "view == racketeer.dependencies", "group": "navigation" }],
+      "explorer/context": [{ "command": "racketdap.browseDependencies", "when": "resourceExtname == .rkt || resourceExtname == .rhm || resourceExtname == .wxme", "group": "racket" }],
       "debug/variables/context": [
         { "command": "racketdap.viewImage", "when": "debugType == racketdap && debugProtocolVariableMenuContext == 'racketdap.image'", "group": "1_view@1" }
       ],

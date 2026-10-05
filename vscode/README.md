@@ -210,6 +210,20 @@ defers language-server startup to it to avoid duplicate providers. Disable
 Magic Racket and reload the window to use this extension alone. No other
 extensions or global Racket packages are disabled or changed automatically.
 
+## Module dependencies
+
+Use **Racket: Browse Module Dependencies** on the current named source file, or
+from its Explorer context menu. The **Racket Dependencies** tree shows imports,
+their phase shifts and submodules. Select an entry to open its source file;
+expand it to follow dependencies. Repeated modules stop expanding within a branch.
+
+Open Racket/Rhombus buffers, including unsaved dependency edits, participate in
+analysis without being saved. The tree refreshes after source changes; its Refresh
+button retries failed branches. Compilation runs readers and compile-time code in
+a trusted workspace. Analysis uses public Racket APIs.
+See [module dependencies](https://github.com/lamestllama/racketeer/blob/main/docs/module-dependencies.md)
+for phase semantics, limits and lifecycle behavior.
+
 ## Lambda insertion
 
 Press **Alt+\\** (**Option+\\** on macOS) in an editable Racket buffer to insert
