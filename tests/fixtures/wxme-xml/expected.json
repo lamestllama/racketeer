@@ -1,0 +1,5 @@
+{
+  "projection": "#lang racket/base\n(define base 7)\n(define result ￼)\n(write result)\n(newline)\n",
+  "preserve": "(root ((title \"λ😀\")) \"\\n  \" (first () \"9\") \"\\n  \" (item () \"α\") (item () \"😀\") \"\\n\")\n",
+  "eliminate": "(root ((title \"λ😀\")) (first () \"9\") (item () \"α\") (item () \"😀\"))\n"
+}

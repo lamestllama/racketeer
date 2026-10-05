@@ -7,9 +7,13 @@ function renderWxme(result, name, stale = false, options = {}) {
   const renderParts = (parts, depth = 0) => parts.map(part => {
     if (part.kind === 'text') return options.text ? options.text(part) : escape(part.text);
     if (part.kind === 'unsupported') return `<span class="unsupported">[${escape(part.label)}]</span>`;
-    if (part.kind === 'editor' || part.kind === 'comment') {
+    if (['editor', 'comment', 'xml', 'racket'].includes(part.kind)) {
       if (depth >= 32) throw new Error('Nested editors exceed the viewer limit (32 levels).');
-      const label = part.kind === 'comment' ? 'Comment box' : 'Nested editor';
+      if ((part.kind === 'xml' && typeof part.eliminateWhitespace !== 'boolean') ||
+          (part.kind === 'racket' && typeof part.splicing !== 'boolean')) throw new Error('Invalid XML or Racket box mode.');
+      const label = part.kind === 'xml' ? `XML box (${part.eliminateWhitespace ? 'eliminate empty-tag whitespace' : 'preserve whitespace'})` :
+        part.kind === 'racket' ? (part.splicing ? 'Racket splice box' : 'Racket box') :
+        part.kind === 'comment' ? 'Comment box' : 'Nested editor';
       return decorate(part, `<span class="embedded" role="group" aria-label="${label}"><span class="box-label" aria-hidden="true">${label}</span><span>${renderParts(part.parts, depth + 1)}</span></span>`);
     }
     if (part.kind !== 'image' || !/^[A-Za-z0-9+/]+={0,2}$/.test(part.data) ||

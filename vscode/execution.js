@@ -20,13 +20,16 @@ async function saveDocument(document) {
 async function activeTarget({ allowWxme = false } = {}) {
   const tab = vscode.window.tabGroups?.activeTabGroup.activeTab;
   if (vscode.TabInputCustom && tab?.input instanceof vscode.TabInputCustom) {
-    if (!allowWxme || tab.input.viewType !== 'racketeer.wxmeEditor') throw new Error('Open a Racket text editor for this command.');
+    const wxmeTab = t => t.input instanceof vscode.TabInputCustom && ['racketeer.wxmeEditor', 'racketeer.wxme'].includes(t.input.viewType);
+    if (!allowWxme || !wxmeTab(tab)) throw new Error('Open a Racket text editor for this command.');
     const target = targetFor(tab.input.uri);
+    const dirtyViews = () => vscode.window.tabGroups.all.flatMap(group => group.tabs)
+      .some(t => wxmeTab(t) && t.input.uri.toString() === target.uri.toString() && t.isDirty);
     if (vscode.workspace.textDocuments.some(d => d.uri.toString() === target.uri.toString() && d.isDirty))
       throw new Error('The text editor has unsaved changes. Save or revert them before running WXME.');
-    if (tab.isDirty) {
+    if (tab.isDirty || dirtyViews()) {
       const saved = await vscode.workspace.save(target.uri);
-      if (!saved || saved.toString() !== target.uri.toString() || tab.isDirty) throw new Error('The WXME document could not be saved.');
+      if (!saved || saved.toString() !== target.uri.toString() || tab.isDirty || dirtyViews()) throw new Error('The WXME document could not be saved.');
     }
     return { ...target, format: 'wxme' };
   }

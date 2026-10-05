@@ -14,6 +14,9 @@ which owns dirty state, undo/redo, save commands and backup scheduling.
 - `vscode/wxme-storage.js` handles bounded reads and staged file replacement.
 - `racketdap/tools/wxme-edit.rkt` handles the process protocol and input lease.
   `wxme-codec.rkt` uses public Racket editor APIs to copy and serialize content.
+- `wxme-editable.rkt` checks whether decoded content can be saved before GUI
+  libraries are loaded. XML and Racket boxes remain read-only because the
+  standalone GUI reader does not preserve their types on save.
 
 ## Document and transactions
 
@@ -67,9 +70,16 @@ content; they are not LSP positions or debugger coordinates.
 
 ## Execution and debugger sources
 
-Run and Debug capture the active custom tab's URI and save a dirty document
+Run and Debug capture the active editor or viewer tab's URI and save a dirty document
 through `workspace.save`. A failed save or conflicting dirty text buffer stops
 the launch. Other text-dependent commands still require a text editor.
+
+The viewer distinguishes XML whitespace modes and Racket splicing modes through
+the public headless readers. XML boxes can contain independent WXME streams;
+the outer stream's class list does not describe all nested readers.
+`wxme-readers.rkt` preloads supported headless readers in one namespace and
+restricts module resolution throughout decoding, including nested streams.
+Document-supplied readers cannot load through an embedded XML box.
 
 The loader reads source bytes once. For supported WXME files, `wxme-source.rkt`
 builds a display snapshot with the public decoder, replacing each outer object

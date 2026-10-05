@@ -357,8 +357,9 @@ Debug REPL program input uses its associated integrated terminal.
 For a saved WXME source file, use **Open With → Racketeer WXME Viewer** to read
 text and embedded bitmap images in source order. The viewer is read-only and
 does not run the program. Ordinary Racket files still open in the text editor.
-Nested editors and comment boxes retain their boundaries, text and embedded
-images. Other object classes are reported as unsupported. A changed file is
+Nested editors, comment boxes, XML boxes and Racket boxes retain their boundaries
+and contents. XML labels show the whitespace mode; Racket labels distinguish
+single values from splicing. Other object classes are reported as unsupported. A changed file is
 marked in the view; close and reopen it to refresh. Unsaved text edits must be
 saved or reverted before viewing.
 
@@ -367,7 +368,9 @@ images and inside nested editors or comment boxes. It supports VS Code's
 Undo, Redo, Save, Save As, Revert and unsaved-document recovery. Use the toolbar
 to insert a PNG image, comment box or nested editor at the cursor. Selecting
 text before inserting a box moves that text inside it. The × button removes an
-object and its contents; Undo restores them. Other object classes and linked or
+object and its contents; Undo restores them. XML and Racket boxes are read-only:
+the standalone GUI codec cannot save their original types without changing the
+program. Use the WXME Viewer for those files. Other object classes and linked or
 missing images cannot be edited. PNG imports are limited to 8 MiB and 4096 pixels
 in either dimension.
 Save As opens its destination in the configured default editor. Use Open With
@@ -382,7 +385,8 @@ comment box takes the framework's standard comment-box style. If the file
 changes externally, use Revert to reload it or Save As to keep the edited version.
 
 **Racket: Run Current File** and **Racket: Debug Current File** save and launch
-the active WXME document. Debugging opens a read-only source snapshot with an
+the active WXME document from either the editor or viewer. A dirty editable view
+of the same file is saved before launch. Debugging opens a read-only source snapshot with an
 object replacement character (U+FFFC) for each image or box. Use that snapshot
 for breakpoints and stepping through the surrounding source text. The program
 executes from the original WXME bytes; the snapshot remains fixed if you edit

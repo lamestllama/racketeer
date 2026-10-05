@@ -1,5 +1,5 @@
 #lang racket/base
-(require racket/class racket/gui/base racket/list racket/string net/base64 wxme framework "wxme-view.rkt")
+(require racket/class racket/gui/base racket/list racket/string net/base64 wxme framework "wxme-view.rkt" "wxme-editable.rkt")
 (provide encode-wxme)
 
 (struct source (part editor start snip) #:transparent)
@@ -9,11 +9,6 @@
     (cond [(null? rest) (list (hasheq 'kind "text" 'text text))]
           [(equal? (hash-ref (car rest) 'kind) "text") (loop (cdr rest) (string-append text (hash-ref (car rest) 'text)))]
           [else (list* (hasheq 'kind "text" 'text text) (car rest) (loop (cdr rest) ""))])))
-(define (supported-content! parts)
-  (for ([part (in-list parts)])
-    (unless (member (hash-ref part 'kind) '("text" "image" "editor" "comment"))
-      (error 'wxme "This document contains an object that cannot be edited safely."))
-    (when (hash-has-key? part 'parts) (supported-content! (hash-ref part 'parts)))))
 (define (utf16-position text wanted)
   (unless (exact-nonnegative-integer? wanted) (error 'wxme "Invalid UTF-16 position."))
   (let loop ([position 0] [units 0])
@@ -33,7 +28,7 @@
 (define (encode-wxme bytes tree image)
   (define decoded (and bytes (decode-wxme bytes)))
   (when decoded
-    (supported-content! (hash-ref decoded 'parts))
+    (check-editable-content! (hash-ref decoded 'parts))
     (define-values (classes data) (extract-used-classes (open-input-bytes bytes)))
     (define comment-class (send (send (new comment-box:snip%) get-snipclass) get-classname))
     (unless (for/and ([name (in-list classes)])

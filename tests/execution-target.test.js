@@ -6,7 +6,7 @@ function setup() {
   class TabInputCustom { constructor(uri, viewType = 'racketeer.wxmeEditor') { this.uri = uri; this.viewType = viewType; } }
   const tab = { input: new TabInputCustom(uri('/wxme.rkt')), isDirty: false };
   const saves = [], vscode = { TabInputCustom,
-    window: { tabGroups: { activeTabGroup: { activeTab: tab } }, activeTextEditor: { document: { uri: uri('/other.rkt'), languageId: 'racket', isDirty: false } } },
+    window: { tabGroups: { activeTabGroup: { activeTab: tab }, all: [{ tabs: [tab] }] }, activeTextEditor: { document: { uri: uri('/other.rkt'), languageId: 'racket', isDirty: false } } },
     workspace: { textDocuments: [], getWorkspaceFolder: () => undefined, getConfiguration: () => ({ get: () => 'racket' }),
       save: async uri => { saves.push(uri.fsPath); tab.isDirty = false; return uri; } }
   };
@@ -32,4 +32,16 @@ test('failed, cancelled or incomplete saves and conflicting text edits prevent l
   }
   h.tab.isDirty = false; h.vscode.workspace.textDocuments = [{ uri: h.tab.input.uri, isDirty: true }];
   await assert.rejects(h.activeTarget({ allowWxme: true }), /unsaved changes/);
+});
+
+test('running a read-only WXME view saves a dirty editable view of the same document', async () => {
+  const h = setup(); h.tab.input.viewType = 'racketeer.wxme';
+  assert.equal((await h.activeTarget({ allowWxme: true })).program, '/wxme.rkt');
+  const editor = { input: new h.vscode.TabInputCustom(h.tab.input.uri), isDirty: true };
+  h.vscode.window.tabGroups.all[0].tabs.push(editor);
+  h.vscode.workspace.save = async uri => { h.saves.push(uri.fsPath); return uri; };
+  await assert.rejects(h.activeTarget({ allowWxme: true }), /could not be saved/);
+  h.vscode.workspace.save = async uri => { h.saves.push(uri.fsPath); editor.isDirty = false; return uri; };
+  assert.equal((await h.activeTarget({ allowWxme: true })).program, '/wxme.rkt');
+  assert.deepEqual(h.saves, ['/wxme.rkt', '/wxme.rkt']);
 });

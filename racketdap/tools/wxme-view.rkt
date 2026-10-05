@@ -1,7 +1,9 @@
 #lang racket/base
 
 (require file/sha1 json net/base64 racket/class racket/draw racket/list racket/port
-         wxme wxme/image wxme/editor wxme/comment "../wxme-source.rkt")
+         wxme wxme/image wxme/editor wxme/comment
+         (only-in wxme/xml xml-editor%) (only-in wxme/scheme scheme-editor%)
+         "../wxme-readers.rkt")
 
 (provide decode-wxme)
 
@@ -37,6 +39,9 @@
              'data (bytes->string/utf-8 (base64-encode data #"")))]))
 
 (define (decode-wxme bytes)
+  (call-with-wxme-readers (lambda () (decode-content bytes))))
+
+(define (decode-content bytes)
   (when (> (bytes-length bytes) limit) (error 'wxme "File exceeds the viewer limit (32 MiB)."))
   (unless (is-wxme-stream? (open-input-bytes bytes))
     (error 'wxme "This is not a WXME document. Use the Text Editor to view ordinary source."))
@@ -70,8 +75,14 @@
          (define part
            (cond [(is-a? object image%) (image-part object)]
                  [(is-a? object editor%)
-                  (hasheq 'kind (if (is-a? object comment-editor%) "comment" "editor")
-                          'parts (read-parts (send object get-content-port) (add1 depth)))]
+                  (define nested (read-parts (send object get-content-port) (add1 depth)))
+                  (cond [(or (is-a? object xml-editor%) (is-a? object scheme-editor%))
+                         (define mode (send object get-data))
+                         (unless (boolean? mode) (error 'wxme "Invalid XML or Racket box mode."))
+                         (if (is-a? object xml-editor%)
+                             (hasheq 'kind "xml" 'eliminateWhitespace mode 'parts nested)
+                             (hasheq 'kind "racket" 'splicing mode 'parts nested))]
+                        [else (hasheq 'kind (if (is-a? object comment-editor%) "comment" "editor") 'parts nested)])]
                  [else (unsupported "Embedded object (not displayed)")]))
          (charge! (string-length (hash-ref part 'data "")))
          (push! part)
