@@ -19,6 +19,7 @@ debug-repl.js
 interactions.js
 interactions-view.js
 interaction-output.js
+error-sources.js
 packages.js
 macro-stepper.js
 macro-process.js

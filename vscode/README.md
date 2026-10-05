@@ -358,6 +358,25 @@ Output is retained until cleared, restarted or closed, within a 32 MiB/1,000-ent
 limit. It is not saved across editor reloads. Image conversion runs as part of
 printing and can execute the value's converter; failures appear in the output.
 
+Errors include clickable source locations when the evaluator has retained the
+relevant source. Try `(broken)` from `examples/errors.rkt`. If an exception
+breakpoint pauses execution, choose **Continue** to finish reporting the error.
+Clicking a location
+opens and selects the expression in the source editor. If its file has been
+changed or deleted since execution, a read-only **Captured** document shows the
+text that ran. Links remain usable after the session stops while the error is in
+the transcript. Clearing, restarting or closing Interactions releases that
+history; an already opened captured document remains available until its tab closes.
+
+Malformed input links to the entered text. **Submitted expression** opens the
+whole expression when no exact location within it is available. **Context:**
+labels approximate stack locations. Arbitrary error-message text is never parsed
+as a file link. Each error retains at most eight locations and 1 MiB of captured
+source, counted within the transcript limit. Omissions caused by these limits
+are reported. Locations in uncaptured libraries or embedded WXME editors may be
+unavailable. The normal error formatter and debugger exception controls remain
+in effect.
+
 **Racket: Load Current File in Debug REPL** reuses this file's session and
 Interactions view. These commands do not execute `main` or `test`. The native
 Debug Console remains available. You can also select an expression in the source and

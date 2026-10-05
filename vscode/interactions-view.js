@@ -17,7 +17,7 @@ function webviewMain() {
   function entry(value) {
     let node = entries.get(value.id);
     if (!node) {
-      node = document.createElement(value.kind === 'image' ? 'figure' : 'pre');
+      node = document.createElement(value.kind === 'image' ? 'figure' : value.kind === 'error' ? 'section' : 'pre');
       node.className = value.kind; node.dataset.id = value.id;
       entries.set(value.id, node); output.append(node);
       if (value.kind === 'image') {
@@ -31,8 +31,24 @@ function webviewMain() {
         save.onclick = () => send('saveImage', { id: value.id });
         node.append(button, save);
       }
+      if (value.kind === 'error') {
+        node.append(document.createElement('pre'));
+        const links = document.createElement('div'); links.className = 'error-locations';
+        value.locations.forEach((location, index) => {
+          const source = value.sources[location.source];
+          const button = document.createElement('button');
+          button.textContent = location.submitted ? 'Submitted expression' :
+            `${location.approximate ? 'Context: ' : ''}${source.name}:${location.line}:${location.column}`;
+          button.title = location.approximate ? 'Open an approximate stack location' : 'Open the source used by this execution';
+          button.onclick = () => send('openError', { id: value.id, index });
+          links.append(button);
+        });
+        node.append(links);
+        if (value.omitted) { const note = document.createElement('div'); note.textContent = 'Some source locations could not be retained.'; note.className = 'hint'; node.append(note); }
+      }
     }
-    if (value.kind !== 'image') node.textContent = (value.kind === 'input' ? '> ' : '') + value.text;
+    if (value.kind === 'error') node.querySelector('pre').textContent = value.text;
+    else if (value.kind !== 'image') node.textContent = (value.kind === 'input' ? '> ' : '') + value.text;
   }
   window.addEventListener('message', ({ data }) => {
     const atBottom = followTail;
@@ -85,6 +101,7 @@ header{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding-bottom:10p
 button{font:inherit;color:var(--vscode-button-foreground);background:var(--vscode-button-background);border:1px solid transparent;padding:4px 9px;cursor:pointer}button:hover{background:var(--vscode-button-hoverBackground)}button:disabled{opacity:.5;cursor:default}button:focus-visible,textarea:focus,input:focus{outline:1px solid var(--vscode-focusBorder)}
 #output{flex:1;overflow:auto;min-height:80px}pre{font-family:var(--vscode-editor-font-family);font-size:var(--vscode-editor-font-size);white-space:pre-wrap;overflow-wrap:anywhere;margin:0;line-height:1.45}.input{border-top:1px solid var(--vscode-panel-border);padding:12px 0 6px;margin-top:8px;color:var(--vscode-debugConsole-sourceForeground)}.stderr{color:var(--vscode-errorForeground)}
 figure{margin:8px 0;display:flex;flex-direction:column;align-items:flex-start;gap:6px}.picture{padding:0;background:transparent;border:1px solid var(--vscode-panel-border);max-width:100%}.picture img{display:block;max-width:100%;height:auto}
+.error{color:var(--vscode-errorForeground);margin:4px 0 10px}.error-locations{display:flex;flex-wrap:wrap;gap:6px;margin:4px 0}.error-locations button{background:transparent;color:var(--vscode-textLink-foreground);padding:2px 0;margin-right:8px;text-decoration:underline}
 textarea,input{box-sizing:border-box;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border,transparent);font-family:var(--vscode-editor-font-family);font-size:var(--vscode-editor-font-size);padding:6px}textarea{width:100%;resize:vertical;min-height:65px}footer{padding-top:10px;border-top:1px solid var(--vscode-panel-border)}.hint{color:var(--vscode-descriptionForeground);font-size:12px;margin:5px 0}details{margin-top:8px}summary{cursor:pointer}#trimmed{color:var(--vscode-descriptionForeground)}
 </style></head><body>
 <header><strong>Interactions</strong><span id="status" role="status">Loading…</span><button id="restart">Run again</button><button id="continue" hidden>Continue</button><button id="cancel">Interrupt</button><button id="stop">Stop</button><button id="clear">Clear output</button><button id="logs">Logs</button></header>

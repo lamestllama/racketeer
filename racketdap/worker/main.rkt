@@ -3,7 +3,7 @@
 (require racket/async-channel racket/file racket/list racket/path racket/port
          racket/string racket/tcp
          "../protocol.rkt" "../commands.rkt" "../source.rkt" "../packages.rkt" "../process-group.rkt" "load.rkt" "../instrumentation/instrument.rkt"
-         "inspect.rkt" "stepping.rkt" "expressions.rkt" "cancel.rkt" "images.rkt" "plots.rkt" "coverage.rkt" "interactions.rkt" "logs.rkt")
+         "inspect.rkt" "stepping.rkt" "expressions.rkt" "cancel.rkt" "images.rkt" "plots.rkt" "coverage.rkt" "interactions.rkt" "logs.rkt" "error-locations.rkt")
 
 (define bootstrap (read-message (current-input-port)))
 (join-process-group! (hash-ref bootstrap 'processGroup #f))
@@ -35,6 +35,17 @@
 (define (fresh-id)
   (call-with-semaphore id-lock (lambda () (set! next-id (add1 next-id)) next-id)))
 (define sources (make-hash))
+(define failure-sites (make-ephemeron-hasheq))
+(define (error-info value [expression #f])
+  (with-handlers ([(lambda (_) #t) (lambda (_) (hasheq 'sources '() 'locations '() 'omitted #t))])
+    (define observed (hash-ref failure-sites (current-thread) #f))
+    (hash-remove! failure-sites (current-thread))
+    (error-locations value sources (if (and observed (eq? (car observed) value)) (cdr observed) '()) expression)))
+(define (on-error value)
+  (when (and (arg config 'racketdapRichInteractions #f) (not (exn:break? value)))
+    (event "racketdap/interactionError" (hash-set (error-info value) 'message (error-text value)))))
+(define (read-interaction expression)
+  (read-expression expression #:source (and (arg config 'racketdapRichInteractions #f) interaction-source)))
 (define sites (make-hash))
 (define coverage-hits (make-hasheqv))
 (define (on-coverage-event stop)
@@ -345,7 +356,7 @@
      (define result
        (if (equal? (arg a 'context) "hover")
            (list (stop-binding-value stop expression index))
-           (call-with-values (lambda () (stop-evaluate stop (read-expression expression) index)) list)))
+           (call-with-values (lambda () (stop-evaluate stop (read-interaction expression) index)) list)))
      (interaction-results request pause result)]
     [(setVariable)
      (define descriptor (owned variables (hash-ref a 'variablesReference) pause))
@@ -360,7 +371,14 @@
                      (equal? (arg a 'context) "repl") (arg a 'racketdapEcho #f)))
   (define (echo text)
     (when echo? (event "output" (hasheq 'category "console" 'output (string-append text "\n")))))
-  (with-handlers ([(lambda (_) #t) (lambda (e) (echo (error-text e)) (reply request (hasheq) (error-text e)))])
+  (with-handlers ([(lambda (_) #t)
+                   (lambda (e)
+                     (echo (error-text e))
+                     (reply request
+                            (if (and (arg config 'racketdapRichInteractions #f)
+                                     (equal? (hash-ref request 'command) "evaluate") (equal? (arg a 'context) "repl"))
+                                (hasheq 'racketdapError (error-info e (arg a 'expression))) (hasheq))
+                            (error-text e)))])
     (when echo? (echo (string-append "> " (hash-ref a 'expression))))
     (define result
       (if (command-flag? (hash-ref request 'command) 'evaluate)
@@ -464,6 +482,10 @@
     [(and before? (eq? (state-pause? st) 'deferred)) (pause-loop st stop "pause" "Paused at an expression" '())]
     [step-message (pause-loop st stop "step" step-message '())]))
 (define (on-exception stop)
+  (when (arg config 'racketdapRichInteractions #f)
+    (hash-set! failure-sites (current-thread)
+               (cons (car (stop-results stop))
+                     (for/list ([i (in-range (min 8 (stop-frame-count stop)))]) (stop-frame-source stop i)))))
   (when exception-enabled?
     (pause-loop (register-thread) stop "exception" (error-text (car (stop-results stop))) '())))
 (define (on-pause raised)
@@ -499,7 +521,7 @@
             (lambda ()
               (call-with-exception-handler
                (make-debug-exception-handler on-exception on-pause)
-               (lambda () (eval (read-expression (hash-ref (arg request 'arguments) 'expression)) namespace))))
+               (lambda () (eval (read-interaction (hash-ref (arg request 'arguments) 'expression)) namespace))))
             list))]
          [else (inspect-request request interaction)])))
     (flush-program-output)
@@ -544,6 +566,7 @@
                      #:coverage? (arg config 'coverage #f)
                      #:on-event (if (arg config 'coverage #f) on-coverage-event on-event)
                      #:on-exception (and (not (arg config 'noDebug #f)) on-exception)
+                     #:on-error on-error
                      #:on-pause (and (not (arg config 'noDebug #f)) on-pause)
                      #:language (and (arg config 'language) (string->symbol (arg config 'language)))
                      #:on-sites on-sites #:on-source-snapshot on-source-snapshot

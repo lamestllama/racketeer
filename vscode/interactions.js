@@ -3,8 +3,10 @@ const vscode = require('vscode');
 const path = require('node:path');
 const { InteractionOutput, pngBytes } = require('./interaction-output');
 const { interactionsHtml } = require('./interactions-view');
+const { registerErrorSources } = require('./error-sources');
 
 function registerInteractions(context, images) {
+  const errorSources = registerErrorSources(context);
   const views = new Map(), sessions = new Map();
   const keyFor = session => JSON.stringify([session.configuration.program, session.configuration.racketExecutable, session.configuration.cwd]);
   function status(view) {
@@ -30,7 +32,7 @@ function registerInteractions(context, images) {
         if (view.closed || !message || typeof message.action !== 'string') return;
         try {
           if (message.action === 'ready') {
-            await panel.webview.postMessage({ type: 'snapshot', entries: view.output.entries }); status(view);
+            await panel.webview.postMessage({ type: 'snapshot', entries: view.output.snapshot() }); status(view);
           } else if (message.action === 'evaluate') {
             if (!vscode.workspace.isTrusted || typeof message.expression !== 'string' || !message.expression.trim() || message.expression.length > 1024 * 1024) return;
             if (!view.evaluate || view.ended) throw new Error('Run the file before evaluating an expression.');
@@ -52,6 +54,11 @@ function registerInteractions(context, images) {
           else if (message.action === 'input' && !view.ended) {
             if (message.eof === true) await view.session.customRequest('racketdap/input', { eof: true });
             else if (typeof message.text === 'string' && message.text.length <= 65536) await view.session.customRequest('racketdap/input', { text: message.text });
+          } else if (message.action === 'openError') {
+            const entry = view.output.entries.find(entry => entry.id === message.id && entry.kind === 'error');
+            const location = Number.isInteger(message.index) && entry?.locations[message.index];
+            if (!location) throw new Error('This error location is no longer in the output.');
+            await errorSources.open(entry.sources[location.source], location);
           } else if (['openImage', 'saveImage'].includes(message.action)) {
             const entry = view.output.entries.find(entry => entry.id === message.id && entry.kind === 'image');
             if (!entry) throw new Error('This image is no longer in the output.');
@@ -90,13 +97,14 @@ function registerInteractions(context, images) {
         onDidSendMessage(message) {
           if (!current()) return;
           if (message.type === 'response' && view.pending.delete(message.request_seq)) {
-            if (!message.success) { view.lastError = message.message || 'Evaluation failed.'; view.output.append('stderr', view.lastError + '\n'); }
+            if (!message.success) { view.lastError = message.message || 'Evaluation failed.'; view.output.error(view.lastError, message.body?.racketdapError); }
             status(view);
           }
           if (message.type !== 'event') return;
           if (message.event === 'racketdap/interactionOutput') {
             try { view.output.output(message.body); } catch (error) { view.output.append('stderr', error.message + '\n'); }
           }
+          if (message.event === 'racketdap/interactionError') view.output.error(message.body.message, message.body, true);
           if (message.event === 'racketdap/ready') view.phase = 'Ready';
           if (message.event === 'stopped') { view.phase = 'Paused'; view.threadId = message.body.threadId; }
           if (message.event === 'continued') view.phase = 'Running…';

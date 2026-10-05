@@ -44,6 +44,7 @@
                     #:on-sites [on-sites void]
                     #:on-event [on-event #f]
                     #:on-exception [on-exception #f]
+                    #:on-error [on-error void]
                     #:on-pause [on-pause #f]
                     #:on-source [on-source void]
                     #:on-source-snapshot [on-source-snapshot void]
@@ -350,9 +351,15 @@
   (define ordinary-uncaught (uncaught-exception-handler))
   (define report-test-error void)
   (define debug-exception-handler (make-debug-exception-handler on-exception on-pause))
+  (define exception-handler-tag (make-continuation-prompt-tag 'module-exception-handler))
   (define (exception-handler value)
     (begin0 (debug-exception-handler value)
+      (on-error value)
       (report-test-error value)))
+  (define (call-with-module-handler thunk)
+    (call-with-continuation-prompt
+     (lambda () (call-with-exception-handler exception-handler thunk))
+     exception-handler-tag))
   (dynamic-wind
     void
     (lambda ()
@@ -361,9 +368,12 @@
                      [current-load/use-compiled load-selected]
                      [current-load load-plain-source]
                      [uncaught-exception-handler
-                      (lambda (value) (exception-handler value) (ordinary-uncaught value))])
-        (call-with-exception-handler
-         exception-handler
+                      (lambda (value)
+                        ;; Child threads inherit parameters, but not this prompt.
+                        (unless (continuation-prompt-available? exception-handler-tag)
+                          (exception-handler value))
+                        (ordinary-uncaught value))])
+        (call-with-module-handler
          (lambda ()
            (define (execute)
              (unless language

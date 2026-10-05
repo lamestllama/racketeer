@@ -8,10 +8,11 @@
 (define (with-safe-reader thunk)
   (parameterize ([read-accept-reader #f] [read-accept-lang #f] [read-accept-compiled #f])
     (thunk)))
-(define (read-expression text)
+(define (read-expression text #:source [source #f])
   (with-safe-reader
    (lambda ()
-     (define in (open-input-string text))
+     (define in (if source (open-input-string text source) (open-input-string text)))
+     (when source (port-count-lines! in))
      (define form (read in))
      (when (or (eof-object? form) (not (eof-object? (read in))))
        (error 'evaluate "Enter one Racket expression."))
