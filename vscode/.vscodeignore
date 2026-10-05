@@ -23,4 +23,7 @@ wxme-process.js
 wxme-viewer.js
 wxme-editor.js
 wxme-document.js
+wxme-render.js
+wxme-editor-view.js
+wxme-storage.js
 workspace-index.js

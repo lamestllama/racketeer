@@ -364,15 +364,22 @@ saved or reverted before viewing.
 
 Choose **Open With → Racketeer WXME Editor** to edit text around embedded
 images and inside nested editors or comment boxes. It supports VS Code's
-Undo, Redo, Save, Save As, Revert and unsaved-document recovery. Images and box
-boundaries stay in place; adding or removing objects is not supported. Other
-object classes and linked or missing images cannot be edited.
+Undo, Redo, Save, Save As, Revert and unsaved-document recovery. Use the toolbar
+to insert a PNG image, comment box or nested editor at the cursor. Selecting
+text before inserting a box moves that text inside it. The × button removes an
+object and its contents; Undo restores them. Other object classes and linked or
+missing images cannot be edited. PNG imports are limited to 8 MiB and 4096 pixels
+in either dimension.
+Save As opens its destination in the configured default editor. Use Open With
+to continue in the WXME editor if needed.
 
 Editing requires the full Racket installation's GUI libraries and a working
 graphical display on the extension host. It opens inside VS Code; no separate
 Racket window is shown. The read-only viewer also works without a display.
-Saving preserves supported objects through Racket's editor codec and can change
-the file's binary representation. If the file changes externally, use Revert
+Saving preserves supported objects and unchanged text styles through Racket's
+editor codec and can change the file's binary representation. Text placed in a
+comment box takes the framework's standard comment-box style. If the file
+changes externally, use Revert
 to reload it or Save As to keep the edited version. Language services and debug
 source locations are not yet available inside the WXME editor.
 

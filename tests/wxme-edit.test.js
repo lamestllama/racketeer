@@ -35,8 +35,8 @@ function harness(t) {
     if (interception) await interception(options);
     const bytes = Buffer.from(request.bytes, 'base64');
     const doc = new WxmeDocument(uri(file), bytes, JSON.parse(bytes));
-    for (const edit of request.edits) doc.edit(edit.path.join('/'), edit.text);
-    return { parts: doc.parts, bytes: Buffer.from(JSON.stringify({ parts: doc.parts })).toString('base64') };
+    if (request.tree) doc.setTree(request.tree);
+    return { version: 1, parts: doc.parts, bytes: Buffer.from(JSON.stringify({ parts: doc.parts })).toString('base64') };
   };
   const filename = path.resolve(__dirname, '../vscode/wxme-editor.js'), local = createRequire(filename), module = { exports: {} };
   const viewerFile = path.resolve(__dirname, '../vscode/wxme-viewer.js'), viewer = { exports: {} };
@@ -49,7 +49,8 @@ function harness(t) {
   function panel(doc) {
     const received = new EventEmitter(), closed = new EventEmitter(), messages = [];
     const p = { webview: { onDidReceiveMessage: received.event, postMessage: m => { messages.push(m); return Promise.resolve(true); } }, onDidDispose: closed.event,
-      edit: async (id, text, before = doc.fields.get(id).part.text) => { received.fire({ type: 'edit', id, text, before }); await new Promise(r => setImmediate(r)); },
+      edit: async (id, text, before = doc.fields.get(id).part.text) => { received.fire({ type: 'edit', generation: doc.generation, id, text, before }); await new Promise(r => setImmediate(r)); },
+      message: async message => { received.fire({ generation: doc.generation, ...message }); await new Promise(r => setImmediate(r)); },
       close: () => closed.fire(), messages };
     provider.resolveCustomEditor(doc, p, token); panels.push(p); return p;
   }
@@ -93,9 +94,33 @@ test('save, undo after save, Save As, revert and backup restore retain content',
   const destination = uri(path.join(h.root, 'copy.wxme'));
   await h.provider.saveCustomDocumentAs(restored, destination, token);
   assert.equal(JSON.parse(fs.readFileSync(destination.fsPath)).parts[0].text, 'changed 😀\n');
+  if (process.platform !== 'win32') assert.equal(fs.statSync(destination.fsPath).mode & 0o777, 0o666 & ~process.umask());
   assert.deepEqual(fs.readFileSync(h.file), original);
   await h.provider.revertCustomDocument(doc, token); assert.equal(doc.fields.get('0').part.text, parts[0].text);
   backup.delete(); doc.dispose(); restored.dispose();
+});
+
+test('structural transactions synchronize views, survive saving and reject stale panel actions', async t => {
+  const h = harness(t), doc = await h.provider.openCustomDocument(h.uri, {}, token), a = h.panel(doc), b = h.panel(doc);
+  const before = doc.tree, generation = doc.generation;
+  await a.message({ type: 'insert', id: '0', start: 2, end: 4, before: 'λ 😀\n', kind: 'comment' });
+  assert.equal(h.events.length, 1); assert.equal(doc.parts[1].parts[0].text, '😀');
+  assert.notEqual(doc.generation, generation); assert.match(b.webview.html, /data-remove="n0"/);
+  await b.message({ type: 'remove', generation, id: 'n0' });
+  assert.equal(h.errors.length, 1); assert.equal(h.events.length, 1);
+  h.events[0].undo(); assert.strictEqual(doc.tree, before);
+  h.events[0].redo(); await h.provider.saveCustomDocument(doc, token);
+  assert.equal(JSON.parse(fs.readFileSync(h.file)).parts[1].parts[0].text, '😀');
+  await a.message({ type: 'remove', id: 'n0' }); assert.equal(h.events.length, 2);
+  assert.equal(doc.parts[0].text, 'λ \n');
+  h.events[1].undo(); assert.equal(doc.parts[1].parts[0].text, '😀');
+});
+
+test('cancelling image selection leaves structure and undo history unchanged', async t => {
+  const h = harness(t), doc = await h.provider.openCustomDocument(h.uri, {}, token), panel = h.panel(doc), before = doc.tree;
+  h.vscode.window.showOpenDialog = async () => undefined;
+  await panel.message({ type: 'insert', id: '0', start: 0, end: 0, before: 'λ 😀\n', kind: 'image' });
+  assert.strictEqual(doc.tree, before); assert.equal(h.events.length, 0); assert.equal(h.errors.length, 0);
 });
 
 test('external replacement, deletion and an edit during encoding refuse save without losing either version', async t => {
@@ -160,7 +185,7 @@ test('webview leaves save and undo commands to VS Code instead of sending duplic
   const listeners = {}, messages = [], field = { value: 'text', dataset: { field: '0' }, addEventListener: (type, fn) => { listeners[type] = fn; } };
   const script = html.match(/<script nonce="[^"]+">([\s\S]*?)<\/script>/)[1];
   vm.runInNewContext(script, { acquireVsCodeApi: () => ({ postMessage: message => messages.push(message) }),
-    document: { querySelectorAll: () => [field] }, window: { addEventListener() {} } });
+    document: { body: { dataset: { generation: 'test' } }, querySelectorAll: selector => selector === 'textarea' ? [field] : [], querySelector: () => undefined }, window: { addEventListener() {} } });
   for (const key of ['s', 'z', 'y']) {
     let prevented = false;
     listeners.keydown({ key, ctrlKey: true, preventDefault: () => { prevented = true; } });
@@ -189,23 +214,22 @@ test('public encoder preserves images, nested comments and Unicode across text e
   for (const [name, edits] of [['images', [{ path: [0], text: '#lang racket/base\n; edited λ 😀\n(define first ' }]],
     ['boxes', [{ path: [1, 1, 0], text: 'changed comment λ 😀\n' }]], ['empty-comment', [{ path: [1, 0], text: 'no longer empty' }]],
     ['empty', [{ path: [0], text: '#lang racket/base\n42\n' }]]]) {
-    const bytes = fixture(name), result = await requestWxme('racket', helper, __filename, { bytes: bytes.toString('base64'), edits });
+    const bytes = fixture(name);
     const original = await decodeWxme('racket', path.resolve(__dirname, '../racketdap/tools/wxme-view.rkt'), path.join(__dirname, 'fixtures/wxme', name + '.wxme'));
     const expected = new WxmeDocument(uri('/a'), bytes, original);
     for (const edit of edits) expected.edit(edit.path.join('/'), edit.text);
+    const result = await requestWxme('racket', helper, __filename, expected.request());
     assert.deepEqual(normalize(result.parts), expected.parts);
-    const reopen = await requestWxme('racket', helper, __filename, { bytes: result.bytes, edits: [] });
+    const reopen = await requestWxme('racket', helper, __filename, { version: 1, bytes: result.bytes });
     assert.deepEqual(reopen.parts, result.parts); assert.deepEqual(fixture(name), bytes);
   }
 });
 
 test('GUI encoder refuses custom readers, invalid positions and oversized edits', gui, async () => {
   for (const name of ['custom', 'nested-custom']) await assert.rejects(requestWxme('racket', helper, __filename,
-    { bytes: fixture(name).toString('base64'), edits: [] }), /Unsupported/);
-  await assert.rejects(requestWxme('racket', helper, __filename, { bytes: fixture('images').toString('base64'),
-    edits: [{ path: [1], text: 'replace image' }] }), /Unknown text edit/);
-  await assert.rejects(requestWxme('racket', helper, __filename, { bytes: fixture('text').toString('base64'),
-    edits: [{ path: [0], text: 'x'.repeat(32 * 1024 * 1024 + 1) }] }), /32 MiB/);
+    { version: 1, bytes: fixture(name).toString('base64') }), /Unsupported/);
+  await assert.rejects(requestWxme('racket', helper, __filename, { version: 1, bytes: fixture('images').toString('base64'), tree: [{ id: '0', kind: 'text', pieces: [{ source: 'missing', start: 0, end: 1 }] }] }), /Unknown original content/);
+  await assert.rejects(requestWxme('racket', helper, __filename, { version: 1, bytes: fixture('text').toString('base64'), tree: [{ id: '0', kind: 'text', pieces: [{ text: 'x'.repeat(32 * 1024 * 1024 + 1) }] }] }), /32 MiB/);
 });
 
 test('a headless comment mapping does not authorize a different GUI reader', gui, async t => {
@@ -214,7 +238,7 @@ test('a headless comment mapping does not authorize a different GUI reader', gui
   fs.writeFileSync(path.join(collection, 'reader.rkt'), `#lang racket/base\n(call-with-output-file ${JSON.stringify(marker)} (lambda (out) (display "loaded" out)))\n(error "CUSTOM READER LOADED")\n`);
   const previous = process.env.PLTCOLLECTS; process.env.PLTCOLLECTS = root + path.delimiter + (previous || '');
   try {
-    await assert.rejects(requestWxme('racket', helper, __filename, { bytes: fixture('different-readers').toString('base64'), edits: [] }), /Unsupported object class/);
+    await assert.rejects(requestWxme('racket', helper, __filename, { version: 1, bytes: fixture('different-readers').toString('base64') }), /Unsupported object class/);
     assert.equal(fs.existsSync(marker), false);
   } finally { if (previous === undefined) delete process.env.PLTCOLLECTS; else process.env.PLTCOLLECTS = previous; }
 });
@@ -224,7 +248,8 @@ test('saving original executable source preserves its objects and intended evalu
   fs.writeFileSync(original, fixture('editable-program'));
   const read = await decodeWxme('racket', path.resolve(__dirname, '../racketdap/tools/wxme-view.rkt'), original);
   const text = read.parts[0].text.replace('20 22', '20 23');
-  const changed = await requestWxme('racket', helper, __filename, { bytes: fixture('editable-program').toString('base64'), edits: [{ path: [0], text }] });
+  const document = new WxmeDocument(uri(original), fixture('editable-program'), read); document.edit('0', text);
+  const changed = await requestWxme('racket', helper, __filename, document.request());
   fs.writeFileSync(saved, Buffer.from(changed.bytes, 'base64'));
   assert.deepEqual(changed.parts.slice(1), read.parts.slice(1));
   for (const [file, value] of [[original, '42'], [saved, '43']]) {
@@ -235,6 +260,6 @@ test('saving original executable source preserves its objects and intended evalu
 
 test('editing without a display returns a useful error and leaves the source intact', { skip: process.platform !== 'linux' }, async () => {
   const display = process.env.DISPLAY; process.env.DISPLAY = ':9876';
-  try { await assert.rejects(requestWxme('racket', helper, __filename, { bytes: fixture('text').toString('base64'), edits: [] }), /working display/); }
+  try { await assert.rejects(requestWxme('racket', helper, __filename, { version: 1, bytes: fixture('text').toString('base64') }), /working display/); }
   finally { if (display === undefined) delete process.env.DISPLAY; else process.env.DISPLAY = display; }
 });
