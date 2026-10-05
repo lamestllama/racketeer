@@ -732,6 +732,18 @@
   (define typed-racket-service
     (send doc-trace get-typed-racket))
   (define pos* (doc-pos->abs-pos doc pos))
+  (define-values (prediction-start prediction-end prediction-kind)
+    (if (doc-trace-latest? doc)
+        (send hover-service predicted-binding-at pos*)
+        (values #f #f #f)))
+  (define prediction-text
+    (and prediction-kind
+         (string-append
+          "**Predicted binding**\n\n"
+          (if (eq? prediction-kind 'mixed)
+              "This source location has confirmed bindings and syntax-template predictions. "
+              "Binding information for this syntax-template occurrence is predicted. ")
+          "Expansion can give the template a different binding.")))
   (define-values (tail-start tail-end tail-parents tail-children)
     (if (doc-trace-latest? doc)
         (send (send doc-trace get-tails) at pos*)
@@ -775,7 +787,7 @@
     ;; Docs alone do not open a card. Type text, an annotation, or
     ;; same-file source summary each can. Stored source detail may still
     ;; supply summary and range when check-syntax produced no hover text.
-    [(and (not type-text) (not annotation) (not source-summary) (not tail-text)) #f]
+    [(and (not type-text) (not annotation) (not source-summary) (not tail-text) (not prediction-text)) #f]
     [else
      (match-define (list link tag)
        (interval-map-ref (send doc-trace get-docs) pos* (list #f #f)))
@@ -792,14 +804,15 @@
                          #:source-summary source-summary
                          #:documentation-text documentation-text))
      (Hover #:contents (string-join (filter non-empty-string?
-                                           (list (or tail-text "") (render-hover-card hover-card)))
+                                           (list (or prediction-text "") (or tail-text "")
+                                                 (render-hover-card hover-card)))
                                    "\n\n")
             ;; Prefer inferred-type intervals, including literal and expression
             ;; delimiter spans Typed Racket can publish without an annotation.
             ;; Fall back to the winning annotation or kept source-detail range.
             #:range (abs-range->range doc
-                                      (or type-start start use-start tail-start)
-                                      (or type-end end use-end tail-end)))]))
+                                      (or prediction-start type-start start use-start tail-start)
+                                      (or prediction-end type-end end use-end tail-end)))]))
 
 ;; Some clients spell a viewport end as a line past the last one. The range is
 ;; only a filter bound here, so clamp instead of failing the request.

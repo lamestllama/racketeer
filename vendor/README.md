@@ -28,6 +28,10 @@ verifies the archive and then applies these patches:
   protocol columns and Racket character offsets at the shared editor boundary,
   including semantic-token lengths and diagnostic ranges.
 
+- `predicted-bindings.patch`: identify unconfirmed syntax-template bindings in
+  hover using the public analysis callback. Keep binding identities and phases
+  distinct, and discard predictions after source edits.
+
 These patches do not introduce closed-file retention rules or
 URI-alias restoration. Rename ownership is provided by upstream
 [PR #244](https://github.com/jeapostrophe/racket-langserver/pull/244).

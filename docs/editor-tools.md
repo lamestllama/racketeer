@@ -2,6 +2,13 @@
 
 ## Tail positions and imports
 
+Identifiers inside syntax templates can have predicted bindings. Their hover
+shows **Predicted binding** when analysis cannot confirm the reported binding;
+ordinary confirmed uses keep their usual hover. A source location can represent
+several bindings or expansion phases, so confirming one does not confirm the
+others. Try [the binding example](../examples/predicted-bindings.rkt). Prediction
+labels are hidden after an edit until successful analysis supplies fresh facts.
+
 Hover an expression's opening delimiter or operator to see its tail-position
 relationships. The language server reports the containing expression and any
 immediate expressions in tail position relative to it, with line and column
