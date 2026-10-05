@@ -40,12 +40,12 @@ test('empty and mixed XML boxes render without evaluating their contents', async
   assert.throws(() => renderWxme({ parts: [{ kind: 'xml', parts: [] }] }, 'bad'), /Invalid.*mode/);
 });
 
-test('read-only refusal precedes GUI loading and preserves every XML source byte', async () => {
+test('XML editing without a display preserves every source byte', async () => {
   const previous = process.env.DISPLAY; process.env.DISPLAY = ':9876';
   try {
     for (const name of ['preserve', 'eliminate', 'boxes', 'mixed']) {
       const bytes = fs.readFileSync(fixture(name));
-      await assert.rejects(requestWxme('racket', editor, fixture(name), { version: 1, bytes: bytes.toString('base64') }), /XML and Racket boxes are read-only.*WXME Viewer/);
+      await assert.rejects(requestWxme('racket', editor, fixture(name), { version: 1, bytes: bytes.toString('base64') }), /Editing requires Racket GUI libraries and a working display/);
       assert.deepEqual(fs.readFileSync(fixture(name)), bytes);
     }
   } finally { if (previous === undefined) delete process.env.DISPLAY; else process.env.DISPLAY = previous; }

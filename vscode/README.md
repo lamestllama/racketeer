@@ -368,9 +368,11 @@ images and inside nested editors or comment boxes. It supports VS Code's
 Undo, Redo, Save, Save As, Revert and unsaved-document recovery. Use the toolbar
 to insert a PNG image, comment box or nested editor at the cursor. Selecting
 text before inserting a box moves that text inside it. The × button removes an
-object and its contents; Undo restores them. XML and Racket boxes are read-only:
-the standalone GUI codec cannot save their original types without changing the
-program. Use the WXME Viewer for those files. Other object classes and linked or
+object and its contents; Undo restores them. XML and Racket boxes support text
+editing, insertion and removal. Box controls change XML whitespace handling or
+Racket splicing, with normal Undo/Redo. Their original object types and nested
+contents survive saving. The writer uses Racket's public editor libraries.
+Unsupported box versions, other object classes and linked or
 missing images cannot be edited. PNG imports are limited to 8 MiB and 4096 pixels
 in either dimension.
 Save As opens its destination in the configured default editor. Use Open With

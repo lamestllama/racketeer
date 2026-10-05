@@ -8,12 +8,19 @@ function validText(s) {
   if (typeof s !== 'string') throw new Error('Invalid WXME text.');
   for (const char of s) if (char.length === 1 && /[\uD800-\uDFFF]/.test(char)) throw new Error('Text contains an incomplete Unicode character.');
 }
+function boxMode(node) {
+  const key = node.kind === 'xml' ? 'eliminateWhitespace' : node.kind === 'racket' ? 'splicing' : undefined;
+  if (!key) return {};
+  if (typeof node[key] !== 'boolean') throw new Error('Invalid XML or Racket box mode.');
+  return { [key]: node[key] };
+}
 function normalize(parts) {
   const result = [{ kind: 'text', text: '' }];
   for (const part of parts) {
     if (part.kind === 'text') result.at(-1).text += part.text;
     else {
-      if (!['image', 'editor', 'comment'].includes(part.kind)) throw new Error('This document contains an object that cannot be edited safely.');
+      if (!['image', 'editor', 'comment', 'xml', 'racket'].includes(part.kind)) throw new Error('This document contains an object that cannot be edited safely.');
+      boxMode(part);
       result.push(part.parts ? { ...part, parts: normalize(part.parts) } : { ...part }, { kind: 'text', text: '' });
     }
   }
@@ -36,7 +43,7 @@ class WxmeDocument {
     const seed = (parts, prefix = []) => normalize(parts).map((part, index) => {
       const path = [...prefix, index], id = path.join('/'); this.originals.set(id, freeze(part));
       if (part.kind === 'text') return { kind: 'text', id, pieces: part.text ? [{ source: id, start: 0, end: part.text.length }] : [] };
-      if (part.parts) return { kind: part.kind, id, source: id, parts: seed(part.parts, path) };
+      if (part.parts) return { kind: part.kind, ...boxMode(part), id, source: id, parts: seed(part.parts, path) };
       return { kind: 'image', id, source: id };
     });
     this.initial = freeze(seed(decoded.parts)); this.setTree(this.initial);
@@ -72,8 +79,8 @@ class WxmeDocument {
         }
         if (node.source !== undefined && this.originals.get(node.source)?.kind !== node.kind) throw new Error('Invalid original object reference.');
         if (node.kind === 'image') { const part = this.image(node); size += part.data.length; return part; }
-        if (!['editor', 'comment'].includes(node.kind)) throw new Error('Unsupported WXME object.');
-        return { kind: node.kind, parts: visit(node.parts, depth + 1, node.id) };
+        if (!['editor', 'comment', 'xml', 'racket'].includes(node.kind)) throw new Error('Unsupported WXME object.');
+        return { kind: node.kind, ...boxMode(node), parts: visit(node.parts, depth + 1, node.id) };
       });
     };
     const parts = visit(tree);
@@ -130,12 +137,14 @@ class WxmeDocument {
   }
   insert(id, start, end, kind, image) {
     const entry = this.nodes.get(id), node = entry?.node;
-    if (node?.kind !== 'text' || !['image', 'comment', 'editor'].includes(kind)) throw new Error('Invalid insertion location or object type.');
+    if (node?.kind !== 'text' || !['image', 'comment', 'editor', 'xml', 'racket', 'splice'].includes(kind)) throw new Error('Invalid insertion location or object type.');
     const text = this.text(node);
     if (!boundary(text, start) || !boundary(text, end) || start > end) throw new Error('Selection splits a Unicode character or is out of range.');
     const identity = () => `n${this.nextId++}`;
     const object = kind === 'image' ? { ...this.image({ ...image, source: undefined }), id: identity() } :
-      { kind, id: identity(), parts: [{ kind: 'text', id: identity(), pieces: this.slice(node.pieces, start, end) }] };
+      { kind: kind === 'splice' ? 'racket' : kind, ...(kind === 'xml' ? { eliminateWhitespace: false } :
+        ['racket', 'splice'].includes(kind) ? { splicing: kind === 'splice' } : {}),
+        id: identity(), parts: [{ kind: 'text', id: identity(), pieces: this.slice(node.pieces, start, end) }] };
     const replacement = [{ ...node, pieces: this.slice(node.pieces, 0, start) }, object,
       { kind: 'text', id: identity(), pieces: this.slice(node.pieces, end, text.length) }];
     return { ...this.transact(this.update(this.tree, entry.parent, entry.index, replacement), `Insert ${kind === 'editor' ? 'nested editor' : kind}`, true), focus: object.parts?.[0]?.id || node.id };
@@ -149,6 +158,14 @@ class WxmeDocument {
     const replace = parts => parts === siblings ? [...parts.slice(0, entry.index - 1), merged, ...parts.slice(entry.index + 2)] :
       parts.map(node => node.parts ? { ...node, parts: replace(node.parts) } : node);
     return this.transact(replace(this.tree), `Remove ${entry.node.kind}`, true);
+  }
+  changeMode(id, value) {
+    const entry = this.nodes.get(id), node = entry?.node;
+    if (!node || !['xml', 'racket'].includes(node.kind) || typeof value !== 'boolean') throw new Error('Invalid XML or Racket box mode.');
+    const key = node.kind === 'xml' ? 'eliminateWhitespace' : 'splicing';
+    if (node[key] === value) return undefined;
+    return this.transact(this.update(this.tree, entry.parent, entry.index, [{ ...node, [key]: value }]),
+      node.kind === 'xml' ? 'Change XML whitespace' : 'Change Racket splicing', true);
   }
   changed() { return this.tree !== this.initial && JSON.stringify(this.tree) !== JSON.stringify(this.initial); }
   snapshot() { return { bytes: this.bytes, tree: this.tree, parts: this.parts, revision: this.revision }; }
@@ -169,4 +186,4 @@ class WxmeDocument {
     this.diskHash = backup.diskHash;
   }
 }
-module.exports = { WxmeDocument, normalize, hash, limit, boundary };
+module.exports = { WxmeDocument, normalize, hash, limit, boundary, boxMode };

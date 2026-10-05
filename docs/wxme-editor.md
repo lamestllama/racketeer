@@ -14,15 +14,17 @@ which owns dirty state, undo/redo, save commands and backup scheduling.
 - `vscode/wxme-storage.js` handles bounded reads and staged file replacement.
 - `racketdap/tools/wxme-edit.rkt` handles the process protocol and input lease.
   `wxme-codec.rkt` uses public Racket editor APIs to copy and serialize content.
-- `wxme-editable.rkt` checks whether decoded content can be saved before GUI
-  libraries are loaded. XML and Racket boxes remain read-only because the
-  standalone GUI reader does not preserve their types on save.
+- `wxme-editable.rkt` validates decoded object kinds and modes before GUI
+  libraries are loaded. `wxme-xml.rkt` supplies independent XML/Racket snip
+  classes using the public Racket editor stream APIs.
 
 ## Document and transactions
 
 An editor contains alternating text and object nodes, beginning and ending with
 a text node. Text slots can be empty. Supported objects are embedded bitmap
-images, comment boxes and nested text editors. Each node has a stable identity.
+images, comment boxes, nested text editors, XML boxes and Racket boxes. XML nodes
+carry `eliminateWhitespace`; Racket nodes carry `splicing`. Both are booleans,
+retained by text edits, structural changes, mode changes and recovery. Each node has a stable identity.
 Original identities name normalized paths; inserted identities use a monotonic
 sequence. Moving surrounding text does not renumber existing objects.
 
@@ -51,6 +53,15 @@ Original readers are checked before loading. A no-edit round trip must preserve
 decoded content before editing opens. Each edited save is compared with the
 model's content before any file is replaced. Opening and saving do not evaluate
 the source program.
+
+XML and Racket boxes use the version-1 snip formats: an integer mode flag followed
+by nested editor content through `write-to-file`/`read-from-file`. Flag zero means
+whitespace elimination or splicing; flag one means preservation or a single value.
+The codec registers its own classes before reading and refuses other versions.
+Copying a box retains its mode, nested objects and text styles. GUI loading cannot
+resolve additional reader modules, including those hidden in nested streams.
+The writer needs the Racket GUI libraries; it does not load GUI application modules
+or the XML and Racket box GUI readers.
 
 Unchanged saves retain exact original bytes. Edited saves can change binary
 serialization. Replacement checks the saved-file hash, stages bytes beside the

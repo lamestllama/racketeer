@@ -1,5 +1,5 @@
 #lang racket/base
-(require racket/class racket/gui/base racket/list racket/string net/base64 wxme framework "wxme-view.rkt" "wxme-editable.rkt")
+(require racket/class racket/gui/base racket/list racket/string net/base64 wxme framework "wxme-view.rkt" "wxme-editable.rkt" "wxme-xml.rkt")
 (provide encode-wxme)
 
 (struct source (part editor start snip) #:transparent)
@@ -26,16 +26,25 @@
   (make-object image-snip% bitmap))
 
 (define (encode-wxme bytes tree image)
+  (register-xml-boxes!)
   (define decoded (and bytes (decode-wxme bytes)))
   (when decoded
     (check-editable-content! (hash-ref decoded 'parts))
     (define-values (classes data) (extract-used-classes (open-input-bytes bytes)))
     (define comment-class (send (send (new comment-box:snip%) get-snipclass) get-classname))
     (unless (for/and ([name (in-list classes)])
-              (or (member name '("wxtext" "wxtab" "wximage" "wxmedia")) (equal? name comment-class)))
+              (or (member name '("wxtext" "wxtab" "wximage" "wxmedia")) (member name xml-box-classnames) (equal? name comment-class)))
       (error 'wxme "Unsupported object class for WXME editing.")))
   (define original (new text%))
-  (when bytes (send original insert-port (open-input-bytes bytes) 'standard))
+  (when bytes
+    ;; Every supported GUI class is registered before loading. Nested streams
+    ;; must not load a different GUI reader paired with an allowed text reader.
+    (define resolve (current-module-name-resolver))
+    (parameterize ([current-module-name-resolver
+                    (case-lambda
+                      [(path namespace) (resolve path namespace)]
+                      [(path relative syntax load?) (error 'wxme "Unsupported GUI object reader: ~s" path)])])
+      (send original insert-port (open-input-bytes bytes) 'standard)))
   (define sources (make-hash))
   (define (index! editor parts prefix)
     (define position 0)
@@ -102,7 +111,10 @@
       (unless (equal? (even? index) (equal? kind "text")) (error 'wxme "Text and object boundaries must alternate."))
       (cond [(equal? kind "text") (for ([piece (in-list (hash-ref node 'pieces))]) (copy-span! target piece))]
             [else
-             (unless (member kind '("image" "editor" "comment")) (error 'wxme "Unsupported object type."))
+             (unless (member kind '("image" "editor" "comment" "xml" "racket")) (error 'wxme "Unsupported object type."))
+             (define box? (member kind '("xml" "racket")))
+             (define mode (and box? (hash-ref node (if (equal? kind "xml") 'eliminateWhitespace 'splicing))))
+             (when (and box? (not (boolean? mode))) (error 'wxme "Invalid XML or Racket box mode."))
              (define origin (hash-ref node 'source #f))
              (define object
                (cond [origin
@@ -111,8 +123,10 @@
                       (send (source-snip ref) copy)]
                      [(equal? kind "image") (charge! (string-length (hash-ref node 'data))) (png-snip (hash-ref node 'data))]
                      [(equal? kind "comment") (new comment-box:snip%)]
+                     [box? (new xml-box-snip% [kind kind] [mode mode])]
                      [else (make-object editor-snip% (new text%))]))
-             (when (member kind '("editor" "comment")) (fill! (send object get-editor) (hash-ref node 'parts) (add1 depth)))
+             (when box? (send object set-box-mode mode))
+             (when (member kind '("editor" "comment" "xml" "racket")) (fill! (send object get-editor) (hash-ref node 'parts) (add1 depth)))
              (send target insert object (send target last-position))])))
   (define target (send original copy-self))
   (cond [image (send target erase) (send target insert (png-snip image))]

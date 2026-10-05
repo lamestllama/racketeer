@@ -1,5 +1,6 @@
 #lang racket/base
-(require racket/class racket/gui/base json net/base64 framework)
+(require racket/class racket/gui/base json net/base64 framework "../../racketdap/tools/wxme-xml.rkt")
+(register-xml-boxes!)
 
 ;; Original fixture and inspection through public editor and style APIs.
 (define editor (new text%))

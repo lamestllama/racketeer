@@ -82,6 +82,22 @@ test('provider sends undoable edits to VS Code and synchronizes split views', as
   a.close(); assert.equal(doc.panels.size, 1); doc.dispose(); assert.equal(doc.panels.size, 0);
 });
 
+test('XML mode changes use native undo events, synchronize views and reject stale actions', async t => {
+  const h = harness(t);
+  fs.writeFileSync(h.file, JSON.stringify({ parts: [{ kind: 'xml', eliminateWhitespace: false, parts: [] }] }));
+  const doc = await h.provider.openCustomDocument(h.uri, {}, token), a = h.panel(doc), b = h.panel(doc);
+  const generation = doc.generation;
+  await a.message({ type: 'mode', id: '1', value: true });
+  assert.equal(h.events.length, 1); assert.equal(doc.parts[1].eliminateWhitespace, true);
+  for (const panel of [a, b]) assert.match(panel.webview.html, /XML box \(eliminate empty-tag whitespace\)/);
+  h.events[0].undo(); assert.equal(doc.parts[1].eliminateWhitespace, false);
+  h.events[0].redo(); assert.equal(doc.parts[1].eliminateWhitespace, true);
+  await b.message({ type: 'mode', generation, id: '1', value: false });
+  assert.equal(h.events.length, 1); assert.match(h.errors.at(-1), /structure changed/);
+  await h.provider.saveCustomDocument(doc, token);
+  assert.equal(JSON.parse(fs.readFileSync(h.file)).parts[1].eliminateWhitespace, true);
+});
+
 test('revealed editors render current text without changing the document or undo history', async t => {
   const h = harness(t), doc = await h.provider.openCustomDocument(h.uri, {}, token), a = h.panel(doc), b = h.panel(doc);
   await a.edit('0', 'saved text'); await h.provider.saveCustomDocument(doc, token);

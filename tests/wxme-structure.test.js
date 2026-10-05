@@ -109,6 +109,11 @@ test('styled Unicode and tabs retain their styles when moved into a box and save
   assert.deepEqual(styles.find(c => c.parts).parts, original.slice(1, 4));
   assert.deepEqual(styles.slice(-2), original.slice(-2));
   assert.deepEqual(normalize(result.parts), doc.parts);
+  const xml = new WxmeDocument(doc.uri, doc.bytes, opened);
+  xml.insert('0', 1, 5, 'xml');
+  const xmlResult = await save(xml);
+  assert.deepEqual(normalize(xmlResult.parts), xml.parts);
+  assert.deepEqual(probe('inspect', xmlResult.bytes).find(c => c.parts).parts, original.slice(1, 4));
   // Public comment-box readers impose their own standard text style on load.
   const comment = new WxmeDocument(doc.uri, doc.bytes, opened);
   comment.insert('0', 1, 5, 'comment');

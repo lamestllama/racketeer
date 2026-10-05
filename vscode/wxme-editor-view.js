@@ -1,6 +1,7 @@
 'use strict';
 const { renderWxme, escape } = require('./wxme-render');
 const path = require('node:path');
+const { boxMode } = require('./wxme-document');
 
 function webviewMain() {
   const api = acquireVsCodeApi(), fields = new Map();
@@ -31,6 +32,7 @@ function webviewMain() {
     else document.querySelector('[role="status"]').textContent = 'Place the cursor in the source text first.';
   });
   for (const button of document.querySelectorAll('button[data-remove]')) button.addEventListener('click', () => api.postMessage({ type: 'remove', generation, id: button.dataset.remove }));
+  for (const button of document.querySelectorAll('button[data-mode]')) button.addEventListener('click', () => api.postMessage({ type: 'mode', generation, id: button.dataset.mode, value: button.dataset.value === 'true' }));
   window.addEventListener('message', ({ data }) => {
     if (data.type !== 'text') return;
     const field = fields.get(data.id); if (!field) return;
@@ -45,14 +47,18 @@ function renderEditor(document) {
   const project = parts => parts.map(node => {
     if (node.kind === 'text') return { kind: 'text', id: node.id, text: document.text(node) };
     if (node.kind === 'image') return { ...document.image(node), id: node.id };
-    return { kind: node.kind, id: node.id, parts: project(node.parts) };
+    return { kind: node.kind, ...boxMode(node), id: node.id, parts: project(node.parts) };
   });
   return renderWxme({ parts: project(document.tree) }, path.basename(document.uri.fsPath), false, {
     generation: document.generation || '',
     text: part => `<textarea data-field="${escape(part.id)}" ${part.id === document.focus ? 'data-focus' : ''} aria-label="Source text ${escape(part.id)}" spellcheck="false" wrap="off">\n${escape(part.text)}</textarea>`,
-    object: (part, body) => `<span class="object">${body}<button class="remove" data-remove="${escape(part.id)}" aria-label="Remove ${part.kind} and its contents" title="Remove ${part.kind} and its contents">×</button></span>`,
+    object: (part, body) => {
+      const mode = part.kind === 'xml' ? part.eliminateWhitespace : part.kind === 'racket' ? part.splicing : undefined;
+      const label = part.kind === 'xml' ? (mode ? 'Preserve whitespace' : 'Eliminate empty-tag whitespace') : (mode ? 'Use single value' : 'Splice values');
+      return `<span class="object">${body}${mode === undefined ? '' : `<button data-mode="${escape(part.id)}" data-value="${!mode}">${label}</button>`}<button class="remove" data-remove="${escape(part.id)}" aria-label="Remove ${part.kind} and its contents" title="Remove ${part.kind} and its contents">×</button></span>`;
+    },
     status: 'Place the cursor to insert an object, or select text to put inside a box. Undo and save use the usual editor commands.',
-    toolbar: '<div role="toolbar" aria-label="Insert WXME objects"><button data-insert="image">Insert PNG image…</button><button data-insert="comment">Comment box</button><button data-insert="editor">Nested editor</button></div>',
+    toolbar: '<div role="toolbar" aria-label="Insert WXME objects"><button data-insert="image">Insert PNG image…</button><button data-insert="comment">Comment box</button><button data-insert="editor">Nested editor</button><button data-insert="xml">XML box</button><button data-insert="racket">Racket box</button><button data-insert="splice">Racket splice box</button></div>',
     styles: `textarea { display: inline-block; vertical-align: middle; box-sizing: content-box; resize: none; overflow: hidden; font: inherit; line-height: inherit; tab-size: inherit; color: inherit; background: transparent; border: 1px solid transparent; padding: 2px; }
 textarea:focus { outline: 1px solid var(--vscode-focusBorder); } button { color: var(--vscode-button-foreground); background: var(--vscode-button-background); border: none; padding: 4px 8px; cursor: pointer; } button:focus { outline: 1px solid var(--vscode-focusBorder); } [role="toolbar"] { display: flex; gap: 8px; } .object { display: inline-block; position: relative; vertical-align: middle; padding-right: 18px; } .remove { position: absolute; right: 0; top: 0; padding: 0 4px; }`,
     script: `(${webviewMain.toString()})();`

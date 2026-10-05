@@ -124,6 +124,9 @@ function registerWxmeEditor(context) {
           } else if (message.type === 'remove') {
             document.focus = undefined;
             record(document, document.remove(message.id));
+          } else if (message.type === 'mode') {
+            document.focus = undefined;
+            record(document, document.changeMode(message.id, message.value));
           }
         } catch (error) {
           if (document.fields.has(message?.id)) broadcast(document, message.id);
