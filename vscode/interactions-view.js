@@ -55,7 +55,7 @@ function webviewMain() {
     if (atBottom) requestAnimationFrame(() => { output.scrollTop = output.scrollHeight; followTail = true; });
   });
   document.getElementById('evaluate').onclick = submit;
-  for (const action of ['restart', 'cancel', 'stop', 'clear', 'continue']) document.getElementById(action).onclick = () => send(action);
+  for (const action of ['restart', 'cancel', 'stop', 'clear', 'continue', 'logs']) document.getElementById(action).onclick = () => send(action);
   document.getElementById('sendInput').onclick = () => {
     const input = document.getElementById('stdin'); send('input', { text: input.value + '\n' }); input.value = '';
   };
@@ -87,7 +87,7 @@ button{font:inherit;color:var(--vscode-button-foreground);background:var(--vscod
 figure{margin:8px 0;display:flex;flex-direction:column;align-items:flex-start;gap:6px}.picture{padding:0;background:transparent;border:1px solid var(--vscode-panel-border);max-width:100%}.picture img{display:block;max-width:100%;height:auto}
 textarea,input{box-sizing:border-box;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border,transparent);font-family:var(--vscode-editor-font-family);font-size:var(--vscode-editor-font-size);padding:6px}textarea{width:100%;resize:vertical;min-height:65px}footer{padding-top:10px;border-top:1px solid var(--vscode-panel-border)}.hint{color:var(--vscode-descriptionForeground);font-size:12px;margin:5px 0}details{margin-top:8px}summary{cursor:pointer}#trimmed{color:var(--vscode-descriptionForeground)}
 </style></head><body>
-<header><strong>Interactions</strong><span id="status" role="status">Loading…</span><button id="restart">Run again</button><button id="continue" hidden>Continue</button><button id="cancel">Interrupt</button><button id="stop">Stop</button><button id="clear">Clear output</button></header>
+<header><strong>Interactions</strong><span id="status" role="status">Loading…</span><button id="restart">Run again</button><button id="continue" hidden>Continue</button><button id="cancel">Interrupt</button><button id="stop">Stop</button><button id="clear">Clear output</button><button id="logs">Logs</button></header>
 <p id="trimmed" hidden>Earlier output was removed to keep the view within its memory limit.</p>
 <div id="output" role="log" aria-label="Racket interaction output" aria-live="polite"></div>
 <footer><label for="expression">Expression</label><textarea id="expression" rows="2" spellcheck="false" aria-label="Racket expression"></textarea>

@@ -10,7 +10,7 @@
            (configurationDone . ()) (threads . ()) (source . ())
            (loadedSources . ()) (breakpointLocations . ())
            (pause . ()) (cancel . ()) (racketdap/cancelEvaluation . ())
-           (racketdap/input . ()) (racketdap/interrupt . ())
+           (racketdap/input . ()) (racketdap/interrupt . ()) (racketdap/logFilter . ())
            (stackTrace . (paused)) (scopes . (paused)) (variables . (paused))
            (exceptionInfo . (paused exception))
            (evaluate . (paused evaluate interactive))

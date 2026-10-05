@@ -106,6 +106,9 @@
     }],
     "commands": [
       { "command": "racketdap.runInteractions", "title": "Racket: Run in Interactions", "icon": "$(run-all)" },
+      { "command": "racketdap.showApplicationLog", "title": "Racket: Show Application Log" },
+      { "command": "racketdap.filterApplicationLog", "title": "Racket: Set Application Log Filter…" },
+      { "command": "racketdap.clearApplicationLog", "title": "Racket: Clear Application Log" },
       { "command": "racketdap.createLauncher", "title": "Racket: Create Launcher…" },
       { "command": "racketdap.buildExecutable", "title": "Racket: Build Executable…" },
       { "command": "racketdap.createDistribution", "title": "Racket: Create Distribution…" },
@@ -307,6 +310,12 @@
           "default": ["."],
           "description": "Directories instrumented by Debug Test and Coverage, relative to the workspace folder (absolute paths also work). The test file is always included. Defaults to the whole workspace."
         },
+        "racketdap.logs.filter": {
+          "scope": "resource",
+          "type": "string",
+          "default": "error",
+          "description": "Application log capture for new debugger and Interactions sessions. Start with none, fatal, error, warning, info or debug, then optional level@topic overrides, for example: warning debug@network."
+        },
         "racketdap.debug.packages": {
           "scope": "resource",
           "type": "array",
@@ -359,6 +368,10 @@
               "racketExecutable": {
                 "type": "string",
                 "description": "Override the Racket executable for this launch."
+              },
+              "logFilter": {
+                "type": "string",
+                "description": "Initial application log capture filter, overriding racketdap.logs.filter. For example: warning debug@network."
               },
               "stopOnEntry": {
                 "type": "boolean",

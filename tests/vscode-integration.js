@@ -18,6 +18,7 @@ exports.run = async function () {
   const workflowChecks = await require('./vscode-workflows').run(workspace);
   const packageChecks = await require('./vscode-packages').run(workspace);
   const applicationChecks = await require('./vscode-application-builds').run(workspace);
+  const applicationLogChecks = await require('./vscode-application-logs').run(workspace);
   const imageChecks = await require('./vscode-images').run(workspace);
   const plotChecks = await require('./vscode-plots').run(workspace);
   const wxmeChecks = await require('./vscode-wxme').run(extension, workspace);
@@ -351,7 +352,7 @@ exports.run = async function () {
       for (const owner of ownershipSessions) await vscode.debug.stopDebugging(owner);
     }
     const report = { passed: true, extension: extension.id, version: extension.packageJSON.version,
-      vscode: vscode.version, checks: [...languageChecks, ...macroChecks, ...rhombusChecks, ...workflowChecks, ...testExplorerChecks, ...packageChecks, ...applicationChecks, ...imageChecks, ...plotChecks, ...wxmeChecks, 'activation', 'language registration', 'gutter breakpoint', 'stack',
+      vscode: vscode.version, checks: [...languageChecks, ...macroChecks, ...rhombusChecks, ...workflowChecks, ...testExplorerChecks, ...packageChecks, ...applicationChecks, ...applicationLogChecks, ...imageChecks, ...plotChecks, ...wxmeChecks, 'activation', 'language registration', 'gutter breakpoint', 'stack',
         'captured source language', 'F9 adds verified breakpoint in captured source', 'F9 removes breakpoint',
         'captured source semantic highlighting', 'captured source language hover', 'stale source excludes language results',
         'captured source definitions and references across unopened files', 'completed session excludes source navigation',

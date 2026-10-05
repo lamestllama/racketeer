@@ -44,6 +44,7 @@ function registerInteractions(context, images) {
               await view.restart();
             } finally { view.restarting = false; }
           } else if (message.action === 'clear') view.output.clear();
+          else if (message.action === 'logs') await vscode.commands.executeCommand('racketdap.showApplicationLog', view.session.id);
           else if (message.action === 'continue' && !view.ended && view.phase === 'Paused')
             await view.session.customRequest('continue', { threadId: view.threadId });
           else if (message.action === 'stop') await view.owner?.stop();

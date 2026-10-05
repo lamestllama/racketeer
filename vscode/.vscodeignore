@@ -34,4 +34,5 @@ dependencies.js
 dependency-process.js
 application-build.js
 application-builds.js
+application-logs.js
 raco-task.js

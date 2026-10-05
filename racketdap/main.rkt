@@ -2,7 +2,7 @@
 
 (require racket/async-channel racket/file racket/list racket/path racket/port
          racket/random racket/runtime-path racket/string racket/tcp
-         "protocol.rkt" "commands.rkt" "process-group.rkt")
+         "protocol.rkt" "commands.rkt" "process-group.rkt" "log-filter.rkt")
 (define-runtime-path worker-path "worker/main.rkt")
 (define input (current-input-port))
 (define output (current-output-port))
@@ -90,6 +90,7 @@
   (when finished? (error 'launch "The debug session has ended. Start a new session to launch a program."))
   (when launch-used? (error 'launch "Start a new debug session for another launch."))
   (define args (hash-ref request 'arguments))
+  (parse-log-filter (hash-ref args 'logFilter "error"))
   (when (hash-has-key? args 'coverage)
     (unless (and (boolean? (hash-ref args 'coverage))
                  (or (not (hash-ref args 'coverage))

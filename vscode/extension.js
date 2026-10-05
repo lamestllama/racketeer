@@ -17,6 +17,7 @@ const { registerDebugRepl } = require('./debug-repl');
 const { registerInteractions } = require('./interactions');
 const { registerPackages } = require('./packages');
 const { registerApplicationBuilds } = require('./application-builds');
+const { registerApplicationLogs, filterError } = require('./application-logs');
 const { registerWxmeViewer } = require('./wxme-viewer');
 const { registerWxmeEditor } = require('./wxme-editor');
 const { registerDependencies } = require('./dependencies');
@@ -27,6 +28,7 @@ function activate(context) {
   const testing = registerTesting(context, sessions);
   registerPackages(context);
   registerApplicationBuilds(context);
+  registerApplicationLogs(context);
   registerWxmeViewer(context);
   registerWxmeEditor(context);
   registerDependencies(context);
@@ -59,6 +61,9 @@ function activate(context) {
       config.cwd ||= folder?.uri.fsPath || path.dirname(config.program);
       config.sourceRoots ||= [folder?.uri.fsPath || path.dirname(config.program)];
       config.debugPackages ??= vscode.workspace.getConfiguration('racketdap', folder?.uri).get('debug.packages', []);
+      config.logFilter ??= vscode.workspace.getConfiguration('racketdap', folder?.uri).get('logs.filter', 'error');
+      const invalidFilter = filterError(config.logFilter);
+      if (invalidFilter) { void vscode.window.showErrorMessage(invalidFilter); return undefined; }
       config.args ||= [];
       config.racketExecutable ||= vscode.workspace.getConfiguration('racketdap', folder?.uri).get('racketExecutable', 'racket');
       try {

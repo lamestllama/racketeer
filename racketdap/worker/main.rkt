@@ -3,7 +3,7 @@
 (require racket/async-channel racket/file racket/list racket/path racket/port
          racket/string racket/tcp
          "../protocol.rkt" "../commands.rkt" "../source.rkt" "../packages.rkt" "../process-group.rkt" "load.rkt" "../instrumentation/instrument.rkt"
-         "inspect.rkt" "stepping.rkt" "expressions.rkt" "cancel.rkt" "images.rkt" "plots.rkt" "coverage.rkt" "interactions.rkt")
+         "inspect.rkt" "stepping.rkt" "expressions.rkt" "cancel.rkt" "images.rkt" "plots.rkt" "coverage.rkt" "interactions.rkt" "logs.rkt")
 
 (define bootstrap (read-message (current-input-port)))
 (join-process-group! (hash-ref bootstrap 'processGroup #f))
@@ -20,6 +20,9 @@
 (define controller-custodian (current-custodian))
 (define (arg h key [default #f]) (hash-ref h key default))
 (define (event name [body (hasheq)]) (send (hasheq 'type "event" 'event name 'body body)))
+(define application-log
+  (make-application-log (arg config 'logFilter "error")
+                        (lambda (body) (event "racketdap/log" body))))
 (define awaiting (make-hasheqv))
 (define (reply request [body (hasheq)] [error #f])
   (hash-remove! awaiting (hash-ref request 'seq))
@@ -49,7 +52,8 @@
 (define exception-enabled? #f)
 (define interaction #f)
 (define (error-text value) (if (exn? value) (exn-message value) (value-preview value)))
-(define (flush-program-output)
+(define (flush-program-output #:final? [final? #f])
+  (application-log-flush! application-log #:final? final?)
   (for ([port (in-list (list (current-output-port) (current-error-port)))])
     (unless (port-closed? port) (flush-output port))))
 (define (new-breakpoint request)
@@ -520,6 +524,7 @@
                         (set! exit-code 1)
                         ((error-display-handler) (error-text e) e))])
        (parameterize ([current-input-port program-input]
+                      [current-logger (application-log-logger application-log)]
                       [current-output-port (rich-port (current-output-port) "stdout")]
                       [current-error-port (rich-port (current-error-port) "stderr")]
                       [current-inspector (if (arg config 'noDebug #f)
@@ -529,7 +534,7 @@
                        (lambda (status)
                          ;; Let the adapter drain output and clean up this worker
                          ;; and its descendants through the owned group anchor.
-                         (flush-program-output)
+                         (flush-program-output #:final? #t)
                          (set! ended? #t)
                          (send (hasheq 'type "workerExit" 'exitCode (if (byte? status) status 1)))
                          (sync never-evt))]
@@ -558,7 +563,7 @@
                        (on-test-event result))
                      #:on-ready (and (arg config 'interactive #f) interactive-loop)
                      #:entry (and (arg config 'entry) (string->symbol (arg config 'entry))))))
-     (flush-program-output)
+     (flush-program-output #:final? #t)
      (set! ended? #t)
      (send (hasheq 'type "workerExit" 'exitCode exit-code)))))
   (thread
@@ -571,6 +576,9 @@
   (define a (arg request 'arguments (hasheq)))
   (define command (hash-ref request 'command))
   (case (string->symbol command)
+    [(racketdap/logFilter)
+     (application-log-filter! application-log (arg a 'filter))
+     (reply request)]
     [(setBreakpoints)
      (define path (source-path (hash-ref a 'source)))
      (define requested (arg a 'breakpoints '()))

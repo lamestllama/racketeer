@@ -468,8 +468,48 @@ In a plain terminal REPL, `(require plot)` and `(plot-new-window? #t)` make late
 
 The workflow follows Racket's [picture-value model](https://docs.racket-lang.org/quick/)
 using the public [conversion protocol](https://docs.racket-lang.org/file/convertible.html).
-Racketeer uses an explicit
-editor preview, keeping the source-and-REPL workflow separate from notebook files.
+Interactions displays these values inline, with a native image preview available
+by clicking the picture.
+
+## Application logs
+
+Choose **Racket: Show Application Log**, or **Logs** in Interactions, to open a
+session's messages in the native Output panel. If several sessions are available,
+choose one by its file and session number. **Racket: Set Application Log Filter…**
+changes capture for a running session. **Racket: Clear Application Log** clears
+its retained messages.
+
+The default filter is `error`, which captures errors and fatal messages. Start a
+filter with `none`, `fatal`, `error`, `warning`, `info` or `debug`, then optionally
+add exact topic overrides. `warning debug@network none@storage` captures warnings
+and more severe messages generally, all network messages, and no storage messages.
+The last override for a repeated topic wins. Filters affect new messages; earlier
+messages remain visible. `none` disables capture. Set `racketdap.logs.filter` for
+new sessions, or `logFilter` in a launch configuration to override that setting.
+
+Try `examples/logging.rkt` in Interactions. Open its log, change the filter to
+`warning debug@network`, then evaluate `(sample-logs)` to see the difference.
+Capture begins before module loading. Stopped sessions keep their received logs;
+new sessions start with a fresh log and their configured filter. Up to ten stopped
+session logs are retained until the editor reloads. Each session retains at most
+1,000 messages and 1 MiB of message text, with omission notices. Individual messages
+are truncated at 16,384 characters. Large pending bursts can be omitted at filter
+changes or program exit; those omissions are reported. Forced termination can
+lose messages still waiting in the worker.
+
+Capture uses the public [Racket logging API](https://docs.racket-lang.org/reference/logging.html)
+for the program's current logger and descendants, including child threads and
+REPL evaluations. Loggers detached from that hierarchy and other processes are
+outside this stream. Existing stderr logging remains active. Opaque log data is
+not inspected or printed. Terminal-only runs use Racket's own logging facilities;
+this view belongs to debugger-backed sessions, including Interactions and tests.
+
+Adapter clients can select an initial `logFilter` at launch and change it with
+`racketdap/logFilter` (`{ "filter": "warning debug@network" }`). Ordered
+`racketdap/log` events carry batches of `entries` with `level`, `topic` (string or
+false), and `message`, plus an omitted-message count `dropped` and a boolean
+`discardedBacklog`. The worker uses bounded batches; clients should bound their
+own retained history as well.
 
 ## Packages
 
