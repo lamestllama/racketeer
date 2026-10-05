@@ -63,5 +63,24 @@ are limited to 8 MiB and 4096 pixels in either dimension.
 
 Editing requires Racket GUI libraries and a display on the extension host. The
 read-only viewer does not. The model's source spans describe retained original
-content; they are not LSP positions or debugger source mappings. Those services
-are not yet available inside the custom editor.
+content; they are not LSP positions or debugger coordinates.
+
+## Execution and debugger sources
+
+Run and Debug capture the active custom tab's URI and save a dirty document
+through `workspace.save`. A failed save or conflicting dirty text buffer stops
+the launch. Other text-dependent commands still require a text editor.
+
+The loader reads source bytes once. For supported WXME files, `wxme-source.rkt`
+builds a display snapshot with the public decoder, replacing each outer object
+with one U+FFFC character. It uses the viewer's reader allowlist and does not call
+embedded objects' `read-special` methods. The program reader still consumes the
+original bytes. Reader positions therefore align with the snapshot without
+flattening nested editors or turning images into executable text.
+
+The existing DAP source-reference lifecycle, position-to-UTF-16 conversion,
+breakpoint resolution and stack handling use this snapshot. Saving a later edit
+does not change a running session's captured source. Breakpoints and stepping
+are available in the native debug source view for surrounding executable text;
+the custom editor has no breakpoint gutter. Locations within embedded editors
+and LSP services for WXME remain unsupported.

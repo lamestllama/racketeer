@@ -1,0 +1,7 @@
+{
+  "text": "#lang racket/base\n; λ 😀\n(define (answer n)\n\t(+ n 2))\n(displayln (answer 40))\n",
+  "objects": "#lang racket/base\n; λ 😀\n￼\n(define picture ￼)\n(define (answer n)\n\t(+ n 2))\n(displayln (answer 40))\n",
+  "runtime-error": "#lang racket/base\n; λ 😀\n￼\n(define picture ￼)\n(define (fail)\n\t(error 'original \"boom λ😀\"))\n(fail)\n",
+  "syntax-error": "#lang racket/base\n; λ 😀\n￼\n(define picture ￼)\n(define answer missing-name)\n",
+  "nested": "#lang racket/base\n; λ 😀\n￼\n(define picture ￼)\n(define nested ￼)\n(define (answer n)\n\t(+ n 2))\n(displayln (answer 40))\n"
+}

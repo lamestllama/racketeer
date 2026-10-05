@@ -1,7 +1,7 @@
 #lang racket/base
 
 (require file/sha1 json net/base64 racket/class racket/draw racket/list racket/port
-         wxme wxme/image wxme/editor wxme/comment)
+         wxme wxme/image wxme/editor wxme/comment "../wxme-source.rkt")
 
 (provide decode-wxme)
 
@@ -40,17 +40,7 @@
   (when (> (bytes-length bytes) limit) (error 'wxme "File exceeds the viewer limit (32 MiB)."))
   (unless (is-wxme-stream? (open-input-bytes bytes))
     (error 'wxme "This is not a WXME document. Use the Text Editor to view ordinary source."))
-  ;; Inspect class names before decoding; admit only the built-in readers and
-  ;; the documented comment reader. Other document-supplied readers stay unloaded.
-  (define-values (snips data) (extract-used-classes (open-input-bytes bytes)))
-  (define (supported? s)
-    (or (member s '("wxtext" "wxtab" "wximage" "wxmedia"))
-        (member (string->lib-path s #f)
-                '((lib "comment.ss" "wxme") (lib "comment.rkt" "wxme")))))
-  (define unknown (filter (lambda (s) (not (supported? s))) snips))
-  (unless (and (null? unknown) (null? data))
-    (error 'wxme "Unsupported WXME object classes: ~a. The file has not been changed."
-           (append unknown data)))
+  (check-wxme-readers! bytes)
   ;; Wrapping specials prevents the codec from invoking readable<%> methods.
   (define count 0)
   (define size 0)

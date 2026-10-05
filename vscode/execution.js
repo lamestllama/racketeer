@@ -17,7 +17,19 @@ async function saveDocument(document) {
   return targetFor(document.uri);
 }
 
-async function activeTarget() {
+async function activeTarget({ allowWxme = false } = {}) {
+  const tab = vscode.window.tabGroups?.activeTabGroup.activeTab;
+  if (vscode.TabInputCustom && tab?.input instanceof vscode.TabInputCustom) {
+    if (!allowWxme || tab.input.viewType !== 'racketeer.wxmeEditor') throw new Error('Open a Racket text editor for this command.');
+    const target = targetFor(tab.input.uri);
+    if (vscode.workspace.textDocuments.some(d => d.uri.toString() === target.uri.toString() && d.isDirty))
+      throw new Error('The text editor has unsaved changes. Save or revert them before running WXME.');
+    if (tab.isDirty) {
+      const saved = await vscode.workspace.save(target.uri);
+      if (!saved || saved.toString() !== target.uri.toString() || tab.isDirty) throw new Error('The WXME document could not be saved.');
+    }
+    return { ...target, format: 'wxme' };
+  }
   const document = vscode.window.activeTextEditor?.document;
   if (!document || document.languageId !== 'racket') throw new Error('Open a Racket source file first.');
   return saveDocument(document);

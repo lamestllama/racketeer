@@ -77,7 +77,7 @@ function registerFileCommands(context, sessions, testing, debugRepl) {
     openMacroStepper: () => macroStepper(),
     openFileInMacroStepper: () => macroStepper(true),
     ...Object.fromEntries(Object.entries(fileCommands).map(([name, command]) =>
-      [name, async () => command(await activeTarget())])),
+      [name, async () => command(await activeTarget({ allowWxme: name === 'runFile' || name === 'debugFile' }))])),
     sendSelectionToDebugRepl: async () => {
       const expressions = selectedExpressions(vscode.window.activeTextEditor);
       return debugRepl.evaluate(await activeTarget(), expressions);
@@ -95,13 +95,13 @@ function registerFileCommands(context, sessions, testing, debugRepl) {
     }
   };
   commands.fileActions = async () => {
-    const target = await activeTarget();
+    const target = await activeTarget({ allowWxme: true });
     const choices = [
       ['Run file', 'runFile'], ['Debug file', 'debugFile'],
       ['Run tests', 'testFile'], ['Debug tests', 'debugTestFile'],
       ['Load in REPL', 'loadFile'], ['Load in Debug REPL', 'startDebugRepl'],
       ['Restart Debug REPL', 'restartDebugRepl']
-    ].map(([label, command]) => ({ label, command }));
+    ].filter((_, index) => target.format !== 'wxme' || index < 2).map(([label, command]) => ({ label, command }));
     const choice = await vscode.window.showQuickPick(choices, { title: `Racket: ${path.basename(target.program)}` });
     if (choice) return fileCommands[choice.command](target);
   };

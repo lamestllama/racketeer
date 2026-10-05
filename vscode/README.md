@@ -379,9 +379,15 @@ Racket window is shown. The read-only viewer also works without a display.
 Saving preserves supported objects and unchanged text styles through Racket's
 editor codec and can change the file's binary representation. Text placed in a
 comment box takes the framework's standard comment-box style. If the file
-changes externally, use Revert
-to reload it or Save As to keep the edited version. Language services and debug
-source locations are not yet available inside the WXME editor.
+changes externally, use Revert to reload it or Save As to keep the edited version.
+
+**Racket: Run Current File** and **Racket: Debug Current File** save and launch
+the active WXME document. Debugging opens a read-only source snapshot with an
+object replacement character (U+FFFC) for each image or box. Use that snapshot
+for breakpoints and stepping through the surrounding source text. The program
+executes from the original WXME bytes; the snapshot remains fixed if you edit
+the file during a stop. Language services, breakpoints in the custom editor and
+locations inside embedded boxes are not yet available.
 
 After an expression returns an image, choose **Racket: View Image** from the
 Command Palette or the preview button on the debug toolbar.

@@ -7,6 +7,7 @@
          racket/runtime-path
          syntax/modcode
          "../test-discovery.rkt"
+         "../wxme-source.rkt"
          "../instrumentation/instrument.rkt")
 (provide run-module make-debug-exception-handler)
 
@@ -257,7 +258,7 @@
     ;; Capture before either callback can edit the file. The reader consumes
     ;; these same bytes, and source consumers never need to reopen the path.
     (define contents (call-with-input-file resolved port->bytes))
-    (define text (string->immutable-string (bytes->string/utf-8 contents #\uFFFD)))
+    (define text (string->immutable-string (source-text contents)))
     (when (and test? (equal? resolved source))
       (define tests (discover-tests text))
       (when test-selection
