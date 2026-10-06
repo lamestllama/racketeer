@@ -138,10 +138,24 @@ call-with-pause-stop receives a break before the loader unwinds the executing
 program. It delivers kind 'pause from captured source marks, with no results
 or expression token. stop-approximate? reports true. The callback runs with
 breaks disabled, recursive callbacks suppressed, and a continuation barrier.
-The helper returns the identical break; the loader classifies intentional
-Pause requests and invokes its resume continuation after the helper returns.
+The helper returns the identical break; its caller can invoke the break's
+resume continuation after the helper returns.
 No-frame/no-callback/hang-up/termination cases pass through without a pause
 callback. Skip/result replacement reject exception and pause stops.
+
+DAP Pause uses call-with-thread-stop instead of sending a break. It suspends
+the requested Racket thread, captures its source continuation marks, and handles
+inspection on a service thread until Continue or Step resumes the target. This
+does not run application break handlers or unwind dynamic-wind frames. Threads
+inside a debugger callback or holding a debugger protocol lock are retried after
+that operation finishes. A thread waiting outside source can have no frames;
+Continue remains available. Other application threads remain runnable.
+
+Each source frame retains its parameterization. Approximate-pause evaluation
+uses the innermost captured parameterization and live bindings on the service
+thread, which has its own thread identity and thread cells. Breakpoint, step and
+exception evaluation still runs on the target thread. Operations that require
+the target's thread identity should be evaluated at an expression stop.
 
 ## Validation
 

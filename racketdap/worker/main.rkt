@@ -9,7 +9,9 @@
 (join-process-group! (hash-ref bootstrap 'processGroup #f))
 (define-values (control-in control-out) (tcp-connect "127.0.0.1" (hash-ref bootstrap 'port)))
 (define output-lock (make-semaphore 1))
-(define (send object) (call-with-semaphore output-lock (lambda () (write-message object control-out))))
+(define (send object)
+  (with-continuation-mark debugger-active-key #t
+    (call-with-semaphore output-lock (lambda () (write-message object control-out)))))
 (send (hasheq 'type "hello" 'version 1 'token (hash-ref bootstrap 'token)))
 (define config (hash-ref bootstrap 'config))
 (define-values (program-input input-writer)
@@ -33,7 +35,8 @@
 (define next-id 0)
 (define id-lock (make-semaphore 1))
 (define (fresh-id)
-  (call-with-semaphore id-lock (lambda () (set! next-id (add1 next-id)) next-id)))
+  (with-continuation-mark debugger-active-key #t
+    (call-with-semaphore id-lock (lambda () (set! next-id (add1 next-id)) next-id))))
 (define sources (make-hash))
 (define failure-sites (make-ephemeron-hasheq))
 (define (error-info value [expression #f])
@@ -56,7 +59,7 @@
 (define variables (make-hasheqv))
 (define states (make-hasheq))
 (define states-by-id (make-hasheqv))
-(struct state (id thread paused step pause? run-to) #:mutable)
+(struct state (id thread paused step pause? run-to pause-lock) #:mutable)
 (struct paused (state stop inbox ids) #:transparent)
 (struct breakpoint (id request targets description rule hits phase) #:mutable)
 (define evaluations (make-evaluations))
@@ -179,7 +182,7 @@
   (hash-ref!
    states (current-thread)
    (lambda ()
-     (define st (state (fresh-id) (current-thread) #f #f #f #f))
+     (define st (state (fresh-id) (current-thread) #f #f #f #f (make-semaphore 1)))
      (hash-set! states-by-id (state-id st) st)
      (event "thread" (hasheq 'reason "started" 'threadId (state-id st)))
      (parameterize ([current-custodian controller-custodian])
@@ -388,6 +391,10 @@
     (reply request result)))
 (define (pause-loop st stop reason description hit-ids)
   (define pause (paused st stop (make-async-channel) (box '())))
+  (define departed
+    (if (eq? (current-thread) (state-thread st)) never-evt
+        (choice-evt (thread-dead-evt (state-thread st))
+                    (thread-resume-evt (state-thread st)))))
   (set-state-paused! st pause)
   (set-state-step! st #f)
   (set-state-pause?! st #f)
@@ -400,9 +407,11 @@
     void
     (lambda ()
       (let loop ()
-        (define request (async-channel-get (paused-inbox pause)))
-        (define command (hash-ref request 'command))
+        (define request
+          (sync (paused-inbox pause) (handle-evt departed (lambda (_) #f))))
+        (define command (and request (hash-ref request 'command)))
         (cond
+          [(not request) (void)]
           [(command-flag? command 'resume)
            (define a (arg request 'arguments (hasheq)))
            (define valid?
@@ -682,10 +691,29 @@
                                                  (< (hash-ref left 'column) (hash-ref right 'column)))))) '())))]
     [(pause)
      (define st (hash-ref states-by-id (hash-ref a 'threadId)))
+     (when (thread-dead? (state-thread st)) (error 'pause "The thread has ended."))
      (reply request)
      (unless (or (state-paused st) (state-pause? st))
        (set-state-pause?! st 'requested)
-       (break-thread (state-thread st)))]
+       (parameterize ([current-custodian controller-custodian])
+         (thread
+          (lambda ()
+            (call-with-semaphore
+             (state-pause-lock st)
+             (lambda ()
+               (let retry ()
+                 (when (and (state-pause? st) (not (state-paused st))
+                            (not (thread-dead? (state-thread st))))
+                   (unless (call-with-thread-stop
+                            (state-thread st)
+                            (lambda (stop)
+                              (parameterize ([current-evaluation-owner (state-thread st)])
+                                (pause-loop st stop "pause" "Thread suspended; source location is approximate" '()))))
+                     ;; Do not freeze a target inside debugger operations. The
+                     ;; lock also lets a prior Continue finish resuming it before
+                     ;; a subsequent Pause takes ownership of its suspension.
+                     (sleep 0.001)
+                     (retry))))))))))]
     [else
      (unless (command-flag? command 'paused) (error 'debugger "Unsupported request: ~a" command))
      (define owner

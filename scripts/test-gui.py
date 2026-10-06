@@ -22,7 +22,7 @@ with subprocess.Popen([args.xvfb, '-displayfd', '1', '-screen', '0', '1024x768x2
         number = display.stdout.readline().strip()
         if not number.isdecimal():
             raise RuntimeError('Xvfb failed to allocate a display')
-        subprocess.run(['node', '--test', '--test-concurrency=1', 'tests/gui-parity.test.js', 'tests/macro-stepper-gui.test.js', 'tests/plots-gui.test.js', 'tests/wxme-edit.test.js', 'tests/wxme-structure.test.js', 'tests/wxme-xml-edit.test.js'],
+        subprocess.run(['node', '--test', '--test-concurrency=1', 'tests/gui-parity.test.js', 'tests/pause.test.js', 'tests/macro-stepper-gui.test.js', 'tests/plots-gui.test.js', 'tests/wxme-edit.test.js', 'tests/wxme-structure.test.js', 'tests/wxme-xml-edit.test.js'],
                        cwd=root, env=dict(os.environ, DISPLAY=f':{number}', RACKETDAP_TEST_WXME_GUI='1'), check=True, timeout=args.timeout)
     finally:
         display.terminate()
