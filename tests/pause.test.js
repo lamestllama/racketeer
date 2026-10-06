@@ -30,16 +30,15 @@ async function suspend(client, threadId) {
   let outcome;
   while (!outcome && Date.now() < deadline) {
     if (client.fatalError) throw client.fatalError;
-    const index = client.events.findIndex(e => e.event === 'stopped' || e.event === 'terminated');
+    const index = client.events.findIndex(e => (e.event === 'stopped' && !e.body.preserveFocusHint) || e.event === 'terminated');
     if (index >= 0) outcome = client.events.splice(index, 1)[0];
     else await new Promise(resolve => setTimeout(resolve, 10));
   }
   assert.ok(outcome, 'Pause must respond with a stopped event');
   assert.equal(outcome.event, 'stopped', 'Pause must not terminate the program');
   assert.equal(outcome.body.reason, 'pause');
-  assert.equal(outcome.body.threadId, threadId);
-  const { stackFrames } = await ok(client.request('stackTrace', { threadId }));
-  return stackFrames[0];
+  const { stackFrames } = await ok(client.request('stackTrace', { threadId: outcome.body.threadId }));
+  return { ...stackFrames[0], threadId: outcome.body.threadId, stop: outcome.body };
 }
 
 test('Pause bypasses application break handlers and preserves a blocked continuation', async t => {
@@ -94,9 +93,16 @@ test('Pause and Continue preserve a running world event loop', {
   await client.event('output', e => e.body.output.includes('ticking'));
   for (let n = 0; n < 2; n++) {
     const frame = await suspend(client, threadId);
-    assert.ok(frame, 'The waiting source call remains inspectable');
+    assert.equal(frame.stop.racketdapApproximate, false, 'Pause reaches an executing callback');
+    assert.notEqual(frame.threadId, threadId, 'Focus moves from the waiting main thread to game code');
     assert.equal((await ok(client.request('threads'))).threads.some(t => t.id === threadId), true);
-    await ok(client.request('continue', { threadId }));
+    for (const command of ['next', 'stepIn', 'next', 'stepOut']) {
+      await ok(client.request(command, { threadId: frame.threadId }));
+      const step = await client.event('stopped', e => !e.body.preserveFocusHint);
+      assert.equal(step.body.reason, 'step');
+      assert.equal(step.body.threadId, frame.threadId);
+    }
+    await ok(client.request('continue', { threadId: frame.threadId }));
   }
   const { threads } = await ok(client.request('threads'));
   const callbackThread = threads.find(t => t.id !== threadId);
@@ -107,6 +113,42 @@ test('Pause and Continue preserve a running world event loop', {
   await client.event('terminated');
   assert.equal((await client.event('exited')).body.exitCode, 0);
   assert.match(client.events.filter(e => e.event === 'output').map(e => e.body.output).join(''), /\(finished #t\)/);
+});
+
+test('Pause focuses executing source, holds other threads, and cancels pending fallback on Continue', async t => {
+  const { client, threadId } = await prepare(t, [
+    '#lang racket/base', '(define gate (make-semaphore))', '(define total 0)',
+    '(define worker (thread (lambda () (let loop ()',
+    '  (set! total (add1 total)) (sleep 0.02) (loop)))))',
+    '(displayln "waiting") (flush-output)', '(semaphore-wait gate)', '(thread-wait worker)'
+  ]);
+  await client.event('output', e => e.body.output.includes('waiting'));
+  for (let round = 0; round < 3; round++) {
+    const frame = await suspend(client, threadId);
+    assert.notEqual(frame.threadId, threadId);
+    assert.equal(frame.stop.racketdapApproximate, false);
+    const inspect = expression => ok(client.request('evaluate', { frameId: frame.id, expression }));
+    const initial = (await inspect('total')).result;
+    if (round === 0) {
+      const waiting = await client.event('stopped', e => e.body.threadId === threadId);
+      assert.equal(waiting.body.preserveFocusHint, true);
+      assert.equal(waiting.body.racketdapApproximate, true);
+      const waitingFrame = (await ok(client.request('stackTrace', { threadId }))).stackFrames[0];
+      assert.ok(waitingFrame);
+      await new Promise(resolve => setTimeout(resolve, 150));
+      assert.equal((await inspect('total')).result, initial, 'Source remains stopped while inspecting');
+      await ok(client.request('next', { threadId: frame.threadId, singleThread: true }));
+      assert.equal((await client.event('stopped')).body.reason, 'step');
+      assert.equal((await ok(client.request('evaluate', {
+        frameId: waitingFrame.id, expression: '(semaphore? gate)'
+      }))).result, '#t', 'Single-thread stepping leaves the waiting thread inspectable');
+    }
+    await ok(client.request('continue', { threadId: frame.threadId }));
+    await new Promise(resolve => setTimeout(resolve, 150));
+    assert.equal(client.events.filter(e => e.event === 'stopped').length, 0, 'Continue cancels delayed suspension');
+  }
+  await ok(client.request('terminate'));
+  await client.event('terminated');
 });
 
 test('cancelling inspection during Pause leaves the enclosing interactive call resumable', async t => {

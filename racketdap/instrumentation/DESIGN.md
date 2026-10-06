@@ -143,13 +143,26 @@ resume continuation after the helper returns.
 No-frame/no-callback/hang-up/termination cases pass through without a pause
 callback. Skip/result replacement reject exception and pause stops.
 
-DAP Pause uses call-with-thread-stop instead of sending a break. It suspends
-the requested Racket thread, captures its source continuation marks, and handles
-inspection on a service thread until Continue or Step resumes the target. This
-does not run application break handlers or unwind dynamic-wind frames. Threads
-inside a debugger callback or holding a debugger protocol lock are retried after
-that operation finishes. A thread waiting outside source can have no frames;
-Continue remains available. Other application threads remain runnable.
+DAP Pause requests stops from all registered application threads, including the
+requested thread. Each stops at its next source expression. The first source
+stop takes editor focus; subsequent stops preserve it. This lets a GUI callback
+take focus when the launch thread is waiting for the event loop. Threads first
+registered while Pause is pending also stop before executing source.
+
+After 100 milliseconds, threads that have not reached source are suspended with
+call-with-thread-stop. Their captured continuation marks support approximate
+inspection on a service thread. Continue or Step resumes them without running
+application break handlers or unwinding dynamic-wind frames. Threads inside a
+debugger callback or holding a debugger protocol lock are retried after that
+operation finishes. A thread waiting outside source can have no frames;
+Continue remains available. Stop events report each thread individually;
+uninstrumented library threads are not claimed to be stopped.
+
+Continue and ordinary stepping cancel pending pauses and resume the other
+stopped threads. DAP singleThread requests leave other threads stopped. Step
+Over and Step Out use the next source boundary when a callback has no observable
+caller or expression-completion target, rather than waiting for a nonexistent
+return stop.
 
 Each source frame retains its parameterization. Approximate-pause evaluation
 uses the innermost captured parameterization and live bindings on the service

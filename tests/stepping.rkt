@@ -5,6 +5,36 @@
          "../racketdap/worker/stepping.rkt")
 (define-runtime-path fixtures "fixtures")
 (module+ test
+  (test-case "callback steps without an observable caller reach the next source expression"
+    (define program (make-temporary-file "callback-step-~a.rkt"))
+    (dynamic-wind
+      void
+      (lambda ()
+        (display-to-file
+         "#lang racket/base\n(define (callback x) (* (+ x 1) 2))\n"
+         program #:exists 'truncate)
+        (for ([mode '(next stepOut)])
+          (define command #f)
+          (define found? #f)
+          (run-module
+           program
+           #:on-ready (lambda (namespace)
+                        (parameterize ([current-namespace namespace])
+                          (check-equal? (eval '(callback 7)) 16)))
+           #:on-event
+           (lambda (stop)
+             (cond
+               [(and command (step-reason command stop))
+                (check-equal? (site-expression (stop-site stop)) '(#%app + x '1))
+                (set! found? #t)
+                (set! command #f)]
+               [(and (not found?) (eq? (stop-kind stop) 'before)
+                     (equal? (site-expression (stop-site stop)) '(#%app * (#%app + x '1) '2)))
+                (check-false (stop-token stop))
+                (check-false (stop-return-token stop))
+                (set! command (make-step mode stop))])))
+          (check-true found?)))
+      (lambda () (delete-file program))))
   (for ([name '("semantics.rkt" "reentry.rkt" "cross-thread.rkt" "tail.rkt" "racket-forms.rkt")])
     (test-case (format "completion instrumentation preserves ~a" name)
       (define (execute events)

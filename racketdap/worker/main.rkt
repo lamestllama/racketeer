@@ -60,6 +60,15 @@
 (define states (make-hasheq))
 (define states-by-id (make-hasheqv))
 (struct state (id thread paused step pause? run-to pause-lock) #:mutable)
+(struct pause-batch (focused))
+(define pending-pause #f)
+(define (claim-pause-focus! batch exact?)
+  (define focus (pause-batch-focused batch))
+  (let loop ()
+    (define previous (unbox focus))
+    (cond [(or (eq? previous 'source) (and previous (not exact?))) #f]
+          [(box-cas! focus previous (if exact? 'source 'approximate)) #t]
+          [else (loop)])))
 (struct paused (state stop inbox ids) #:transparent)
 (struct breakpoint (id request targets description rule hits phase) #:mutable)
 (define evaluations (make-evaluations))
@@ -185,6 +194,7 @@
      (define st (state (fresh-id) (current-thread) #f #f #f #f (make-semaphore 1)))
      (hash-set! states-by-id (state-id st) st)
      (event "thread" (hasheq 'reason "started" 'threadId (state-id st)))
+     (when pending-pause (request-pause! st pending-pause))
      (parameterize ([current-custodian controller-custodian])
        (thread (lambda ()
                  (sync (thread-dead-evt (state-thread st)))
@@ -391,6 +401,9 @@
     (reply request result)))
 (define (pause-loop st stop reason description hit-ids)
   (define pause (paused st stop (make-async-channel) (box '())))
+  (define batch (state-pause? st))
+  (define preserve-focus?
+    (and (pause-batch? batch) (not (claim-pause-focus! batch (not (stop-approximate? stop))))))
   (define departed
     (if (eq? (current-thread) (state-thread st)) never-evt
         (choice-evt (thread-dead-evt (state-thread st))
@@ -399,6 +412,7 @@
   (set-state-step! st #f)
   (set-state-pause?! st #f)
   (event "stopped" (hasheq 'reason reason 'description description 'threadId (state-id st)
+                            'preserveFocusHint preserve-focus?
                             'allThreadsStopped #f 'hitBreakpointIds hit-ids
                             'racketdapStopKind (symbol->string (stop-kind stop))
                             'racketdapApproximate (stop-approximate? stop)
@@ -488,7 +502,7 @@
     [(pair? hit-ids) (set! entry-pending? #f) (pause-loop st stop "breakpoint" (or failure (if before? "Before expression" "Expression returned")) hit-ids)]
     [reached? (pause-loop st stop "goto" "Continue-to target reached" '())]
     [(and before? entry-pending?) (set! entry-pending? #f) (pause-loop st stop "entry" "Starting program; first expression has not run" '())]
-    [(and before? (eq? (state-pause? st) 'deferred)) (pause-loop st stop "pause" "Paused at an expression" '())]
+    [(and before? (state-pause? st)) (pause-loop st stop "pause" "Paused before expression" '())]
     [step-message (pause-loop st stop "step" step-message '())]))
 (define (on-exception stop)
   (when (arg config 'racketdapRichInteractions #f)
@@ -497,14 +511,28 @@
                      (for/list ([i (in-range (min 8 (stop-frame-count stop)))]) (stop-frame-source stop i)))))
   (when exception-enabled?
     (pause-loop (register-thread) stop "exception" (error-text (car (stop-results stop))) '())))
-(define (on-pause raised)
-  (define st (hash-ref states (current-thread) #f))
-  (and st (state-pause? st)
-       (begin
-         (set-state-pause?! st 'deferred)
-         (call-with-pause-stop raised
-           (lambda (stop) (pause-loop st stop "pause" "Paused; source location is approximate" '())))
-         #t)))
+(define (request-pause! st batch)
+  (unless (or (state-paused st) (state-pause? st) (thread-dead? (state-thread st)))
+    (set-state-pause?! st batch)
+    (parameterize ([current-custodian controller-custodian])
+      (thread
+       (lambda ()
+         ;; Prefer a source boundary on the executing thread. A blocked thread
+         ;; still needs an inspectable stop even if no further source executes.
+         (sleep 0.1)
+         (call-with-semaphore
+          (state-pause-lock st)
+          (lambda ()
+            (let retry ()
+              (when (and (eq? (state-pause? st) batch) (not (state-paused st))
+                         (not (thread-dead? (state-thread st))))
+                (unless (call-with-thread-stop
+                         (state-thread st)
+                         (lambda (stop)
+                           (parameterize ([current-evaluation-owner (state-thread st)])
+                             (pause-loop st stop "pause" "Thread suspended; source location is approximate" '()))))
+                  (sleep 0.001)
+                  (retry)))))))))))
 (define (interactive-loop namespace)
   (define st (register-thread))
   (set! interaction (paused st #f (make-async-channel) (box '())))
@@ -529,7 +557,7 @@
            (call-with-values
             (lambda ()
               (call-with-exception-handler
-               (make-debug-exception-handler on-exception on-pause)
+               (make-debug-exception-handler on-exception #f)
                (lambda () (eval (read-interaction (hash-ref (arg request 'arguments) 'expression)) namespace))))
             list))]
          [else (inspect-request request interaction)])))
@@ -577,7 +605,6 @@
                      #:on-event (if (arg config 'coverage #f) on-coverage-event on-event)
                      #:on-exception (and (not (arg config 'noDebug #f)) on-exception)
                      #:on-error on-error
-                     #:on-pause (and (not (arg config 'noDebug #f)) on-pause)
                      #:language (and (arg config 'language) (string->symbol (arg config 'language)))
                      #:on-sites on-sites #:on-source-snapshot on-source-snapshot
                      #:source-roots (append (arg config 'sourceRoots (list (arg config 'cwd)))
@@ -693,27 +720,11 @@
      (define st (hash-ref states-by-id (hash-ref a 'threadId)))
      (when (thread-dead? (state-thread st)) (error 'pause "The thread has ended."))
      (reply request)
-     (unless (or (state-paused st) (state-pause? st))
-       (set-state-pause?! st 'requested)
-       (parameterize ([current-custodian controller-custodian])
-         (thread
-          (lambda ()
-            (call-with-semaphore
-             (state-pause-lock st)
-             (lambda ()
-               (let retry ()
-                 (when (and (state-pause? st) (not (state-paused st))
-                            (not (thread-dead? (state-thread st))))
-                   (unless (call-with-thread-stop
-                            (state-thread st)
-                            (lambda (stop)
-                              (parameterize ([current-evaluation-owner (state-thread st)])
-                                (pause-loop st stop "pause" "Thread suspended; source location is approximate" '()))))
-                     ;; Do not freeze a target inside debugger operations. The
-                     ;; lock also lets a prior Continue finish resuming it before
-                     ;; a subsequent Pause takes ownership of its suspension.
-                     (sleep 0.001)
-                     (retry))))))))))]
+     (set! pending-pause (pause-batch (box #f)))
+     (for ([other (in-hash-values states-by-id)]) (set-state-pause?! other #f))
+     (request-pause! st pending-pause)
+     (for ([other (in-hash-values states-by-id)] #:unless (eq? other st))
+       (request-pause! other pending-pause))]
     [else
      (unless (command-flag? command 'paused) (error 'debugger "Unsupported request: ~a" command))
      (define owner
@@ -725,7 +736,11 @@
                             (equal? (arg a 'context "repl") "repl") interaction))]))
      (unless (and owner (or (eq? owner interaction) (eq? owner (state-paused (paused-state owner)))))
        (error 'debugger "Pause the program before using this command."))
+     (when (command-flag? command 'resume)
+       (set-state-pause?! (paused-state owner) #f))
      (when (and (command-flag? command 'all-threads) (not (arg a 'singleThread #f)))
+       (set! pending-pause #f)
+       (for ([st (in-hash-values states-by-id)]) (set-state-pause?! st #f))
        (for ([st (in-hash-values states-by-id)] #:when (and (state-paused st) (not (eq? (state-paused st) owner))))
          (async-channel-put (paused-inbox (state-paused st)) (hasheq 'command "internalContinue"))))
      (when (command-flag? command 'evaluate)
