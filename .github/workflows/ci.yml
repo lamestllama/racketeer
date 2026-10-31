@@ -16,7 +16,9 @@ jobs:
   core:
     name: Core / ${{ matrix.os }} / Racket ${{ matrix.racket }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    # 430 Node tests take about 24 minutes on macOS and a projected 29 to 31
+    # minutes on Linux and Windows, from 6 minutes for 138 tests before.
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
