@@ -6,6 +6,26 @@
 - Suspend paused threads without delivering application breaks, so programs that catch breaks keep their behavior. Inspect a suspended thread's live source frames with its captured parameterization, and keep evaluation cancellation scoped to the selected program thread.
 - Pause requests a source stop in every registered application thread and focuses the first executing expression. Blocked calls remain suspended, and resuming cancels a pending pause.
 - Step from a GUI or other callback to the next source boundary when no return target is observable.
+- Label debugger results as Return values with a count, clarify lexical variables and `set!`, and align expression and printing commands while retaining native VS Code controls and call-site completion stops.
+- Stop at standalone module and plain-file expressions such as literals and variable references, while keeping atomic operands out of the stepping sequence.
+- Preserve custom error display and escape handlers after an exception stop so program recovery can continue in its original context.
+- Show bounded list, vector, hash, structure and syntax previews, expandable syntax source details, and procedure arity without invoking custom printers or wrapped accessors.
+- Escape symbol and keyword names consistently, and show port direction plus safely known names and state without performing port I/O or invoking user callbacks.
+- Start debugging at the first expression in main, preserving explicit breakpoints during module initialization.
+- Offer `stopOnEntryMode: "firstExpression"` to pause before initialization, with a launch configuration snippet for that mode.
+- Step into function initializers without stopping on generated binding containers that make Step Over skip the remaining body.
+- Resolve the Unix cleanup helper through PATH so adapter crashes also stop grandchildren.
+- Own debugger and macro-stepper descendants with Windows Job Objects.
+- Evaluate multiple selections in source order in the plain and Debug REPLs.
+- Evaluate selected Racket expressions in the Debug REPL with Shift+Enter.
+- Open the relevant setting directly from debugger and language-server startup errors.
+- Report language-server startup failures once while keeping diagnostic detail in Output.
+- Preview and save image results in the native image editor, with a picker for multiple returned images.
+- View image variables directly from the debugger context menu and keep image previews in one editor group.
+- Find references in unopened workspace files using a separate Racketeer indexing service with bounded analysis.
+- Keep editor buffers authoritative during file replacement and rename events.
+- Show incomplete indexing and provide a command to refresh workspace references.
+- Update the bundled language server with lifecycle, cancellation and logging fixes.
 
 ## 0.8.34
 
@@ -146,29 +166,6 @@
 ## 0.8.3
 
 - Preview binding-checked renames across workspace files, rejecting incomplete analysis, stale snapshots, and unsupported import transformations.
-
-## 0.8.2
-
-- Label debugger results as Return values with a count, clarify lexical variables and `set!`, and align expression and printing commands while retaining native VS Code controls and call-site completion stops.
-- Stop at standalone module and plain-file expressions such as literals and variable references, while keeping atomic operands out of the stepping sequence.
-- Preserve custom error display and escape handlers after an exception stop so program recovery can continue in its original context.
-- Show bounded list, vector, hash, structure and syntax previews, expandable syntax source details, and procedure arity without invoking custom printers or wrapped accessors.
-- Escape symbol and keyword names consistently, and show port direction plus safely known names and state without performing port I/O or invoking user callbacks.
-- Start debugging at the first expression in main, preserving explicit breakpoints during module initialization.
-- Offer `stopOnEntryMode: "firstExpression"` to pause before initialization, with a launch configuration snippet for that mode.
-- Step into function initializers without stopping on generated binding containers that make Step Over skip the remaining body.
-- Resolve the Unix cleanup helper through PATH so adapter crashes also stop grandchildren.
-- Own debugger and macro-stepper descendants with Windows Job Objects.
-- Evaluate multiple selections in source order in the plain and Debug REPLs.
-- Evaluate selected Racket expressions in the Debug REPL with Shift+Enter.
-- Open the relevant setting directly from debugger and language-server startup errors.
-- Report language-server startup failures once while keeping diagnostic detail in Output.
-- Preview and save image results in the native image editor, with a picker for multiple returned images.
-- View image variables directly from the debugger context menu and keep image previews in one editor group.
-- Find references in unopened workspace files using a separate Racketeer indexing service with bounded analysis.
-- Keep editor buffers authoritative during file replacement and rename events.
-- Show incomplete indexing and provide a command to refresh workspace references.
-- Update the bundled language server with lifecycle, cancellation and logging fixes.
 
 ## 0.8.1
 
