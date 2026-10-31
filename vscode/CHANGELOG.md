@@ -2,12 +2,16 @@
 
 ## 0.8.48
 
-- Bundle racket-langserver at upstream b7c4642, whose background analysis ends every waiting request when analysis fails, times out or is superseded. Keep tail-position and predicted-binding hover, UTF-16 positions and unsaved imports as local patches.
+- Combine the continuous integration corrections, the re-vendored language server and debugger attachment.
+- Bundle racket-langserver at upstream b7c4642, whose background analysis ends every waiting request when analysis fails, times out or is superseded. A request whose analysis failed or passed its 30-second deadline now fails with RequestFailed, as upstream answers, instead of returning an empty result. Keep tail-position and predicted-binding hover, UTF-16 positions and unsaved imports as local patches.
 - Untitled documents follow upstream: definition no longer leads from an untitled document into the files it imports, references and rename stay within the document, the workspace index covers saved files only, and a workspace folder is no longer an import base. A relative import in an untitled document without a save location reports that one is required instead of resolving against the language server's working directory.
 - Use vscode-languageclient 11.0.0 and vscode-jsonrpc 10.0.0, which contain the startup and request-write corrections formerly patched locally. VS Code 1.91 or newer is required. Language server output is a log channel with timestamps and levels, as the new client requires.
 - Attach to cooperative Racket hosts through a token authenticated loopback listener.
 - Reuse source selection, breakpoints and inspection without owning or killing the host.
 - Resolve attach configurations without a program; input and interrupt stay with the host.
+- Keep the source editor active after Run File or Start Debug REPL opens Interactions beside it, so a further command on the same file finds its editor.
+- Record coverage visits without constructing debugger stops: coverage reports are unchanged and no longer slow down with the depth of the stack.
+- Treat build outputs that differ from their input only in case as the same file on Windows and macOS, so a build cannot replace its source there.
 
 ## 0.8.47
 
