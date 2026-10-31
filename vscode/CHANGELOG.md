@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.8.47
+
+- Combine the thread pausing and suspension work with the editor, debugger view and test tooling releases.
+- Suspend paused threads without delivering application breaks, so programs that catch breaks keep their behavior. Inspect a suspended thread's live source frames with its captured parameterization, and keep evaluation cancellation scoped to the selected program thread.
+- Pause requests a source stop in every registered application thread and focuses the first executing expression. Blocked calls remain suspended, and resuming cancels a pending pause.
+- Step from a GUI or other callback to the next source boundary when no return target is observable.
+
 ## 0.8.34
 
 - Browse module imports and submodules in a native dependency tree with phase labels, source navigation and unsaved-buffer support. Cancel obsolete analysis and release owned workers on timeout or editor shutdown.
