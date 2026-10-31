@@ -16,6 +16,7 @@ exports.run = async function () {
   await extension.exports.languageServerReady();
   const expected = new Map([
     ['experiments/lexical-eval.rkt', 10],
+    ['tests/attach.rkt', 28],
     ['tests/headless.rkt', 22],
     ['tests/instrumentation-lifetime.rkt', 8],
     ['tests/loader-isolation.rkt', 14],
