@@ -143,9 +143,19 @@ test('Pause focuses executing source, holds other threads, and cancels pending f
         frameId: waitingFrame.id, expression: '(semaphore? gate)'
       }))).result, '#t', 'Single-thread stepping leaves the waiting thread inspectable');
     }
-    await ok(client.request('continue', { threadId: frame.threadId }));
+    const resumed = await client.request('continue', { threadId: frame.threadId });
+    assert.equal(resumed.success, true, resumed.message);
     await new Promise(resolve => setTimeout(resolve, 150));
-    assert.equal(client.events.filter(e => e.event === 'stopped').length, 0, 'Continue cancels delayed suspension');
+    // The waiting thread's fallback stop may legitimately precede Continue on a
+    // slow host; Continue resumes it. Messages are ordered by sequence number,
+    // so only a stop after the Continue response is a suspension Continue missed.
+    const stops = client.events.filter(e => e.event === 'stopped');
+    client.events = client.events.filter(e => e.event !== 'stopped');
+    for (const stop of stops.filter(e => e.seq < resumed.seq)) {
+      assert.equal(stop.body.threadId, threadId);
+      assert.equal(stop.body.racketdapApproximate, true);
+    }
+    assert.deepEqual(stops.filter(e => e.seq > resumed.seq), [], 'Continue cancels delayed suspension');
   }
   await ok(client.request('terminate'));
   await client.event('terminated');
