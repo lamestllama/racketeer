@@ -8,7 +8,7 @@
          stop-token stop-contexts stop-return-token call-with-exception-stop call-with-pause-stop
          call-with-thread-stop debugger-active-key
          make-activation make-live-binding make-frame frame-key context-key
-         announce-before announce-after current-expression-token register-module-context!)
+         announce-before announce-after announce-visit current-expression-token register-module-context!)
 
 (struct site (id source line column position span tail? expression) #:transparent)
 (define (site-phases descriptor)
@@ -282,6 +282,11 @@
             (unbox action))))))
 (define (announce-before descriptor token on-event)
   (deliver on-event descriptor 'before #f token))
+;; Coverage records only that a site began. It needs no frames, results or
+;; stop, so the callback receives the site itself.
+(define (announce-visit descriptor on-visit)
+  (when (and runtime-phase-zero? on-visit (debugging-enabled?))
+    (on-visit descriptor)))
 (define (announce-after descriptor token on-event results)
   (define replacement (deliver on-event descriptor 'after results token))
   (apply values (or replacement results)))

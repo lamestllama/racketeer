@@ -330,8 +330,14 @@
     (define visible? (boundary-visible? current))
     (define descriptor (site-for expression tail? visible?))
     (define callback (and visible? on-event))
-    (if (not descriptor)
-        rewritten
+    (cond
+      [(not descriptor) rewritten]
+      ;; Coverage runs without debugging, so a visit is the only event.
+      [coverage?
+       (if callback
+           #`(begin (announce-visit #,(literal descriptor) #,(literal callback)) #,rewritten)
+           rewritten)]
+      [else
         (let* ([token (car (generate-temporaries '(token)))]
                [decision (car (generate-temporaries '(decision)))]
                [frame-expression
@@ -359,7 +365,7 @@
                            (if #,decision (apply values #,decision) #,rewritten))
                          (lambda results
                            (announce-after #,(literal descriptor) #,token
-                                           #,(literal callback) results)))))))))))
+                                           #,(literal callback) results)))))))))]))
   (define local-name (and (syntax-transforming?) (syntax-local-name)))
   (define result (walk expanded '() activation-id initial-tail?
                        (if (identifier? local-name) (syntax-e local-name) local-name)))

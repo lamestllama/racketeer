@@ -100,6 +100,19 @@ test('coverage preserves multiple values, quoted data, evaluation order and tail
     { kind: 'summary', status: 'passed', total: 4, failed: 0 });
 });
 
+// Coverage records only whether each expression ran. Recording a visit must not
+// inspect the continuation, whose cost grows with the depth of the stack.
+test('coverage cost does not grow with recursion depth', { timeout: 30000 }, async t => {
+  const source = '#lang racket/base\n(require rackunit)\n' +
+    '(define (depth n) (if (zero? n) 0 (add1 (depth (sub1 n)))))\n' +
+    '(check-equal? (depth 10000) 10000)\n';
+  const { client, program } = await fixture(t, source);
+  const [report] = await run(client, program);
+  assert.equal(expression(report, source, '(add1 (depth (sub1 n)))').executed, true);
+  assert.deepEqual((await client.event('racketdap/test', e => e.body.kind === 'summary')).body,
+    { kind: 'summary', status: 'passed', total: 1, failed: 0 });
+});
+
 test('ordinary runs and incomplete test processes do not publish coverage', async t => {
   for (const [source, options] of [
     ['#lang racket/base\n(require rackunit)\n(check-true #t)\n', { coverage: false }],
