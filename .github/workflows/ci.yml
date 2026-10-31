@@ -93,7 +93,10 @@ jobs:
   editor:
     name: Installed extension / ${{ matrix.os }} / Racket ${{ matrix.racket }} / VS Code ${{ matrix.code }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    # Locally the integration run takes 16 minutes and dogfooding 11. The
+    # runners took 1.4 to 2 times as long, and Windows a further 1.6 times
+    # Linux, so the slowest entry needs about 2 hours for its three runs.
+    timeout-minutes: 150
     strategy:
       fail-fast: false
       matrix:
@@ -208,19 +211,19 @@ jobs:
         env:
           TEST_EDITOR: ${{ steps.editor.outputs.executable }}
           TEST_ARTIFACT: ${{ steps.artifact.outputs.path }}
-        run: python scripts/test-vscode.py --code "$TEST_EDITOR" --artifact "$TEST_ARTIFACT" --timeout 1200
+        run: python scripts/test-vscode.py --code "$TEST_EDITOR" --artifact "$TEST_ARTIFACT" --timeout 2700
       - name: Test the installed extension with the pinned Rhombus runtime
         if: ${{ !cancelled() && steps.integration.outcome == 'success' }}
         env:
           TEST_EDITOR: ${{ steps.editor.outputs.executable }}
           TEST_ARTIFACT: ${{ steps.artifact.outputs.path }}
-        run: python scripts/test-vscode.py --rhombus --code "$TEST_EDITOR" --artifact "$TEST_ARTIFACT" --timeout 1200
+        run: python scripts/test-vscode.py --rhombus --code "$TEST_EDITOR" --artifact "$TEST_ARTIFACT" --timeout 3600
       - name: Run and debug the repository tests through Test Explorer
         if: ${{ !cancelled() && steps.artifact.outcome == 'success' }}
         env:
           TEST_EDITOR: ${{ steps.editor.outputs.executable }}
           TEST_ARTIFACT: ${{ steps.artifact.outputs.path }}
-        run: python scripts/test-vscode.py --dogfood --code "$TEST_EDITOR" --artifact "$TEST_ARTIFACT" --timeout 1200
+        run: python scripts/test-vscode.py --dogfood --code "$TEST_EDITOR" --artifact "$TEST_ARTIFACT" --timeout 2700
       - name: Verify the artifact and checkout
         env:
           TEST_ARTIFACT: ${{ steps.artifact.outputs.path }}
