@@ -62,7 +62,7 @@ function registerApplicationLogs(context) {
     if (candidates.length === 1) return candidates[0];
     const chosen = await vscode.window.showQuickPick(candidates.map(record => ({
       label: record.name, description: record.ended ? 'Stopped' : 'Running',
-      detail: record.session.configuration.program, record
+      detail: record.session.configuration.request === 'attach' ? record.session.name : record.session.configuration.program, record
     })), { title: 'Racket Application Logs', placeHolder: 'Choose the session whose log you want to use' });
     return chosen?.record;
   }
@@ -80,7 +80,7 @@ function registerApplicationLogs(context) {
   context.subscriptions.push(vscode.debug.registerDebugAdapterTrackerFactory('racketdap', {
     createDebugAdapterTracker(session) {
       const record = { session, output: new ApplicationLog(), filter: session.configuration.logFilter || 'error',
-        name: `Racket Log ${++sequence}: ${path.basename(session.configuration.program)}`, ended: false };
+        name: `Racket Log ${++sequence}: ${(session.configuration.request === 'attach' ? session.name : path.basename(session.configuration.program))}`, ended: false };
       records.set(session.id, record);
       return {
         onDidSendMessage(message) {

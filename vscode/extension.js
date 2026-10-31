@@ -51,16 +51,16 @@ function activate(context) {
     },
     async resolveDebugConfigurationWithSubstitutedVariables(folder, config) {
       if (!vscode.workspace.isTrusted) return undefined;
-      if (config.request !== 'launch') {
-        vscode.window.showErrorMessage('Racket DAP supports launch sessions.');
+      if (!['launch', 'attach'].includes(config.request)) {
+        vscode.window.showErrorMessage('Racket DAP supports launch and attach sessions.');
         return undefined;
       }
-      if (!config.program || !fs.existsSync(config.program) || !fs.statSync(config.program).isFile()) {
+      if (config.request === 'launch' && (!config.program || !fs.existsSync(config.program) || !fs.statSync(config.program).isFile())) {
         vscode.window.showErrorMessage('Choose an existing Racket source file to debug.');
         return undefined;
       }
-      config.cwd ||= folder?.uri.fsPath || path.dirname(config.program);
-      config.sourceRoots ||= [folder?.uri.fsPath || path.dirname(config.program)];
+      if (config.request === 'launch') config.cwd ||= folder?.uri.fsPath || path.dirname(config.program);
+      config.sourceRoots ||= folder ? [folder.uri.fsPath] : config.request === 'launch' ? [path.dirname(config.program)] : [];
       config.debugPackages ??= vscode.workspace.getConfiguration('racketdap', folder?.uri).get('debug.packages', []);
       config.logFilter ??= vscode.workspace.getConfiguration('racketdap', folder?.uri).get('logs.filter', 'error');
       const invalidFilter = filterError(config.logFilter);

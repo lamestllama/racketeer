@@ -204,3 +204,22 @@ Copyright © 2026 Eric Parsonage. Racketeer's original code, examples, tests,
 and documentation are available under [Apache-2.0 OR MIT](LICENSE), at your
 choice. Bundled dependencies retain their own copyright and licence notices;
 see [vendor/README.md](vendor/README.md).
+
+## Attach to an embedded Racket program
+
+An embedding host can load `racketdap/worker/attach.rkt` and expose a
+loopback listener. Connect with a `racketdap` debug configuration whose
+`request` is `attach`, with the returned `port` and secret `token`; no
+`program` is required. `sourceRoots` and `debugPackages` select source as
+for a launch, with the host's exclusions taking precedence even over
+breakpoints. The extension fills roots from the workspace and packages
+from `racketdap.debug.packages`.
+
+This is cooperative attachment to a host using the library, rather than
+attachment to an arbitrary process. The host owns program input, output
+and thread lifetime. Interrupt is refused. Disconnect and Terminate close
+only the debugger connection and release held stops; they never kill the
+host. Host disconnection produces `terminated`, without `exited`.
+
+See the [host contract](racketdap/instrumentation/DESIGN.md#embedding-host-contract)
+for API and inspector, thread and lock requirements. Keep tokens private.

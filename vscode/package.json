@@ -589,6 +589,44 @@
                 "description": "Initial application log capture filter, overriding racketdap.logs.filter. For example: warning debug@network."
               }
             }
+          },
+          "attach": {
+            "required": [
+              "port",
+              "token"
+            ],
+            "properties": {
+              "port": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 65535,
+                "description": "Loopback listener port supplied by the embedding host."
+              },
+              "token": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Secret authentication token supplied by the host."
+              },
+              "racketExecutable": {
+                "type": "string",
+                "description": "Override the Racket executable for the adapter."
+              },
+              "sourceRoots": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Directories whose Racket sources are debugged. Defaults to the workspace folder."
+              },
+              "debugPackages": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "description": "Installed package names to debug. Their source directories are resolved by the launched Racket environment and added to sourceRoots. Defaults to racketdap.debug.packages."
+              }
+            }
           }
         },
         "initialConfigurations": [

@@ -25,6 +25,7 @@
 (define streams-done 0)
 (define output-ports '())
 (define terminal? #f)
+(define attach? #f)
 (define pending (make-hasheqv))
 (define (send message)
   (set! sequence (add1 sequence))
@@ -56,7 +57,7 @@
     (set! finished? #t)
     (for ([request (in-hash-values pending)]) (reply request (hasheq) "The debug session ended."))
     (hash-clear! pending)
-    (event "exited" (hasheq 'exitCode code))
+    (unless attach? (event "exited" (hasheq 'exitCode code)))
     (event "terminated")
     (when worker-out (close-output-port worker-out))
     (when worker-in (close-input-port worker-in))
@@ -195,6 +196,37 @@
                (define message (read-message in))
                (if (eof-object? message) (async-channel-put messages (cons 'workerEOF #f))
                    (begin (async-channel-put messages (cons 'worker message)) (loop)))))))))))
+(define (attach request)
+  (unless initialized? (error 'attach "Initialize the adapter first."))
+  (when (or finished? launch-used?) (error 'attach "Start a new debug session for another attachment."))
+  (define args (hash-ref request 'arguments))
+  (unless (and (exact-positive-integer? (hash-ref args 'port #f))
+               (<= (hash-ref args 'port) 65535))
+    (error 'attach "port must be an integer from 1 to 65535."))
+  (unless (and (string? (hash-ref args 'token #f)) (positive? (string-length (hash-ref args 'token))))
+    (error 'attach "A nonempty authentication token is required."))
+  (set! attach? #t)
+  (set! launch-used? #t)
+  (set! connection-custodian (make-custodian))
+  (set! launch-request request)
+  (set! launch-deadline (+ (current-inexact-monotonic-milliseconds) 15000))
+  (parameterize ([current-custodian connection-custodian])
+    (thread
+     (lambda ()
+       (with-handlers ([exn:fail? (lambda (_) (async-channel-put messages (cons 'startupError "Racket attach connection or authentication failed.")))])
+         (define-values (in out) (tcp-connect "127.0.0.1" (hash-ref args 'port)))
+         (write-message (hasheq 'type "hello" 'version 1 'token (hash-ref args 'token)
+                               'config (hash-remove args 'token) 'client client) out)
+         (define hello (read-message in))
+         (unless (and (hash? hello) (equal? (hash-ref hello 'type #f) "hello")
+                      (equal? (hash-ref hello 'version #f) 1))
+           (error 'attach "Authentication refused."))
+         (async-channel-put messages (cons 'ready (cons in out)))
+         (with-handlers ([exn:fail? (lambda (_) (async-channel-put messages (cons 'workerEOF #f)))])
+           (let loop ()
+             (define message (read-message in))
+             (if (eof-object? message) (async-channel-put messages (cons 'workerEOF #f))
+                 (begin (async-channel-put messages (cons 'worker message)) (loop))))))))))
 (define (dispatch request)
   (define command (hash-ref request 'command))
   (case (string->symbol command)
@@ -214,6 +246,7 @@
                     (list (hasheq 'filter "uncaught" 'label "Uncaught Racket exceptions" 'default #t
                                   'description "Stop on uncaught runtime exceptions before the worker handles them."))))]
     [(launch) (launch request)]
+    [(attach) (attach request)]
     [(terminate disconnect)
      (reply request)
      (set! desired-exit 0)
@@ -226,7 +259,7 @@
        [(and finished? (equal? command "threads"))
         (reply request (hasheq 'threads '()))]
        [(worker-command? command)
-        (unless (and worker-out (not finished?)) (error 'debugger "No active launched program."))
+        (unless (and worker-out (not finished?)) (error 'debugger "No active debug session."))
         (hash-set! pending (hash-ref request 'seq) request)
         (write-message request worker-out)]
        [else (reply request (hasheq) (format "Unsupported request: ~a" command))])]))
@@ -263,7 +296,8 @@
     [(startupTimeout startupError)
      (when launch-request
        (fail-launch! (if (eq? (car item) 'startupTimeout)
-                         "Racket worker initialization timed out after 15 seconds."
+                         (if attach? "Racket attach initialization timed out after 15 seconds."
+                             "Racket worker initialization timed out after 15 seconds.")
                          (cdr item)))
        (terminate-worker))]
     [(request)
@@ -286,7 +320,7 @@
      (unless finished?
        (for ([port (in-list output-ports)])
          (unless (port-closed? port) (close-input-port port))))]
-    [(workerEOF) (unless finished? (terminate-worker))]
+    [(workerEOF) (unless finished? (if attach? (complete! 0) (terminate-worker)))]
     [(worker)
      (define message (cdr item))
      (when (equal? (hash-ref message 'type) "response") (hash-remove! pending (hash-ref message 'request_seq)))

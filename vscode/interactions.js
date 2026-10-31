@@ -98,7 +98,7 @@ function registerInteractions(context, images) {
   }
   context.subscriptions.push(vscode.debug.registerDebugAdapterTrackerFactory('racketdap', {
     createDebugAdapterTracker(session) {
-      if (!session.configuration.racketdapRichInteractions) return;
+      if (session.configuration.request === 'attach' || !session.configuration.racketdapRichInteractions) return;
       const view = create(session);
       const current = () => !view.closed && view.session.id === session.id;
       return {

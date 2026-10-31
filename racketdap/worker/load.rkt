@@ -9,7 +9,7 @@
          "../test-discovery.rkt"
          "../wxme-source.rkt"
          "../instrumentation/instrument.rkt")
-(provide run-module make-debug-exception-handler)
+(provide run-module make-debug-loader make-debug-exception-handler)
 
 ;; Used both while loading a program and during later console interactions.
 (define (make-debug-exception-handler on-exception on-pause)
@@ -35,38 +35,26 @@
   (hash-ref! (get-place-table) 'racketeer/worker/load:compilation-policy-owner
              (lambda () (make-parameter #f))))
 
-;; Load source in a fresh namespace and custodian. Stop callbacks run on the
-;; target thread; selected modules bypass bytecode without writing caches.
-(define (run-module path
-                    #:instrument? [instrument? #t]
-                    #:images? [images? #f]
-                    #:coverage? [coverage? #f]
-                    #:language [language #f]
-                    #:on-sites [on-sites void]
-                    #:on-event [on-event #f]
-                    #:on-entry [on-entry #f]
-                    #:on-exception [on-exception #f]
-                    #:on-error [on-error void]
-                    #:on-pause [on-pause #f]
-                    #:on-source [on-source void]
-                    #:on-source-snapshot [on-source-snapshot void]
-                    #:source-selected? [source-selected? (lambda (_path) #f)]
-                    #:sources [additional-sources '()]
-                    #:source-roots [source-roots '()]
-                    #:submodule [submodule '()]
-                    #:main? [main? #f]
-                    #:test? [test? #f]
-                    #:test-selection [test-selection #f]
-                    #:on-test-event [on-test-event void]
-                    #:on-ready [on-ready #f]
-                    #:entry [entry #f])
-  (define source (simplify-path (path->complete-path path)))
-  (unless (and (list? submodule) (andmap symbol? submodule))
-    (raise-argument-error 'run-module "list of submodule symbols" submodule))
-  (when (and language (pair? submodule))
-    (error 'run-module "A plain-file language cannot be combined with a submodule selection."))
-  (when (and test? (or language (pair? submodule) main? entry on-ready))
-    (error 'run-module "Test mode cannot be combined with language, submodule, main, entry, or interactive execution."))
+;; Build load handlers for one namespace. The entry controls belong to the
+;; same instrumentation state as those handlers; loading alone starts no run.
+;; Returns the compiled/source load handlers, an entry selector and an entry
+;; completion procedure, in that order. The source path is already canonical.
+(define (make-debug-loader namespace source
+                           #:instrument? [instrument? #t]
+                           #:coverage? [coverage? #f]
+                           #:language [language #f]
+                           #:on-sites [on-sites void]
+                           #:on-event [on-event #f]
+                           #:on-entry [on-entry #f]
+                           #:on-source [on-source void]
+                           #:on-source-snapshot [on-source-snapshot void]
+                           #:exclude [excluded? (lambda (_path) #f)]
+                           #:fresh-id [supplied-fresh-id #f]
+                           #:source-selected? [source-selected? (lambda (_path) #f)]
+                           #:sources [additional-sources '()]
+                           #:source-roots [source-roots '()]
+                           #:test? [test? #f]
+                           #:test-selection [test-selection #f])
   (define selected-sources
     (cons source (map (lambda (path) (simplify-path (path->complete-path path)))
                       additional-sources)))
@@ -82,17 +70,11 @@
     (and (<= (length root) (length parts))
          (for/and ([a (in-list root)] [b (in-list parts)]) (equal? a b))))
   (define (selected-source? resolved)
-    (and (not (debugger-source? resolved))
+    (and (not (equal? (path-get-extension resolved) #".zo"))
+         (not (debugger-source? resolved))
+         (not (excluded? resolved))
          (or (member resolved selected-sources) (under-root? resolved)
              (source-selected? resolved))))
-  (define target (if (null? submodule) source `(submod ,source ,@submodule)))
-  (define namespace (make-base-namespace))
-  ;; Image values and the debugger must share the conversion property identity.
-  (when (or instrument? images?)
-    (namespace-attach-module (namespace-anchor->namespace anchor) 'file/convertible namespace))
-  (when language
-    (unless (symbol? language) (raise-argument-error 'run-module "language module-path symbol" language))
-    (parameterize ([current-namespace namespace]) (namespace-require language)))
   (when instrument?
     (namespace-attach-module (namespace-anchor->namespace anchor)
                              instrumentation-path namespace)
@@ -116,7 +98,8 @@
   (define entry-submodule #f)
   (define entry-announced? #f)
   (define (fresh-id)
-    (begin0 next-id (set! next-id (add1 next-id))))
+    (if supplied-fresh-id (supplied-fresh-id)
+        (begin0 next-id (set! next-id (add1 next-id)))))
   (define (instrument-eval selected-source #:top-level? [top-level? language])
     (lambda (form)
       (parameterize ([current-eval ordinary-eval])
@@ -374,11 +357,12 @@
        (define resolved (simplify-path (path->complete-path path)))
        (define request (selected-load-request))
        (define selected?
-         (or (selected-source? resolved)
+         (and (not (excluded? resolved))
+          (or (selected-source? resolved)
              ;; Preserve the ordinary loader's .rkt-to-.ss source fallback.
              (and expected request
                   (equal? (path-get-extension request) #".rkt")
-                  (equal? resolved (path-replace-extension request #".ss")))))
+                  (equal? resolved (path-replace-extension request #".ss"))))))
        (parameterize ([current-eval
                        (if (and selected? instrument?)
                            (instrument-eval resolved #:top-level? (not expected))
@@ -386,6 +370,62 @@
          (if selected?
              (load-source-snapshot resolved expected)
              (ordinary-source-load path expected)))]))
+  (values load-selected load-plain-source
+          (lambda (selected) (set! entry-submodule selected))
+          (lambda () (set! entry-announced? #t))))
+
+;; Load source in a fresh namespace and custodian. Stop callbacks run on the
+;; target thread; selected modules bypass bytecode without writing caches.
+(define (run-module path
+                    #:instrument? [instrument? #t]
+                    #:images? [images? #f]
+                    #:coverage? [coverage? #f]
+                    #:language [language #f]
+                    #:on-sites [on-sites void]
+                    #:on-event [on-event #f]
+                    #:on-entry [on-entry #f]
+                    #:on-exception [on-exception #f]
+                    #:on-error [on-error void]
+                    #:on-pause [on-pause #f]
+                    #:on-source [on-source void]
+                    #:on-source-snapshot [on-source-snapshot void]
+                    #:source-selected? [source-selected? (lambda (_path) #f)]
+                    #:sources [additional-sources '()]
+                    #:source-roots [source-roots '()]
+                    #:submodule [submodule '()]
+                    #:main? [main? #f]
+                    #:test? [test? #f]
+                    #:test-selection [test-selection #f]
+                    #:on-test-event [on-test-event void]
+                    #:on-ready [on-ready #f]
+                    #:entry [entry #f])
+  (define source (simplify-path (path->complete-path path)))
+  (unless (and (list? submodule) (andmap symbol? submodule))
+    (raise-argument-error 'run-module "list of submodule symbols" submodule))
+  (when (and language (pair? submodule))
+    (error 'run-module "A plain-file language cannot be combined with a submodule selection."))
+  (when (and test? (or language (pair? submodule) main? entry on-ready))
+    (error 'run-module "Test mode cannot be combined with language, submodule, main, entry, or interactive execution."))
+  ;; Resolve launch paths before loading a language, which may change the
+  ;; current directory while it initializes.
+  (define (canonical path) (simplify-path (path->complete-path path)))
+  (define selected-sources (map canonical additional-sources))
+  (define roots (map canonical source-roots))
+  (define target (if (null? submodule) source `(submod ,source ,@submodule)))
+  (define namespace (make-base-namespace))
+  ;; Image values and the debugger must share the conversion property identity.
+  (when (or instrument? images?)
+    (namespace-attach-module (namespace-anchor->namespace anchor) 'file/convertible namespace))
+  (when language
+    (unless (symbol? language) (raise-argument-error 'run-module "language module-path symbol" language))
+    (parameterize ([current-namespace namespace]) (namespace-require language)))
+  (define-values (load-selected load-plain-source select-entry! finish-entry!)
+    (make-debug-loader namespace source
+                       #:instrument? instrument? #:coverage? coverage? #:language language
+                       #:on-sites on-sites #:on-event on-event #:on-entry on-entry
+                       #:on-source on-source #:on-source-snapshot on-source-snapshot
+                       #:source-selected? source-selected? #:sources selected-sources
+                       #:source-roots roots #:test? test? #:test-selection test-selection))
   (define program-custodian (make-custodian))
   (define ordinary-uncaught (uncaught-exception-handler))
   (define exception-handler-tag (make-continuation-prompt-tag 'module-exception-handler))
@@ -422,12 +462,12 @@
                 ;; remains debuggable without consuming the automatic entry stop.
                 ;; This loads the declaration through the same snapshot/expansion
                 ;; path; dynamic-require below reuses it.
-                (set! entry-submodule
-                      (cond
-                        [(and on-entry (not language) main?
-                              (module-declared? `(submod ,source main) #t)) '(main)]
-                        [test-submodule? '(test)]
-                        [else submodule]))
+                (select-entry!
+                 (cond
+                   [(and on-entry (not language) main?
+                         (module-declared? `(submod ,source main) #t)) '(main)]
+                   [test-submodule? '(test)]
+                   [else submodule]))
                 (unless language
                   ;; Configure the launched module, not its dependencies. Tests
                   ;; use the enclosing file's configuration, as raco test does.
@@ -456,7 +496,7 @@
                 (begin0 (if entry ((if language (eval entry) (dynamic-require target entry))) (void))
                   ;; An empty entry module must not defer its entry stop to a
                   ;; subsequent Debug Console expression or GUI callback.
-                  (set! entry-announced? #t)
+                  (finish-entry!)
                   (if on-ready
                       (on-ready (if language namespace (module->namespace target)))
                       ((executable-yield-handler) 0))))

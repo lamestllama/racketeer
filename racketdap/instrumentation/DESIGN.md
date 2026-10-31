@@ -194,3 +194,39 @@ The Node suites exercise the shipped DAP consumer, including source locations,
 module fragments, binding identity, result edits, and asynchronous pause.
 
 The production artifact list remains only instrument.rkt and runtime.rkt.
+
+## Embedding host contract
+
+Load `worker/attach.rkt` under an inspector superior to the inspector used
+to declare program structures. Check `attach-api-version` (currently `1`)
+before using the API. The library attaches its instrumentation modules to
+each program namespace; hosts may create fresh namespaces.
+
+- `(start-attach #:exclude excluded? #:on-pause on-pause #:thread-name name)`
+  creates an attachment. The predicate receives source paths and wins over
+  all module selection. The callback receives the program thread when a
+  Racket Pause belongs to host code outside an attached call.
+- `(attachment-listen! a)` returns a loopback port and a fresh secret token.
+  Call again after a connection ends to accept a new session.
+- `(attachment-ready-evt a)` becomes ready after `configurationDone`;
+  `(attachment-ended-evt a)` becomes ready when that connection ends.
+- `(call-with-attached-program a thunk)` marks the program thread and installs
+  load handlers there. Other host threads do not deliver source stops.
+- `(call-with-attached-code a thunk #:step-in? step-in?)` establishes a call
+  boundary and returns three values: the thunk's results as a list, a pending
+  step flag, and whether instrumented code ran. Exceptions propagate after
+  the debugger's exception stop. An unused entry remains a pending step.
+- `(attachment-pause! a thread)` forwards a host Pause inside an attached call.
+- `(close-attachment! a)` releases held stops and closes the connection,
+  without killing host threads or acquiring a program lock. Call it after
+  killing the program thread as well as on ordinary shutdown.
+
+The host must hold no lock in its program thread that another host thread
+needs while stopped. Protect unavoidable lock regions with the exported
+`debugger-active-key` from `instrumentation/runtime.rkt`; Pause defers
+suspension there. Keep protocol output on a separate service thread.
+Source roots and package selection come only from the authenticated client
+configuration. A host does not set selection policy through `start-attach`.
+The adapter proves the token with a version 1 hello before forwarding DAP
+requests. Input and interrupt remain the host's responsibility; connection
+closure releases the debugger without changing host lifetime.

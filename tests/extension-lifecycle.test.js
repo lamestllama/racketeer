@@ -47,7 +47,7 @@ function load(name, dependencies) {
   const localRequire = createRequire(filename);
   const module = { exports: {} };
   vm.runInNewContext(fs.readFileSync(filename, 'utf8'), {
-    module, exports: module.exports,
+    module, exports: module.exports, setTimeout, clearTimeout,
     require: name => Object.hasOwn(dependencies, name) ? dependencies[name] : localRequire(name)
   }, { filename });
   return module.exports;
@@ -497,4 +497,78 @@ for (const mode of ['cancel', 'reject', 'timeout']) test({
   assert.deepEqual(errors, []);
   assert.equal(logs.length, 2, 'Cancelled startup diagnostics remain in Output');
   assert.ok(children.every(child => child.exitCode !== null || child.signalCode !== null));
+});
+
+function configurationProvider(version = 'Welcome to Racket v9.1 [cs].') {
+  let provider;
+  const errors = [];
+  const vscode = { workspace: { isTrusted: true, getConfiguration: () => ({ get: (_key, fallback) => fallback }) },
+    window: { showErrorMessage: async message => { errors.push(message); } },
+    debug: { registerDebugConfigurationProvider(_type, value) { provider = value; return disposable(); },
+      registerDebugAdapterDescriptorFactory: disposable, registerDebugAdapterTrackerFactory: disposable },
+    commands: { registerCommand: disposable } };
+  const dependencies = { vscode, 'node:child_process': { execFile(_file, _args, _options, done) {
+    done(null, { stdout: version, stderr: '' });
+  } } };
+  for (const [name, methods] of Object.entries({
+    terminal: ['createProgramTerminal'], 'language-client': ['registerLanguageTools'], commands: ['registerFileCommands'],
+    'debug-actions': ['registerDebugActions'], 'debug-images': ['registerDebugImages'], 'debug-sources': ['registerDebugSources'],
+    sessions: ['registerSessions'], testing: ['registerTesting'], 'debug-repl': ['registerDebugRepl'],
+    interactions: ['registerInteractions'], 'file-runs': ['registerFileRuns'], packages: ['registerPackages'],
+    'application-builds': ['registerApplicationBuilds'], 'application-logs': ['registerApplicationLogs'],
+    'wxme-viewer': ['registerWxmeViewer'], 'wxme-editor': ['registerWxmeEditor'], dependencies: ['registerDependencies']
+  })) dependencies[`./${name}`] = Object.fromEntries(methods.map(method => [method, () => ({})]));
+  dependencies['./application-logs'].filterError = () => undefined;
+  load('extension.js', dependencies).activate({ subscriptions: [] });
+  return { provider, errors, vscode };
+}
+
+test('attach resolves without a program and inherits workspace selection', async () => {
+  const { provider, errors } = configurationProvider();
+  const configuration = { type: 'racketdap', request: 'attach', port: 12345, token: 'private' };
+  Object.defineProperty(configuration, 'program', { get() { throw new Error('attach read program'); } });
+  const result = await provider.resolveDebugConfigurationWithSubstitutedVariables({ uri: { fsPath: '/workspace' } }, configuration);
+  assert.equal(result, configuration);
+  assert.deepEqual(Array.from(result.sourceRoots), ['/workspace']);
+  assert.deepEqual(Array.from(result.debugPackages), []);
+  assert.equal(result.racketExecutable, 'racket');
+  assert.deepEqual(errors, []);
+  const noFolder = await provider.resolveDebugConfigurationWithSubstitutedVariables(undefined, { request: 'attach' });
+  assert.deepEqual(Array.from(noFolder.sourceRoots), []);
+});
+
+test('launch still requires an existing program and resolves its directory', async () => {
+  const { provider, errors } = configurationProvider();
+  assert.equal(await provider.resolveDebugConfigurationWithSubstitutedVariables(undefined, { request: 'launch' }), undefined);
+  const program = path.resolve(__dirname, '../examples/demo.rkt');
+  const result = await provider.resolveDebugConfigurationWithSubstitutedVariables(undefined, { request: 'launch', program });
+  assert.equal(result.program, program);
+  assert.equal(result.cwd, path.dirname(program));
+  assert.deepEqual(Array.from(result.sourceRoots), [path.dirname(program)]);
+  assert.equal(errors.length, 1);
+});
+
+test('attach keeps the Racket version and workspace trust checks', async () => {
+  const { provider, errors, vscode } = configurationProvider('Welcome to Racket v8.18 [cs].');
+  assert.equal(await provider.resolveDebugConfigurationWithSubstitutedVariables(undefined, { request: 'attach' }), undefined);
+  assert.match(errors[0], /Racket 9.1/);
+  vscode.workspace.isTrusted = false;
+  assert.equal(await provider.resolveDebugConfigurationWithSubstitutedVariables(undefined, { request: 'attach' }), undefined);
+});
+
+test('attach trackers do not read a launch program or create an Interactions view', () => {
+  let logFactory, interactionsFactory;
+  const vscode = { Disposable: class { constructor(dispose) { this.dispose = dispose; } },
+    debug: { registerDebugAdapterTrackerFactory(_type, factory) { logFactory = factory; return disposable(); },
+      onDidTerminateDebugSession: disposable }, commands: { registerCommand: disposable } };
+  const context = { subscriptions: [] };
+  load('application-logs.js', { vscode }).registerApplicationLogs(context);
+  const configuration = { request: 'attach', racketdapRichInteractions: true };
+  Object.defineProperty(configuration, 'program', { get() { throw new Error('attach read program'); } });
+  const session = { id: 'attachment', name: 'Embedded program', configuration };
+  assert.ok(logFactory.createDebugAdapterTracker(session));
+  vscode.debug.registerDebugAdapterTrackerFactory = (_type, factory) => { interactionsFactory = factory; return disposable(); };
+  load('interactions.js', { vscode, './error-sources': { registerErrorSources: () => ({}) } }).registerInteractions(context, {});
+  assert.equal(interactionsFactory.createDebugAdapterTracker(session), undefined);
+  context.subscriptions.forEach(item => item.dispose());
 });

@@ -4,6 +4,9 @@
 
 - Bundle racket-langserver at upstream b7c4642, whose background analysis ends every waiting request when analysis fails, times out or is superseded. Keep tail-position and predicted-binding hover, UTF-16 positions, unsaved imports and untitled documents as local patches.
 - Use vscode-languageclient 11.0.0 and vscode-jsonrpc 10.0.0, which contain the startup and request-write corrections formerly patched locally. VS Code 1.91 or newer is required. Language server output is a log channel with timestamps and levels, as the new client requires.
+- Attach to cooperative Racket hosts through a token authenticated loopback listener.
+- Reuse source selection, breakpoints and inspection without owning or killing the host.
+- Resolve attach configurations without a program; input and interrupt stay with the host.
 
 ## 0.8.47
 
