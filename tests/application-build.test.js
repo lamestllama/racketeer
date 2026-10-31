@@ -1,0 +1,85 @@
+'use strict';
+const assert = require('node:assert/strict');
+const test = require('node:test');
+const fs = require('node:fs/promises');
+const path = require('node:path');
+const os = require('node:os');
+const { execFile } = require('node:child_process');
+const { promisify } = require('node:util');
+const { buildPlan, executablePath } = require('../vscode/application-build');
+const execute = promisify(execFile);
+
+test('build arguments preserve paths and task variables without shell interpretation', () => {
+  const source = '/project λ/source $(ignored).rkt', output = '/output λ/app';
+  const plan = buildPlan({ action: 'executable', source, output, gui: true,
+    libraries: ['racket/math'], languages: ['at-exp racket/base'] }, '/');
+  assert.deepEqual(plan.args, ['exe', '--gui', '++lib', 'racket/math', '++lang', 'at-exp racket/base',
+    '-o', executablePath(output, true), '--', source]);
+  const variable = buildPlan({ action: 'executable', source: '${file}', output: '${workspaceFolder}/app' }, '/root');
+  assert.equal(variable.source, '${file}');
+  assert.ok(variable.output.startsWith('${workspaceFolder}/app'));
+  assert.equal(executablePath('app', true, 'darwin'), 'app.app');
+  assert.equal(executablePath('app.app', true, 'darwin'), 'app.app');
+  assert.equal(executablePath('app', false, 'win32'), 'app.exe');
+  assert.equal(executablePath('app.exe', true, 'win32'), 'app.exe');
+});
+
+test('invalid build definitions and direct input replacement are rejected', () => {
+  const valid = { action: 'executable', source: 'main.rkt', output: 'app' };
+  for (const update of [{ action: 'unknown' }, { source: '' }, { output: 'bad\0name' }, { gui: 'true' },
+    { libraries: 'racket/math' }, { languages: [42] }, { output: 'main.rkt' }, { output: './main.rkt' },
+    { action: 'launcher', libraries: ['racket/math'] }, { action: 'distribution', gui: true }]) {
+    assert.throws(() => buildPlan({ ...valid, ...update }, '/project'));
+  }
+});
+
+test('public tools build a user-package launcher, embed modules and relocate runtime files', { timeout: 120000 }, async t => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'racket build λ '));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const source = path.join(directory, 'source'), library = path.join(directory, 'library');
+  await fs.mkdir(source); await fs.mkdir(library);
+  await fs.writeFile(path.join(library, 'info.rkt'), '#lang info\n(define collection "build-example")\n(define deps \'("base"))\n');
+  await fs.writeFile(path.join(library, 'main.rkt'), '#lang racket/base\n(provide answer)\n(define answer 42)\n');
+  const env = { ...process.env, PLTADDONDIR: path.join(directory, 'addon') };
+  await execute('racket', ['-l', 'raco', '--', 'pkg', 'install', '--scope', 'user', '--no-setup', '--deps', 'fail', '--link', '--', library], { env, timeout: 30000 });
+  const program = path.join(source, 'main λ.rkt');
+  await fs.writeFile(program, `#lang racket/base
+(require build-example racket/runtime-path racket/file)
+(define-runtime-path data "data.txt")
+(displayln (list answer (file->string data) (vector->list (current-command-line-arguments))))
+`);
+  await fs.writeFile(path.join(source, 'data.txt'), 'payload λ');
+  async function build(action, input, output, extra = {}) {
+    const plan = buildPlan({ action, source: input, output, ...extra }, directory);
+    await execute('racket', ['-l', 'raco', '--', ...plan.args], { cwd: directory, env, timeout: 60000 });
+    return plan.output;
+  }
+  const launcher = await build('launcher', program, path.join(directory, 'launcher'));
+  assert.match((await execute(launcher, ['argument λ'], { env })).stdout, /42 payload λ \(argument λ\)/);
+  const exe = await build('executable', program, path.join(directory, 'app'));
+  assert.match((await execute(exe, [], { env })).stdout, /42 payload λ/);
+  const distribution = await build('distribution', exe, path.join(directory, 'distribution'));
+  const moved = path.join(directory, 'moved distribution');
+  await fs.rename(distribution, moved);
+  await fs.rename(source, path.join(directory, 'hidden source'));
+  await fs.rename(library, path.join(directory, 'hidden library'));
+  const distributedExe = path.join(moved, ...(process.platform === 'win32' ? [] : ['bin']), path.basename(exe));
+  const result = await execute(distributedExe, ['moved λ'], { cwd: os.tmpdir(), env });
+  assert.match(result.stdout, /42 payload λ \(moved λ\)/);
+  await assert.rejects(execute(launcher, [], { env }), /cannot open module file|no such file/i);
+  // Embedded code remains usable without source; the undeployed runtime file does not.
+  await assert.rejects(execute(exe, [], { env }), /data.txt|cannot open input file/i);
+});
+
+test('explicit dynamic libraries are embedded and compiler errors remain errors', { timeout: 120000 }, async t => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'racket dynamic build '));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const program = path.join(directory, 'dynamic.rkt');
+  await fs.writeFile(program, '#lang racket/base\n(displayln ((dynamic-require \'racket/math \'sqr) 7))\n');
+  const plan = buildPlan({ action: 'executable', source: program, output: path.join(directory, 'app'), libraries: ['racket/math'] }, directory);
+  await execute('racket', ['-l', 'raco', '--', ...plan.args], { timeout: 60000 });
+  await fs.rename(program, path.join(directory, 'hidden.rkt'));
+  assert.equal((await execute(plan.output)).stdout.trim(), '49');
+  await fs.writeFile(program, '#lang racket/base\n(');
+  await assert.rejects(execute('racket', ['-l', 'raco', '--', ...plan.args], { timeout: 60000 }), /expected a|read-syntax/);
+});

@@ -10,7 +10,7 @@ of production readiness on other platforms or configurations.
    artifact in an isolated editor profile and test the installed code.
 2. Run the RackUnit suites both directly and through our Test Explorer's Run
    and Debug profiles. Verify the expected suite inventory and case counts,
-   a real breakpoint with live locals, a deliberate assertion failure and its
+   a real breakpoint with live lexical variables, a deliberate assertion failure and its
    source location, and a successful rerun after correction.
 3. Run protocol, language, GUI, and workflow regressions. Cover termination at
    the end of a program, cancellation while blocked, repeated REPL evaluations,
@@ -49,8 +49,8 @@ The recorded [0.8.0 local release environment](releases/0.8.0.md) is Linux
 ARM64, full Racket 9.1 CS, VS Code 1.98.1.
 Before declaring broader production support, run the installed-artifact tests
 on Windows, macOS, and Linux x64, on the advertised minimum and current editor
-versions, and on each supported Racket version. The current editor harness is
-Linux-specific and needs portable display/launch support for that matrix.
+versions, and on each supported Racket version. The editor harness supports
+Linux, Windows and macOS; record passing results for each selected configuration.
 
 Package tests use local links and archives without depending on the network.
 Catalog and Git installation, interrupted downloads, proxy/authentication
@@ -62,21 +62,51 @@ The [CI workflow](../.github/workflows/ci.yml) builds the extension and runs the
 core suites on Linux x64, Windows x64 and macOS ARM64, with Racket 9.1 and the
 current stable release. Linux jobs also exercise the installed extension,
 Test Explorer, GUI callbacks and bundled language-server regressions on the
-minimum and current stable editor versions. [CI details](ci.md) distinguish
-these checks from the Windows/macOS editor coverage still needed. A configured
+minimum and current stable editor versions. [CI details](ci.md) describe the
+installed-editor checks on Windows and macOS as well. A configured
 job establishes support only once its results pass for the revision in question.
 
-Owned process-group cleanup is exercised on Linux, including abrupt worker and
-adapter death. The Unix implementation retains a separate live group leader;
-processes that deliberately leave that group are outside its ownership. Windows
-currently terminates the immediate worker and needs native process-tree ownership
-and validation before equivalent cleanup can be claimed.
+Owned process cleanup passes the [native lifecycle and macro-stepper checks](https://github.com/lamestllama/racketeer/actions/runs/36821772249)
+on Windows x64 with Racket 9.1 and 9.3, Linux x64 and macOS ARM64 with Racket 9.1.
+The Unix implementation retains a separate live group leader; processes that
+deliberately leave that group are outside its ownership. Windows uses a Job
+Object owned by the adapter or macro-stepper supervisor. Its worker joins before
+running project code; closing the owner's handle terminates the job, including
+on owner death. Checks cover children and grandchildren, startup cancellation,
+Stop, Disconnect, worker and adapter crashes, preservation of unrelated processes,
+and cancellation of a stuck macro transformer with a child process. These checks
+are separate from installed VS Code extension checks.
+
+The [native validation run](https://github.com/lamestllama/racketeer/actions/runs/36855276354)
+at revision `a5ad68e` passes all eleven jobs. The six core configurations use
+Racket 9.1 and 9.3 on Linux x64, Windows x64 and macOS ARM64. Each runs all
+110 RackUnit cases and 138 Node tests, with the recorded platform-specific skips. Each of the five
+editor configurations passes 91 ordinary checks, 100 checks with the pinned
+Rhombus runtime, GUI regressions, and all 110 RackUnit cases through each
+Test Explorer profile. The recorded editors are VS Code 1.90.0 for the minimum
+version and 1.140.0 for stable; [CI details](ci.md) list the selected combinations.
+
+The macOS installation now preserves source and bytecode timestamps, preventing
+the installation itself from invalidating bundled bytecode. Workspace discovery
+and analysis run in disposable places so cancelling work does not terminate a
+thread sharing the controller's module-loading state. Regression checks cover
+active expansion cancellation, worker failure and recovery, and references across
+unopened files.
+
+The pinned `vscode-jsonrpc` dependency has a narrow write-failure correction:
+failed requests reject their callers without an additional unhandled rejection.
+The public transport regression exercises failed header writes, body writes and
+encoding with Node's strict unhandled-rejection handling. See the
+[dependency patch record](../vendor/README.md#javascript-language-client-reliability).
 
 Known product boundaries remain explicit:
 
-- Test Explorer reports files and RackUnit failures; it does not discover
-  individual cases or implement all `info.rkt` policies. Test Package uses the
-  native runner and reports in the task terminal.
+- Test Explorer discovers direct named RackUnit cases and `run-tests` calls.
+  Bound and generated suites report nested results during explicit execution.
+  Nested selection retains suite construction and fixtures; dynamic tests need
+  stable names and ordering for reruns. Mixed forms, custom runners and teaching
+  checks retain file-level execution. The separate raco profile delegates package
+  policies to Racket, with native task output and file-level exit results.
 - The language client uses one Racket installation per window, selected by the
   first workspace folder. Use separate windows for different installations.
 - Package mutation commands operate in user scope. Debugging requires source

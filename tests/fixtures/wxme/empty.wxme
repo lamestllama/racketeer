@@ -1,0 +1,20 @@
+#reader(lib"read.ss""wxme")WXME0111 ## 
+#|
+   This file uses the GRacket editor format.
+   Open this file in DrRacket version 9.1 or later to read it.
+
+   Most likely, it was created by saving a program in DrRacket,
+   and it probably contains a program with non-text elements
+   (such as images or comment boxes).
+
+            http://racket-lang.org/
+|#
+ 4 7 #"wxtext\0"
+3 1 6 #"wxtab\0"
+1 1 8 #"wximage\0"
+2 0 8 #"wxmedia\0"
+4 1 1 6 #"wxloc\0"
+          0 0 2 0 9 #"Standard\0"
+0 -1 1 #"\0"
+1 0 -1 -1 -1 -1 -1 -1 0 0 0 0 0 0 1 1 1 1.0 1 1 1 1.0 0 0 0 0.0 0 0 0
+0.0 -1 -1           0 0           0

@@ -97,6 +97,52 @@ for (const oneBased of [true, false]) {
       source: { path: program }, line, column: endColumn, endColumn: firstColumn - 1
     })).success, false);
   });
+
+  test(`captured source references identify ${base}-based breakpoints without a filesystem path`, async t => {
+    const { client, program, directory } = await prepare(t,
+      '#lang racket/base\n(define result (+ 1 2))\n(displayln result)\n', { oneBased, stopOnEntry: true });
+    await ok(client.request('configurationDone'));
+    const entry = await client.event('stopped');
+    const stack = await ok(client.request('stackTrace', { threadId: entry.body.threadId }));
+    const { sourceReference } = stack.stackFrames[0].source;
+    const line = 2 + base;
+    const expected = await ok(client.request('breakpointLocations', { source: { path: program, sourceReference: 0 }, line }));
+    let breakpoint;
+    for (const source of [{ sourceReference }, { sourceReference, path: path.join(directory, 'unrelated.rkt') }]) {
+      assert.deepEqual(await ok(client.request('breakpointLocations', { source, line })), expected);
+      breakpoint = (await ok(client.request('setBreakpoints', { source, breakpoints: [{ line }] }))).breakpoints[0];
+      assert.equal(breakpoint.verified, true);
+      assert.equal(breakpoint.source.sourceReference, sourceReference);
+    }
+    assert.equal((await client.request('setBreakpoints', {
+      source: { path: program, sourceReference: sourceReference + 10000 }, breakpoints: []
+    })).success, false, 'An unknown reference must not clear breakpoints through a fallback path');
+    await ok(client.request('continue', { threadId: entry.body.threadId }));
+    const stopped = await client.event('stopped');
+    assert.deepEqual(stopped.body.hitBreakpointIds, [breakpoint.id]);
+    await ok(client.request('setBreakpoints', { source: { sourceReference }, breakpoints: [] }));
+    await ok(client.request('continue', { threadId: stopped.body.threadId }));
+    await client.event('terminated');
+  });
+
+  test(`returned frames use closing boundaries with ${base}-based Unicode coordinates`, async t => {
+    const lines = ['#lang racket/base', '(define-values (a b)', '  (values "first"', '          "λ😀"))'];
+    const { client } = await prepare(t, lines.join('\r\n') + '\r\n', { oneBased, stopOnEntry: true });
+    await ok(client.request('configurationDone'));
+    const before = await client.event('stopped');
+    await ok(client.request('next', { threadId: before.body.threadId }));
+    const after = await client.event('stopped');
+    assert.equal(after.body.racketdapStopKind, 'after');
+    const { stackFrames } = await ok(client.request('stackTrace', { threadId: after.body.threadId }));
+    const top = stackFrames[0];
+    assert.equal(top.line, 3 + base);
+    assert.equal(top.endLine, top.line);
+    assert.equal(top.column, lines[3].indexOf(')') + base);
+    assert.equal(top.endColumn, top.column + 1);
+    assert.match(top.name, /^Returned 2 values at /);
+    await ok(client.request('continue', { threadId: after.body.threadId }));
+    await client.event('terminated');
+  });
 }
 
 test('a late breakpoint selects an unloaded external module for instrumentation', async t => {

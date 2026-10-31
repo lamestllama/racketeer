@@ -26,7 +26,8 @@ the deepest breakpoint. The arithmetic uses exact values.
    not run merely from loading it into the REPL.
 4. It should stop in `rates.rkt`. Inspect `taxable` (`180`) and `rate` (`1/10`).
    Expand **Call Stack** to see the callers in `pricing.rkt`, `orders.rkt`,
-   and `main.rkt`. Select a caller frame to inspect its locals.
+   and `main.rkt`. Select a caller frame to inspect its lexical variables under
+   **Variables → Locals**.
 5. Use **Step Out** (`Shift+F11`) to follow the return to a caller, or
    **Continue** (`F5`) to finish. Debug Console shows three returned values on
    separate lines: `198`, `18`, `180` (total, tax, net).

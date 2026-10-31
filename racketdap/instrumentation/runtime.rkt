@@ -6,6 +6,7 @@
          stop-binding-value stop-set-binding!
          stop-skip! stop-replace-results! stop-approximate?
          stop-token stop-contexts stop-return-token call-with-exception-stop call-with-pause-stop
+         call-with-thread-stop debugger-active-key
          make-activation make-live-binding make-frame frame-key context-key
          announce-before announce-after current-expression-token register-module-context!)
 
@@ -26,10 +27,11 @@
 (struct unavailable (reason) #:transparent)
 (struct live-binding (name read write) #:transparent)
 (struct activation (identity return-token) #:transparent)
-(struct frame (activation source bindings module-bindings context-bindings namespace site) #:transparent)
+(struct frame (activation source bindings module-bindings context-bindings namespace site parameters) #:transparent)
 (struct debug-stop (site kind frames results token contexts return-token owner live action))
 (define frame-key (make-continuation-mark-key 'racket-debug-frame))
 (define context-key (make-continuation-mark-key 'racket-debug-expression))
+(define debugger-active-key (make-continuation-mark-key 'racket-debugger-active))
 (define debugging-enabled? (make-parameter #t))
 ;; A helper instance imported at transformer phase must not invoke callbacks.
 (define runtime-phase-zero?
@@ -88,7 +90,9 @@
 (define (make-activation)
   (activation (gensym 'activation) (current-expression-token)))
 (define make-live-binding live-binding)
-(define make-frame frame)
+(define (make-frame activation source bindings module-bindings context-bindings namespace site)
+  (frame activation source bindings module-bindings context-bindings namespace site
+         (current-parameterization)))
 
 (define (inspectable-frames [marks #f])
   (define seen (make-hasheq))
@@ -252,24 +256,26 @@
      (lambda () (eval expression namespace)))))
 (define (stop-evaluate s datum [i 0])
   (evaluate-in-frame (selected-frame s i 'stop-evaluate) datum))
-(define (deliver callback descriptor kind results token [marks #f])
+(define (deliver callback descriptor kind results token [marks #f] #:empty? [empty? #f])
   (and runtime-phase-zero? callback (debugging-enabled?)
        (let ([frames (inspectable-frames marks)])
          (and
-          (pair? frames)
+          (or empty? (pair? frames))
           (let* ([contexts (continuation-mark-set->list marks context-key)]
                  [enclosing (if (and token (pair? contexts) (eq? token (car contexts)))
                                 (cdr contexts) contexts)]
                  [action (box #f)]
                  [s (debug-stop descriptor kind frames results token enclosing
-                                (activation-return-token (frame-activation (car frames)))
+                                (and (pair? frames) (activation-return-token (frame-activation (car frames))))
                                 (current-thread) (box #t) action)])
             (parameterize ([debugging-enabled? #f])
               (call-with-continuation-barrier
                (lambda ()
                  (dynamic-wind
                    (lambda () (check-stop s 'debug-callback))
-                   (lambda () (call-with-values (lambda () (callback s)) (lambda ignored (void))))
+                   (lambda ()
+                     (with-continuation-mark debugger-active-key #t
+                       (call-with-values (lambda () (callback s)) (lambda ignored (void)))))
                    (lambda () (set-box! (debug-stop-live s) #f))))))
             ;; Each delivery owns this decision. Continuation re-entry through an
             ;; expression completion creates a new stop and a fresh decision.
@@ -306,3 +312,29 @@
        #f
        (deliver callback (frame-site (car frames)) 'pause #f #f marks))))
   interruption)
+
+;; Pause must not raise an exception in application code. A library can handle
+;; a break before the debugger sees it, causing arbitrary application effects.
+;; Keep the selected thread suspended while a service thread handles inspection.
+;; Its evaluation context comes from the innermost captured source frame; the
+;; service thread has its own thread identity and thread cells.
+(define (call-with-thread-stop target callback)
+  (when (eq? target (current-thread))
+    (raise-arguments-error 'call-with-thread-stop "cannot suspend the calling thread"))
+  (define resume? (thread-running? target))
+  (dynamic-wind
+    (lambda () (when resume? (thread-suspend target)))
+    (lambda ()
+      (define marks (continuation-marks target))
+      (cond
+        [(or (thread-dead? target)
+             (continuation-mark-set-first marks debugger-active-key #f)) #f]
+        [else
+         (define frames (inspectable-frames marks))
+         (call-with-parameterization
+          (if (pair? frames) (frame-parameters (car frames)) (current-parameterization))
+          (lambda ()
+            (deliver callback (and (pair? frames) (frame-site (car frames)))
+                     'pause #f #f marks #:empty? #t)))
+         #t]))
+    (lambda () (when resume? (thread-resume target)))))

@@ -15,8 +15,17 @@ Runtime forms are recognized by binding identity. Arbitrary rename-in/prefix-in
 aliases are supported, and familiar printed names do not override their actual
 bindings. Input binding identifiers retain their syntax scopes. Literal values,
 identifier reads, variable-reference construction, and function construction
-have no stop sites. Descriptors retain original source coordinates and expanded
-expression data; duplicated macro occurrences receive independent site IDs.
+have stop sites only when they are complete module body expressions or plain
+loaded top-level expressions. Atomic definition initializers and operands inside
+larger expressions remain without their own sites. Descriptors retain original
+source coordinates and expanded expression data; duplicated macro occurrences
+receive independent site IDs.
+Binding containers introduced for internal definitions have neither an operator
+source nor an expansion origin. Their inherited enclosing-body range is not a
+separate stop; their initializers and body are still traversed and instrumented.
+Explicit and macro-originated binding forms retain their normal stops.
+The containers retain their frame marks for exception and asynchronous Pause
+inspection, but are omitted from breakpoint sites and expression callbacks.
 
 Non-tail expressions allocate an evaluation identity and preserve all returned
 values through a completion continuation. Tail wrappers retain the original
@@ -132,10 +141,37 @@ call-with-pause-stop receives a break before the loader unwinds the executing
 program. It delivers kind 'pause from captured source marks, with no results
 or expression token. stop-approximate? reports true. The callback runs with
 breaks disabled, recursive callbacks suppressed, and a continuation barrier.
-The helper returns the identical break; the loader classifies intentional
-Pause requests and invokes its resume continuation after the helper returns.
+The helper returns the identical break; its caller can invoke the break's
+resume continuation after the helper returns.
 No-frame/no-callback/hang-up/termination cases pass through without a pause
 callback. Skip/result replacement reject exception and pause stops.
+
+DAP Pause requests stops from all registered application threads, including the
+requested thread. Each stops at its next source expression. The first source
+stop takes editor focus; subsequent stops preserve it. This lets a GUI callback
+take focus when the launch thread is waiting for the event loop. Threads first
+registered while Pause is pending also stop before executing source.
+
+After 100 milliseconds, threads that have not reached source are suspended with
+call-with-thread-stop. Their captured continuation marks support approximate
+inspection on a service thread. Continue or Step resumes them without running
+application break handlers or unwinding dynamic-wind frames. Threads inside a
+debugger callback or holding a debugger protocol lock are retried after that
+operation finishes. A thread waiting outside source can have no frames;
+Continue remains available. Stop events report each thread individually;
+uninstrumented library threads are not claimed to be stopped.
+
+Continue and ordinary stepping cancel pending pauses and resume the other
+stopped threads. DAP singleThread requests leave other threads stopped. Step
+Over and Step Out use the next source boundary when a callback has no observable
+caller or expression-completion target, rather than waiting for a nonexistent
+return stop.
+
+Each source frame retains its parameterization. Approximate-pause evaluation
+uses the innermost captured parameterization and live bindings on the service
+thread, which has its own thread identity and thread cells. Breakpoint, step and
+exception evaluation still runs on the target thread. Operations that require
+the target's thread identity should be evaluated at an expression stop.
 
 ## Validation
 

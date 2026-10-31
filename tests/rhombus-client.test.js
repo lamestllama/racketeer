@@ -14,7 +14,7 @@ function event() {
 }
 function fixture(initialDocuments = [], source = 'bundled') {
   const opened = event(), active = event(), changed = event();
-  const clients = [], watchers = [], processes = [], commands = new Map();
+  const clients = [], indexes = [], processes = [], commands = new Map();
   let enabled = true;
   const disposable = () => ({ dispose() {} });
   const status = { visible: false, show() { this.visible = true; }, hide() { this.visible = false; }, dispose() {} };
@@ -32,10 +32,6 @@ function fixture(initialDocuments = [], source = 'bundled') {
       getConfiguration: () => ({ get(key, fallback) {
         return ({ 'languageServer.enabled': enabled, 'languageServer.source': source })[key] ?? fallback;
       } }),
-      createFileSystemWatcher: pattern => {
-        const watcher = { pattern, disposed: false, dispose() { this.disposed = true; } };
-        watchers.push(watcher); return watcher;
-      },
       onDidOpenTextDocument: opened.subscribe,
       onDidChangeConfiguration: changed.subscribe
     },
@@ -46,6 +42,7 @@ function fixture(initialDocuments = [], source = 'bundled') {
     constructor(_id, _name, factory, options) { this.factory = factory; this.options = options; this.state = event(); clients.push(this); }
     createDefaultErrorHandler() { return { error() {}, closed() {} }; }
     onDidChangeState(callback) { return this.state.subscribe(callback); }
+    onNotification(_method, callback) { this.indexNotification = callback; return disposable(); }
     isRunning() { return this.running; }
     async start() { await this.factory(); this.running = true; this.state.emit({ newState: 'running' }); }
     async stop() { this.running = false; }
@@ -56,6 +53,11 @@ function fixture(initialDocuments = [], source = 'bundled') {
   const filename = path.join(__dirname, '../vscode/language-client.js');
   const dependencies = {
     vscode, 'vscode-languageclient/node': { LanguageClient: Client, State: { Running: 'running' }, CloseAction: {} },
+    './workspace-index': { createWorkspaceIndex() {
+      const index = { disposed: false, starts: 0, async start() { this.starts++; }, refresh() {},
+        cancelStart() {}, async dispose() { this.disposed = true; }, provideReferences(...args) { return args.pop()(...args); } };
+      indexes.push(index); return index;
+    } },
     './language-process': { createLanguageProcess(executable, args) {
       const process = { executable, args, start: async () => ({}), ready() {}, cancelStart() {}, disposed: false,
         async dispose() { this.disposed = true; } };
@@ -64,20 +66,23 @@ function fixture(initialDocuments = [], source = 'bundled') {
   };
   vm.runInNewContext(fs.readFileSync(filename, 'utf8'), { module, require: name => dependencies[name] }, { filename });
   const language = module.exports.registerLanguageTools(context, { setLanguageClient() {} });
-  return { language, vscode, status, clients, watchers, processes, opened, active, changed, commands, context,
+  return { language, vscode, status, clients, indexes, processes, opened, active, changed, commands, context,
     setEnabled(value) { enabled = value; changed.emit({ affectsConfiguration: key => key === 'racketdap.languageServer' }); } };
 }
 
-for (const source of ['bundled', 'installed']) test(`Rhombus-only startup registers file analysis, watches .rhm and shows status (${source})`, async t => {
+for (const source of ['bundled', 'installed']) test(`Rhombus-only startup registers language analysis, starts its index and shows status (${source})`, async t => {
   const instance = fixture([{ languageId: 'rhombus' }], source);
   t.after(() => instance.language.dispose());
   await instance.language.whenReady();
   assert.equal(instance.clients.length, 1);
   const { options } = instance.clients[0];
   assert.deepEqual(JSON.parse(JSON.stringify(options.documentSelector)),
-    [{ language: 'racket', scheme: 'file' }, { language: 'rhombus', scheme: 'file' }]);
-  assert.match(instance.watchers[0].pattern, /\brhm\b/);
-  assert.equal(options.synchronize.fileEvents, instance.watchers[0]);
+    source === 'bundled'
+      ? [{ language: 'racket', scheme: 'file' }, { language: 'racket', scheme: 'untitled' },
+        { language: 'rhombus', scheme: 'file' }, { language: 'rhombus', scheme: 'untitled' }]
+      : [{ language: 'racket', scheme: 'file' }, { language: 'rhombus', scheme: 'file' }]);
+  assert.equal(instance.indexes[0].starts, 1);
+  assert.equal(options.synchronize.fileEvents, undefined, 'The index owns file watching');
   assert.equal(instance.status.visible, true);
   assert.match(instance.status.tooltip, /Rhombus/);
   assert.deepEqual(JSON.parse(JSON.stringify(instance.processes[0].args)),
@@ -88,7 +93,7 @@ for (const source of ['bundled', 'installed']) test(`Rhombus-only startup regist
   instance.active.emit(); assert.equal(instance.status.visible, true);
   await instance.commands.get('racketdap.restartLanguageServer')();
   assert.equal(instance.clients.length, 2);
-  assert.equal(instance.watchers[0].disposed, true);
+  assert.equal(instance.indexes[0].disposed, true);
   assert.equal(instance.processes[0].disposed, true);
 });
 

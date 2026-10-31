@@ -45,11 +45,18 @@ jobs:
         with:
           python-version: '3.12'
       - uses: Bogdanp/setup-racket@2466913449df77df2bad149d1f2fc4e1ea4795dd # v1.15
+        if: runner.os != 'macOS'
         with:
           version: ${{ matrix.racket }}
           architecture: ${{ matrix.architecture }}
           distribution: full
           variant: CS
+      - name: Install Racket with preserved timestamps
+        if: runner.os == 'macOS'
+        env:
+          RACKET_VERSION: ${{ matrix.racket }}
+          RACKET_ARCH: ${{ matrix.architecture }}
+        run: bash scripts/install-racket-macos.sh "$RACKET_VERSION" "$RACKET_ARCH"
       - name: Record environment
         run: |
           mkdir -p .test-output/ci
@@ -82,18 +89,32 @@ jobs:
           retention-days: 14
 
   editor:
-    name: Installed extension / Racket ${{ matrix.racket }} / VS Code ${{ matrix.code }}
-    runs-on: ubuntu-24.04
+    name: Installed extension / ${{ matrix.os }} / Racket ${{ matrix.racket }} / VS Code ${{ matrix.code }}
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
         include:
-          - racket: '9.1'
+          - os: ubuntu-24.04
+            architecture: x64
+            racket: '9.1'
             code: minimum
-          - racket: '9.1'
+          - os: ubuntu-24.04
+            architecture: x64
+            racket: '9.1'
             code: stable
-          - racket: stable
+          - os: ubuntu-24.04
+            architecture: x64
+            racket: stable
+            code: stable
+          - os: windows-2022
+            architecture: x64
+            racket: '9.1'
+            code: stable
+          - os: macos-15
+            architecture: arm64
+            racket: '9.1'
             code: stable
     defaults:
       run:
@@ -111,12 +132,20 @@ jobs:
         with:
           python-version: '3.12'
       - uses: Bogdanp/setup-racket@2466913449df77df2bad149d1f2fc4e1ea4795dd # v1.15
+        if: runner.os != 'macOS'
         with:
           version: ${{ matrix.racket }}
-          architecture: x64
+          architecture: ${{ matrix.architecture }}
           distribution: full
           variant: CS
+      - name: Install Racket with preserved timestamps
+        if: runner.os == 'macOS'
+        env:
+          RACKET_VERSION: ${{ matrix.racket }}
+          RACKET_ARCH: ${{ matrix.architecture }}
+        run: bash scripts/install-racket-macos.sh "$RACKET_VERSION" "$RACKET_ARCH"
       - name: Install display dependencies
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y xvfb xauth libgtk-3-0 libnss3 libasound2t64
@@ -140,11 +169,8 @@ jobs:
             ? manifest.engines.vscode.replace(/^\^/, '') : process.env.EDITOR_VERSION;
           downloadAndUnzipVSCode({ version, cachePath: path.join(process.env.RUNNER_TEMP, 'vscode-test') })
             .then(executable => {
-              const app = path.join(path.dirname(executable), 'resources/app');
-              const metadata = JSON.parse(fs.readFileSync(path.join(app, 'package.json'), 'utf8'));
-              const product = JSON.parse(fs.readFileSync(path.join(app, 'product.json'), 'utf8'));
               fs.writeFileSync('.test-output/ci/editor.json', JSON.stringify({
-                requested: version, version: metadata.version, commit: product.commit
+                requested: version, executable
               }, null, 2) + '\n');
               fs.appendFileSync(process.env.GITHUB_OUTPUT, `executable=${executable}\n`);
             })
@@ -157,24 +183,38 @@ jobs:
         run: |
           node scripts/package-extension.js | tee .test-output/ci/package.log
           node -e 'const p = require("./vscode/package.json"); require("node:fs").appendFileSync(process.env.GITHUB_OUTPUT, `path=dist/${p.name}-${p.version}.vsix\n`);'
+      - name: Check editor orchestration
+        run: python tests/harness-checks.py
+      - name: Compile standalone GUI test programs
+        run: raco make racketdap/main.rkt racketdap/worker/main.rkt racketdap/tools/macro-stepper.rkt tests/support/macro-stepper-gui.rkt
       - name: Run GUI regressions
-        run: python scripts/test-gui.py 2>&1 | tee .test-output/ci/gui.log
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then
+            python scripts/test-gui.py 2>&1 | tee .test-output/ci/gui.log
+          else
+            node --test --test-concurrency=1 tests/gui-parity.test.js tests/macro-stepper-gui.test.js 2>&1 | tee .test-output/ci/gui.log
+          fi
       - name: Run bundled language-server regressions
+        if: runner.os == 'Linux'
         env:
           PLTCOLLECTS: '${{ github.workspace }}/vendor/collects:'
         run: |
-          xvfb-run -a raco test vendor/collects/racket-langserver/tests/lib/doc-test.rkt vendor/collects/racket-langserver/tests/lsp/watched-create-test.rkt 2>&1 | tee .test-output/ci/language.log
+          xvfb-run -a raco test vendor/collects/racket-langserver/tests/lib/doc-test.rkt vendor/collects/racket-langserver/tests/lsp/workspace-lifecycle-test.rkt 2>&1 | tee .test-output/ci/language.log
       - name: Test the installed extension
+        id: integration
+        if: ${{ !cancelled() && steps.artifact.outcome == 'success' }}
         env:
           TEST_EDITOR: ${{ steps.editor.outputs.executable }}
           TEST_ARTIFACT: ${{ steps.artifact.outputs.path }}
         run: python scripts/test-vscode.py --code "$TEST_EDITOR" --artifact "$TEST_ARTIFACT" --timeout 1200
       - name: Test the installed extension with the pinned Rhombus runtime
+        if: ${{ !cancelled() && steps.integration.outcome == 'success' }}
         env:
           TEST_EDITOR: ${{ steps.editor.outputs.executable }}
           TEST_ARTIFACT: ${{ steps.artifact.outputs.path }}
         run: python scripts/test-vscode.py --rhombus --code "$TEST_EDITOR" --artifact "$TEST_ARTIFACT" --timeout 1200
       - name: Run and debug the repository tests through Test Explorer
+        if: ${{ !cancelled() && steps.artifact.outcome == 'success' }}
         env:
           TEST_EDITOR: ${{ steps.editor.outputs.executable }}
           TEST_ARTIFACT: ${{ steps.artifact.outputs.path }}
@@ -189,7 +229,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: editor-racket-${{ matrix.racket }}-code-${{ matrix.code }}
+          name: editor-${{ matrix.os }}-racket-${{ matrix.racket }}-code-${{ matrix.code }}
           include-hidden-files: true
           path: |
             dist/*.vsix
@@ -202,6 +242,8 @@ jobs:
             .test-output/**/install.log
             .test-output/**/xvfb.log
             .test-output/**/language-server.log
+            .test-output/**/user/logs/**/*Racket Language Server.log
+            .test-output/**/user/logs/**/exthost.log
             .test-output/**/rhombus-runtime.json
             .test-output/**/rhombus-runtime-lock.json
             .test-output/**/rhombus-install.log

@@ -2,7 +2,7 @@
 const vscode = require('vscode');
 const path = require('node:path');
 
-function registerDebugRepl(sessions) {
+function registerDebugRepl(sessions, interactions) {
   const modules = new Map();
   const transitions = new Map();
   const keyFor = target => JSON.stringify([target.program, target.racketExecutable, target.cwd]);
@@ -17,14 +17,17 @@ function registerDebugRepl(sessions) {
     if (!record || record.ended) {
       record = await sessions.start(target, {
         name: `Racket REPL: ${path.basename(target.program)}`,
-        submodule: [], interactive: true, console: 'integratedTerminal', stopOnEntry: false
+        submodule: [], interactive: true, console: 'integratedTerminal', stopOnEntry: false,
+        racketdapRichInteractions: !!interactions,
+        ...(interactions ? { internalConsoleOptions: 'neverOpen' } : {})
       });
       modules.set(key, record);
       void record.done.then(() => {
         if (modules.get(key) === record) modules.delete(key);
       });
     }
-    await vscode.commands.executeCommand('workbench.debug.action.focusRepl');
+    if (interactions) interactions.reveal(record, expression => evaluate(target, [expression]), () => open(target, true));
+    else await vscode.commands.executeCommand('workbench.debug.action.focusRepl');
     return record;
   }
   function open(target, restart = false) {
@@ -36,7 +39,7 @@ function registerDebugRepl(sessions) {
     return operation;
   }
 
-  async function evaluate(target, expression) {
+  async function evaluate(target, expressions) {
     // The command's target is the frame selected when evaluation was requested.
     // Revealing the console can change the editor's active stack selection.
     const selected = vscode.debug.activeStackItem;
@@ -57,9 +60,13 @@ function registerDebugRepl(sessions) {
     if (record.evaluating.has(evaluation)) throw new Error('This Debug REPL is already evaluating. Continue, cancel, or stop that evaluation first.');
     record.evaluating.add(evaluation);
     try {
-      return await record.session.customRequest('evaluate', {
-        expression, context: 'repl', frameId, racketdapEcho: true
-      });
+      let result;
+      for (const expression of expressions) {
+        result = await record.session.customRequest('evaluate', {
+          expression, context: 'repl', frameId, racketdapEcho: true
+        });
+      }
+      return result;
     } finally { record.evaluating.delete(evaluation); }
   }
   return { open, evaluate };

@@ -1,10 +1,13 @@
 #lang racket/base
 
 (require (only-in ffi/unsafe/global get-place-table)
+         file/convertible
          racket/path
          racket/port
          racket/runtime-path
          syntax/modcode
+         "../test-discovery.rkt"
+         "../wxme-source.rkt"
          "../instrumentation/instrument.rkt")
 (provide run-module make-debug-exception-handler)
 
@@ -36,10 +39,14 @@
 ;; target thread; selected modules bypass bytecode without writing caches.
 (define (run-module path
                     #:instrument? [instrument? #t]
+                    #:images? [images? #f]
+                    #:coverage? [coverage? #f]
                     #:language [language #f]
                     #:on-sites [on-sites void]
                     #:on-event [on-event #f]
+                    #:on-entry [on-entry #f]
                     #:on-exception [on-exception #f]
+                    #:on-error [on-error void]
                     #:on-pause [on-pause #f]
                     #:on-source [on-source void]
                     #:on-source-snapshot [on-source-snapshot void]
@@ -49,6 +56,7 @@
                     #:submodule [submodule '()]
                     #:main? [main? #f]
                     #:test? [test? #f]
+                    #:test-selection [test-selection #f]
                     #:on-test-event [on-test-event void]
                     #:on-ready [on-ready #f]
                     #:entry [entry #f])
@@ -79,6 +87,9 @@
              (source-selected? resolved))))
   (define target (if (null? submodule) source `(submod ,source ,@submodule)))
   (define namespace (make-base-namespace))
+  ;; Image values and the debugger must share the conversion property identity.
+  (when (or instrument? images?)
+    (namespace-attach-module (namespace-anchor->namespace anchor) 'file/convertible namespace))
   (when language
     (unless (symbol? language) (raise-argument-error 'run-module "language module-path symbol" language))
     (parameterize ([current-namespace namespace]) (namespace-require language)))
@@ -98,6 +109,12 @@
   (define (target-registry?)
     (eq? registry (namespace-module-registry (current-namespace))))
   (define next-id 0)
+  (define discovered-tests '())
+  ;; Record module ownership during expansion. Source paths alone cannot
+  ;; distinguish main from its parent or sibling submodules in the same file.
+  (define module-paths (make-hasheq))
+  (define entry-submodule #f)
+  (define entry-announced? #f)
   (define (fresh-id)
     (begin0 next-id (set! next-id (add1 next-id))))
   (define (instrument-eval selected-source #:top-level? [top-level? language])
@@ -118,15 +135,31 @@
                           (file ,(path->string expander-path)))
                  (provide (filtered-out
                            (lambda (name)
-                             (and (not (equal? name "original:#%module-begin"))
+                             (and (regexp-match? #rx"^original:" name)
+                                  (not (equal? name "original:#%module-begin"))
                                   (substring name 9)))
                            (all-from-out ,(syntax->datum language)))
                           (rename-out [debug-module-begin #%module-begin]))
                  (define-instrumented-module-begin debug-module-begin original:#%module-begin ,rewrite ,(path->string instrumentation-runtime-path))))))
           (datum->syntax context `(quote ,name)))
-        (define (annotate expanded [bindings #f])
+        (define (annotate expanded [bindings #f] #:expression-boundary? [expression-boundary? #f])
+          (define events
+            (and on-event
+                 (if on-entry
+                     (lambda (stop)
+                       (cond
+                         [(and (not entry-announced?)
+                               (eq? (stop-kind stop) 'before)
+                               (equal? selected-source source)
+                               (equal? (hash-ref module-paths bindings '()) entry-submodule))
+                          (set! entry-announced? #t)
+                          (on-entry stop)]
+                         [else (on-event stop)]))
+                     on-event)))
           (define-values (annotated sites)
-            (instrument-module expanded selected-source fresh-id on-event #:module-context bindings))
+            (instrument-module expanded selected-source fresh-id events #:module-context bindings
+                               #:coverage? coverage?
+                               #:expression-boundary? expression-boundary?))
           (on-sites sites)
           annotated)
         (define (make-transform bindings)
@@ -134,6 +167,7 @@
             (case kind
               [(declaration) (record-module-bindings! bindings stx selected-source)]
               [(expression) (annotate stx bindings)]
+              [(module-expression) (annotate stx bindings #:expression-boundary? #t)]
               [(module) (rewrite-submodule stx bindings)])))
         (define (wrap-body body context bindings)
           (define transform (make-transform bindings))
@@ -144,12 +178,32 @@
                                     (rename-in (file ,(path->string expander-path))
                                                [instrument-form ,wrapper-name])))
            (for/list ([item (in-list body)])
-             #`(#,wrapper #,transform #,item))))
+             ;; Racket's module-begin must see an explicit runtime configuration
+             ;; before expansion, or it inserts a second submodule of that name.
+             (syntax-case item ()
+               [(head name language form ...)
+                (and (memq (syntax-e #'head) '(module module*))
+                     (eq? (syntax-e #'name) 'configure-runtime))
+                (let ([child (module-binding-context-child! bindings 'configure-runtime
+                                                           (not (syntax-e #'language)))])
+                  (hash-set! module-paths child
+                             (append (hash-ref module-paths bindings '()) '(configure-runtime)))
+                  (if (syntax-e #'language)
+                      #`(head name #,(language-wrapper #'language item child) form ...)
+                      #`(head name language #,@(wrap-body (syntax->list #'(form ...)) item child))))]
+               [_ #`(#,wrapper #,transform #,item)]))))
         (define (rewrite-submodule form [parent-bindings #f])
           (define (context-for name inherit?)
-            (if parent-bindings
-                (module-binding-context-child! parent-bindings (syntax-e name) inherit?)
-                (make-module-binding-context)))
+            (define context
+              (if parent-bindings
+                  (module-binding-context-child! parent-bindings (syntax-e name) inherit?)
+                  (make-module-binding-context)))
+            (hash-set! module-paths context
+                       (if parent-bindings
+                           (append (hash-ref module-paths parent-bindings) (list (syntax-e name)))
+                           '()))
+            context)
+          ;; Keep declaration bindings when a module is loaded during expansion.
           (define rewritten
             (syntax-case form (module module* module+ begin)
             [(module . _) (not (equal? (syntax-source form) selected-source)) form]
@@ -157,29 +211,29 @@
             [(module name language (mb body ...))
              (and (memq (syntax-e #'language) '(racket/base racket))
                   (eq? (syntax-e #'mb) '#%module-begin))
-             #`(module name language
+             #`(#,(car (syntax-e form)) name language
                  (mb #,@(wrap-body (syntax->list #'(body ...)) #'mb (context-for #'name #f))))]
             [(module name language body ...)
              (memq (syntax-e #'language) '(racket/base racket))
-             #`(module name language #,@(wrap-body (syntax->list #'(body ...)) form (context-for #'name #f)))]
+             #`(#,(car (syntax-e form)) name language #,@(wrap-body (syntax->list #'(body ...)) form (context-for #'name #f)))]
             [(module* name language body ...)
              (or (not (syntax-e #'language))
                  (memq (syntax-e #'language) '(racket/base racket)))
-             #`(module* name language
+             #`(#,(car (syntax-e form)) name language
                  #,@(wrap-body (syntax->list #'(body ...)) form
                                (context-for #'name (not (syntax-e #'language)))))]
             [(module name language . _)
              (syntax-case form ()
                [(_ name language body ...)
-                #`(module name #,(language-wrapper #'language form (context-for #'name #f)) body ...)])]
+                #`(#,(car (syntax-e form)) name #,(language-wrapper #'language form (context-for #'name #f)) body ...)])]
             [(module* name language . _)
              (syntax-case form ()
                [(_ name language body ...)
-                #`(module* name #,(language-wrapper #'language form (context-for #'name #f)) body ...)])]
+                #`(#,(car (syntax-e form)) name #,(language-wrapper #'language form (context-for #'name #f)) body ...)])]
             [(module+ name body ...)
-             #`(module+ name #,@(wrap-body (syntax->list #'(body ...)) form (context-for #'name #t)))]
+             #`(#,(car (syntax-e form)) name #,@(wrap-body (syntax->list #'(body ...)) form (context-for #'name #t)))]
             [(begin body ...)
-             #`(begin #,@(map (lambda (item) (rewrite-submodule item parent-bindings))
+             #`(#,(car (syntax-e form)) #,@(map (lambda (item) (rewrite-submodule item parent-bindings))
                               (syntax->list #'(body ...))))]
             [_ form]))
           (if (syntax? rewritten)
@@ -195,12 +249,21 @@
                      [else (call-with-values (lambda () (eval-top (car items))) (lambda _ (void)))
                            (loop (cdr items))]))]
             [(define-values ids rhs)
-             (ordinary-eval #`(define-values ids #,(annotate (expand-syntax #'rhs))))]
+             ;; Plain-file evaluation has no transformer-time syntax-local-name
+             ;; to carry this binding through the procedure-registration call.
+             (let* ([expanded-rhs (expand-syntax #'rhs)]
+                    [identifiers (syntax->list #'ids)]
+                    [named-rhs
+                     (if (and (= (length identifiers) 1)
+                              (not (syntax-property expanded-rhs 'inferred-name)))
+                         (syntax-property expanded-rhs 'inferred-name (syntax-e (car identifiers)))
+                         expanded-rhs)])
+               (ordinary-eval #`(define-values ids #,(annotate named-rhs))))]
             [(define-syntaxes . _) (ordinary-eval partial)]
             [(begin-for-syntax . _) (ordinary-eval partial)]
             [(#%require . _) (ordinary-eval partial)]
             [(module . _) (ordinary-eval (rewrite-submodule partial))]
-            [_ (ordinary-eval (annotate (expand-syntax partial)))]))
+            [_ (ordinary-eval (annotate (expand-syntax partial) #:expression-boundary? #t))]))
         (if (and top-level? (not (compiled-expression? form)))
             (eval-top form)
             (ordinary-eval (rewrite-submodule form))))))
@@ -235,7 +298,15 @@
     ;; Capture before either callback can edit the file. The reader consumes
     ;; these same bytes, and source consumers never need to reopen the path.
     (define contents (call-with-input-file resolved port->bytes))
-    (define text (string->immutable-string (bytes->string/utf-8 contents #\uFFFD)))
+    (define text (string->immutable-string (source-text contents)))
+    (when (and test? (equal? resolved source))
+      (define tests (discover-tests text))
+      (when test-selection
+        (unless (and tests (equal? (hash-ref test-selection 'sourceHash) (test-source-hash text))
+                     (andmap (lambda (id) (findf (lambda (test) (= id (hash-ref test 'id))) tests))
+                             (hash-ref test-selection 'ids)))
+          (error 'test "Test selection is out of date or this file requires a whole-file run.")))
+      (set! discovered-tests (or tests '())))
     (on-source resolved)
     (on-source-snapshot resolved text)
     (open-input-bytes contents resolved))
@@ -260,7 +331,10 @@
                              (open-source-snapshot resolved)
                              (ordinary-open path)))])
          (get-module-code resolved #:sub-path '() #:rkt-try-ss? #f
-                          #:compile evaluate-loaded-form))]
+                          #:compile (lambda (form)
+                                      (evaluate-loaded-form
+                                       (if (and test? (equal? resolved source) (pair? discovered-tests))
+                                           (wrap-discovered-tests form discovered-tests (and test-selection #t)) form)))))]
       [else
        (define input (open-source-snapshot resolved))
        (port-count-lines! input)
@@ -314,10 +388,12 @@
              (ordinary-source-load path expected)))]))
   (define program-custodian (make-custodian))
   (define ordinary-uncaught (uncaught-exception-handler))
+  (define exception-handler-tag (make-continuation-prompt-tag 'module-exception-handler))
   (define report-test-error void)
   (define debug-exception-handler (make-debug-exception-handler on-exception on-pause))
   (define (exception-handler value)
     (begin0 (debug-exception-handler value)
+      (on-error value)
       (report-test-error value)))
   (dynamic-wind
     void
@@ -327,29 +403,70 @@
                      [current-load/use-compiled load-selected]
                      [current-load load-plain-source]
                      [uncaught-exception-handler
-                      (lambda (value) (exception-handler value) (ordinary-uncaught value))])
-        (call-with-exception-handler
-         exception-handler
+                      (lambda (value)
+                        ;; The enclosing handler already observed this raise.
+                        ;; Child threads inherit parameters, but not this prompt,
+                        ;; so their uncaught errors still need observation.
+                        (unless (continuation-prompt-available? exception-handler-tag)
+                          (exception-handler value))
+                        (ordinary-uncaught value))])
+        (call-with-continuation-prompt
          (lambda ()
-           (define (execute)
-             (if language
-                 (begin
-                   (when instrument?
-                     (eval `(require (only-in (file ,(path->string instrumentation-runtime-path))))))
-                   (load source))
-                 (dynamic-require
-                  (if (and test? (module-declared? `(submod ,source test) #t))
-                      `(submod ,source test) target) #f))
-             (when (and (not language) main? (module-declared? `(submod ,source main) #t))
-               (dynamic-require `(submod ,source main) #f))
-             (begin0 (if entry ((if language (eval entry) (dynamic-require target entry))) (void))
-               (if on-ready
-                   (on-ready (if language namespace (module->namespace target)))
-                   ((executable-yield-handler) 0))))
-           (if test?
-               (let-values ([(run-tests report-error)
-                             ((dynamic-require testing-path 'make-test-runner) on-test-event)])
-                 (set! report-test-error report-error)
-                 (run-tests execute))
-               (execute))))))
+           (call-with-exception-handler
+            exception-handler
+            (lambda ()
+              (define (execute)
+                (define test-submodule?
+                  (and test? (module-declared? `(submod ,source test) #t)))
+                ;; Discover main before instantiation, so parent initialization
+                ;; remains debuggable without consuming the automatic entry stop.
+                ;; This loads the declaration through the same snapshot/expansion
+                ;; path; dynamic-require below reuses it.
+                (set! entry-submodule
+                      (cond
+                        [(and on-entry (not language) main?
+                              (module-declared? `(submod ,source main) #t)) '(main)]
+                        [test-submodule? '(test)]
+                        [else submodule]))
+                (unless language
+                  ;; Configure the launched module, not its dependencies. Tests
+                  ;; use the enclosing file's configuration, as raco test does.
+                  (define runtime-target (if test? source target))
+                  (define config-module `(submod ,source ,@(if test? '() submodule) configure-runtime))
+                  (when (module-declared? config-module #t)
+                    (dynamic-require config-module #f))
+                  ;; Racket also applies legacy language metadata after the
+                  ;; submodule. raco test uses only the submodule protocol.
+                  (define info (and (not test?) (module->language-info runtime-target #t)))
+                  (define (invoke spec)
+                    ((dynamic-require (vector-ref spec 0) (vector-ref spec 1)) (vector-ref spec 2)))
+                  (when info
+                    (for ([config (in-list ((invoke info) 'configure-runtime '()))])
+                      (invoke config))))
+                (if language
+                    (begin
+                      (when instrument?
+                        (eval `(require (only-in (file ,(path->string instrumentation-runtime-path))))))
+                      (load source))
+                    (dynamic-require
+                     (if test-submodule?
+                         `(submod ,source test) target) #f))
+                (when (and (not language) main? (module-declared? `(submod ,source main) #t))
+                  (dynamic-require `(submod ,source main) #f))
+                (begin0 (if entry ((if language (eval entry) (dynamic-require target entry))) (void))
+                  ;; An empty entry module must not defer its entry stop to a
+                  ;; subsequent Debug Console expression or GUI callback.
+                  (set! entry-announced? #t)
+                  (if on-ready
+                      (on-ready (if language namespace (module->namespace target)))
+                      ((executable-yield-handler) 0))))
+              (if test?
+                  (let-values ([(run-tests report-error)
+                                ((dynamic-require testing-path 'make-test-runner) on-test-event
+                                 (and test-selection (hash-ref test-selection 'ids))
+                                 (if test-selection (hash-ref test-selection 'cases '()) '()))])
+                    (set! report-test-error report-error)
+                    (run-tests execute))
+                  (execute)))))
+         exception-handler-tag)))
     (lambda () (custodian-shutdown-all program-custodian))))

@@ -1,0 +1,113 @@
+'use strict';
+const assert = require('node:assert/strict');
+const test = require('node:test');
+const fs = require('node:fs');
+const { fileURLToPath } = require('node:url');
+const rpc = require('../vscode/node_modules/vscode-jsonrpc/node');
+const { definition, uses, uri, edited, project } = require('./workspace-index-project');
+
+test('workspace rename follows imports and previews edits without changing files', { timeout: 120000 }, async t => {
+  const p = await project(t), consumer = p.open('uses.rkt', uses);
+  const untouched = '#lang racket/base\n(define (square x) (+ x 1))\n(square 3)\n';
+  p.write('unrelated.rkt', untouched); await p.update();
+  const position = { line: 2, character: 2 };
+  assert.deepEqual(await p.rename(consumer, undefined, position), {
+    start: { line: 2, character: 1 }, end: { line: 2, character: 7 }
+  });
+  assert.deepEqual((await p.rename(consumer, 'square', position)).changes, {});
+  const { changes } = await p.rename(consumer, 'squared', position);
+  assert.deepEqual(Object.keys(changes).sort(), [p.origin, consumer].sort());
+  assert.equal(changes[p.origin].length, 2);
+  assert.equal(changes[consumer].length, 1);
+  assert.equal(fs.readFileSync(p.filename('definition.rkt'), 'utf8'), definition);
+  assert.equal(fs.readFileSync(p.filename('uses.rkt'), 'utf8'), uses);
+  for (const [key, edits] of Object.entries(changes)) {
+    fs.writeFileSync(fileURLToPath(key), edited(fs.readFileSync(fileURLToPath(key), 'utf8'), edits));
+  }
+  const { spawnSync } = require('node:child_process');
+  const result = spawnSync('racket', [p.filename('uses.rkt')], { encoding: 'utf8', cwd: p.directory });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.trim(), '9');
+  assert.equal(fs.readFileSync(p.filename('unrelated.rkt'), 'utf8'), untouched);
+});
+
+test('workspace rename rejects capture, conflicting imports, and invalid names', { timeout: 120000 }, async t => {
+  const p = await project(t);
+  p.write('other.rkt', '#lang racket/base\n(provide squared)\n(define squared 4)\n');
+  await p.update();
+  for (const name of ['42', '', 'new name', 'x ;comment', '#;ignored x']) {
+    await assert.rejects(p.rename(p.origin, name), /single Racket identifier/);
+  }
+  for (const [description, text] of [
+    ['lexical capture', '#lang racket/base\n(require "definition.rkt")\n(let ([squared 2]) (square squared))\n'],
+    ['conflicting unused import', '#lang racket/base\n(require "definition.rkt" "other.rkt")\n']
+  ]) {
+    t.diagnostic(`Checking ${description}`);
+    p.write('uses.rkt', text); await p.update();
+    await assert.rejects(p.rename(p.origin, 'squared'), /another binding|Cannot analyse|alias/, description);
+    assert.equal(fs.readFileSync(p.filename('definition.rkt'), 'utf8'), definition);
+    assert.equal(fs.readFileSync(p.filename('uses.rkt'), 'utf8'), text);
+  }
+});
+
+test('lexical rename preserves scopes and uses current Unicode buffers', { timeout: 120000 }, async t => {
+  const p = await project(t);
+  const text = '#lang racket/base\n; 😀\n(define (f x) (let ([other 2]) (+ x other)))\n(define (g x) x)\n';
+  p.write('local.rkt', text);
+  const local = p.open('local.rkt', text);
+  await p.update();
+  const position = { line: 2, character: 11 };
+  const result = await p.rename(local, 'value', position);
+  assert.deepEqual(Object.keys(result.changes), [local]);
+  assert.equal(edited(text, result.changes[local]), text.replace('(f x)', '(f value)').replace('(+ x other)', '(+ value other)'));
+  await assert.rejects(p.rename(local, 'other', position), /another binding/);
+  const unused = '#lang racket/base\n(define outer 5)\n(define (f unused) outer)\n';
+  p.write('local.rkt', unused); p.open('local.rkt', unused, 2); await p.update();
+  await assert.rejects(p.rename(local, 'outer', position), /another binding/,
+    'Renaming an unused parameter must not capture an unchanged outer reference');
+  const unsaved = definition + '(define extra (square 2))\n';
+  p.open('definition.rkt', unsaved, 2); await p.update();
+  const renamed = await p.rename(p.origin, '平方');
+  assert.equal(renamed.changes[p.origin].length, 3);
+  assert.equal(fs.readFileSync(p.filename('definition.rkt'), 'utf8'), definition);
+});
+
+test('rename refuses partial indexes, stale disk snapshots and retired requests', { timeout: 120000 }, async t => {
+  const p = await project(t);
+  p.write('broken.rkt', '#lang racket/base\nunknown-name\n'); await p.update();
+  await assert.rejects(p.rename(p.origin, 'squared'), /analysis is incomplete/);
+  fs.unlinkSync(p.filename('broken.rkt')); await p.update();
+  await p.references(p.origin);
+  p.write('uses.rkt', uses + '(square 5)\n');
+  await assert.rejects(p.rename(p.origin, 'squared'), /files changed/);
+  await p.update();
+  const retired = p.rename(p.origin, 'squared');
+  p.open('definition.rkt', definition, 1); await p.update();
+  await assert.rejects(retired, error => error.code === -32801);
+  const cancel = new rpc.CancellationTokenSource();
+  const cancelled = p.rename(p.origin, 'squared', undefined, cancel.token);
+  cancel.cancel();
+  await assert.rejects(cancelled, error => error.code === -32800);
+  cancel.dispose();
+  assert.equal((await p.rename(p.origin, 'squared')).changes[uri(p.filename('uses.rkt'))].length, 2);
+});
+
+test('workspace rename releases expansion state within the worker memory limit', { timeout: 180000 }, async t => {
+  const p = await project(t);
+  const consumers = Array.from({ length: 4 }, (_, index) => `shapes-${index}.rkt`);
+  const text = '#lang racket/base\n(require (prefix-in image: 2htdp/image) (prefix-in plot: plot/no-gui) "definition.rkt")\n(image:circle (square 3) "solid" "red")\n';
+  for (const file of consumers) p.write(file, text);
+  for (let index = 0; index < 24; index++) p.write(`consumer-${index}.rkt`, uses);
+  await p.update();
+  for (const name of ['squared', 'area']) {
+    const { changes } = await p.rename(p.origin, name);
+    assert.equal(edited(definition, changes[p.origin]), definition.replaceAll('square', name));
+    for (const file of consumers) {
+      assert.equal(edited(text, changes[uri(p.filename(file))]), text.replace('(square 3)', `(${name} 3)`));
+      assert.equal(fs.readFileSync(p.filename(file), 'utf8'), text);
+    }
+    for (let index = 0; index < 24; index++) {
+      assert.equal(edited(uses, changes[uri(p.filename(`consumer-${index}.rkt`))]), uses.replace('square', name));
+    }
+  }
+});

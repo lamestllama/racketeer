@@ -2,7 +2,7 @@
 
 (require racket/async-channel racket/file racket/list racket/path racket/port
          racket/random racket/runtime-path racket/string racket/tcp
-         "protocol.rkt" "commands.rkt" "process-group.rkt")
+         "protocol.rkt" "commands.rkt" "process-group.rkt" "log-filter.rkt")
 (define-runtime-path worker-path "worker/main.rkt")
 (define input (current-input-port))
 (define output (current-output-port))
@@ -38,7 +38,9 @@
   (cond
     [process-group
      (stop-process-group! process-group)
-     (set! process-group #f)]
+     (set! process-group #f)
+     ;; A Windows worker can still be starting, before it has joined the job.
+     (when (and process (eq? (system-type 'os) 'windows)) (subprocess-kill process #t))]
     [process (subprocess-kill process #t)]))
 (define (fail-launch! message)
   (when launch-request
@@ -88,6 +90,33 @@
   (when finished? (error 'launch "The debug session has ended. Start a new session to launch a program."))
   (when launch-used? (error 'launch "Start a new debug session for another launch."))
   (define args (hash-ref request 'arguments))
+  (parse-log-filter (hash-ref args 'logFilter "error"))
+  (when (hash-has-key? args 'coverage)
+    (unless (and (boolean? (hash-ref args 'coverage))
+                 (or (not (hash-ref args 'coverage))
+                     (and (hash-ref args 'testMode #f) (hash-ref args 'noDebug #f))))
+      (error 'launch "coverage requires testMode and noDebug.")))
+  (when (hash-has-key? args 'testSelection)
+    (define selection (hash-ref args 'testSelection))
+    (unless (and (hash-ref args 'testMode #f) (hash? selection)
+                 (string? (hash-ref selection 'sourceHash #f))
+                 (list? (hash-ref selection 'ids #f))
+                 (pair? (hash-ref selection 'ids))
+                 (andmap exact-positive-integer? (hash-ref selection 'ids))
+                 (list? (hash-ref selection 'cases '()))
+                 (andmap
+                  (lambda (item)
+                    (and (hash? item) (member (hash-ref item 'id #f) (hash-ref selection 'ids))
+                         (list? (hash-ref item 'path #f)) (pair? (hash-ref item 'path))
+                         (andmap (lambda (part)
+                                   (and (list? part) (= (length part) 2)
+                                        (exact-nonnegative-integer? (car part))
+                                        (or (string? (cadr part)) (eq? (cadr part) #f))))
+                                 (hash-ref item 'path))))
+                  (hash-ref selection 'cases '())))
+      (error 'launch "testSelection requires testMode, a sourceHash, and a nonempty array of source positions.")))
+  (unless (member (hash-ref args 'stopOnEntryMode "entryPoint") '("entryPoint" "firstExpression"))
+    (error 'launch "stopOnEntryMode must be entryPoint or firstExpression."))
   (when (and (hash-ref args 'testMode #f)
              (or (hash-ref args 'interactive #f) (hash-ref args 'entry #f)
                  (hash-ref args 'language #f) (hash-has-key? args 'submodule)))
@@ -149,7 +178,8 @@
            (dynamic-wind
              void
              (lambda ()
-               (write-message (hasheq 'port port 'token token 'config config 'client client) child-in))
+               (write-message (hasheq 'port port 'token token 'config config 'client client
+                                      'processGroup (process-group-name owned-group)) child-in))
              (lambda () (unless (port-closed? child-in) (close-output-port child-in))))
            (define connection (sync (tcp-accept-evt listener)))
            (tcp-close listener)

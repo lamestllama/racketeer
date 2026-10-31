@@ -10,15 +10,21 @@ exports.run = async function () {
   assert.ok(extension, 'Packaged extension is available');
   await extension.activate();
   const workspace = vscode.workspace.workspaceFolders[0];
+  const testExplorerChecks = await require('./vscode-test-explorer').run(extension, workspace);
   const languageChecks = await require('./vscode-language').run(extension, workspace);
   const macroChecks = await require('./vscode-macro-stepper').run(extension, workspace);
   const rhombusChecks = process.env.RACKETDAP_TEST_RHOMBUS === '1'
     ? await require('./vscode-rhombus').run(extension, workspace) : [];
   const workflowChecks = await require('./vscode-workflows').run(workspace);
   const packageChecks = await require('./vscode-packages').run(workspace);
+  const applicationChecks = await require('./vscode-application-builds').run(workspace);
+  const applicationLogChecks = await require('./vscode-application-logs').run(workspace);
+  const imageChecks = await require('./vscode-images').run(workspace);
+  const plotChecks = await require('./vscode-plots').run(workspace);
+  const wxmeChecks = await require('./vscode-wxme').run(extension, workspace);
   const program = path.join(workspace.uri.fsPath, 'demo.rkt');
   const document = await vscode.workspace.openTextDocument(program);
-  await vscode.window.showTextDocument(document);
+  await vscode.window.showTextDocument(document, { preview: false });
   assert.equal(document.languageId, 'racket');
   const breakpoint = new vscode.SourceBreakpoint(new vscode.Location(document.uri, new vscode.Position(3, 0)), true, '(= subtotal 100)', '1');
   vscode.debug.addBreakpoints([breakpoint]);
@@ -27,7 +33,10 @@ exports.run = async function () {
   const tracker = vscode.debug.registerDebugAdapterTrackerFactory('racketdap', {
     createDebugAdapterTracker(session) {
       sessions.set(session.id, session);
-      return { onDidSendMessage(message) { messages.push({ ...message, sessionId: session.id }); } };
+      return {
+        onWillReceiveMessage(message) { messages.push({ ...message, sessionId: session.id }); },
+        onDidSendMessage(message) { messages.push({ ...message, sessionId: session.id }); }
+      };
     }
   });
   async function event(name, predicate = () => true) {
@@ -40,12 +49,32 @@ exports.run = async function () {
     }
     throw new Error(`No ${name} event. Messages: ${JSON.stringify(messages)}`);
   }
+  let referenceLocations;
   async function waitUntil(predicate, description) {
     const deadline = Date.now() + 20000;
-    while (!predicate()) {
-      if (Date.now() >= deadline) throw new Error(`Timed out: ${description}`);
+    while (!await predicate()) {
+      if (Date.now() >= deadline) {
+        const editor = vscode.window.activeTextEditor;
+        const item = vscode.debug.activeStackItem;
+        throw new Error(`Timed out: ${description}. ${JSON.stringify({
+          editor: editor?.document.uri.toString(), selection: editor?.selection,
+          sourceDocument: { closed: document.isClosed, version: document.version },
+          workspaceAnalysis: vscode.workspace.getConfiguration('racket-langserver', workspace.uri).get('workspaceAnalysis'),
+          stackItem: item && { sessionId: item.session.id, threadId: item.threadId, frameId: item.frameId },
+          breakpoints: vscode.debug.breakpoints, references: referenceLocations, messages: messages.slice(-20)
+        })}`);
+      }
       await new Promise(resolve => setTimeout(resolve, 20));
     }
+  }
+  async function selectedFrame(session, stop) {
+    await waitUntil(() => {
+      const item = vscode.debug.activeStackItem;
+      return item?.session.id === session.id && messages.some(message =>
+        message.sessionId === session.id && message.type === 'response' &&
+        message.command === 'stackTrace' && message.seq > stop.seq &&
+        message.body?.stackFrames?.some(frame => frame.id === item.frameId));
+    }, 'editor selects a frame from the current stop');
   }
   try {
     assert.equal(await vscode.debug.startDebugging(workspace, {
@@ -76,6 +105,15 @@ exports.run = async function () {
     const snapshotHover = await vscode.commands.executeCommand('vscode.executeHoverProvider', capturedDocument.uri, valuesPosition);
     assert.ok(snapshotHover.some(item => item.contents.some(content => /values/.test(content.value || content))),
       'Captured source receives language-server documentation');
+    const callPosition = new vscode.Position(7, 31);
+    const definitions = await vscode.commands.executeCommand('vscode.executeDefinitionProvider', capturedDocument.uri, callPosition);
+    assert.ok(definitions.some(item => (item.targetUri || item.uri).fsPath === program &&
+      (item.targetSelectionRange || item.range).start.line === 2), 'Captured source navigates to the function definition');
+    await waitUntil(async () => {
+      const references = await vscode.commands.executeCommand('vscode.executeReferenceProvider', capturedDocument.uri, callPosition);
+      referenceLocations = references;
+      return references.some(item => item.uri.fsPath === program && item.range.start.line === 7);
+    }, 'captured source finds function references');
     const originalText = document.getText();
     const changedSource = new vscode.WorkspaceEdit();
     changedSource.insert(document.uri, new vscode.Position(0, 0), '; unsaved change while debugging\n');
@@ -83,13 +121,18 @@ exports.run = async function () {
     assert.deepEqual(await semanticTokens(capturedDocument), [], 'Mismatched source cannot supply semantic tokens');
     assert.deepEqual(await vscode.commands.executeCommand('vscode.executeHoverProvider', capturedDocument.uri, valuesPosition), [],
       'Mismatched source cannot supply hover documentation');
+    for (const command of ['vscode.executeDefinitionProvider', 'vscode.executeReferenceProvider']) {
+      assert.deepEqual(await vscode.commands.executeCommand(command, capturedDocument.uri, callPosition), [],
+        'Mismatched source cannot supply navigation locations');
+    }
     const restore = new vscode.WorkspaceEdit();
     restore.replace(document.uri, new vscode.Range(document.positionAt(0), document.positionAt(document.getText().length)), originalText);
     assert.equal(await vscode.workspace.applyEdit(restore), true);
     await document.save();
     const atReturn = bp => bp instanceof vscode.SourceBreakpoint &&
       bp.location.uri.toString() === capturedUri && bp.location.range.start.line === 4;
-    capturedEditor.selection = new vscode.Selection(4, 0, 4, 0);
+    await vscode.window.showTextDocument(capturedDocument, { selection: new vscode.Range(4, 0, 4, 0) });
+    await vscode.commands.executeCommand('workbench.action.focusActiveEditorGroup');
     await vscode.commands.executeCommand('editor.debug.action.toggleBreakpoint');
     await waitUntil(() => vscode.debug.breakpoints.some(atReturn), 'F9 adds breakpoint in captured source');
     await waitUntil(() => messages.some(m => m.type === 'response' && m.command === 'setBreakpoints' &&
@@ -109,8 +152,16 @@ exports.run = async function () {
     stopped = await event('stopped');
     assert.equal(stopped.body.description, 'Expression returned');
     const after = await session.customRequest('stackTrace', { threadId: stopped.body.threadId });
+    assert.match(after.stackFrames[0].name, /^Returned 1 value at /);
+    assert.equal(after.stackFrames[0].column, '  (define tax (* subtotal rate'.length + 1);
+    assert.equal(after.stackFrames[0].endColumn, after.stackFrames[0].column + 1);
+    await waitUntil(() => {
+      const editor = vscode.window.activeTextEditor;
+      return editor?.document.uri.toString() === capturedUri && editor.selection.start.line === 3 &&
+        editor.selection.start.character === after.stackFrames[0].column - 1;
+    }, 'editor selects the closing parenthesis after evaluation');
     const { scopes } = await session.customRequest('scopes', { frameId: after.stackFrames[0].id });
-    const resultScope = scopes.find(s => s.name.startsWith('Results'));
+    const resultScope = scopes.find(s => s.name === 'Return values (1)');
     assert.ok(resultScope);
     const { variables } = await session.customRequest('variables', { variablesReference: resultScope.variablesReference });
     assert.equal(variables[0].value, '20');
@@ -152,6 +203,81 @@ exports.run = async function () {
     await event('terminated');
     terminal.dispose();
     messages.length = 0;
+    const multiProgram = path.join(workspace.uri.fsPath, 'multi-file/main.rkt');
+    const unopenedConsumer = path.join(workspace.uri.fsPath, 'multi-file/index-consumer.rkt');
+    fs.writeFileSync(unopenedConsumer, '#lang racket/base\n(require "app/orders.rkt")\n(order-total 10 2 1/10)\n');
+    const multiDocument = await vscode.workspace.openTextDocument(multiProgram);
+    await vscode.window.showTextDocument(multiDocument);
+    assert.equal(await vscode.debug.startDebugging(workspace, {
+      type: 'racketdap', request: 'launch', name: 'Captured source navigation',
+      program: multiProgram, stopOnEntry: true
+    }), true);
+    const multiStop = await event('stopped');
+    const multiSession = vscode.debug.activeDebugSession;
+    const multiFrames = (await multiSession.customRequest('stackTrace', { threadId: multiStop.body.threadId })).stackFrames;
+    assert.equal(multiStop.body.reason, 'entry');
+    assert.equal(multiFrames[0].line, 10, 'Entry starts at the call inside main');
+    const multiUri = vscode.debug.asDebugSourceUri(multiFrames[0].source, multiSession);
+    const multiCaptured = await vscode.workspace.openTextDocument(multiUri);
+    await vscode.window.showTextDocument(multiCaptured, { preview: false });
+    const orderCall = new vscode.Position(5, 35);
+    const ordersPath = path.join(workspace.uri.fsPath, 'multi-file/app/orders.rkt');
+    await waitUntil(async () => {
+      const locations = await vscode.commands.executeCommand('vscode.executeDefinitionProvider', multiUri, orderCall);
+      return locations.some(item => (item.targetUri || item.uri).fsPath === ordersPath &&
+        (item.targetSelectionRange || item.range).start.line === 4);
+    }, 'captured source navigates to an imported function');
+    await waitUntil(async () => {
+      const references = await vscode.commands.executeCommand('vscode.executeReferenceProvider', multiUri, orderCall);
+      referenceLocations = references;
+      return references.some(item => item.uri.fsPath === multiProgram && item.range.start.line === 5) &&
+        references.some(item => item.uri.fsPath === ordersPath && item.range.start.line === 4) &&
+        references.some(item => item.uri.fsPath === unopenedConsumer && item.range.start.line === 2);
+    }, 'captured source finds references in unopened files');
+    assert.ok(!vscode.workspace.textDocuments.some(item => item.uri.fsPath === unopenedConsumer));
+    let stepStop = multiStop;
+    for (const [command, file, line, kind] of [
+      ['stepInto', multiProgram, 6, 'before'],
+      ['stepInto', ordersPath, 6, 'before'],
+      ['stepOver', ordersPath, 6, 'after'],
+      ['stepOver', ordersPath, 7, 'before'],
+      ['stepOver', ordersPath, 7, 'after'],
+      ['stepOver', ordersPath, 8, 'before'],
+      ['stepOut', multiProgram, 6, 'after']
+    ]) {
+      await selectedFrame(multiSession, stepStop);
+      await vscode.commands.executeCommand(`workbench.action.debug.${command}`);
+      stepStop = await event('stopped', message => message.sessionId === multiSession.id);
+      const { stackFrames } = await multiSession.customRequest('stackTrace', { threadId: stepStop.body.threadId });
+      assert.equal(stackFrames[0].source.path, file, `${command} selects the expected file`);
+      assert.equal(stackFrames[0].line, line, `${command} selects the expected expression`);
+      assert.equal(stackFrames[0].endLine, line, 'A body stop does not highlight the enclosing function');
+      assert.equal(stepStop.body.racketdapStopKind, kind);
+    }
+    await vscode.debug.stopDebugging(multiSession);
+    await event('terminated');
+    await waitUntil(() => vscode.debug.activeDebugSession?.id !== multiSession.id, 'navigation session ends');
+    assert.equal(multiCaptured.isClosed, false, 'Keep captured source open to test navigation after termination');
+    assert.deepEqual(await vscode.commands.executeCommand('vscode.executeDefinitionProvider', multiUri, orderCall), [],
+      'A completed session no longer supplies navigation from its captured sources');
+    messages.length = 0;
+    assert.equal(await vscode.debug.startDebugging(workspace, {
+      type: 'racketdap', request: 'launch', name: 'Debug initialization',
+      program: multiProgram, stopOnEntry: true, stopOnEntryMode: 'firstExpression'
+    }), true);
+    const initializationStop = await event('stopped');
+    const initializationSession = vscode.debug.activeDebugSession;
+    await selectedFrame(initializationSession, initializationStop);
+    const initializationFrames = (await initializationSession.customRequest('stackTrace', {
+      threadId: initializationStop.body.threadId
+    })).stackFrames;
+    assert.equal(initializationStop.body.reason, 'entry');
+    assert.equal(initializationFrames[0].source.path, multiProgram);
+    assert.equal(initializationFrames[0].line, 5, 'Initialization mode starts at function setup');
+    await vscode.debug.stopDebugging(initializationSession);
+    await event('terminated');
+    await waitUntil(() => vscode.debug.activeDebugSession?.id !== initializationSession.id, 'initialization session ends');
+    messages.length = 0;
     const parityProgram = path.join(workspace.uri.fsPath, 'debugger-actions.rkt');
     fs.writeFileSync(parityProgram, '#lang racket/base\n(define hidden 3)\n(define x (+ hidden 1))\n(displayln x)\n');
     const parityDocument = await vscode.workspace.openTextDocument(parityProgram);
@@ -165,18 +291,19 @@ exports.run = async function () {
     assert.equal(stopped.body.racketdapStopKind, 'before');
     assert.ok(stopped.body.racketdapActions.includes('racketdap/skipExpression'));
     assert.ok(!stopped.body.racketdapActions.includes('racketdap/replaceResults'));
+    await selectedFrame(paritySession, stopped);
     assert.equal((await vscode.commands.executeCommand('racketdap.skipExpression', '(+ hidden 7)')).result, '10');
     await paritySession.customRequest('next', { threadId: stopped.body.threadId });
     stopped = await event('stopped');
     assert.equal(stopped.body.racketdapStopKind, 'after');
     assert.ok(stopped.body.racketdapActions.includes('racketdap/replaceResults'));
     assert.ok(!stopped.body.racketdapActions.includes('racketdap/skipExpression'));
+    await selectedFrame(paritySession, stopped);
     assert.equal((await vscode.commands.executeCommand('racketdap.replaceResults', '20')).result, '20');
     await vscode.commands.executeCommand('racketdap.printResults');
     await event('output', m => m.body.category === 'console' && m.body.output === '20\n');
     // Wait for VS Code to focus the new stop before actions use its selected frame.
-    await waitUntil(() => vscode.debug.activeStackItem?.session.id === paritySession.id &&
-      vscode.debug.activeStackItem?.frameId !== undefined, 'selected debugger frame');
+    await selectedFrame(paritySession, stopped);
     assert.equal((await vscode.commands.executeCommand('racketdap.printBinding', 'hidden')).result, '3');
     assert.equal((await vscode.commands.executeCommand('racketdap.setBinding', 'hidden', '9')).result, '9');
     const cursorEditor = vscode.window.activeTextEditor || await vscode.window.showTextDocument(parityDocument);
@@ -188,13 +315,11 @@ exports.run = async function () {
     // No interactive launch flag is supplied: completing the file ends debugging.
     for (let steps = 0; ; steps++) {
       assert.ok(steps < 10, 'Stepping must finish the small program');
-      await waitUntil(() => vscode.debug.activeStackItem?.session.id === paritySession.id &&
-        vscode.debug.activeStackItem?.frameId !== undefined, 'frame ready for Step Over');
-      const oldFrame = vscode.debug.activeStackItem.frameId;
+      await selectedFrame(paritySession, stopped);
       await vscode.commands.executeCommand('workbench.action.debug.stepOver');
       const next = await event(['stopped', 'terminated']);
       if (next.event === 'terminated') break;
-      await waitUntil(() => vscode.debug.activeStackItem?.frameId !== oldFrame, 'stepped frame selected');
+      stopped = next;
     }
     await waitUntil(() => vscode.debug.activeDebugSession?.id !== paritySession.id, 'VS Code leaves debug mode');
     assert.ok(!messages.some(m => m.event === 'racketdap/ready'), 'Normal launch does not stay in the interaction loop');
@@ -244,14 +369,19 @@ exports.run = async function () {
       for (const owner of ownershipSessions) await vscode.debug.stopDebugging(owner);
     }
     const report = { passed: true, extension: extension.id, version: extension.packageJSON.version,
-      vscode: vscode.version, checks: [...languageChecks, ...macroChecks, ...rhombusChecks, ...workflowChecks, ...packageChecks, 'activation', 'language registration', 'gutter breakpoint', 'stack',
+      vscode: vscode.version, checks: [...languageChecks, ...macroChecks, ...rhombusChecks, ...workflowChecks, ...testExplorerChecks, ...packageChecks, ...applicationChecks, ...applicationLogChecks, ...imageChecks, ...plotChecks, ...wxmeChecks, 'activation', 'language registration', 'gutter breakpoint', 'stack',
         'captured source language', 'F9 adds verified breakpoint in captured source', 'F9 removes breakpoint',
         'captured source semantic highlighting', 'captured source language hover', 'stale source excludes language results',
+        'captured source definitions and references across unopened files', 'completed session excludes source navigation',
+        'editor Step Into reaches the callee initializer', 'editor Step Over advances through internal definitions',
+        'editor Step Out returns to the caller',
+        'return marker and value count distinguish expression completion',
         'editor Step Over to completion exits debugging',
-        'live evaluation', 'mutation', 'step over', 'Results scope', 'continue', 'output', 'termination',
+        'live evaluation', 'mutation', 'step over', 'Return values scope', 'continue', 'output', 'termination',
         'conditional and hit-count breakpoint', 'logpoint', 'exception stop', 'exceptionInfo',
         'cancel command', 'persistent console', 'terminal input and Unicode output',
         'adapter-provided action availability', 'skip expression command', 'replace results command', 'print results command',
+        'startup mode selects main or initialization',
         'print variable command', 'set variable command', 'continue to cursor command',
         'continue to cursor rejects another session’s captured source'] };
     if (process.env.RACKETDAP_TEST_REPORT) fs.writeFileSync(process.env.RACKETDAP_TEST_REPORT, JSON.stringify(report, null, 2));

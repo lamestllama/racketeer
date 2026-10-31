@@ -21,10 +21,13 @@ exports.run = async function () {
     ['tests/loader-isolation.rkt', 14],
     ['tests/macro-stepper.rkt', 10],
     ['tests/packages.rkt', 3],
-    ['tests/parity-languages.rkt', 10],
-    ['tests/protocol-inspection.rkt', 9],
-    ['tests/stepping.rkt', 8],
-    ['tests/source-loading.rkt', 10]
+    ['tests/parity-languages.rkt', 13],
+    ['tests/predicted-bindings.rkt', 7],
+    ['tests/protocol-inspection.rkt', 25],
+    ['tests/source-positions.rkt', 4],
+    ['tests/stepping.rkt', 11],
+    ['tests/source-loading.rkt', 10],
+    ['tests/wxme-source.rkt', 9]
   ]);
   const sessions = [], messages = [], checks = [];
   const active = new Set();
@@ -70,7 +73,9 @@ exports.run = async function () {
       new vscode.RelativePattern(workspace, settings.get('testing.exclude')));
     assert.deepEqual(discovered.map(uri => path.relative(workspace.uri.fsPath, uri.fsPath).split(path.sep).join('/')).sort(),
       [...expected.keys()].sort(), 'Workspace globs select the real suites');
-    for (const [command, noDebug] of [['testing.runAll', true], ['testing.debugAll', false]]) {
+    for (const [command, noDebug, coverage] of [
+      ['testing.runAll', true, false], ['testing.debugAll', false, false], ['testing.coverageAll', true, true]
+    ]) {
       console.log(`${command}: repository suites through Test Explorer`);
       const start = sessions.length;
       await vscode.commands.executeCommand(command);
@@ -80,6 +85,7 @@ exports.run = async function () {
         const file = relative(session);
         assert.ok(expected.has(file), `Only suites should run, not fixtures or helpers: ${file}`);
         assert.equal(!!session.configuration.noDebug, noDebug);
+        assert.equal(!!session.configuration.coverage, coverage);
         assert.equal(session.configuration.testMode, true);
         assert.deepEqual(session.configuration.sourceRoots,
           ['tests', 'experiments'].map(directory => path.join(workspace.uri.fsPath, directory)));
@@ -87,7 +93,11 @@ exports.run = async function () {
         assert.deepEqual(summary.body, { kind: 'summary', status: 'passed', failed: 0, total: expected.get(file) }, file);
         await event(session, 'terminated');
         assert.equal((await event(session, 'exited')).body.exitCode, 0);
-        if (noDebug) checks.push({ file, total: summary.body.total });
+        if (command === 'testing.runAll') checks.push({ file, total: summary.body.total });
+        if (coverage) {
+          const report = await event(session, 'racketdap/coverage', m => m.body.path === session.configuration.program);
+          assert.ok(report.body.statements.some(statement => statement.executed), `${file} has executed expressions`);
+        }
         console.log(`${file}: ${summary.body.total} passed`);
       }
       assert.deepEqual(profileSessions.map(relative).sort(), [...expected.keys()].sort());
@@ -179,9 +189,9 @@ exports.run = async function () {
     await repl.stop(); await repl.done;
 
     fs.writeFileSync(process.env.RACKETDAP_TEST_REPORT, JSON.stringify({
-      passed: true, extension: extension.id, version: extension.packageJSON.version,
+      passed: true, extension: extension.id, version: extension.packageJSON.version, vscode: vscode.version,
       suites: checks, total: checks.reduce((sum, suite) => sum + suite.total, 0),
-      checks: ['Test Explorer Run All and Debug All execute only repository suites', 'real test breakpoint and live local',
+      checks: ['Test Explorer Run All, Debug All and Coverage execute only repository suites', 'real test breakpoint and live local',
         'failed assertion and source location', 'restored suite passes again',
         'Debug REPL stops through four nested files and stays available for another expression']
     }, null, 2));

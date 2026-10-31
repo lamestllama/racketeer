@@ -9,18 +9,33 @@ const { createProgramTerminal } = require('./terminal');
 const { registerLanguageTools } = require('./language-client');
 const { registerFileCommands } = require('./commands');
 const { registerDebugActions } = require('./debug-actions');
+const { registerDebugImages } = require('./debug-images');
 const { registerDebugSources } = require('./debug-sources');
 const { registerSessions } = require('./sessions');
 const { registerTesting } = require('./testing');
 const { registerDebugRepl } = require('./debug-repl');
+const { registerInteractions } = require('./interactions');
+const { registerFileRuns } = require('./file-runs');
 const { registerPackages } = require('./packages');
+const { registerApplicationBuilds } = require('./application-builds');
+const { registerApplicationLogs, filterError } = require('./application-logs');
+const { registerWxmeViewer } = require('./wxme-viewer');
+const { registerWxmeEditor } = require('./wxme-editor');
+const { registerDependencies } = require('./dependencies');
 let languageTools;
 
 function activate(context) {
   const sessions = registerSessions(context);
   const testing = registerTesting(context, sessions);
   registerPackages(context);
-  registerFileCommands(context, sessions, testing, registerDebugRepl(sessions));
+  registerApplicationBuilds(context);
+  registerApplicationLogs(context);
+  registerWxmeViewer(context);
+  registerWxmeEditor(context);
+  registerDependencies(context);
+  const images = registerDebugImages(context);
+  const interactions = registerInteractions(context, images);
+  registerFileCommands(context, sessions, testing, registerDebugRepl(sessions, interactions), registerFileRuns(sessions, interactions));
   const debugSources = registerDebugSources(context);
   registerDebugActions(context, debugSources);
   languageTools = registerLanguageTools(context, debugSources);
@@ -47,6 +62,9 @@ function activate(context) {
       config.cwd ||= folder?.uri.fsPath || path.dirname(config.program);
       config.sourceRoots ||= [folder?.uri.fsPath || path.dirname(config.program)];
       config.debugPackages ??= vscode.workspace.getConfiguration('racketdap', folder?.uri).get('debug.packages', []);
+      config.logFilter ??= vscode.workspace.getConfiguration('racketdap', folder?.uri).get('logs.filter', 'error');
+      const invalidFilter = filterError(config.logFilter);
+      if (invalidFilter) { void vscode.window.showErrorMessage(invalidFilter); return undefined; }
       config.args ||= [];
       config.racketExecutable ||= vscode.workspace.getConfiguration('racketdap', folder?.uri).get('racketExecutable', 'racket');
       try {
@@ -56,7 +74,11 @@ function activate(context) {
           throw new Error('Racket 9.1 or newer is required.');
         }
       } catch (error) {
-        vscode.window.showErrorMessage(`Cannot start Racket DAP: ${error.message} Set racketdap.racketExecutable to your Racket executable.`);
+        void vscode.window.showErrorMessage(
+          `Cannot start Racket DAP: ${error.message} Set racketdap.racketExecutable to your Racket executable.`,
+          'Open Settings').then(action => {
+          if (action === 'Open Settings') return vscode.commands.executeCommand('workbench.action.openSettings', '@id:racketdap.racketExecutable');
+        });
         return undefined;
       }
       return config;
@@ -72,7 +94,7 @@ function activate(context) {
     }),
     vscode.debug.registerDebugAdapterTrackerFactory('racketdap', {
       createDebugAdapterTracker(session) {
-        if (session.configuration.console !== 'integratedTerminal') return undefined;
+        if (session.configuration.console !== 'integratedTerminal' || session.configuration.racketdapRichInteractions) return undefined;
         const terminal = createProgramTerminal(session);
         context.subscriptions.push(terminal);
         return {

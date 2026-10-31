@@ -61,13 +61,13 @@ function registerDebugActions(context, debugSources) {
   );
   if (vscode.debug.onDidChangeActiveStackItem) context.subscriptions.push(vscode.debug.onDidChangeActiveStackItem(updateContext));
   for (const [name, prompt] of [
-    ['skipExpression', 'Replacement Racket expression; use (values ...) for multiple values'],
-    ['replaceResults', 'New returned values as a Racket expression']
+    ['skipExpression', 'Replacement return values as a Racket expression; use (values ...) for multiple values'],
+    ['replaceResults', 'New return values as a Racket expression; use (values ...) for multiple values']
   ]) command(name, async ({ session, threadId }, request, expression) => {
     expression ??= await vscode.window.showInputBox({ prompt, ignoreFocusOut: true });
     if (expression === undefined) return;
     const result = await session.customRequest(request, { threadId, expression });
-    vscode.debug.activeDebugConsole.appendLine(`Selected values: ${result.result}`);
+    vscode.debug.activeDebugConsole.appendLine(`Selected return values: ${result.result}`);
     return result;
   });
   async function bindingName(name) {
@@ -79,7 +79,7 @@ function registerDebugActions(context, debugSources) {
         : editor.selection;
       if (range) name = editor.document.getText(range);
     }
-    return name || vscode.window.showInputBox({ prompt: 'Racket variable name', ignoreFocusOut: true });
+    return name || vscode.window.showInputBox({ prompt: 'Lexical or module variable name', ignoreFocusOut: true });
   }
   command('printBinding', async ({ session, threadId, frameId }, request, name) => {
     name = await bindingName(name);
@@ -89,7 +89,7 @@ function registerDebugActions(context, debugSources) {
   command('setBinding', async ({ session, threadId, frameId }, request, name, expression) => {
     name = await bindingName(name);
     if (name === undefined) return;
-    expression ??= await vscode.window.showInputBox({ prompt: `New value for ${name} as a Racket expression`, ignoreFocusOut: true });
+    expression ??= await vscode.window.showInputBox({ prompt: `New value for (set! ${name} ...) as a Racket expression`, ignoreFocusOut: true });
     if (expression === undefined) return;
     return session.customRequest(request, { threadId, frameId, name, expression });
   });

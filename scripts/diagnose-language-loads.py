@@ -29,7 +29,7 @@ METADATA = '''
 '''
 
 
-def run_case(label, command, timeout):
+def run_case(label, command, timeout, env=None):
     print(f'\n=== {label} ===', flush=True)
     print('command: ' + json.dumps([str(item) for item in command]), flush=True)
     started = time.monotonic()
@@ -38,7 +38,7 @@ def run_case(label, command, timeout):
         # Each case owns a process group, so a timed-out probe cannot leave a
         # worker behind. Inherit the failing job's Racket environment unchanged.
         with subprocess.Popen(command, cwd=ROOT, stdout=subprocess.PIPE,
-                              stderr=subprocess.STDOUT, start_new_session=True) as process:
+                              stderr=subprocess.STDOUT, start_new_session=True, env=env) as process:
             try:
                 output, _ = process.communicate(timeout=timeout)
             except BaseException as error:
@@ -81,6 +81,19 @@ def main():
         key: os.environ[key] for key in (
             'PLTADDONDIR', 'PLTCOLLECTS', 'PLTCONFIGDIR', 'PLTCOMPILEDROOTS',
             'PLTUSERHOME', 'PLT_COMPILED_FILE_CHECK') if key in os.environ}), flush=True)
+    stale = []
+    checked = 0
+    for bytecode in (racket.parent.parent / 'collects').rglob('*.zo'):
+        parts = bytecode.stem.rsplit('_', 1)
+        if len(parts) != 2:
+            continue
+        source = bytecode.parent.parent / '.'.join(parts)
+        if source.is_file():
+            checked += 1
+            source_time, compiled_time = source.stat().st_mtime, bytecode.stat().st_mtime
+            if int(source_time) > int(compiled_time):
+                stale.append({'source': str(source), 'sourceTime': source_time, 'compiledTime': compiled_time})
+    print('Installation bytecode timestamps: ' + json.dumps({'checked': checked, 'stale': len(stale), 'examples': stale[:20]}), flush=True)
     results = [run_case('runtime and cache metadata', [racket, '-e', METADATA], args.timeout)]
     with tempfile.TemporaryDirectory(prefix='racketeer-language-diagnostic-') as temporary:
         directory = Path(temporary)
@@ -94,6 +107,12 @@ def main():
             '(run-module (string->path (vector-ref arguments 0))\n'
             '            #:instrument? (equal? (vector-ref arguments 1) "instrumented"))\n',
             encoding='utf-8')
+        namespace_driver = directory / 'namespace-probe.rkt'
+        namespace_driver.write_text(
+            '#lang racket/base\n'
+            '(parameterize ([current-namespace (make-base-namespace)])\n'
+            '  (dynamic-require (string->path (vector-ref (current-command-line-arguments) 0)) #f))\n',
+            encoding='utf-8')
         for language in LANGUAGES:
             program = directory / (language.replace('/', '-') + '.rkt')
             program.write_text(
@@ -103,6 +122,15 @@ def main():
             for mode in ('direct', 'uninstrumented', 'instrumented'):
                 command = [racket, program] if mode == 'direct' else [racket, driver, program, mode]
                 results.append(run_case(f'{language} / {mode}', command, args.timeout))
+        program = directory / 'images.rkt'
+        shutil.copyfile(ROOT / 'examples/images.rkt', program)
+        for mode in ('direct', 'uninstrumented', 'instrumented'):
+            command = [racket, program] if mode == 'direct' else [racket, driver, program, mode]
+            results.append(run_case(f'image libraries / {mode}', command, args.timeout))
+        results.append(run_case('image libraries / fresh Racket namespace', [racket, namespace_driver, program], args.timeout))
+        exists_env = {**os.environ, 'PLT_COMPILED_FILE_CHECK': 'exists'}
+        results.append(run_case('image libraries / fresh namespace / ignore timestamps', [racket, namespace_driver, program], args.timeout, exists_env))
+        results.append(run_case('image libraries / instrumented / ignore timestamps', [racket, driver, program, 'instrumented'], args.timeout, exists_env))
     print('\nsummary: ' + json.dumps(results), flush=True)
     return int(any(result['exitCode'] != 0 or result['timedOut'] for result in results))
 

@@ -58,6 +58,69 @@
                      (void))))
         normal)
        (check-true seen?))))
+  (test-case "module languages retain the caller context for implicit identifiers"
+    (with-program
+     "#lang s-exp \"language.rkt\"\n(define (entry) (define x 7) (displayln (+ x 1)))\n"
+     (lambda (program directory)
+       (display-to-file
+        (string-append
+         "#lang racket/base\n(require (for-syntax racket/base))\n"
+         "(provide (except-out (all-from-out racket/base) #%module-begin)\n"
+         "         (rename-out [start-module #%module-begin]))\n"
+         "(define-syntax (start-module stx)\n"
+         "  (syntax-case stx ()\n"
+         "    [(_ form ...)\n"
+         "     (with-syntax ([entry (datum->syntax stx 'entry)])\n"
+         "       #'(#%module-begin form ... (entry)))]))\n")
+        (build-path directory "language.rkt"))
+       (define seen? #f)
+       (check-equal?
+        (capture program #t #:on-entry
+                 (lambda (stop)
+                   (when (assq 'x (stop-locals stop))
+                     (set! seen? #t)
+                     (check-equal? (stop-evaluate stop 'x) 7))))
+        (capture program #f))
+       (check-true seen?))))
+  (test-case "shared contract lifts precede both definitions and bare expressions"
+    (with-program
+     (string-append
+      "#lang racket/base\n(require racket/contract \"predicate.rkt\")\n"
+      "(define (answer n) (+ n 1))\n"
+      "(provide/contract [answer (-> accept? any)])\n"
+      "(displayln ((contract (-> accept? any) answer 'positive 'negative) 7))\n")
+     (lambda (program directory)
+       (display-to-file
+        (string-append
+         "#lang racket/base\n(require racket/contract)\n"
+         "(provide (contract-out [accept? (-> any/c boolean?)]))\n"
+         "(define (accept? v) (integer? v))\n")
+        (build-path directory "predicate.rkt"))
+       (check-equal? (capture program #f) "8\n")
+       (check-equal? (capture program #t) "8\n"))))
+  (test-case "macro-time module loads retain declaration bindings"
+    (for ([phase '(1 2)])
+      (with-program
+       (string-append
+        "#lang racket/base\n(require (for-syntax racket/base) (for-meta 2 racket/base))\n"
+        (if (= phase 2) "(begin-for-syntax\n" "")
+        "(define-syntax (answer stx)\n"
+        "  (define get (dynamic-require\n"
+        "               (build-path (current-load-relative-directory) \"dependency.rkt\") 'answer))\n"
+        "  (datum->syntax stx (get)))\n"
+        "(displayln (answer))\n"
+        (if (= phase 2) ")\n" ""))
+       (lambda (program directory)
+         (display-to-file
+          "#lang racket/base\n(provide answer)\n(define (answer) 42)\n"
+          (build-path directory "dependency.rkt"))
+         (for ([instrument? '(#f #t)])
+           (check-equal?
+            (with-output-to-string
+              (lambda ()
+                (run-module program #:instrument? instrument?
+                            #:source-roots (list directory))))
+            "42\n"))))))
   (test-case "plain files loaded by another plain file retain their own source identity"
     (with-program
      "(load (build-path (current-load-relative-directory) \"helper.rkt\"))\n(displayln (answer 4))\n"

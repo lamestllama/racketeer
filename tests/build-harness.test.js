@@ -34,7 +34,7 @@ async function fixture(t) {
 test('headless entry point discovers every native and Node suite except explicit GUI tests', () => {
   const suites = inventory();
   const names = fs.readdirSync(path.join(root, 'tests'));
-  assert.deepEqual(suites.node, names.filter(n => n.endsWith('.test.js') && !['gui-parity.test.js', 'macro-stepper-gui.test.js'].includes(n)).sort().map(n => `tests/${n}`));
+  assert.deepEqual(suites.node, names.filter(n => n.endsWith('.test.js') && !['gui-parity.test.js', 'macro-stepper-gui.test.js', 'plots-gui.test.js'].includes(n)).sort().map(n => `tests/${n}`));
   assert.deepEqual(suites.racket, [...names.filter(n => n.endsWith('.rkt')).sort().map(n => `tests/${n}`), 'experiments/lexical-eval.rkt']);
   assert.equal(require('../vscode/package.json').scripts.test, 'node ../scripts/test-headless.js');
   const task = JSON.parse(fs.readFileSync(path.join(root, '.vscode/tasks.json'))).tasks.find(t => t.label === 'Racket: Check adapter protocol and extension logic');
@@ -45,6 +45,29 @@ test('editor orchestration uses fresh state and sanitized collection paths', () 
   const result = spawnSync(process.platform === 'win32' ? 'python' : 'python3',
     ['-B', path.join(__dirname, 'harness-checks.py')], { encoding: 'utf8' });
   assert.equal(result.status, 0, result.stderr || String(result.error));
+});
+
+test('headless entry point prepares bundled dependencies in a fresh checkout', async t => {
+  const { directory } = await fixture(t);
+  for (const name of ['test-headless.js', 'stage-extension.js']) {
+    fs.copyFileSync(path.join(root, 'scripts', name), path.join(directory, 'scripts', name));
+  }
+  fs.writeFileSync(path.join(directory, 'experiments/lexical-eval.rkt'), '#lang racket/base\n');
+  fs.writeFileSync(path.join(directory, 'vendor/dependency.rkt'), '#lang racket/base\n');
+  fs.writeFileSync(path.join(directory, 'tests/staged.test.js'), `
+    const assert = require('node:assert/strict'), fs = require('node:fs');
+    assert.equal(fs.readFileSync('vscode/language-server/dependency.rkt', 'utf8'),
+      fs.readFileSync('vendor/dependency.rkt', 'utf8'));
+    assert.equal(fs.readFileSync('vscode/runtime/racketdap/main.rkt', 'utf8'),
+      fs.readFileSync('racketdap/main.rkt', 'utf8'));
+    fs.writeFileSync('probe-passed', 'yes');
+  `);
+  const env = { ...process.env };
+  delete env.NODE_TEST_CONTEXT;
+  const result = spawnSync(process.execPath, ['scripts/test-headless.js'],
+    { cwd: directory, env, encoding: 'utf8', timeout: 30000 });
+  assert.equal(result.status, 0, result.stdout + result.stderr || String(result.error));
+  assert.equal(fs.readFileSync(path.join(directory, 'probe-passed'), 'utf8'), 'yes');
 });
 
 test('a same-version artifact is rejected when a source or test input changes', async t => {

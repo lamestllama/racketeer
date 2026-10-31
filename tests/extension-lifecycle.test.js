@@ -8,7 +8,39 @@ const net = require('node:net');
 const vm = require('node:vm');
 const { createRequire } = require('node:module');
 const { once } = require('node:events');
+const { spawnSync } = require('node:child_process');
 const { createLanguageProcess } = require('../vscode/language-process');
+
+test('JSON-RPC write failures reject the request without an unhandled rejection', () => {
+  const result = spawnSync(process.execPath, ['--unhandled-rejections=strict', '-e', `
+    const assert = require('node:assert/strict');
+    const { PassThrough, Writable } = require('node:stream');
+    const rpc = require(${JSON.stringify(require.resolve('../vscode/node_modules/vscode-jsonrpc/node'))});
+    (async () => {
+      for (const failure of ['header', 'body', 'encoding']) {
+        let writes = 0;
+        const input = new PassThrough();
+        const output = new Writable({ write(_chunk, _encoding, done) {
+          writes++;
+          queueMicrotask(() => done(writes === (failure === 'header' ? 1 : 2)
+            ? new Error('closed language-server pipe') : undefined));
+        } });
+        const connection = rpc.createMessageConnection(input, output);
+        connection.listen();
+        const params = {};
+        if (failure === 'encoding') params.cycle = params;
+        await assert.rejects(connection.sendRequest('shutdown', params), error => {
+          assert.equal(error.code, rpc.ErrorCodes.MessageWriteError);
+          assert.match(error.message, failure === 'encoding' ? /circular/i : /closed language-server pipe/);
+          return true;
+        });
+        await new Promise(resolve => setImmediate(resolve));
+        connection.dispose(); input.destroy(); output.destroy();
+      }
+    })().catch(error => { console.error(error); process.exitCode = 1; });
+  `], { encoding: 'utf8', timeout: 10000 });
+  assert.equal(result.status, 0, result.stderr || String(result.error));
+});
 
 function load(name, dependencies) {
   const filename = path.join(__dirname, '..', 'vscode', name);
@@ -35,6 +67,50 @@ function event() {
 }
 const disposable = () => ({ dispose() {} });
 const target = { program: '/workspace/example.rkt', cwd: '/workspace', racketExecutable: 'racket' };
+
+test('file debugging retains native controls while Run and Interactions suppress them', async () => {
+  const started = event(), terminated = event(), launches = [];
+  const vscode = { workspace: { isTrusted: true }, debug: {
+    registerDebugAdapterTrackerFactory: disposable,
+    onDidStartDebugSession: started.subscribe, onDidTerminateDebugSession: terminated.subscribe,
+    async startDebugging(_folder, configuration, options) {
+      const session = { id: String(launches.length), configuration };
+      launches.push(options); started.fire(session); return true;
+    },
+    async stopDebugging(session) { terminated.fire(session); }
+  } };
+  const context = { subscriptions: [] };
+  const sessions = load('sessions.js', { vscode, './execution': { launchConfiguration: (_target, config) => config } }).registerSessions(context);
+  for (const [interactive, noDebug] of [[false, false], [false, true], [true, false]]) {
+    const record = await sessions.start(target, { interactive, racketdapRichInteractions: true }, { noDebug });
+    const options = launches.at(-1);
+    assert.equal(options.suppressDebugToolbar, interactive || noDebug);
+    assert.equal(options.suppressDebugView, interactive || noDebug);
+    assert.equal(options.suppressDebugStatusbar, noDebug);
+    await record.stop(); await record.done;
+  }
+  context.subscriptions.forEach(item => item.dispose());
+});
+
+test('Results reruns save dirty source and custom WXME editors without text-editor conversion', async () => {
+  const uri = { toString: () => 'file:///workspace/picture.rkt' };
+  const tab = { input: new (class {})(), isDirty: true }; let saved = 0, opened = 0;
+  const vscode = { TabInputCustom: tab.input.constructor,
+    window: { tabGroups: { all: [{ tabs: [tab] }] } },
+    workspace: { textDocuments: [],
+      async save(actual) { assert.equal(actual, uri); saved++; tab.isDirty = false; return uri; },
+      async openTextDocument() { opened++; return { isDirty: true, save: async () => { saved++; return true; } }; }
+    }
+  };
+  Object.assign(tab.input, { uri, viewType: 'racketeer.wxmeEditor' });
+  const { saveTarget } = load('execution.js', { vscode });
+  await saveTarget({ ...target, uri, format: 'wxme' }); assert.equal(saved, 1); assert.equal(opened, 0);
+  await saveTarget({ ...target, uri }); assert.equal(saved, 2); assert.equal(opened, 1);
+  tab.isDirty = true; vscode.workspace.save = async () => uri;
+  await assert.rejects(saveTarget({ ...target, uri, format: 'wxme' }), /could not be saved/);
+  vscode.workspace.textDocuments = [{ uri, isDirty: true }];
+  await assert.rejects(saveTarget({ ...target, uri, format: 'wxme' }), /text editor has unsaved changes/);
+});
 
 test('disposal retains ownership until a pending workflow starts and terminates', async () => {
   const started = event(), terminated = event(), launch = deferred();
@@ -100,18 +176,82 @@ test('paused selection inspection preserves the pending outer interaction', asyn
     vscode.debug.activeStackItem = undefined;
   } }, debug: {} };
   const repl = load('debug-repl.js', { vscode }).registerDebugRepl({ start: async () => record });
-  const evaluating = repl.evaluate(target, '(f 4)');
+  const evaluating = repl.evaluate(target, ['(f 4)']);
   await entered.promise;
   record.phase = 'paused';
-  await assert.rejects(repl.evaluate(target, 'x'), /Select a stack frame/);
+  await assert.rejects(repl.evaluate(target, ['x']), /Select a stack frame/);
   vscode.debug.activeStackItem = { session: { id: 'another-session' }, frameId: 23 };
-  await assert.rejects(repl.evaluate(target, 'x'), /Select a stack frame/);
+  await assert.rejects(repl.evaluate(target, ['x']), /Select a stack frame/);
   vscode.debug.activeStackItem = { session, frameId: 23 };
-  assert.equal((await repl.evaluate(target, 'x')).result, '4');
+  assert.equal((await repl.evaluate(target, ['x'])).result, '4');
   record.phase = 'running';
-  await assert.rejects(repl.evaluate(target, '(f 5)'), /already evaluating/);
+  await assert.rejects(repl.evaluate(target, ['(f 5)']), /already evaluating/);
   outer.resolve({ result: '8' });
   assert.equal((await evaluating).result, '8');
+});
+
+for (const name of ['sendSelection', 'sendSelectionToDebugRepl']) {
+  test(`${name} sends all nonempty selections in source order without changing the editor`, async () => {
+    const commands = new Map(), sent = [], errors = [];
+    let launches = 0;
+    const selection = (line, text) => ({ isEmpty: !text, text, start: { line, compareTo: other => line - other.line } });
+    const selections = Object.freeze([selection(9, ''), selection(8, '(+ x 2)'), selection(3, '(define x 40) ; first')]);
+    const editor = { selections, selection: selections[0],
+      document: { uri: { scheme: 'file', fsPath: target.program }, languageId: 'racket', getText: range => range.text } };
+    const terminal = { show() {}, sendText: text => sent.push(text) };
+    const vscode = {
+      workspace: { isTrusted: true, getWorkspaceFolder: () => undefined,
+        getConfiguration: () => ({ get: () => 'racket' }) },
+      window: { activeTextEditor: editor, onDidCloseTerminal: disposable,
+        createTerminal: () => { launches++; return terminal; }, showErrorMessage: text => errors.push(text) },
+      commands: { registerCommand: (id, callback) => { commands.set(id, callback); return disposable(); } }
+    };
+    const debugRepl = { evaluate: async (actualTarget, expressions) => {
+      assert.equal(actualTarget, target);
+      launches++; sent.push(...expressions);
+    } };
+    load('commands.js', { vscode, './macro-stepper': { registerMacroStepper: () => () => {} },
+      './execution': { activeTarget: async () => target } })
+      .registerFileCommands({ subscriptions: [] }, {}, {}, debugRepl);
+    const command = commands.get(`racketdap.${name}`);
+    await command();
+    assert.deepEqual(sent, ['(define x 40) ; first', '(+ x 2)']);
+    assert.equal(editor.selections, selections);
+    assert.equal(launches, 1);
+    editor.selections = [selection(0, '')];
+    await command();
+    assert.match(errors.pop(), /Select a complete Racket expression/);
+    editor.document.languageId = 'plaintext';
+    await command();
+    assert.match(errors.pop(), /Open a Racket editor/);
+    assert.equal(launches, 1);
+  });
+}
+
+test('selection batches keep the selected frame and evaluation lock, stopping after an error', async () => {
+  const pending = deferred(), entered = deferred(), requests = [];
+  const session = { id: 'owned', async customRequest(_method, args) {
+    requests.push(args);
+    if (args.expression === 'first') { entered.resolve(); return pending.promise; }
+    if (args.expression === 'fail') throw new Error('Evaluation cancelled');
+    return { result: '42' };
+  } };
+  const record = { session, phase: 'paused', ready: Promise.resolve(session), done: new Promise(() => {}) };
+  const selected = { session, frameId: 23 };
+  const vscode = { debug: { activeStackItem: selected }, commands: {
+    executeCommand: async () => { vscode.debug.activeStackItem = undefined; }
+  } };
+  const repl = load('debug-repl.js', { vscode }).registerDebugRepl({ start: async () => record });
+  const batch = repl.evaluate(target, ['first', 'fail', 'must-not-run']);
+  await entered.promise;
+  vscode.debug.activeStackItem = selected;
+  await assert.rejects(repl.evaluate(target, ['concurrent']), /already evaluating/);
+  pending.resolve({ result: '1' });
+  await assert.rejects(batch, /Evaluation cancelled/);
+  assert.deepEqual(requests.map(args => args.expression), ['first', 'fail']);
+  assert.ok(requests.every(args => args.frameId === 23 && args.racketdapEcho));
+  vscode.debug.activeStackItem = selected;
+  assert.equal((await repl.evaluate(target, ['retry'])).result, '42');
 });
 
 test('captured source ownership gates Continue to Cursor and output does not update contexts', async () => {
@@ -270,6 +410,7 @@ for (const mode of ['cancel', 'reject', 'timeout']) test({
   const commands = new Map(), starting = [];
   const children = [];
   const errors = [];
+  const logs = [];
   const changes = event();
   const vscode = {
     StatusBarAlignment: { Left: 1 },
@@ -294,9 +435,14 @@ for (const mode of ['cancel', 'reject', 'timeout']) test({
     }
     createDefaultErrorHandler() { return { error: () => ({}), closed: () => ({ action: 'restart' }) }; }
     onDidChangeState = callback => this.state.subscribe(callback);
+    onNotification = disposable;
     isRunning() { return false; }
     dispose() { return this.stop(); }
     async stop() { throw new Error('SDK cannot stop an initializing connection'); }
+    error(message, data, showNotification) {
+      logs.push({ message, data });
+      if (showNotification) errors.push(message);
+    }
     async start() {
       const child = await this.factory(); children.push(child); this.entered.resolve();
       if (!initializeFails) {
@@ -308,12 +454,14 @@ for (const mode of ['cancel', 'reject', 'timeout']) test({
       // Match the SDK failure path: its public stop is intentionally unawaited.
       // The owned client must make that operation valid during initialization.
       void this.stop();
+      this.error('Client could not start', failure, true);
       throw failure;
     }
   }
   const language = load('language-client.js', {
     vscode,
     'vscode-languageclient/node': { LanguageClient: Client, State: {}, CloseAction: { DoNotRestart: 'stop' } },
+    './workspace-index': { createWorkspaceIndex: () => ({ cancelStart() {}, async dispose() {} }) },
     './language-process': { createLanguageProcess: (_command, _args, _options, lifecycle) => {
       assert.equal(lifecycle.timeout, mode === 'timeout' ? 1000 : mode === 'cancel' ? 240000 : 180000);
       return createLanguageProcess(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {}, lifecycle);
@@ -328,6 +476,8 @@ for (const mode of ['cancel', 'reject', 'timeout']) test({
     await language.dispose();
     assert.equal(children.length, 1);
     assert.equal(errors.length, 1);
+    assert.equal(logs.length, 1);
+    assert.ok(logs[0].data instanceof Error, 'Client diagnostic detail is retained');
     if (initializeFails) assert.match(errors[0], /Initialize rejected/);
     else {
       assert.match(errors[0], /timed out after 1 seconds/);
@@ -345,5 +495,6 @@ for (const mode of ['cancel', 'reject', 'timeout']) test({
   await second;
   assert.equal(children.length, 2);
   assert.deepEqual(errors, []);
+  assert.equal(logs.length, 2, 'Cancelled startup diagnostics remain in Output');
   assert.ok(children.every(child => child.exitCode !== null || child.signalCode !== null));
 });

@@ -1,31 +1,32 @@
 # Racketeer: Organised Racket
 
-*Racket debugging, editing and REPL for VS Code.*
+*Racket source debugging and editing for VS Code.*
 
 By [Eric Parsonage](https://github.com/lamestllama).
 
 Racketeer's DAP server brings source-level Racket debugging to VS Code:
 set breakpoints, step across modules and packages, and inspect or evaluate
-live lexical bindings. The extension also bundles `racket-langserver`, REPL
+live lexical variables. The extension also bundles `racket-langserver`, REPL
 workflows, Test Explorer integration, and package management.
 
-**Status:** development release, version 0.8.0. Tested on Linux ARM64
+**Status:** development release, version 0.8.6. Tested on Linux ARM64
 with Racket 9.1 CS and VS Code 1.98.1. Requires **VS Code 1.90 or newer** and the
 **full Racket 9.1 or newer distribution**. No separate language-server installation, Magic Racket, Node.js,
 or npm is needed to use the extension. It does not automatically install Racket packages.
 
 ## Install and try it
 
-Install `dist/racketeer-0.8.0.vsix` using VS Code's **Extensions: Install from
+Install `dist/racketeer-0.8.6.vsix` using VS Code's **Extensions: Install from
 VSIX…**, or:
 
 ```sh
-code --install-extension dist/racketeer-0.8.0.vsix
+code --install-extension dist/racketeer-0.8.6.vsix
 ```
 
 Open a trusted folder and a saved `.rkt` file: the language tools start
-automatically. Run **Racket: Run Current File**, **Test Current File**,
-**Load Current File in REPL**, or **Debug Current File** from the Command Palette.
+automatically. Click **Run Current File** to see text and images in Results
+beside the source. Choose **Debug Current File** for breakpoints, stepping and
+Variables. Testing and optional REPL commands are available in the Command Palette.
 Set `racketdap.racketExecutable` if Racket is not on PATH. The extension ID is
 `lamestllama.racketeer`; the debugger type and settings prefix are `racketdap`.
 Remove the earlier `lamestllama.racketdap` development extension before
@@ -33,7 +34,7 @@ installing Racketeer. Disable Magic Racket if installed to use our bundled clien
 
 Try [examples/demo.rkt](examples/demo.rkt): place a breakpoint on line 4,
 evaluate `(+ subtotal 20)` in the Debug Console, then `(set! subtotal 200)`.
-Step Over displays `20` in the Results scope; continuing prints `220` and `20`.
+Step Over displays `20` in the Return values scope; continuing prints `220` and `20`.
 See the [extension guide](vscode/README.md) for launch configuration and controls.
 The [stepping walkthrough](docs/stepping.md) explains the initial stop and why an
 expression can stay highlighted after a step.
@@ -43,14 +44,14 @@ the execution model and current limits.
 
 ## What works
 
-- Expression breakpoints, Step In/Over/Out, Continue, and resumable asynchronous Pause.
+- Expression breakpoints, Step Into, Step Over, Step Out, Continue, and resumable asynchronous Pause.
 - Conditional breakpoints, hit counts, and logpoints with Racket expressions.
 - Uncaught runtime exception stops, lexical frames, and exception details.
-- Call stack, lexical locals, Watches, Debug Console evaluation, and variable
-  assignment against the actual paused program's bindings.
+- Call Stack, lexical variables in Variables, Watch, Debug Console evaluation,
+  and `set!` assignment against the actual paused program's variables.
 - Before/after expression breakpoints, one-time Continue to Cursor, skipping
   expressions, replacing returned values, and printing values to Debug Console.
-- Results scopes distinguishing zero, one, and multiple returned values.
+- Return values scopes with counts distinguishing zero, one, and multiple values.
 - Source-variable hover, printing, and assignment, including module variables.
 - GUI callbacks and eventspace lifetime, additional module languages, and plain
   non-module files through the launch `language` setting.
@@ -74,7 +75,8 @@ the execution model and current limits.
   language is installed in the selected Racket environment.
 - Macro expansion through Racket's macro stepper, for selected expressions or
   complete modules. See [editor tools](docs/editor-tools.md).
-- Run tasks and Test Explorer with Run/Debug profiles, failure locations, and cancellation.
+- File execution with retained text, images and error links in Results.
+- Test Explorer with Run/Debug profiles, failure locations, and cancellation.
 - Plain and debugging REPLs, file loading/reloading, selection evaluation, and
   module-specific Debug REPL restart.
 - A File Actions menu connecting Run, Debug, Test, and REPL workflows.
@@ -106,7 +108,7 @@ stable editor versions. Each run retains its test reports and artifact identitie
 
 For a hands-on REPL walkthrough, use the [multi-file example](examples/multi-file/README.md).
 It follows four calls through nested folders and explains the breakpoint,
-console input, expected locals, results, and restart commands.
+console input, expected lexical variables, return values, and restart commands.
 For package workflows, see [package development](docs/packages.md) and the
 [linked-package example](examples/packages/README.md).
 
@@ -135,9 +137,9 @@ directory with Python 3 and Xvfb available:
 
 ```sh
 python3 scripts/test-gui.py
-python3 scripts/test-vscode.py --artifact dist/racketeer-0.8.0.vsix
-python3 scripts/test-vscode.py --rhombus --artifact dist/racketeer-0.8.0.vsix
-python3 scripts/test-vscode.py --dogfood --artifact dist/racketeer-0.8.0.vsix
+python3 scripts/test-vscode.py --artifact dist/racketeer-0.8.6.vsix
+python3 scripts/test-vscode.py --rhombus --artifact dist/racketeer-0.8.6.vsix
+python3 scripts/test-vscode.py --dogfood --artifact dist/racketeer-0.8.6.vsix
 ```
 
 Use `--code` and `--xvfb` to select those executables. Each run creates fresh

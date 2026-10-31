@@ -3,7 +3,7 @@ const { spawn } = require('node:child_process');
 
 // LanguageClient cannot stop an initializing connection. Own its process so
 // a stalled initialize request can be cancelled before awaiting client.stop().
-function createLanguageProcess(command, args, options, { timeout = 180000, onTimeout = () => {} } = {}) {
+function createLanguageProcess(command, args, options, { timeout = 180000, onTimeout = () => {}, name = 'Language server' } = {}) {
   let process;
   let closed = Promise.resolve();
   let timer;
@@ -30,11 +30,11 @@ function createLanguageProcess(command, args, options, { timeout = 180000, onTim
     get cancelled() { return cancelled; },
     get starting() { return starting; },
     async start() {
-      if (cancelled) throw new Error('Language server startup was cancelled.');
+      if (cancelled) throw new Error(`${name} startup was cancelled.`);
       starting = true;
       // A disconnected server need not have exited when the client restarts.
       if (process) { terminate(); await closed; }
-      if (cancelled) throw new Error('Language server startup was cancelled.');
+      if (cancelled) throw new Error(`${name} startup was cancelled.`);
       const child = spawn(command, args, { ...options, windowsHide: true, stdio: 'pipe' });
       process = child;
       closed = new Promise(resolve => child.once('close', () => {
@@ -43,7 +43,7 @@ function createLanguageProcess(command, args, options, { timeout = 180000, onTim
       }));
       timer = setTimeout(() => {
         cancelStart();
-        onTimeout(new Error(`Language server initialization timed out after ${timeout / 1000} seconds.`));
+        onTimeout(new Error(`${name} initialization timed out after ${timeout / 1000} seconds.`));
       }, timeout);
       await new Promise((resolve, reject) => {
         child.once('spawn', resolve);

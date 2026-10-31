@@ -1,5 +1,175 @@
 # Changelog
 
+## 0.8.34
+
+- Browse module imports and submodules in a native dependency tree with phase labels, source navigation and unsaved-buffer support. Cancel obsolete analysis and release owned workers on timeout or editor shutdown.
+
+## 0.8.33
+
+- Edit, insert and remove XML/Racket boxes, change whitespace and splicing modes, and retain them through undo, recovery and saving. Use independent box readers and writers.
+
+## 0.8.32
+
+- View XML and Racket boxes with whitespace and splicing labels, and run or debug WXME from its read-only viewer. Restrict readers in nested streams and refuse edits that would change the original box types.
+
+## 0.8.31
+
+- Restore current WXME text when returning from the debugger or another editor tab. Preserve edits and undo history while VS Code recreates hidden webviews.
+
+## 0.8.30
+
+- Run and debug the active WXME document after saving it through VS Code. Debug source snapshots retain decoded text and one position per embedded object, correcting breakpoints and exception locations in surrounding source.
+
+## 0.8.29
+
+- Insert PNG images, comment boxes and nested editors in WXME documents. Move selected text into a box or remove an object with native undo, save and recovery. Unchanged text retains its source styles.
+
+## 0.8.28
+
+- Edit text around images and inside nested WXME editors and comment boxes with native undo, save, revert and recovery. Object boundaries remain fixed; editing requires Racket GUI libraries and a working display.
+
+## 0.8.27
+
+- Display nested editors and comment boxes in the WXME viewer, including their text and embedded images, while preserving file bytes and refusing unsupported object readers.
+
+## 0.8.26
+
+- View saved WXME source with inline bitmap images through Open With. The read-only viewer preserves file bytes, identifies unsupported objects and marks changed snapshots for reopening.
+
+## 0.8.25
+
+- Rename through composed import selectors, compile-time uses and relative submodules.
+- Rename local aliases inside prefixes while preserving exported names and checking for capture or ambiguous selectors.
+
+## 0.8.24
+
+- Support untitled documents in the bundled language service and workspace index.
+- Preserve draft locations through rename, Save As and document closure; resolve relative imports from an associated save location or one workspace folder.
+
+## 0.8.23
+
+- Separate the workspace analysis engine from request transport and editor integration.
+- Use unsaved workspace imports for diagnostics, definitions, references and rename previews.
+- Refresh affected open consumers when dependencies change or close, and discard superseded analysis.
+
+## 0.8.22
+
+- Reuse verified workspace analysis when unchanged files open or close, while refreshing after edits and disk changes.
+
+## 0.8.21
+
+- Stop startup, references and rename requests waiting indefinitely when the workspace index disconnects.
+
+## 0.8.20
+
+- Avoid restarting workspace analysis for unchanged document notifications or an unchanged startup snapshot.
+
+## 0.8.19
+
+- Keep captured-source references available when VS Code closes or reopens the underlying file document during indexing.
+- Reject changed source text before expanding it for debugger references.
+
+## 0.8.18
+
+- Preserve nested prefixes and prefixed selective imports when renaming exported definitions.
+- Leave unused syntax templates unchanged during import rename.
+- Release expansion state between files to reduce rename memory use.
+
+## 0.8.17
+
+- Rename explicit import aliases locally, preserve simple prefixes, and update selective imports when renaming workspace definitions.
+- Reject ambiguous export selectors while retaining binding, capture and stale-source checks.
+
+## 0.8.16
+
+- Honor quiet RackUnit output and send failing suite summaries to stderr while retaining Test Explorer results.
+- Avoid repeated linear searches when tracking generated and selected test cases.
+
+## 0.8.15
+
+- Run, debug and collect coverage for nested and generated RackUnit cases, including suites held in variables.
+- Add a Test Explorer profile that uses raco test for package policies.
+
+## 0.8.14
+
+- Run, debug and collect coverage for individual inline named RackUnit suites from Test Explorer.
+
+## 0.8.13
+
+- Insert λ using the native Racket lambda snippet or a reconfigurable Alt+backslash shortcut.
+
+## 0.8.12
+
+- Add a file session option for the plain REPL, with separate terminals and selection routing for each saved file.
+
+## 0.8.11
+
+- Read shared language-server settings at window scope while preserving the selected Racket executable.
+
+## 0.8.10
+
+- Allow separate debugging and test settings for each workspace folder.
+
+## 0.8.9
+
+- Preserve each execution and returned value when a macro gives a generated wrapper its argument's source range. Stepping and breakpoint selection use expansion origins to prefer the source expression.
+
+## 0.8.8
+
+- Show macro-renamed local state, including unit variables, under its source names in the debugger and Debug REPL. Variable edits update the running program.
+- Stop once at a source conditional instead of repeatedly stopping on nested expansion forms with the same range. Separate executions retain their breakpoints.
+
+## 0.8.7
+
+- Apply the language's runtime configuration before debugging and retain it in the Debug REPL, including custom printing and legacy language configuration.
+
+## 0.8.6
+
+- Report teaching-language check counts, failures and signature violations through Test Explorer, and load each test file's language runtime configuration.
+- Include constants and references in test coverage so untaken literal branches and unused constant function bodies are visible.
+
+## 0.8.5
+
+- Run tests with native VS Code coverage controls and highlight executed expressions across loaded source files, keeping results tied to the source that ran.
+
+## 0.8.4
+
+- Discover direct named RackUnit cases without running project code, and run or debug a selected case using Test Explorer and editor test controls.
+
+## 0.8.3
+
+- Preview binding-checked renames across workspace files, rejecting incomplete analysis, stale snapshots, and unsupported import transformations.
+
+## 0.8.2
+
+- Label debugger results as Return values with a count, clarify lexical variables and `set!`, and align expression and printing commands while retaining native VS Code controls and call-site completion stops.
+- Stop at standalone module and plain-file expressions such as literals and variable references, while keeping atomic operands out of the stepping sequence.
+- Preserve custom error display and escape handlers after an exception stop so program recovery can continue in its original context.
+- Show bounded list, vector, hash, structure and syntax previews, expandable syntax source details, and procedure arity without invoking custom printers or wrapped accessors.
+- Escape symbol and keyword names consistently, and show port direction plus safely known names and state without performing port I/O or invoking user callbacks.
+- Start debugging at the first expression in main, preserving explicit breakpoints during module initialization.
+- Offer `stopOnEntryMode: "firstExpression"` to pause before initialization, with a launch configuration snippet for that mode.
+- Step into function initializers without stopping on generated binding containers that make Step Over skip the remaining body.
+- Resolve the Unix cleanup helper through PATH so adapter crashes also stop grandchildren.
+- Own debugger and macro-stepper descendants with Windows Job Objects.
+- Evaluate multiple selections in source order in the plain and Debug REPLs.
+- Evaluate selected Racket expressions in the Debug REPL with Shift+Enter.
+- Open the relevant setting directly from debugger and language-server startup errors.
+- Report language-server startup failures once while keeping diagnostic detail in Output.
+- Preview and save image results in the native image editor, with a picker for multiple returned images.
+- View image variables directly from the debugger context menu and keep image previews in one editor group.
+- Find references in unopened workspace files using a separate Racketeer indexing service with bounded analysis.
+- Keep editor buffers authoritative during file replacement and rename events.
+- Show incomplete indexing and provide a command to refresh workspace references.
+- Update the bundled language server with lifecycle, cancellation and logging fixes.
+
+## 0.8.1
+
+- Distinguish pending evaluation, returned values, and waiting callers in the
+  call stack; point return stops at the expression's closing parenthesis.
+- Enable Go to Definition and Find References in captured debugger sources
+  while their contents match the current project file.
+
 ## 0.8.0
 
 - Use the Racket project logo as the extension icon, with its upstream notice.

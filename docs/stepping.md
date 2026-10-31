@@ -4,36 +4,98 @@ Racketeer currently steps through expressions and exposes both their start and
 their returned values. It does not simply move to the next source line.
 
 In [the multi-file example](../examples/multi-file/main.rkt), the default launch
-stops at the definition of `quote-order` on line 5. That expression creates the
-function during module initialization. The function body has not run yet.
-The `stopOnEntry` setting means the first instrumented expression, not the first
-expression inside `module+ main`.
+stops at `(quote-order)` on line 10, the first executable expression inside
+`module+ main`. Module initialization has created the function on lines 5–7;
+its body has not run yet. `stopOnEntry` waits for the selected entry module,
+while explicit breakpoints can still stop during initialization.
 
-Starting there, Step Over produces these stops:
+Without a `main` submodule, entry is the first instrumented expression in the
+program's module body. An explicit submodule selection uses that submodule;
+test mode uses `test` when present. Plain files start at their first instrumented
+expression. An entry module without executable stops runs to completion.
+
+To pause before initialization, add this to your launch configuration:
+
+```json
+"stopOnEntry": true,
+"stopOnEntryMode": "firstExpression"
+```
+
+The default mode is `"entryPoint"`. `"firstExpression"` pauses at the first
+instrumented expression, including initialization in debugged dependencies.
+In the multi-file example it stops at the function setup on line 5, before
+`main` runs. Files outside the configured debug sources and compile-time code
+are not covered by this stop. Use **Racket: debug initialization** from
+**Add Configuration** in `launch.json` to insert a complete configuration.
+`stopOnEntry: false` disables the automatic stop in either mode; Run Without
+Debugging also ignores it. Breakpoints remain independent of the chosen mode.
+
+In the default `entryPoint` mode, Step Over produces these stops:
 
 | Stop | Highlight | Meaning |
 | --- | --- | --- |
-| Initial stop | Function definition, lines 5–7 | About to create `quote-order` |
-| First F10 | Same definition | Function value has been produced |
-| Second F10 | `(quote-order)` on line 10 | About to call the function |
-| Third F10 | Same call | The call has returned; inspect Results |
-| Fourth F10 | `printf` on line 11 | About to print the result |
+| Initial stop | `(quote-order)` on line 10 | About to call the function |
+| First F10 | Call's closing parenthesis on line 10 | The call has returned; inspect Return values |
+| Second F10 | `printf` on line 11 | About to print the result |
 
-For a walkthrough of the actual calculation, set a breakpoint on `(quote-order)`
-at line 10 and use **Continue** to reach it. **F11 / Step Into** enters the body
+From the initial stop, **F11 / Step Into** enters the body
 at line 6; further steps enter `app/orders.rkt` and its required files.
 **F10 / Step Over** evaluates the selected expression, including its calls,
-and stops when it returns. **Shift+F11 / Step Out** follows the current function's
+and stops at the call site when it returns, before advancing to the next
+expression. This completion stop lets you inspect or change the return values.
+**Shift+F11 / Step Out** follows the current function's
 return context. **F5 / Continue** runs until a breakpoint, exception, or completion.
 You can set `stopOnEntry` to `false` to run directly to your first breakpoint.
 
-Check the stop description: **Before expression** means it has not executed;
-**Expression returned** means its result is available. The Results scope can
-contain zero, one, or several values. A repeated highlight does not necessarily
-mean the expression ran twice.
+**Call Stack**, **Variables**, and **Watch**
+retain their native VS Code labels. The **Locals** scope in Variables contains
+the lexical variables visible in the selected frame.
 
-The current display has a limitation: expanded forms can share the source range
-of an enclosing function, producing broad or repeated highlights. That does not
-mean the function definition is being executed again. More precise source
-selection and clearer distinction between startup, expression entry, and
-expression results remain usability improvements.
+Call Stack labels each stop **Before evaluation** or **Returned N values**.
+Before evaluation, the expression is highlighted; after it returns, the marker
+moves to its closing parenthesis. Open **Return values** to inspect those values.
+The scope includes the count, such as **Return values (1)**; **Return values
+(0)** is distinct from one `#<void>` value.
+**Waiting for return** identifies a caller whose calculation is still pending.
+These are two stages of one evaluation, not two executions of the expression.
+
+Hover, Go to Definition, and Find References also work in captured debugger
+sources. Navigation opens the current project files. Language-server results
+are used only while the captured source matches the current file; editing that
+file suspends these features until the contents match again or debugging restarts.
+
+Internal definitions expand into binding containers whose source range can
+cover the whole function. Those generated containers are not separate stepping
+stops. Step Into enters the first executable initializer, and Step Over advances
+through the remaining initializers and body expressions. Explicit binding forms
+such as `let` and `letrec` retain their own expression stops. Macros can still
+execute a source expression more than once. Each execution retains its start
+and returned-value stops. When expansion metadata identifies the source
+expression inside a generated wrapper with the same range, that expression
+owns the stop. Step Over then completes one execution, not the whole wrapper.
+
+Standalone expressions in a module body or plain file also have stops when
+they are a literal, a variable reference, or a function expression. Atomic
+operands inside larger expressions and atomic definition initializers remain
+outside the stepping sequence.
+
+Structures show bounded field previews and expand in Variables and Watch.
+Fields are numbered in visible
+superclass-to-subclass order; Racket's runtime reflection does not provide field
+names. Inspection uses Racket's inspector API and does not run custom printers,
+name callbacks, or wrapped accessors. Structures outside the debugger's inspector
+remain opaque. Use an explicit console expression to invoke a custom accessor.
+
+Symbol and keyword previews use Racket escaping, including inside containers
+and syntax objects, so `|blue bud|` remains distinguishable from two symbols.
+Ports show their input/output direction. When an instrumented call invokes a
+known Racket port constructor directly or through an unchanged alias, the preview
+also shows its name; expanding it exposes direction, name, and `closed?`.
+Inspection does not read, write, flush, or close the port. Ports obtained through
+unobserved library calls, `apply`, keyword or optimized constructor dispatch,
+wrapped constructors, or
+delegating structures retain a conservative direction-only preview. These paths
+can involve user callbacks, so their names and state are not queried implicitly.
+Racket can use optimized dispatch for file constructors even without explicit
+keywords; calling the unchanged constructor through a local alias retains its
+identity and allows metadata inspection.

@@ -69,7 +69,7 @@ the applicable inspector permits access.
 - Ordinary stepping stops before visible expressions. Step Over can also stop
   at an expression's completion and show its returned values. The stop
   description distinguishes “before expression” from “expression returned.”
-- Results have a dedicated `Results` scope. Zero values, one `#<void>` value,
+- Return values have a dedicated `Return values` scope with a count. Zero values, one `#<void>` value,
   and several values are distinct. A result is retained only for the relevant
   stop; there is no implicit unbounded evaluation history.
 - Conditional breakpoints evaluate Racket expressions in the stopped lexical
@@ -114,6 +114,30 @@ Runtime debugging of macro-generated code belongs in the core. Debugging a
 macro transformer while it expands code is a separate, phase-aware feature.
 
 ## 3. Architecture and ownership
+
+The adapter, language tools, and VS Code integration share a repository, but
+have separate responsibilities. `racketdap/` runs independently of `vscode/`
+and the bundled language server. Stepping, live values, and execution results
+belong to the adapter. Workspace references and rename belong to language
+analysis. VS Code owns commands, editor views, and presentation of those results.
+Language analysis must not become a prerequisite for launching or controlling
+a debug session.
+
+Keep the adapter's stdio DAP entry point usable by other clients. Any optional
+client-specific metadata must leave ordinary DAP operations usable without it.
+The protocol session regression runs a standalone copy of `racketdap/`, without
+the extension, bundled server, user package links, or repository working directory.
+
+The adapter will move to its own repository and independently versioned Racket
+package. Keep its runtime, instrumentation, and protocol tests together. Editor
+commands, language analysis, and presentation remain with the extension. The
+extension should bundle a pinned adapter release so users still install one
+extension. Launch options and optional protocol extensions belong to the
+adapter's documented public contract.
+
+Until extraction, enforce the same dependency boundary in this repository and
+retain the standalone protocol regression. The split should change packaging
+and release ownership without changing debugger behavior.
 
 ```mermaid
 flowchart LR
@@ -183,6 +207,49 @@ Use explicit structs and narrow module interfaces. Do not add a general
 debugger-backend plugin framework, a second expression interpreter, or an
 editor-specific core. Introduce further abstractions when a second concrete
 use requires them.
+
+### Workspace analysis boundaries
+
+Workspace analysis runs in a separate service with three ownership boundaries:
+
+| Layer | Responsibility |
+| --- | --- |
+| `vscode/workspace-index.js` | Observe VS Code document lifetimes, settings and file events; submit source views; convert results to editor locations and edit previews. |
+| `vscode/workspace-index.rkt` | Frame private requests, map request IDs and cancellation messages, translate domain outcomes, and close the engine when the connection ends. |
+| `vscode/workspace-analysis.rkt` and `vscode/workspace-rename.rkt` | Discover files, analyse immutable source views, combine binding references, validate rename, and own bounded worker places. |
+
+The engine has no editor connection, request IDs or wire-protocol errors.
+`make-workspace-analysis` creates an independent instance. Its optional
+`#:on-status` callback receives progress records; it is an output sink and must
+not re-enter the engine. Instances have separate runs, locks and worker slots.
+
+`workspace-analysis-update!` accepts a complete immutable snapshot containing
+`revision`, `roots`, `documents` and optional `settings`. Each document has a
+file or untitled URI, an opaque lifetime identity, a version and its text. Revisions increase
+within one instance. The adapter owns incremental changes and assigns a new
+identity when a document closes and reopens. The optional `documentsOnly` hint
+permits reuse only after the engine verifies the new source view against disk.
+Untitled source identities and import bases belong to the analysis snapshot.
+The engine creates no placeholder source files; returned locations retain the
+original document URI.
+
+`workspace-analysis-query` accepts `references`, `prepare-rename` or `rename`,
+the source URI and position, and an optional cancellation event. Ordinary
+requests identify the document lifetime and version; captured-source reference
+requests instead supply the captured text. Results are `AnalysisResult` values
+containing the accepted revision and value, or `AnalysisFailure` values with a
+symbolic reason and message. Adapters choose their protocol's representation.
+
+`workspace-analysis-close!` is idempotent. It cancels active runs, waits for
+their completion and reaps worker places. Further updates have no effect;
+queries return a closed-engine outcome. Closing one instance leaves other
+instances usable.
+
+An LSP host can use the same engine by constructing snapshots from its document
+registry and mapping standard reference and rename requests to the query API.
+VS Code document events, commands, status presentation and edit application
+remain editor responsibilities. That integration changes the adapters while
+retaining the analysis and rename implementation.
 
 ## 4. Instrumentation and module loading
 
@@ -388,10 +455,10 @@ thread. The adapter must remain responsive enough to terminate the worker.
 | Numbers | Racket notation preserving exactness, rationals, and complex values |
 | Symbols, keywords, strings, bytes, characters | Bounded Racket notation with their actual type |
 | Pairs and lists | Bounded sequence preview; expandable `car`/`cdr` preserves improper or cyclic shape |
-| Vectors, boxes, hashes | Lazy children with indexing/entry paging and mutability information |
-| Structures | Type name and fields only where permitted; field indexes when names are unavailable |
-| Procedures | Available name, arity, and source metadata; never an invented list of closure captures |
-| Syntax objects | Bounded datum, source location, and available binding/phase metadata |
+| Vectors, boxes, hashes | Bounded contents previews; lazy children with indexing/entry paging and mutability information |
+| Structures | Bounded type/field preview where permitted; numbered expandable fields |
+| Procedures | Name when available without program callbacks; expandable arity, without an invented list of closure captures |
+| Syntax objects | Bounded datum preview; expandable datum and source coordinates |
 | Promises, ports, threads, continuations | Descriptive handles; no implicit forcing, reading, execution, or resumption |
 | Uninitialized/unavailable bindings | Explicit unavailable state, distinct from `#f` and `#<void>` |
 
@@ -607,7 +674,7 @@ dynamic expression and activation contexts without retaining tail-call history.
 The DAP implementation now launches a separate Racket worker over authenticated
 loopback control, captures program output separately, and uses bounded value
 previews and stop-owned handles. `tests/dap.test.js` covers complete debug
-sessions, live mutation, multiple-value Results, stale references, Unicode
+sessions, live mutation, multiple return values, stale references, Unicode
 source snapshots, independent thread stops, cooperative pause, blocked-evaluation
 termination, and target exit/errors. `tests/vscode-integration.js` exercises the
 packaged extension in a real isolated VS Code extension host.

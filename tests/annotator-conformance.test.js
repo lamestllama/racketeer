@@ -70,6 +70,72 @@ test('instrumented execution preserves values, effects, continuations, and tail 
   assert.equal(normal.stderr, '');
 });
 
+test('function inspection preserves inferred names, identity, and case-lambda arity', async t => {
+  const lines = [
+    '#lang racket/base',
+    '(define (cedar x) x)',
+    '(define branch (case-lambda [(x) x] [(x y) y]))',
+    '(define alias cedar)',
+    '(define nested (letrec ([leaf (lambda (x) x)]) leaf))',
+    '(define selected (if #t (lambda (x) x) (lambda (x y) y)))',
+    '(define (run proc)',
+    '  (displayln (list (object-name cedar) (object-name branch) (object-name nested)',
+    '                   (object-name selected) (procedure-arity branch) (eq? alias cedar))))',
+    '(module+ main (run cedar))'
+  ];
+  const { client, program } = await prepare(t, lines, [{ line: 8 }]);
+  const normal = await execute('racket', [program], { timeout: 30000 });
+  await ok(client.request('configurationDone'));
+  const { threadId, frame } = await stoppedFrame(client);
+  for (const [expression, name] of [['cedar', 'cedar'], ['branch', 'branch'], ['nested', 'leaf'], ['selected', 'selected'], ['proc', 'cedar']]) {
+    const value = await ok(client.request('evaluate', { frameId: frame.id, expression, context: 'watch' }));
+    assert.equal(value.result, `#<procedure:${name}>`);
+    assert.ok(value.variablesReference > 0);
+    const { variables } = await ok(client.request('variables', { variablesReference: value.variablesReference }));
+    assert.equal(variables.find(item => item.name === 'arity').value, expression === 'branch' ? '(1 2)' : '1');
+  }
+  assert.equal((await ok(client.request('evaluate', { frameId: frame.id, expression: '(eq? cedar alias)' }))).result, '#t');
+  await ok(client.request('continue', { threadId }));
+  assert.equal(await finished(client), normal.stdout);
+});
+
+test('port provenance preserves evaluation order, multiple values, tail calls, and continuation reentry', async t => {
+  const { client, program } = await prepare(t, [
+    '#lang racket/base',
+    "(define events '())",
+    '(define (note label value) (set! events (cons label events)) value)',
+    '(define (choose port #:label label) (list (input-port? port) label))',
+    '(define (failure thunk) (with-handlers ([exn:fail? exn-message]) (thunk)))',
+    '(define saved #f)',
+    '(define (build)',
+    "  (define port ((note 'operator open-input-string)",
+    "                (call/cc (lambda (k) (set! saved k) (note 'content \"fir\")))",
+    "                (note 'name 'canopy)))",
+    '  (list (object-name port) (read-string 3 port) (eq? port port)))',
+    '(define (tail-loop n)',
+    "  (with-continuation-mark 'branch n",
+    "    (if (zero? n) (values 'done (continuation-mark-set->list #f 'branch))",
+    '        ((if (even? n) tail-loop tail-loop) (sub1 n)))))',
+    '(module+ main',
+    '  (define rounds 0)',
+    '  (displayln (build))',
+    '  (set! rounds (add1 rounds))',
+    '  (when (= rounds 1) (saved "oak"))',
+    "  (define-values (input output) ((note 'pipe-maker make-pipe) 16 'twig-in 'twig-out))",
+    '  (displayln (list (object-name input) (object-name output) (input-port? input) (output-port? output)))',
+    '  (close-input-port input) (close-output-port output)',
+    '  (displayln (call-with-values (lambda () (tail-loop 30000)) list))',
+    "  (displayln (choose (note 'positional (open-input-string \"\")) #:label (note 'keyword 'caption)))",
+    '  (displayln (failure (lambda () ((values) 1))))',
+    '  (displayln (failure (lambda () ((values 1 2) 3))))',
+    '  (displayln (reverse events)))'
+  ]);
+  const normal = await execute('racket', [program], { timeout: 30000 });
+  await ok(client.request('configurationDone'));
+  assert.equal(await finished(client), normal.stdout);
+  assert.equal(normal.stderr, '');
+});
+
 test('source-visible locals retain hygiene and mutation affects the actual computation', async t => {
   const lines = [
     '#lang racket/base',
@@ -89,6 +155,159 @@ test('source-visible locals retain hygiene and mutation affects the actual compu
   assert.equal(await finished(client), '(30 31)\n');
   assert.equal((await client.request('scopes', { frameId: frame.id })).success, false);
 });
+
+test('unit state keeps source names, lexical shadowing, and live mutation across instances', async t => {
+  const lines = [
+    '#lang racket/base',
+    '(require racket/unit)',
+    '(define worker@',
+    '  (unit (import) (export)',
+    '    (define count 10)',
+    '    (define reserve 90)',
+    '    (define (update n)',
+    '      (let ([count 1000])',
+    '        (displayln (+ count n)))',
+    '      (set! count (+ count n))',
+    '      count)',
+    '    (displayln (update 4))))',
+    '(invoke-unit worker@)',
+    '(invoke-unit worker@)'
+  ];
+  const { client } = await prepare(t, lines, [{ line: 9 }, { line: 10 }]);
+  await ok(client.request('configurationDone'));
+  for (let instance = 0; instance < 2; instance++) {
+    const shadow = await stoppedFrame(client);
+    assert.equal(shadow.frame.line, 9);
+    assert.equal((await ok(client.request('evaluate', { frameId: shadow.frame.id, expression: 'count' }))).result, '1000');
+    await ok(client.request('continue', { threadId: shadow.threadId }));
+    const { threadId, frame } = await stoppedFrame(client);
+    assert.equal(frame.line, 10);
+    const { scopes } = await ok(client.request('scopes', { frameId: frame.id }));
+    const locals = scopes.find(scope => scope.name === 'Locals');
+    const { variables } = await ok(client.request('variables', { variablesReference: locals.variablesReference }));
+    assert.deepEqual(variables.map(variable => variable.name).sort(), ['count', 'n', 'reserve']);
+    assert.equal(variables.find(variable => variable.name === 'count').value, '10');
+    assert.equal(variables.find(variable => variable.name === 'reserve').value, '90');
+    assert.equal((await ok(client.request('evaluate', { frameId: frame.id, expression: 'count' }))).result, '10');
+    if (instance === 0) {
+      await ok(client.request('setVariable', { variablesReference: locals.variablesReference, name: 'count', value: '20' }));
+      assert.equal((await ok(client.request('evaluate', { frameId: frame.id, expression: 'count' }))).result, '20');
+    }
+    await ok(client.request('continue', { threadId }));
+  }
+  assert.equal(await finished(client), '1004\n24\n1004\n14\n');
+});
+
+test('macro-renamed locals use binding identity through nested and hidden same-name bindings', async t => {
+  const lines = [
+    '#lang racket/base',
+    '(require (for-syntax racket/base))',
+    '(define-syntax (with-state stx)',
+    '  (syntax-case stx ()',
+    '    [(_ name initial body ...)',
+    '     (with-syntax ([(cell) (generate-temporaries #\'(name))])',
+    '       #\'(let ([cell initial])',
+    '           (let-syntax ([name (make-rename-transformer #\'cell)]) body ...)))]))',
+    '(define-syntax-rule (hide body) (let ([count \'hidden]) body))',
+    '(with-state count 10',
+    '  (with-state count 20',
+    '    (hide (displayln (+ count 1))))',
+    '  (displayln (+ count 2)))'
+  ];
+  const { client } = await prepare(t, lines, [{ line: 12, column: lines[11].indexOf('(+ count') + 1 }, { line: 13 }]);
+  await ok(client.request('configurationDone'));
+  const inner = await stoppedFrame(client);
+  assert.equal(inner.frame.line, 12);
+  assert.equal((await ok(client.request('evaluate', { frameId: inner.frame.id, expression: 'count' }))).result, '20');
+  assert.equal((await ok(client.request('evaluate', { frameId: inner.frame.id, expression: '(begin (set! count 30) count)' }))).result, '30');
+  await ok(client.request('continue', { threadId: inner.threadId }));
+  const outer = await stoppedFrame(client);
+  assert.equal(outer.frame.line, 13);
+  assert.equal((await ok(client.request('evaluate', { frameId: outer.frame.id, expression: 'count' }))).result, '10');
+  await ok(client.request('continue', { threadId: outer.threadId }));
+  assert.equal(await finished(client), '31\n12\n');
+});
+
+test('a conditional breakpoint stops once per call across expanded clauses', async t => {
+  const lines = [
+    '#lang racket/base',
+    '(define (classify x)',
+    '  (cond [(zero? x) \'zero]',
+    '        [(negative? x) \'negative]',
+    '        [else \'positive]))',
+    '(displayln (classify -1))',
+    '(displayln (classify 1))'
+  ];
+  const { client } = await prepare(t, lines, [{ line: 3 }]);
+  await ok(client.request('configurationDone'));
+  for (const expected of ['-1', '1']) {
+    const { threadId, frame } = await stoppedFrame(client);
+    assert.equal(frame.line, 3);
+    assert.equal((await ok(client.request('evaluate', { frameId: frame.id, expression: 'x' }))).result, expected);
+    await ok(client.request('continue', { threadId }));
+  }
+  assert.equal(await finished(client), 'negative\npositive\n');
+});
+
+test('a generated operation keeps its stop when it borrows an atomic argument range', async t => {
+  const lines = [
+    '#lang racket/base',
+    '(require (for-syntax racket/base))',
+    '(define-syntax (increment stx)',
+    '  (syntax-case stx ()',
+    '    [(_ value) (syntax/loc #\'value (+ 1 value))]))',
+    '(define (run)',
+    '  (displayln (increment 4)))',
+    '(run)'
+  ];
+  const { client } = await prepare(t, lines, [{ line: 7, column: lines[6].indexOf('4') + 1 }]);
+  await ok(client.request('configurationDone'));
+  const { threadId, frame } = await stoppedFrame(client);
+  assert.equal(frame.line, 7);
+  await ok(client.request('continue', { threadId }));
+  assert.equal(await finished(client), '5\n');
+});
+
+for (const expression of ['(set! counter (add1 counter))', '(tick)', '(when #t (set! counter (add1 counter)))']) {
+  for (const phase of ['before', 'after']) {
+    test(`a macro borrowing ${expression}'s range preserves each ${phase} boundary`, async t => {
+      const lines = [
+        '#lang racket/base',
+        '(require (for-syntax racket/base))',
+        '(define-syntax (twice stx)',
+        '  (syntax-case stx ()',
+        '    [(_ expression) (syntax/loc #\'expression (begin0 expression expression))]))',
+        '(define counter 0)',
+        '(define (tick) (set! counter (add1 counter)) counter)',
+        '(define (run)',
+        `  (twice ${expression})`,
+        '  (displayln counter))',
+        '(run)'
+      ];
+      const column = lines[8].indexOf(expression) + (phase === 'after' ? expression.length : 1);
+      const { client } = await prepare(t, lines, [{ line: 9, column }]);
+      await ok(client.request('configurationDone'));
+      for (let iteration = 0; iteration < 2; iteration++) {
+        const stopped = await client.event('stopped');
+        assert.equal(stopped.body.reason, 'breakpoint');
+        assert.equal(stopped.body.racketdapStopKind, phase);
+        const { stackFrames } = await ok(client.request('stackTrace', { threadId: stopped.body.threadId }));
+        assert.equal(stackFrames[0].line, 9);
+        const value = String(iteration + (phase === 'after' ? 1 : 0));
+        assert.equal((await ok(client.request('evaluate', { frameId: stackFrames[0].id, expression: 'counter' }))).result, value);
+        if (phase === 'before') {
+          await ok(client.request('next', { threadId: stopped.body.threadId }));
+          const returned = await client.event('stopped');
+          assert.equal(returned.body.racketdapStopKind, 'after');
+          const stack = await ok(client.request('stackTrace', { threadId: returned.body.threadId }));
+          assert.equal((await ok(client.request('evaluate', { frameId: stack.stackFrames[0].id, expression: 'counter' }))).result, String(iteration + 1));
+        }
+        await ok(client.request('continue', { threadId: stopped.body.threadId }));
+      }
+      assert.equal(await finished(client), '2\n');
+    });
+  }
+}
 
 test('both executions of a macro-duplicated source expression hit the breakpoint', async t => {
   const lines = [
@@ -156,11 +375,11 @@ test('source module identifiers remain distinct from expansion-renamed namespace
   await ok(client.request('configurationDone'));
   const { threadId, frame } = await stoppedFrame(client);
   const evaluate = expression => client.request('evaluate', { frameId: frame.id, expression });
-  assert.equal((await ok(evaluate('(list n n.1)'))).result, '(5 . (40 . ()))');
+  assert.equal((await ok(evaluate('(list n n.1)'))).result, '(5 40)');
   await ok(evaluate('(set! n.1 100)'));
-  assert.equal((await ok(evaluate('(list n n.1)'))).result, '(5 . (100 . ()))');
+  assert.equal((await ok(evaluate('(list n n.1)'))).result, '(5 100)');
   await ok(evaluate('(set! n.1 40)'));
-  assert.equal((await ok(evaluate('(list n n.1)'))).result, '(5 . (40 . ()))');
+  assert.equal((await ok(evaluate('(list n n.1)'))).result, '(5 40)');
   await ok(evaluate('(set! n 8)'));
   await ok(client.request('continue', { threadId }));
   assert.equal(await finished(client), '(9 40)\n');

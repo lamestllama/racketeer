@@ -17,7 +17,32 @@ async function saveDocument(document) {
   return targetFor(document.uri);
 }
 
-async function activeTarget() {
+async function saveTarget(target) {
+  if (target.format !== 'wxme') {
+    const document = await vscode.workspace.openTextDocument(target.uri || target.program);
+    if (document.isDirty && !await document.save()) throw new Error('The file could not be saved.');
+    return target;
+  }
+  const dirtyViews = () => vscode.window.tabGroups.all.flatMap(group => group.tabs)
+    .some(tab => tab.input instanceof vscode.TabInputCustom &&
+      ['racketeer.wxmeEditor', 'racketeer.wxme'].includes(tab.input.viewType) &&
+      tab.input.uri.toString() === target.uri.toString() && tab.isDirty);
+  if (vscode.workspace.textDocuments.some(document => document.uri.toString() === target.uri.toString() && document.isDirty))
+    throw new Error('The text editor has unsaved changes. Save or revert them before running WXME.');
+  if (dirtyViews()) {
+    const saved = await vscode.workspace.save(target.uri);
+    if (!saved || saved.toString() !== target.uri.toString() || dirtyViews()) throw new Error('The WXME document could not be saved.');
+  }
+  return target;
+}
+
+async function activeTarget({ allowWxme = false } = {}) {
+  const tab = vscode.window.tabGroups?.activeTabGroup.activeTab;
+  if (vscode.TabInputCustom && tab?.input instanceof vscode.TabInputCustom) {
+    const wxmeTab = t => t.input instanceof vscode.TabInputCustom && ['racketeer.wxmeEditor', 'racketeer.wxme'].includes(t.input.viewType);
+    if (!allowWxme || !wxmeTab(tab)) throw new Error('Open a Racket text editor for this command.');
+    return saveTarget({ ...targetFor(tab.input.uri), format: 'wxme' });
+  }
   const document = vscode.window.activeTextEditor?.document;
   if (!document || document.languageId !== 'racket') throw new Error('Open a Racket source file first.');
   return saveDocument(document);
@@ -31,4 +56,4 @@ function launchConfiguration(target, options = {}) {
   };
 }
 
-module.exports = { targetFor, saveDocument, activeTarget, launchConfiguration };
+module.exports = { targetFor, saveDocument, saveTarget, activeTarget, launchConfiguration };

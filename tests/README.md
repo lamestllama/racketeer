@@ -31,8 +31,16 @@ and is explicitly included in both workflows.
 To debug a real test, open `tests/protocol-inspection.rkt`, set a breakpoint on
 `(define in (open-input-bytes ...))`, and run **Racket: Debug Tests in Current
 File**. Inspect `message`, step, or continue to finish the suite. **Debug Test**
-in the Testing view uses the same profile. Results are currently per file;
-RackUnit case names and failed source locations appear in failure details.
+in the Testing view uses the same profile. Direct named cases and `run-tests`
+calls appear under their files. Running a suite adds its nested cases with
+separate results and failure locations. Select a nested case to Run, Debug or
+collect Coverage; suite construction and fixtures still run. Generated cases
+are discovered during execution, never by opening a file.
+
+For package policies, choose **Run with package policies (raco test)** on files.
+Racket applies omissions, arguments, timeouts and other native policies; results
+are per file and output appears in the dedicated task terminal. **Racket: Test
+Package** remains available for an entire installed package.
 
 This workspace sets `racketdap.testing.sourceRoots` to `tests` and `experiments`.
 That makes Debug Test instrument the test code; the debugger tests themselves
@@ -50,13 +58,14 @@ own profile.
 
 ```sh
 node scripts/package-extension.js
-python3 scripts/test-vscode.py --dogfood --artifact dist/racketeer-0.8.0.vsix
+python3 scripts/test-vscode.py --dogfood
 ```
 
 On Linux this needs VS Code and Xvfb; pass `--code` and `--xvfb` when their
 executables are not on PATH. It uses a disposable copy of the actual suites,
 source, and workspace discovery settings under `.test-output/dogfood/run-*/`. It
-drives **Run All Tests** and **Debug All Tests**, verifies every suite's RackUnit count, stops inside a
+drives **Run All Tests**, **Debug All Tests** and **Run All Tests with Coverage**,
+verifies every suite's RackUnit count, stops inside a
 real test and reads a local, then changes an assertion in the copy to prove
 failure reporting and source locations work. Finally it restores the assertion
 and reruns the suite. It also checks the four-file Debug REPL example, including
@@ -90,8 +99,8 @@ Command-line equivalents:
 ```sh
 node scripts/test-headless.js
 python3 scripts/test-gui.py
-python3 scripts/test-vscode.py --artifact dist/racketeer-0.8.0.vsix
-python3 scripts/test-vscode.py --rhombus --artifact dist/racketeer-0.8.0.vsix
+python3 scripts/test-vscode.py
+python3 scripts/test-vscode.py --rhombus
 ```
 
 The explicit `--rhombus` run installs a pinned Rhombus language runtime into its
@@ -102,9 +111,20 @@ directories without these extra language packages. Macro-stepper command
 acceptance runs with the ordinary installed-editor checks on the isolated
 display. Package identities and provisioning logs accompany the Rhombus report.
 
-The headless command discovers top-level `tests/*.rkt`, the lexical-evaluation
+The GUI command includes callback debugging, event-loop Pause/Continue, macro-stepper windows, interactive
+plots and WXME text, object and XML/Racket-box editing. Pass `--timeout 600` on a
+busy host to increase its whole-suite time limit; individual test deadlines
+remain unchanged.
+
+The headless command stages the bundled runtime and analysis dependencies before
+running tests, so a fresh checkout does not need an earlier package build. It
+discovers top-level `tests/*.rkt`, the lexical-evaluation
 experiment, and every `tests/*.test.js` except the explicit GUI suites
-`gui-parity.test.js` and `macro-stepper-gui.test.js`. It is also
+`gui-parity.test.js`, `macro-stepper-gui.test.js`, `plots-gui.test.js`, and the display-dependent
+cases in `pause.test.js`, `wxme-edit.test.js`, `wxme-structure.test.js` and `wxme-xml-edit.test.js`. The WXME cases cover
+object insertion and removal, structural undo, versioned recovery, source spans,
+styled Unicode and tabs, object-preserving saves, reader refusal and evaluation
+of original fixtures. It is also
 the implementation of `npm test --prefix vscode` and the headless workspace task.
 The harness regression tests use Python 3; no editor or display is needed.
 
@@ -115,19 +135,19 @@ offline packaging check is:
 npm_config_offline=true node scripts/package-extension.js
 ```
 
-The bundled language server has recorded fixes for viewport ranges and delayed
-file-creation notifications. Run its native regression suites on Linux with:
+The bundled upstream language server includes fixes for viewport ranges and
+watched-file notifications. Run its native regression suites on Linux with:
 
 ```sh
 PLTCOLLECTS="$PWD/vendor/collects:" raco test \
   vendor/collects/racket-langserver/tests/lib/doc-test.rkt \
-  vendor/collects/racket-langserver/tests/lsp/watched-create-test.rkt
+  vendor/collects/racket-langserver/tests/lsp/workspace-lifecycle-test.rkt
 ```
 
-This includes the unchanged upstream document cases, viewport bounds, and
-preservation of an open buffer and its incremental edits when a delayed
-file-creation notification arrives. Both patches are recorded in
-`vendor/patches/` and applied by the pinned-source reproduction script.
+This includes the upstream document cases, viewport bounds, and preservation
+of editor buffers through watched-file and rename notifications. The remaining
+analysis-completion patch is recorded in `vendor/patches/` and applied by the
+pinned-source reproduction script.
 
 The loader-isolation regression covers nested module and plain-file executions
 with both Run and Debug policies. Each loader changes evaluation and compilation

@@ -7,7 +7,11 @@
   (define-syntax (name stx)
     (syntax-case stx ()
       [(_ body (... ...))
-       #'(instrument-language-body rewrite runtime-path (language-module-begin body (... ...)))])))
+       (with-syntax ([original-body
+                      (datum->syntax stx
+                        (cons #'language-module-begin (syntax->list #'(body (... ...))))
+                        stx stx)])
+         #'(instrument-language-body rewrite runtime-path original-body))])))
 
 (define-syntax (instrument-language-body stx)
   (syntax-case stx ()
@@ -31,6 +35,8 @@
 ;; remain in the module's ordinary expansion pass. Only runtime expressions
 ;; undergo complete expansion before annotation; their lexical syntax has
 ;; already been consumed when the resulting core expression is compiled.
+;; #%expression defers bare expressions to the same pass as definition RHSs,
+;; preserving expansion order and the placement of shared lifted expressions.
 (define-syntax (instrument-form stx)
   (syntax-case stx ()
     [(_ transform form)
@@ -43,7 +49,7 @@
              #'(begin (instrument-form transform forms) ...)]
             [(define-values ids rhs)
              ((syntax-e #'transform) 'declaration expanded)
-             #'(define-values ids (instrument-expression transform rhs))]
+             #'(define-values ids (instrument-expression transform expression rhs))]
             [(define-syntaxes . _)
              ((syntax-e #'transform) 'declaration expanded)
              expanded]
@@ -53,10 +59,10 @@
             [(#%declare . _) expanded]
             [(module . _) ((syntax-e #'transform) 'module expanded)]
             [(module* . _) ((syntax-e #'transform) 'module expanded)]
-            [else #`(instrument-expression transform #,expanded)]))])]))
+            [else #`(#%expression (instrument-expression transform module-expression #,expanded))]))])]))
 
 (define-syntax (instrument-expression stx)
   (syntax-case stx ()
-    [(_ transform expression)
-     ((syntax-e #'transform) 'expression
+    [(_ transform kind expression)
+     ((syntax-e #'transform) (syntax-e #'kind)
                             (local-expand #'expression 'expression null))]))

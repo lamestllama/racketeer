@@ -24,9 +24,9 @@ async function stopped(client) {
 }
 async function results(client, frame) {
   const { scopes } = await ok(client.request('scopes', { frameId: frame.id }));
-  const scope = scopes.find(s => s.name.startsWith('Results'));
+  const scope = scopes.find(s => s.name.startsWith('Return values'));
   assert.ok(scope);
-  return { reference: scope.variablesReference, values: (await ok(client.request('variables', { variablesReference: scope.variablesReference }))).variables.map(v => v.value) };
+  return { name: scope.name, reference: scope.variablesReference, values: (await ok(client.request('variables', { variablesReference: scope.variablesReference }))).variables.map(v => v.value) };
 }
 async function finished(client) {
   await client.event('terminated');
@@ -34,7 +34,7 @@ async function finished(client) {
   return client.events.filter(e => e.event === 'output' && e.body.category === 'stdout').map(e => e.body.output).join('');
 }
 
-test('skip and replace preserve multiple values, skipped effects, live Results, and failed-edit recovery', async t => {
+test('skip and replace preserve multiple values, skipped effects, live Return values, and failed-edit recovery', async t => {
   const lines = ['#lang racket/base', '(define effects 0)',
     '(define-values (a b) (begin (set! effects (add1 effects)) (values 1 2)))',
     '(displayln (list effects a b))'];
@@ -61,7 +61,16 @@ test('skip and replace preserve multiple values, skipped effects, live Results, 
   assert.ok(s.racketdapActions.includes('racketdap/replaceResults'));
   assert.ok(s.racketdapActions.includes('racketdap/printResults'));
   const original = await results(client, s.frame); assert.deepEqual(original.values, ['8', '9']);
+  assert.equal(original.name, 'Return values (2)');
   assert.equal((await client.request('racketdap/skipExpression', { threadId: s.threadId, expression: '0' })).success, false);
+  await ok(client.request('racketdap/replaceResults', { threadId: s.threadId, expression: '(values)' }));
+  const invalidated = await client.event('invalidated', event => event.body.areas.includes('stacks'));
+  assert.equal(invalidated.body.threadId, s.threadId);
+  const refreshed = await ok(client.request('stackTrace', { threadId: s.threadId }));
+  assert.match(refreshed.stackFrames[0].name, /^Returned 0 values at /);
+  const noValues = await results(client, refreshed.stackFrames[0]);
+  assert.equal(noValues.name, 'Return values (0)');
+  assert.deepEqual(noValues.values, []);
   await ok(client.request('racketdap/replaceResults', { threadId: s.threadId, expression: '(values 40 50)' }));
   assert.equal((await client.request('racketdap/replaceResults', { threadId: s.threadId, expression: '(error "bad edit")' })).success, false);
   assert.deepEqual((await ok(client.request('variables', { variablesReference: original.reference }))).variables.map(v => v.value), ['40', '50']);
@@ -78,7 +87,11 @@ test('closing-parenthesis breakpoints stop at completion and expose replaceable 
   await ok(client.request('setBreakpoints', { source: { path: program }, breakpoints: [{ line: 2, column: end }] }));
   await ok(client.request('configurationDone'));
   const s = await stopped(client); assert.equal(s.racketdapStopKind, 'after');
-  assert.deepEqual((await results(client, s.frame)).values, ['3']);
+  assert.equal(s.frame.column, end);
+  assert.equal(s.frame.endColumn, end + 1);
+  const returned = await results(client, s.frame);
+  assert.equal(returned.name, 'Return values (1)');
+  assert.deepEqual(returned.values, ['3']);
   const locations = await ok(client.request('breakpointLocations', { source: { path: program }, line: 2 }));
   assert.ok(locations.breakpoints.some(b => b.column === end && b.racketdapPhase === 'after'));
   await ok(client.request('racketdap/replaceResults', { threadId: s.threadId, expression: '7' }));

@@ -2,13 +2,16 @@
 
 (require racket/async-channel racket/file racket/list racket/path racket/port
          racket/string racket/tcp
-         "../protocol.rkt" "../commands.rkt" "../source.rkt" "../packages.rkt" "load.rkt" "../instrumentation/instrument.rkt"
-         "inspect.rkt" "stepping.rkt" "expressions.rkt" "cancel.rkt")
+         "../protocol.rkt" "../commands.rkt" "../source.rkt" "../packages.rkt" "../process-group.rkt" "load.rkt" "../instrumentation/instrument.rkt"
+         "inspect.rkt" "stepping.rkt" "expressions.rkt" "cancel.rkt" "images.rkt" "plots.rkt" "coverage.rkt" "interactions.rkt" "logs.rkt" "error-locations.rkt")
 
 (define bootstrap (read-message (current-input-port)))
+(join-process-group! (hash-ref bootstrap 'processGroup #f))
 (define-values (control-in control-out) (tcp-connect "127.0.0.1" (hash-ref bootstrap 'port)))
 (define output-lock (make-semaphore 1))
-(define (send object) (call-with-semaphore output-lock (lambda () (write-message object control-out))))
+(define (send object)
+  (with-continuation-mark debugger-active-key #t
+    (call-with-semaphore output-lock (lambda () (write-message object control-out)))))
 (send (hasheq 'type "hello" 'version 1 'token (hash-ref bootstrap 'token)))
 (define config (hash-ref bootstrap 'config))
 (define-values (program-input input-writer)
@@ -19,6 +22,9 @@
 (define controller-custodian (current-custodian))
 (define (arg h key [default #f]) (hash-ref h key default))
 (define (event name [body (hasheq)]) (send (hasheq 'type "event" 'event name 'body body)))
+(define application-log
+  (make-application-log (arg config 'logFilter "error")
+                        (lambda (body) (event "racketdap/log" body))))
 (define awaiting (make-hasheqv))
 (define (reply request [body (hasheq)] [error #f])
   (hash-remove! awaiting (hash-ref request 'seq))
@@ -29,22 +35,48 @@
 (define next-id 0)
 (define id-lock (make-semaphore 1))
 (define (fresh-id)
-  (call-with-semaphore id-lock (lambda () (set! next-id (add1 next-id)) next-id)))
+  (with-continuation-mark debugger-active-key #t
+    (call-with-semaphore id-lock (lambda () (set! next-id (add1 next-id)) next-id))))
 (define sources (make-hash))
+(define failure-sites (make-ephemeron-hasheq))
+(define (error-info value [expression #f])
+  (with-handlers ([(lambda (_) #t) (lambda (_) (hasheq 'sources '() 'locations '() 'omitted #t))])
+    (define observed (hash-ref failure-sites (current-thread) #f))
+    (hash-remove! failure-sites (current-thread))
+    (error-locations value sources (if (and observed (eq? (car observed) value)) (cdr observed) '()) expression)))
+(define (on-error value)
+  (when (and (arg config 'racketdapRichInteractions #f) (not (exn:break? value)))
+    (event "racketdap/interactionError" (hash-set (error-info value) 'message (error-text value)))))
+(define (read-interaction expression)
+  (read-expression expression #:source (and (arg config 'racketdapRichInteractions #f) interaction-source)))
 (define sites (make-hash))
+(define coverage-hits (make-hasheqv))
+(define (on-coverage-event stop)
+  (when (eq? (stop-kind stop) 'before)
+    (hash-set! coverage-hits (site-id (stop-site stop)) #t)))
 (define breakpoints (make-hash))
 (define frames (make-hasheqv))
 (define variables (make-hasheqv))
 (define states (make-hasheq))
 (define states-by-id (make-hasheqv))
-(struct state (id thread paused step pause? run-to) #:mutable)
+(struct state (id thread paused step pause? run-to pause-lock) #:mutable)
+(struct pause-batch (focused))
+(define pending-pause #f)
+(define (claim-pause-focus! batch exact?)
+  (define focus (pause-batch-focused batch))
+  (let loop ()
+    (define previous (unbox focus))
+    (cond [(or (eq? previous 'source) (and previous (not exact?))) #f]
+          [(box-cas! focus previous (if exact? 'source 'approximate)) #t]
+          [else (loop)])))
 (struct paused (state stop inbox ids) #:transparent)
 (struct breakpoint (id request targets description rule hits phase) #:mutable)
 (define evaluations (make-evaluations))
 (define exception-enabled? #f)
 (define interaction #f)
 (define (error-text value) (if (exn? value) (exn-message value) (value-preview value)))
-(define (flush-program-output)
+(define (flush-program-output #:final? [final? #f])
+  (application-log-flush! application-log #:final? final?)
   (for ([port (in-list (list (current-output-port) (current-error-port)))])
     (unless (port-closed? port) (flush-output port))))
 (define (new-breakpoint request)
@@ -55,6 +87,7 @@
 (define started? #f)
 (define ended? #f)
 (define entry-pending? (arg config 'stopOnEntry #f))
+(define stop-at-first-expression? (equal? (arg config 'stopOnEntryMode "entryPoint") "firstExpression"))
 (define lines-one? (arg client 'linesStartAt1 #t))
 (define columns-one? (arg client 'columnsStartAt1 #t))
 (define line-base (if lines-one? 1 0))
@@ -71,6 +104,15 @@
   (when (and (hash-has-key? request 'phase) (not (member (hash-ref request 'phase) '("before" "after"))))
     (error 'breakpoint "phase must be before or after")))
 (define (canonical p) (simplify-path (path->complete-path p)))
+(define (referenced-source reference)
+  (or (and (exact-positive-integer? reference)
+           (findf (lambda (source) (= (source-file-id source) reference)) (hash-values sources)))
+      (error 'source "Unknown source reference.")))
+(define (source-path source)
+  (define reference (arg source 'sourceReference 0))
+  (if (equal? reference 0)
+      (canonical (hash-ref source 'path))
+      (source-file-path (referenced-source reference))))
 (define (source-json source)
   (hasheq 'name (path->string (file-name-from-path (source-file-path source)))
           'path (path->string (source-file-path source)) 'sourceReference (source-file-id source)))
@@ -123,6 +165,10 @@
     (hash-set! sources path source)
     (event "loadedSource" (hasheq 'reason "new" 'source (source-json source)))))
 (define (on-test-event result)
+  (when (and (arg config 'coverage #f) (equal? (hash-ref result 'kind) "summary")
+             (not (equal? (hash-ref result 'status) "errored")))
+    (for ([file (in-list (coverage-files sources sites coverage-hits))])
+      (event "racketdap/coverage" file)))
   (when (and (equal? (hash-ref result 'kind) "failure") (arg result 'location))
     (define raw (hash-ref result 'location))
     (define source (hash-ref sources (canonical (hash-ref raw 'path)) #f))
@@ -146,9 +192,10 @@
   (hash-ref!
    states (current-thread)
    (lambda ()
-     (define st (state (fresh-id) (current-thread) #f #f #f #f))
+     (define st (state (fresh-id) (current-thread) #f #f #f #f (make-semaphore 1)))
      (hash-set! states-by-id (state-id st) st)
      (event "thread" (hasheq 'reason "started" 'threadId (state-id st)))
+     (when pending-pause (request-pause! st pending-pause))
      (parameterize ([current-custodian controller-custodian])
        (thread (lambda ()
                  (sync (thread-dead-evt (state-thread st)))
@@ -172,15 +219,38 @@
   (for ([entry (in-list (hash-values awaiting))] #:when (eq? (car entry) pause))
     (reply (cdr entry) (hasheq) "The paused thread resumed or ended.")))
 (define (describe pause name value)
-  (hasheq 'name name 'value (value-preview value) 'type (value-type value)
-          'variablesReference (if (expandable? value) (new-handle variables pause (cons 'value value)) 0)))
+  (define image? (image-value? value))
+  (define plot? (plot-value? value))
+  (define result
+    (hasheq 'name name 'value (if plot? "#<interactive plot>" (value-preview value))
+            'type (if plot? "plot" (value-type value))
+            'variablesReference (if (or image? plot? (expandable? value))
+                                    (new-handle variables pause (cons 'value value)) 0)))
+  (define visual (if image? (hash-set result 'racketdapImage #t) result))
+  (cond [plot? (hash-set (hash-set visual 'racketdapPlot #t) '__vscodeVariableMenuContext "racketdap.plot")]
+        [image? (hash-set visual '__vscodeVariableMenuContext "racketdap.image")]
+        [else visual]))
 (define (describe-results pause result)
   (define display-result
     (cond [(null? result) (hasheq 'value "#<zero values>" 'type "values" 'variablesReference 0)]
           [(null? (cdr result)) (describe pause "" (car result))]
-          [else (hasheq 'value (string-join (map value-preview (take result (min 10 (length result)))) "\n")
-                        'type "values" 'variablesReference (new-handle variables pause (cons 'results result)))]))
+          [else
+           ;; Bound the picker metadata and retained handles like a variables page.
+           (define image-count 0)
+           (hasheq 'value (string-join (map value-preview (take result (min 10 (length result)))) "\n")
+                        'type "values" 'variablesReference (new-handle variables pause (cons 'results result))
+                        'racketdapImages
+                        (for/list ([value (in-list result)] [i (in-naturals 1)]
+                                   #:break (= image-count 200)
+                                   #:when (or (image-value? value) (plot-value? value)))
+                          (set! image-count (add1 image-count))
+                          (describe pause (format "value ~a" i) value)))]))
   (hash-set (hash-remove (hash-remove display-result 'name) 'value) 'result (hash-ref display-result 'value)))
+(define (interaction-results request pause result)
+  (when (and (arg config 'racketdapRichInteractions #f)
+             (equal? (arg (arg request 'arguments (hasheq)) 'context) "repl"))
+    (for ([value (in-list result)]) ((current-print) value)))
+  (describe-results pause result))
 (define (owned table id pause)
   (define entry (hash-ref table id #f))
   (unless (and entry (eq? (car entry) pause)) (error 'debugger "Expired or invalid reference; refresh the paused frame."))
@@ -195,12 +265,22 @@
              (not (zero? (owned frames (arg a 'frameId) pause))))
     (error 'debugger "Expression actions apply to the executing frame."))
   (case (string->symbol command)
+    [(racketdap/openPlot)
+     (define descriptor (owned variables (hash-ref a 'variablesReference) pause))
+     (unless (eq? (car descriptor) 'value) (error 'plot "Select a single interactive plot."))
+     (open-plot (cdr descriptor))]
+    [(racketdap/renderImage)
+     (define descriptor (owned variables (hash-ref a 'variablesReference) pause))
+     (unless (eq? (car descriptor) 'value) (error 'image "Select a single image value."))
+     (render-image (cdr descriptor))]
     [(racketdap/skipExpression racketdap/replaceResults)
      (define result (call-with-values (lambda () (stop-evaluate stop (read-expression (hash-ref a 'expression)))) list))
      (if (equal? command "racketdap/skipExpression")
          (stop-skip! stop result)
          (stop-replace-results! stop result))
-     (event "invalidated" (hasheq 'areas '("variables") 'threadId (state-id (paused-state pause))))
+     (event "invalidated" (hasheq 'areas (if (equal? command "racketdap/replaceResults")
+                                           '("stacks" "variables") '("variables"))
+                                  'threadId (state-id (paused-state pause))))
      (describe-results pause result)]
     [(racketdap/printBinding racketdap/setBinding)
      (define index (if (arg a 'frameId) (owned frames (arg a 'frameId) pause) 0))
@@ -236,10 +316,23 @@
              (for/list ([i (in-range (min start total) end)])
                (define raw (stop-frame-source stop i))
                (define source (hash-ref sources (syntax-source raw) #f))
-               (define loc (if source (location source (syntax-position raw) (syntax-span raw))
+               (define returned? (and (zero? i) (eq? (stop-kind stop) 'after)))
+               (define return-position (and returned? (site-boundary-position (stop-site stop) 'after)))
+               (define position (or return-position (syntax-position raw)))
+               (define loc (if source (location source position (if return-position 1 (syntax-span raw)))
                                (hasheq 'line 1 'column 1)))
+               (define label
+                 (cond
+                   [(positive? i) "Waiting for return"]
+                   [returned?
+                    (define count (length (stop-results stop)))
+                    (format "Returned ~a ~a" count (if (= count 1) "value" "values"))]
+                   [else (case (stop-kind stop)
+                           [(before) "Before evaluation"]
+                           [(exception) "Exception"]
+                           [else "Paused (approximate)"])]))
                (hash-set (hash-set loc 'id (new-handle frames pause i))
-                         'name (format "~a at ~a:~a" (if (zero? i) "expression" "caller")
+                         'name (format "~a at ~a:~a" label
                                        (if source (path->string (file-name-from-path (source-file-path source))) "Racket")
                                        (hash-ref loc 'line)))))]
     [(scopes)
@@ -249,7 +342,7 @@
               (list (hasheq 'name "Locals" 'presentationHint "locals" 'expensive #f
                             'variablesReference (new-handle variables pause (cons 'locals index))))
               (if (and (zero? index) (eq? (stop-kind stop) 'after))
-                  (list (hasheq 'name (format "Results (~a values)" (length (stop-results stop)))
+                  (list (hasheq 'name (format "Return values (~a)" (length (stop-results stop)))
                                 'expensive #f 'variablesReference
                                 (new-handle variables pause (cons 'return-results stop)))) '())
               (if (and (zero? index) (eq? (stop-kind stop) 'exception))
@@ -277,11 +370,11 @@
      (define result
        (if (equal? (arg a 'context) "hover")
            (list (stop-binding-value stop expression index))
-           (call-with-values (lambda () (stop-evaluate stop (read-expression expression) index)) list)))
-     (describe-results pause result)]
+           (call-with-values (lambda () (stop-evaluate stop (read-interaction expression) index)) list)))
+     (interaction-results request pause result)]
     [(setVariable)
      (define descriptor (owned variables (hash-ref a 'variablesReference) pause))
-     (unless (eq? (car descriptor) 'locals) (error 'setVariable "Only lexical locals can be assigned here."))
+     (unless (eq? (car descriptor) 'locals) (error 'setVariable "Only lexical variables can be assigned here."))
      (hash-remove (describe pause (hash-ref a 'name)
                             (stop-set-binding! stop (hash-ref a 'name)
                                                 (read-expression (hash-ref a 'value)) (cdr descriptor) #:scope 'lexical)) 'name)]
@@ -292,7 +385,14 @@
                      (equal? (arg a 'context) "repl") (arg a 'racketdapEcho #f)))
   (define (echo text)
     (when echo? (event "output" (hasheq 'category "console" 'output (string-append text "\n")))))
-  (with-handlers ([(lambda (_) #t) (lambda (e) (echo (error-text e)) (reply request (hasheq) (error-text e)))])
+  (with-handlers ([(lambda (_) #t)
+                   (lambda (e)
+                     (echo (error-text e))
+                     (reply request
+                            (if (and (arg config 'racketdapRichInteractions #f)
+                                     (equal? (hash-ref request 'command) "evaluate") (equal? (arg a 'context) "repl"))
+                                (hasheq 'racketdapError (error-info e (arg a 'expression))) (hasheq))
+                            (error-text e)))])
     (when echo? (echo (string-append "> " (hash-ref a 'expression))))
     (define result
       (if (command-flag? (hash-ref request 'command) 'evaluate)
@@ -302,10 +402,18 @@
     (reply request result)))
 (define (pause-loop st stop reason description hit-ids)
   (define pause (paused st stop (make-async-channel) (box '())))
+  (define batch (state-pause? st))
+  (define preserve-focus?
+    (and (pause-batch? batch) (not (claim-pause-focus! batch (not (stop-approximate? stop))))))
+  (define departed
+    (if (eq? (current-thread) (state-thread st)) never-evt
+        (choice-evt (thread-dead-evt (state-thread st))
+                    (thread-resume-evt (state-thread st)))))
   (set-state-paused! st pause)
   (set-state-step! st #f)
   (set-state-pause?! st #f)
   (event "stopped" (hasheq 'reason reason 'description description 'threadId (state-id st)
+                            'preserveFocusHint preserve-focus?
                             'allThreadsStopped #f 'hitBreakpointIds hit-ids
                             'racketdapStopKind (symbol->string (stop-kind stop))
                             'racketdapApproximate (stop-approximate? stop)
@@ -314,15 +422,17 @@
     void
     (lambda ()
       (let loop ()
-        (define request (async-channel-get (paused-inbox pause)))
-        (define command (hash-ref request 'command))
+        (define request
+          (sync (paused-inbox pause) (handle-evt departed (lambda (_) #f))))
+        (define command (and request (hash-ref request 'command)))
         (cond
+          [(not request) (void)]
           [(command-flag? command 'resume)
            (define a (arg request 'arguments (hasheq)))
            (define valid?
              (with-handlers ([exn:fail? (lambda (e) (reply request (hasheq) (exn-message e)) #f)])
                (when (equal? command "racketdap/continueToLocation")
-                 (define path (canonical (hash-ref (hash-ref a 'source) 'path)))
+                 (define path (source-path (hash-ref a 'source)))
                  (define-values (targets phase) (select-targets path a))
                  (when (null? targets) (error 'continue-to "No executable expression boundary at this location."))
                  (set-state-run-to! st (cons phase targets)))
@@ -347,7 +457,7 @@
       (when (state-paused st)
         (set-state-paused! st #f)
         (event "continued" (hasheq 'threadId (state-id st) 'allThreadsContinued #f))))))
-(define (on-event stop)
+(define (on-event stop #:entry? [entry? #f])
   (define st (register-thread))
   (define where (stop-site stop))
   (define before? (eq? (stop-kind stop) 'before))
@@ -392,20 +502,44 @@
   (cond
     [(pair? hit-ids) (set! entry-pending? #f) (pause-loop st stop "breakpoint" (or failure (if before? "Before expression" "Expression returned")) hit-ids)]
     [reached? (pause-loop st stop "goto" "Continue-to target reached" '())]
-    [(and before? entry-pending?) (set! entry-pending? #f) (pause-loop st stop "entry" "Before first expression" '())]
-    [(and before? (eq? (state-pause? st) 'deferred)) (pause-loop st stop "pause" "Paused at an expression" '())]
+    [(and before? entry-pending? (or entry? stop-at-first-expression?))
+     (set! entry-pending? #f)
+     (pause-loop st stop "entry"
+                 (if stop-at-first-expression?
+                     "Starting program; first instrumented expression has not run"
+                     "Starting entry point; expression has not run")
+                 '())]
+    [(and before? (state-pause? st)) (pause-loop st stop "pause" "Paused before expression" '())]
     [step-message (pause-loop st stop "step" step-message '())]))
 (define (on-exception stop)
+  (when (arg config 'racketdapRichInteractions #f)
+    (hash-set! failure-sites (current-thread)
+               (cons (car (stop-results stop))
+                     (for/list ([i (in-range (min 8 (stop-frame-count stop)))]) (stop-frame-source stop i)))))
   (when exception-enabled?
     (pause-loop (register-thread) stop "exception" (error-text (car (stop-results stop))) '())))
-(define (on-pause raised)
-  (define st (hash-ref states (current-thread) #f))
-  (and st (state-pause? st)
-       (begin
-         (set-state-pause?! st 'deferred)
-         (call-with-pause-stop raised
-           (lambda (stop) (pause-loop st stop "pause" "Paused; source location is approximate" '())))
-         #t)))
+(define (request-pause! st batch)
+  (unless (or (state-paused st) (state-pause? st) (thread-dead? (state-thread st)))
+    (set-state-pause?! st batch)
+    (parameterize ([current-custodian controller-custodian])
+      (thread
+       (lambda ()
+         ;; Prefer a source boundary on the executing thread. A blocked thread
+         ;; still needs an inspectable stop even if no further source executes.
+         (sleep 0.1)
+         (call-with-semaphore
+          (state-pause-lock st)
+          (lambda ()
+            (let retry ()
+              (when (and (eq? (state-pause? st) batch) (not (state-paused st))
+                         (not (thread-dead? (state-thread st))))
+                (unless (call-with-thread-stop
+                         (state-thread st)
+                         (lambda (stop)
+                           (parameterize ([current-evaluation-owner (state-thread st)])
+                             (pause-loop st stop "pause" "Thread suspended; source location is approximate" '()))))
+                  (sleep 0.001)
+                  (retry)))))))))))
 (define (interactive-loop namespace)
   (define st (register-thread))
   (set! interaction (paused st #f (make-async-channel) (box '())))
@@ -425,17 +559,22 @@
        (cond
          [(equal? (hash-ref request 'command) "evaluate")
           (invalidate! interaction)
-          (describe-results
-           interaction
+          (interaction-results
+           request interaction
            (call-with-values
             (lambda ()
               (call-with-exception-handler
-               (make-debug-exception-handler on-exception on-pause)
-               (lambda () (eval (read-expression (hash-ref (arg request 'arguments) 'expression)) namespace))))
+               (make-debug-exception-handler on-exception #f)
+               (lambda () (eval (read-interaction (hash-ref (arg request 'arguments) 'expression)) namespace))))
             list))]
          [else (inspect-request request interaction)])))
     (flush-program-output)
     (loop)))
+(define (rich-port original category)
+  (if (arg config 'racketdapRichInteractions #f)
+      (interaction-output-port original category
+                               (lambda (body) (event "racketdap/interactionOutput" body)))
+      original))
 (define (start-program)
   (set! started? #t)
   (set! target-thread
@@ -446,43 +585,64 @@
      ;; output line without requiring another console request to release it.
      (for ([port (in-list (list (current-output-port) (current-error-port)))])
        (when (file-stream-port? port) (file-stream-buffer-mode port 'line)))
-     (with-handlers ([(lambda (_) #t)
-                      (lambda (e)
-                        (set! exit-code 1)
-                        (eprintf "~a\n" (if (exn? e) (exn-message e) (value-preview e))))])
-       (parameterize ([current-input-port program-input]
-                      [current-subprocess-custodian-mode 'kill]
-                      [exit-handler
-                       (lambda (status)
-                         ;; Let the adapter drain output and clean up this worker
-                         ;; and its descendants through the owned group anchor.
-                         (flush-program-output)
-                         (set! ended? #t)
-                         (send (hasheq 'type "workerExit" 'exitCode (if (byte? status) status 1)))
-                         (sync never-evt))]
-                      [current-command-line-arguments (list->vector (arg config 'args '()))])
-         (run-module (hash-ref config 'program)
-                     #:instrument? (not (arg config 'noDebug #f))
-                     #:on-event on-event #:on-exception (and (not (arg config 'noDebug #f)) on-exception)
-                     #:on-pause (and (not (arg config 'noDebug #f)) on-pause)
-                     #:language (and (arg config 'language) (string->symbol (arg config 'language)))
-                     #:on-sites on-sites #:on-source-snapshot on-source-snapshot
-                     #:source-roots (append (arg config 'sourceRoots (list (arg config 'cwd)))
-                                            (if (arg config 'noDebug #f) '()
-                                                (package-source-roots (arg config 'debugPackages '()))))
-                     #:source-selected? (lambda (path) (pair? (hash-ref breakpoints path '())))
-                     #:submodule (map string->symbol (arg config 'submodule '()))
-                     #:main? (and (not (arg config 'testMode #f)) (not (hash-has-key? config 'submodule)))
-                     #:test? (arg config 'testMode #f)
-                     #:on-test-event
-                     (lambda (result)
-                       (when (and (equal? (hash-ref result 'kind) "summary")
-                                  (not (equal? (hash-ref result 'status) "passed")))
-                         (set! exit-code 1))
-                       (on-test-event result))
-                     #:on-ready (and (arg config 'interactive #f) interactive-loop)
-                     #:entry (and (arg config 'entry) (string->symbol (arg config 'entry))))))
-     (flush-program-output)
+     ;; Keep reporting and error escape in the program's dynamic context.
+     ;; A user escape handler can recover there. Reaching the outer program
+     ;; prompt ends this run unsuccessfully, while preserving the default
+     ;; prompt handler's execution of the supplied abort thunk.
+     (call-with-continuation-prompt
+      (lambda ()
+        (parameterize ([current-input-port program-input]
+                       [current-logger (application-log-logger application-log)]
+                       [current-output-port (rich-port (current-output-port) "stdout")]
+                       [current-error-port (rich-port (current-error-port) "stderr")]
+                       [current-inspector (if (arg config 'noDebug #f)
+                                              (current-inspector) (make-inspector))]
+                       [current-subprocess-custodian-mode 'kill]
+                       [exit-handler
+                        (lambda (status)
+                          ;; Let the adapter drain output and clean up this worker
+                          ;; and its descendants through the owned group anchor.
+                          (flush-program-output #:final? #t)
+                          (set! ended? #t)
+                          (send (hasheq 'type "workerExit" 'exitCode (if (byte? status) status 1)))
+                          (sync never-evt))]
+                       [current-command-line-arguments (list->vector (arg config 'args '()))])
+          (run-module (hash-ref config 'program)
+                      #:instrument? (or (arg config 'coverage #f) (not (arg config 'noDebug #f)))
+                     #:images? (arg config 'racketdapRichInteractions #f)
+                      #:coverage? (arg config 'coverage #f)
+                      #:on-event (if (arg config 'coverage #f) on-coverage-event on-event)
+                      #:on-exception (and (not (arg config 'noDebug #f)) on-exception)
+                     #:on-error on-error
+                      #:on-entry (and entry-pending? (not stop-at-first-expression?)
+                                      (not (arg config 'noDebug #f))
+                                      (lambda (stop) (on-event stop #:entry? #t)))
+                      #:language (and (arg config 'language) (string->symbol (arg config 'language)))
+                      #:on-sites on-sites #:on-source-snapshot on-source-snapshot
+                      #:source-roots (append (arg config 'sourceRoots (list (arg config 'cwd)))
+                                             (if (arg config 'noDebug #f) '()
+                                                 (package-source-roots (arg config 'debugPackages '()))))
+                      #:source-selected? (lambda (path) (pair? (hash-ref breakpoints path '())))
+                      #:submodule (map string->symbol (arg config 'submodule '()))
+                      #:main? (and (not (arg config 'testMode #f)) (not (hash-has-key? config 'submodule)))
+                      #:test? (arg config 'testMode #f)
+                      #:test-selection (arg config 'testSelection #f)
+                      #:on-test-event
+                      (lambda (result)
+                        (when (and (equal? (hash-ref result 'kind) "summary")
+                                   (not (equal? (hash-ref result 'status) "passed")))
+                          (set! exit-code 1))
+                        (on-test-event result))
+                      #:on-ready (and (arg config 'interactive #f)
+                                      (lambda (namespace)
+                                        (set! entry-pending? #f)
+                                        (interactive-loop namespace)))
+                      #:entry (and (arg config 'entry) (string->symbol (arg config 'entry))))))
+      (default-continuation-prompt-tag)
+      (lambda (abort-thunk)
+        (set! exit-code 1)
+        (call-with-continuation-prompt abort-thunk)))
+     (flush-program-output #:final? #t)
      (set! ended? #t)
      (send (hasheq 'type "workerExit" 'exitCode exit-code)))))
   (thread
@@ -495,8 +655,11 @@
   (define a (arg request 'arguments (hasheq)))
   (define command (hash-ref request 'command))
   (case (string->symbol command)
+    [(racketdap/logFilter)
+     (application-log-filter! application-log (arg a 'filter))
+     (reply request)]
     [(setBreakpoints)
-     (define path (canonical (hash-ref (hash-ref a 'source) 'path)))
+     (define path (source-path (hash-ref a 'source)))
      (define requested (arg a 'breakpoints '()))
      (unless (list? requested) (error 'setBreakpoints "breakpoints must be an array"))
      ;; A pending breakpoint is resolved later on the target thread. Validate
@@ -539,12 +702,11 @@
             (hasheq 'threads (for/list ([st (in-hash-values states-by-id)] #:unless (thread-dead? (state-thread st)))
                                (hasheq 'id (state-id st) 'name (format "Racket thread ~a" (state-id st))))))]
     [(source)
-     (define source (findf (lambda (s) (= (source-file-id s) (arg a 'sourceReference 0))) (hash-values sources)))
-     (unless source (error 'source "Unknown source reference."))
+     (define source (referenced-source (arg a 'sourceReference 0)))
      (reply request (hasheq 'content (source-file-text source) 'mimeType "text/x-racket"))]
     [(loadedSources) (reply request (hasheq 'sources (map source-json (hash-values sources))))]
     [(breakpointLocations)
-     (define path (canonical (hash-ref (hash-ref a 'source) 'path)))
+     (define path (source-path (hash-ref a 'source)))
      (define source (hash-ref sources path #f))
      (define first-line (coordinate a 'line line-base line-base))
      (define last-line (coordinate a 'endLine line-base first-line))
@@ -575,10 +737,13 @@
                                                  (< (hash-ref left 'column) (hash-ref right 'column)))))) '())))]
     [(pause)
      (define st (hash-ref states-by-id (hash-ref a 'threadId)))
+     (when (thread-dead? (state-thread st)) (error 'pause "The thread has ended."))
      (reply request)
-     (unless (or (state-paused st) (state-pause? st))
-       (set-state-pause?! st 'requested)
-       (break-thread (state-thread st)))]
+     (set! pending-pause (pause-batch (box #f)))
+     (for ([other (in-hash-values states-by-id)]) (set-state-pause?! other #f))
+     (request-pause! st pending-pause)
+     (for ([other (in-hash-values states-by-id)] #:unless (eq? other st))
+       (request-pause! other pending-pause))]
     [else
      (unless (command-flag? command 'paused) (error 'debugger "Unsupported request: ~a" command))
      (define owner
@@ -590,7 +755,11 @@
                             (equal? (arg a 'context "repl") "repl") interaction))]))
      (unless (and owner (or (eq? owner interaction) (eq? owner (state-paused (paused-state owner)))))
        (error 'debugger "Pause the program before using this command."))
+     (when (command-flag? command 'resume)
+       (set-state-pause?! (paused-state owner) #f))
      (when (and (command-flag? command 'all-threads) (not (arg a 'singleThread #f)))
+       (set! pending-pause #f)
+       (for ([st (in-hash-values states-by-id)]) (set-state-pause?! st #f))
        (for ([st (in-hash-values states-by-id)] #:when (and (state-paused st) (not (eq? (state-paused st) owner))))
          (async-channel-put (paused-inbox (state-paused st)) (hasheq 'command "internalContinue"))))
      (when (command-flag? command 'evaluate)

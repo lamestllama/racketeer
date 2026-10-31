@@ -1,10 +1,14 @@
 {
   "name": "racketeer",
   "displayName": "Racketeer: Organised Racket",
-  "description": "Racket debugging and REPL, with Racket and Rhombus editing for VS Code.",
-  "version": "0.8.0",
+  "description": "Racket source debugging and execution, with Racket and Rhombus editing for VS Code.",
+  "version": "0.8.46",
   "publisher": "lamestllama",
-  "author": { "name": "Eric Parsonage", "email": "eric@eparsonage.com", "url": "https://github.com/lamestllama" },
+  "author": {
+    "name": "Eric Parsonage",
+    "email": "eric@eparsonage.com",
+    "url": "https://github.com/lamestllama"
+  },
   "icon": "images/racket.png",
   "license": "(Apache-2.0 OR MIT)",
   "private": true,
@@ -31,7 +35,8 @@
     "onLanguage:racket",
     "onLanguage:rhombus",
     "workspaceContains:**/*.rkt",
-    "workspaceContains:**/*.rhm"
+    "workspaceContains:**/*.rhm",
+    "onTaskType:racket-build"
   ],
   "capabilities": {
     "untrustedWorkspaces": {
@@ -49,6 +54,40 @@
     "vscode:prepublish": "npm run build"
   },
   "contributes": {
+    "customEditors": [
+      {
+        "viewType": "racketeer.wxme",
+        "displayName": "Racketeer WXME Viewer",
+        "selector": [
+          {
+            "filenamePattern": "*.rkt"
+          },
+          {
+            "filenamePattern": "*.rktl"
+          },
+          {
+            "filenamePattern": "*.wxme"
+          }
+        ],
+        "priority": "option"
+      },
+      {
+        "viewType": "racketeer.wxmeEditor",
+        "displayName": "Racketeer WXME Editor",
+        "selector": [
+          {
+            "filenamePattern": "*.rkt"
+          },
+          {
+            "filenamePattern": "*.rktl"
+          },
+          {
+            "filenamePattern": "*.wxme"
+          }
+        ],
+        "priority": "option"
+      }
+    ],
     "languages": [
       {
         "id": "racket",
@@ -68,8 +107,13 @@
       },
       {
         "id": "rhombus",
-        "aliases": ["Rhombus", "rhombus"],
-        "extensions": [".rhm"],
+        "aliases": [
+          "Rhombus",
+          "rhombus"
+        ],
+        "extensions": [
+          ".rhm"
+        ],
         "configuration": "./rhombus-language-configuration.json"
       }
     ],
@@ -79,17 +123,110 @@
       }
     ],
     "commands": [
-      { "command": "racketdap.openMacroStepper", "title": "Racket: Open Line or Selection in Macro Stepper" },
-      { "command": "racketdap.openFileInMacroStepper", "title": "Racket: Open File in Macro Stepper" },
-      { "command": "racketdap.managePackages", "title": "Racket: Manage Packages" },
-      { "command": "racketdap.installPackage", "title": "Racket: Install Package" },
-      { "command": "racketdap.linkPackage", "title": "Racket: Link Local Package" },
-      { "command": "racketdap.updatePackage", "title": "Racket: Update Package" },
-      { "command": "racketdap.removePackage", "title": "Racket: Remove Package" },
-      { "command": "racketdap.testPackage", "title": "Racket: Test Package" },
-      { "command": "racketdap.setupPackage", "title": "Racket: Build Package" },
-      { "command": "racketdap.openPackage", "title": "Racket: Open Package Source" },
-      { "command": "racketdap.selectDebugPackages", "title": "Racket: Choose Packages to Debug" },
+      {
+        "command": "racketdap.runInteractions",
+        "title": "Racket: Run in Interactions",
+        "icon": "$(run-all)"
+      },
+      {
+        "command": "racketdap.showApplicationLog",
+        "title": "Racket: Show Application Log"
+      },
+      {
+        "command": "racketdap.filterApplicationLog",
+        "title": "Racket: Set Application Log Filter\u2026"
+      },
+      {
+        "command": "racketdap.clearApplicationLog",
+        "title": "Racket: Clear Application Log"
+      },
+      {
+        "command": "racketdap.createLauncher",
+        "title": "Racket: Create Launcher\u2026"
+      },
+      {
+        "command": "racketdap.buildExecutable",
+        "title": "Racket: Build Executable\u2026"
+      },
+      {
+        "command": "racketdap.createDistribution",
+        "title": "Racket: Create Distribution\u2026"
+      },
+      {
+        "command": "racketdap.browseDependencies",
+        "title": "Racket: Browse Module Dependencies"
+      },
+      {
+        "command": "racketdap.refreshDependencies",
+        "title": "Racket: Refresh Module Dependencies",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "racketdap.viewImage",
+        "title": "Racket: View Image",
+        "enablement": "racketdap.viewImage.enabled || debugProtocolVariableMenuContext == 'racketdap.image' || debugProtocolVariableMenuContext == 'racketdap.plot'",
+        "icon": "$(preview)"
+      },
+      {
+        "command": "racketdap.openPlot",
+        "title": "Racket: Open Interactive Plot",
+        "enablement": "racketdap.openPlot.enabled || debugProtocolVariableMenuContext == 'racketdap.plot'",
+        "icon": "$(graph)"
+      },
+      {
+        "command": "racketdap.saveImage",
+        "title": "Racket: Save Image As\u2026",
+        "enablement": "resourceScheme == racketeer-image",
+        "icon": "$(save-as)"
+      },
+      {
+        "command": "racketdap.refreshWorkspaceReferences",
+        "title": "Racket: Refresh Workspace References"
+      },
+      {
+        "command": "racketdap.openMacroStepper",
+        "title": "Racket: Open Line or Selection in Macro Stepper"
+      },
+      {
+        "command": "racketdap.openFileInMacroStepper",
+        "title": "Racket: Open File in Macro Stepper"
+      },
+      {
+        "command": "racketdap.managePackages",
+        "title": "Racket: Manage Packages"
+      },
+      {
+        "command": "racketdap.installPackage",
+        "title": "Racket: Install Package"
+      },
+      {
+        "command": "racketdap.linkPackage",
+        "title": "Racket: Link Local Package"
+      },
+      {
+        "command": "racketdap.updatePackage",
+        "title": "Racket: Update Package"
+      },
+      {
+        "command": "racketdap.removePackage",
+        "title": "Racket: Remove Package"
+      },
+      {
+        "command": "racketdap.testPackage",
+        "title": "Racket: Test Package"
+      },
+      {
+        "command": "racketdap.setupPackage",
+        "title": "Racket: Build Package"
+      },
+      {
+        "command": "racketdap.openPackage",
+        "title": "Racket: Open Package Source"
+      },
+      {
+        "command": "racketdap.selectDebugPackages",
+        "title": "Racket: Choose Packages to Debug"
+      },
       {
         "command": "racketdap.debugFile",
         "title": "Racket: Debug Current File",
@@ -103,6 +240,10 @@
         "command": "racketdap.runFile",
         "title": "Racket: Run Current File",
         "icon": "$(play)"
+      },
+      {
+        "command": "racketdap.runFileInTerminal",
+        "title": "Racket: Run Current File in Terminal"
       },
       {
         "command": "racketdap.testFile",
@@ -179,18 +320,74 @@
       },
       {
         "command": "racketdap.fileActions",
-        "title": "Racket: File Actions…",
+        "title": "Racket: File Actions\u2026",
         "icon": "$(chevron-down)"
       }
     ],
     "configuration": {
       "title": "Racketeer",
       "properties": {
+        "racket-langserver.workspaceAnalysis.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Analyse unopened workspace files for references. Readers and macros run during analysis, as they do for open files. Applies to the bundled language server."
+        },
+        "racket-langserver.workspaceAnalysis.excludedDirectories": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "default": [
+            ".git",
+            "compiled",
+            "node_modules",
+            ".test-output",
+            "dist",
+            "build"
+          ],
+          "description": "Directory names excluded from workspace reference analysis and dependency watching. Each name matches a whole path component."
+        },
+        "racket-langserver.workspaceAnalysis.maxFiles": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000,
+          "default": 1000,
+          "description": "Maximum files discovered per workspace analysis pass. Reaching a limit is reported as partial references."
+        },
+        "racket-langserver.workspaceAnalysis.maxFileBytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10485760,
+          "default": 1048576,
+          "description": "Maximum source file size for background reference analysis."
+        },
+        "racket-langserver.workspaceAnalysis.timeoutSeconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 90,
+          "default": 20,
+          "description": "Time limit for each background file analysis. Timed-out files make the reference index partial."
+        },
         "racketdap.racketExecutable": {
           "type": "string",
           "default": "racket",
           "scope": "machine-overridable",
           "description": "Full Racket 9.1 or newer installation used by the language server, debugger, REPL, and file commands."
+        },
+        "racketdap.repl.sessionScope": {
+          "scope": "resource",
+          "type": "string",
+          "enum": [
+            "workspace",
+            "file"
+          ],
+          "default": "workspace",
+          "enumDescriptions": [
+            "Share a plain REPL among files in each workspace folder.",
+            "Keep a separate plain REPL for each saved file."
+          ],
+          "description": "Choose how Start REPL, Load Current File in REPL and Evaluate Selection in REPL share terminals. Changing this leaves existing sessions available. Unsaved files use the workspace session."
         },
         "racketdap.languageServer.enabled": {
           "type": "boolean",
@@ -237,26 +434,43 @@
           "description": "Enable optional Resyntax suggestions. Requires the separate resyntax Racket package; it is not bundled."
         },
         "racketdap.testing.include": {
+          "scope": "resource",
           "type": "string",
           "default": "**/*.rkt",
           "description": "Workspace-relative glob for Racket test module files. Discovery does not execute modules."
         },
         "racketdap.testing.exclude": {
+          "scope": "resource",
           "type": "string",
           "default": "{**/compiled/**,**/node_modules/**,**/vendor/**,**/.git/**,**/.test-output/**,**/info.rkt}",
           "description": "Workspace-relative glob for files excluded from Test Explorer."
         },
         "racketdap.testing.sourceRoots": {
+          "scope": "resource",
           "type": "array",
-          "items": { "type": "string" },
-          "default": ["."],
-          "description": "Directories instrumented by Debug Test, relative to the workspace folder (absolute paths also work). The test file is always included. Defaults to the whole workspace."
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "."
+          ],
+          "description": "Directories instrumented by Debug Test and Coverage, relative to the workspace folder (absolute paths also work). The test file is always included. Defaults to the whole workspace."
         },
         "racketdap.debug.packages": {
+          "scope": "resource",
           "type": "array",
-          "items": { "type": "string", "minLength": 1 },
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
           "default": [],
           "description": "Installed package names whose sources should be instrumented for debugging, including linked packages outside the workspace. Applies to Debug, Debug Tests, and Debug REPL; restart sessions after changing it."
+        },
+        "racketdap.logs.filter": {
+          "scope": "resource",
+          "type": "string",
+          "default": "error",
+          "description": "Application log capture for new debugger and Interactions sessions. Start with none, fatal, error, warning, info or debug, then optional level@topic overrides, for example: warning debug@network."
         }
       }
     },
@@ -307,7 +521,20 @@
               "stopOnEntry": {
                 "type": "boolean",
                 "default": false,
-                "description": "Pause before the first executable expression."
+                "description": "Pause automatically at startup. stopOnEntryMode chooses where to pause."
+              },
+              "stopOnEntryMode": {
+                "type": "string",
+                "enum": [
+                  "entryPoint",
+                  "firstExpression"
+                ],
+                "enumDescriptions": [
+                  "Pause in main, the explicitly selected submodule, or the program body when no main exists.",
+                  "Pause before the first instrumented expression, including initialization in debugged dependencies."
+                ],
+                "default": "entryPoint",
+                "description": "Where to pause when stopOnEntry is true. Ignored when running without debugging."
               },
               "interactive": {
                 "type": "boolean",
@@ -332,7 +559,10 @@
               },
               "debugPackages": {
                 "type": "array",
-                "items": { "type": "string", "minLength": 1 },
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
                 "description": "Installed package names to debug. Their source directories are resolved by the launched Racket environment and added to sourceRoots. Defaults to racketdap.debug.packages."
               },
               "submodule": {
@@ -354,6 +584,10 @@
                 "type": "boolean",
                 "default": false,
                 "description": "Run the test submodule when present, otherwise the module body, and report test results. Cannot be combined with interactive, submodule, entry, or language."
+              },
+              "logFilter": {
+                "type": "string",
+                "description": "Initial application log capture filter, overriding racketdap.logs.filter. For example: warning debug@network."
               }
             }
           }
@@ -377,6 +611,18 @@
               "program": "^\"${file}\"",
               "stopOnEntry": true
             }
+          },
+          {
+            "label": "Racket: debug initialization",
+            "description": "Pause at the first instrumented expression, before initialization proceeds.",
+            "body": {
+              "type": "racketdap",
+              "request": "launch",
+              "name": "Debug Racket initialization",
+              "program": "^\"${file}\"",
+              "stopOnEntry": true,
+              "stopOnEntryMode": "firstExpression"
+            }
           }
         ]
       }
@@ -391,10 +637,32 @@
         "language": "rhombus",
         "scopeName": "source.rhombus",
         "path": "./syntaxes/rhombus.tmLanguage.json",
-        "embeddedLanguages": { "meta.embedded.inline.racket": "racket" }
+        "embeddedLanguages": {
+          "meta.embedded.inline.racket": "racket"
+        }
+      }
+    ],
+    "snippets": [
+      {
+        "language": "racket",
+        "path": "./snippets/racket.json"
       }
     ],
     "keybindings": [
+      {
+        "command": "editor.action.insertSnippet",
+        "key": "alt+\\",
+        "when": "editorTextFocus && editorLangId == racket && !editorReadonly",
+        "args": {
+          "langId": "racket",
+          "name": "Racket lambda"
+        }
+      },
+      {
+        "command": "racketdap.sendSelectionToDebugRepl",
+        "key": "shift+enter",
+        "when": "editorTextFocus && editorLangId == racket && resourceScheme == file && editorHasSelection"
+      },
       {
         "command": "racketdap.openMacroStepper",
         "key": "alt+shift+enter",
@@ -402,7 +670,36 @@
       }
     ],
     "menus": {
+      "debug/variables/context": [
+        {
+          "command": "racketdap.viewImage",
+          "when": "debugType == racketdap && (debugProtocolVariableMenuContext == 'racketdap.image' || debugProtocolVariableMenuContext == 'racketdap.plot')",
+          "group": "1_view@1"
+        },
+        {
+          "command": "racketdap.openPlot",
+          "when": "debugType == racketdap && debugProtocolVariableMenuContext == 'racketdap.plot'",
+          "group": "1_view@2"
+        }
+      ],
+      "debug/toolBar": [
+        {
+          "command": "racketdap.viewImage",
+          "when": "racketdap.viewImage.enabled",
+          "group": "navigation@20"
+        },
+        {
+          "command": "racketdap.openPlot",
+          "when": "racketdap.openPlot.enabled",
+          "group": "navigation@21"
+        }
+      ],
       "editor/title": [
+        {
+          "command": "racketdap.saveImage",
+          "when": "resourceScheme == racketeer-image",
+          "group": "navigation@1"
+        },
         {
           "command": "racketdap.runFile",
           "when": "resourceLangId == racket && resourceScheme == file",
@@ -485,6 +782,20 @@
           "when": "resourceLangId == racket && resourceScheme == file && editorHasSelection",
           "group": "racket@5"
         }
+      ],
+      "view/title": [
+        {
+          "command": "racketdap.refreshDependencies",
+          "when": "view == racketeer.dependencies",
+          "group": "navigation"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "racketdap.browseDependencies",
+          "when": "resourceExtname == .rkt || resourceExtname == .rhm || resourceExtname == .wxme",
+          "group": "racket"
+        }
       ]
     },
     "configurationDefaults": {
@@ -497,7 +808,71 @@
         "editor.insertSpaces": true,
         "editor.defaultFormatter": "lamestllama.racketeer"
       }
-    }
+    },
+    "views": {
+      "explorer": [
+        {
+          "id": "racketeer.dependencies",
+          "name": "Racket Dependencies",
+          "visibility": "collapsed"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "racketeer.dependencies",
+        "contents": "[Browse the current module](command:racketdap.browseDependencies)\nInspect imports and submodules using the current Racket installation."
+      }
+    ],
+    "taskDefinitions": [
+      {
+        "type": "racket-build",
+        "required": [
+          "action",
+          "source",
+          "output"
+        ],
+        "when": "processExecutionSupported",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "launcher",
+              "executable",
+              "distribution"
+            ],
+            "description": "Build a source module or distribute an existing executable."
+          },
+          "source": {
+            "type": "string",
+            "description": "Source module for a build, or existing executable for a distribution. Relative to the workspace folder; task variables are supported."
+          },
+          "output": {
+            "type": "string",
+            "description": "Executable path or distribution directory, relative to the workspace folder. Task variables are supported."
+          },
+          "gui": {
+            "type": "boolean",
+            "default": false,
+            "description": "Build a graphical launcher or executable. Distributions inherit their executable's mode."
+          },
+          "libraries": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Additional module paths to embed with raco exe ++lib, for dynamic loading."
+          },
+          "languages": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Additional languages to embed with raco exe ++lang."
+          }
+        }
+      }
+    ]
   },
   "dependencies": {
     "vscode-languageclient": "9.0.1"

@@ -3,6 +3,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import plistlib
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -17,18 +18,70 @@ runtime_spec.loader.exec_module(runtime)
 
 
 class EditorIsolation(unittest.TestCase):
+    def test_distribution_paths_resolve_without_shell_quoting(self):
+        layouts = [
+            ('linux', 'code', 'resources/app', ['code', 'bin/code']),
+            ('win32', 'Code.exe', 'resources/app', ['Code.exe', 'bin/code.cmd']),
+            ('darwin', 'Editor.app/Contents/MacOS/Electron', 'Editor.app/Contents/Resources/app',
+             ['Editor.app', 'Editor.app/Contents/MacOS/Electron', 'Editor.app/Contents/Resources/app/bin/code']),
+            ('darwin', 'Editor.app/Contents/MacOS/Code', 'Editor.app/Contents/Resources/app',
+             ['Editor.app', 'Editor.app/Contents/MacOS/Code', 'Editor.app/Contents/Resources/app/bin/code']),
+        ]
+        with tempfile.TemporaryDirectory(prefix='editor paths λ & ') as temporary:
+            for platform, executable, app, entries in layouts:
+                root = Path(temporary) / platform
+                for relative in (executable, app + '/out/cli.js', *[p for p in entries if not p.endswith('.app')]):
+                    file = root / relative
+                    file.parent.mkdir(parents=True, exist_ok=True)
+                    file.touch()
+                if platform == 'darwin':
+                    (root / 'Editor.app/Contents/Info.plist').write_bytes(
+                        plistlib.dumps({'CFBundleExecutable': Path(executable).name}))
+                for entry in entries:
+                    with self.subTest(platform=platform, entry=entry):
+                        self.assertEqual(harness.editor_layout(root / entry, platform),
+                                         ((root / executable).resolve(), (root / app).resolve()))
+                (root / app / 'out/cli.js').unlink()
+                with self.assertRaises(ValueError):
+                    harness.editor_layout(root / executable, platform)
+
+    def test_native_desktop_does_not_start_a_virtual_display_or_change_environment(self):
+        env = {'DISPLAY': 'user display', 'PLTADDONDIR': 'private addon'}
+        for platform in ('win32', 'darwin'):
+            with patch.object(harness.sys, 'platform', platform), patch.object(harness.subprocess, 'Popen') as spawn:
+                with harness.editor_display(Path('/unused'), env, None) as actual:
+                    self.assertEqual(actual, env)
+                spawn.assert_not_called()
+
+    def test_windows_versioned_resources_are_unambiguous(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            executable = root / 'Code.exe'
+            executable.touch()
+            app = root / '123456789a/resources/app'
+            (app / 'out').mkdir(parents=True)
+            (app / 'out/cli.js').touch()
+            self.assertEqual(harness.editor_layout(executable, 'win32'), (executable.resolve(), app.resolve()))
+            other = root / 'abcdef1234/resources/app/out'
+            other.mkdir(parents=True)
+            (other / 'cli.js').touch()
+            with self.assertRaisesRegex(ValueError, 'one resources directory'):
+                harness.editor_layout(executable, 'win32')
+
     def test_previous_workspace_profile_extensions_and_addon_are_never_reused(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             for relative in ('tests/vscode-integration.js', 'tests/vscode-dogfood.js',
                              'racketdap/main.rkt', 'examples/demo.rkt',
+                             'vendor/collects/example/reader.rkt',
                              '.vscode/settings.json', 'experiments/lexical-eval.rkt'):
                 file = root / relative
                 file.parent.mkdir(parents=True, exist_ok=True)
                 file.write_text('fixture')
             for relative in ('examples/nested/compiled/demo_rkt.zo',
                              'examples/__pycache__/helper.pyc',
-                             'tests/compiled/check_rkt.zo'):
+                             'tests/compiled/check_rkt.zo',
+                             'vendor/collects/example/compiled/reader_rkt.zo'):
                 file = root / relative
                 file.parent.mkdir(parents=True, exist_ok=True)
                 file.write_text('checkout cache')
@@ -42,6 +95,10 @@ class EditorIsolation(unittest.TestCase):
                     self.assertFalse((second / name / 'contamination').exists())
                     self.assertTrue((first / name / 'contamination').exists())
                 self.assertTrue((second / 'harness/vscode-integration.js').is_file())
+                dependency = second / 'workspace/vendor/collects/example/reader.rkt'
+                self.assertEqual(dependency.exists(), dogfood)
+                if dogfood:
+                    self.assertEqual(dependency.read_text(), 'fixture')
                 for directory in ('workspace', 'harness'):
                     self.assertFalse(list((second / directory).rglob('compiled')))
                     self.assertFalse(list((second / directory).rglob('__pycache__')))

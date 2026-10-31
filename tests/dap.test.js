@@ -4,7 +4,9 @@ const test = require('node:test');
 const path = require('node:path');
 const fs = require('node:fs/promises');
 const os = require('node:os');
+const { spawn } = require('node:child_process');
 const { DapClient } = require('./dap-client');
+const { deferCleanup } = require('./cleanup');
 const root = path.resolve(__dirname, '..');
 const demo = path.join(root, 'examples/demo.rkt');
 async function ok(promise) {
@@ -22,16 +24,34 @@ async function frame(client, stopped) {
   assert.ok(stack.stackFrames.length);
   return stack.stackFrames[0];
 }
-test('complete session: break, inspect, evaluate, mutate, step, results, output, terminate', async t => {
-  const client = new DapClient(); t.after(() => client.close());
-  await launch(client);
-  const pending = await ok(client.request('setBreakpoints', { source: { path: demo }, breakpoints: [{ line: 4 }] }));
+test('standalone adapter: break, inspect, evaluate, mutate, step, results, output, terminate', async t => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'racketeer-standalone-'));
+  deferCleanup(t, () => fs.rm(directory, { recursive: true, force: true }));
+  await fs.cp(path.join(root, 'racketdap'), path.join(directory, 'racketdap'), {
+    recursive: true, filter: file => path.basename(file) !== 'compiled'
+  });
+  const program = path.join(directory, 'demo.rkt');
+  await fs.copyFile(demo, program);
+  // Only the adapter sources and the installed Racket distribution are present.
+  // Exclude user package links and collection/cache overrides from this session.
+  const env = { ...process.env, PLTADDONDIR: path.join(directory, 'addon') };
+  delete env.PLTCOLLECTS;
+  delete env.PLT_COMPILED_FILE_ROOTS;
+  const client = new DapClient(path.join(directory, 'racketdap/main.rkt'), {
+    spawn: (command, args, options) => spawn(command, args, { ...options, cwd: directory, env })
+  });
+  deferCleanup(t, () => client.close());
+  await launch(client, program);
+  const pending = await ok(client.request('setBreakpoints', { source: { path: program }, breakpoints: [{ line: 4 }] }));
   assert.equal(pending.breakpoints[0].verified, false);
   await ok(client.request('configurationDone'));
   let stopped = await client.event('stopped');
   assert.equal(stopped.body.reason, 'breakpoint');
   let top = await frame(client, stopped);
   assert.equal(top.line, 4);
+  assert.match(top.name, /^Before evaluation at /);
+  const pendingFrames = (await ok(client.request('stackTrace', { threadId: stopped.body.threadId }))).stackFrames;
+  assert.match(pendingFrames[1].name, /^Waiting for return at /);
   const originalFrame = top.id;
   const scopes = await ok(client.request('scopes', { frameId: top.id }));
   const locals = scopes.scopes[0].variablesReference;
@@ -51,8 +71,11 @@ test('complete session: break, inspect, evaluate, mutate, step, results, output,
   assert.equal(stopped.body.description, 'Expression returned');
   assert.equal((await client.request('scopes', { frameId: originalFrame })).success, false);
   top = await frame(client, stopped);
+  assert.match(top.name, /^Returned 1 value at /);
+  assert.equal(top.column, '  (define tax (* subtotal rate'.length + 1);
+  assert.equal(top.endColumn, top.column + 1);
   const afterScopes = await ok(client.request('scopes', { frameId: top.id }));
-  const results = afterScopes.scopes.find(s => s.name.startsWith('Results'));
+  const results = afterScopes.scopes.find(s => s.name === 'Return values (1)');
   assert.ok(results);
   assert.equal((await ok(client.request('variables', { variablesReference: results.variablesReference }))).variables[0].value, '20');
   await ok(client.request('stepIn', { threadId: stopped.body.threadId }));
@@ -62,8 +85,9 @@ test('complete session: break, inspect, evaluate, mutate, step, results, output,
   stopped = await client.event('stopped');
   assert.equal(stopped.body.description, 'Expression returned');
   top = await frame(client, stopped);
+  assert.match(top.name, /^Returned 2 values at /);
   const callerScopes = await ok(client.request('scopes', { frameId: top.id }));
-  const returned = callerScopes.scopes.find(s => s.name.startsWith('Results'));
+  const returned = callerScopes.scopes.find(s => s.name === 'Return values (2)');
   assert.deepEqual((await ok(client.request('variables', { variablesReference: returned.variablesReference }))).variables.map(v => v.value), ['220', '20']);
   await ok(client.request('continue', { threadId: stopped.body.threadId }));
   await client.event('terminated');
@@ -363,5 +387,35 @@ test('target exit ends its ordinary subprocess group without hanging inherited o
   try {
     const stat = await fs.readFile(`/proc/${pid}/stat`, 'utf8');
     assert.match(stat, /\) Z /, 'A remaining child may only be a zombie awaiting reaping');
-  } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  } catch (error) { if (!['ENOENT', 'ESRCH'].includes(error.code)) throw error; }
+});
+test('opaque program structures expose paged fields without invoking user code', async t => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'racketdap-structures-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const program = path.join(dir, 'main.rkt');
+  await fs.writeFile(program, `#lang racket/base
+(define effects 0)
+(struct post (title body)
+  #:property prop:custom-write (lambda args (set! effects (add1 effects)))
+  #:property prop:object-name (lambda (_) (set! effects (add1 effects)) 'wrong))
+(define (show value)
+  (displayln effects))
+(show (post "Title" "Body"))
+`);
+  const client = new DapClient(); t.after(() => client.close());
+  await launch(client, program);
+  await ok(client.request('setBreakpoints', { source: { path: program }, breakpoints: [{ line: 7 }] }));
+  await ok(client.request('configurationDone'));
+  const stopped = await client.event('stopped');
+  const top = await frame(client, stopped);
+  const value = await ok(client.request('evaluate', { frameId: top.id, expression: 'value', context: 'watch' }));
+  assert.equal(value.type, 'post');
+  assert.equal(value.result, '#<post "Title" "Body">');
+  assert.ok(value.variablesReference > 0);
+  const fields = (await ok(client.request('variables', { variablesReference: value.variablesReference, start: 1, count: 1 }))).variables;
+  assert.deepEqual(fields.map(({ name, value }) => ({ name, value })), [{ name: '1', value: '"Body"' }]);
+  assert.equal((await ok(client.request('evaluate', { frameId: top.id, expression: 'effects' }))).result, '0');
+  await ok(client.request('continue', { threadId: stopped.body.threadId }));
+  await client.event('terminated');
+  assert.equal((await client.event('exited')).body.exitCode, 0);
 });

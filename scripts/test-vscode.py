@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Test one verified VSIX in a fresh Linux editor, workspace, and Racket addon directory."""
+"""Test one verified VSIX in a fresh editor, workspace, and Racket addon directory."""
 import argparse
+from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
+import plistlib
 import selectors
 import shutil
 import subprocess
@@ -13,6 +15,63 @@ import tempfile
 ROOT = Path(__file__).resolve().parent.parent
 
 
+def editor_layout(code, platform):
+    """Accept the distribution's executable, CLI launcher, or macOS bundle."""
+    code = Path(shutil.which(str(code)) or code).resolve()
+    if platform == 'darwin':
+        bundle = next((parent for parent in (code, *code.parents) if parent.suffix == '.app'), None)
+        if bundle is None:
+            raise ValueError('--code must select a VS Code application bundle or its launcher.')
+        with (bundle / 'Contents/Info.plist').open('rb') as source:
+            executable = plistlib.load(source)['CFBundleExecutable']
+        code = bundle / 'Contents/MacOS' / executable
+        app = bundle / 'Contents/Resources/app'
+    elif platform == 'win32':
+        if code.suffix.lower() == '.cmd':
+            code = code.parent.parent / 'Code.exe'
+        # Windows archives can keep resources under a build-specific directory.
+        candidates = [code.parent / 'resources/app', *code.parent.glob('*/resources/app')]
+        apps = [candidate for candidate in candidates if (candidate / 'out/cli.js').is_file()]
+        if len(apps) != 1:
+            raise ValueError('--code must select a Windows distribution with one resources directory.')
+        app = apps[0]
+    else:
+        if code.parent.name == 'bin':
+            code = code.parent.parent / 'code'
+        app = code.parent / 'resources/app'
+    if not code.is_file() or not (app / 'out/cli.js').is_file():
+        raise ValueError('--code must select a standard VS Code distribution.')
+    return code, app
+
+
+@contextmanager
+def editor_display(output, env, xvfb):
+    if sys.platform != 'linux':
+        yield env
+        return
+    with (output / 'xvfb.log').open('w') as log:
+        display = subprocess.Popen(
+            [xvfb, '-displayfd', '1', '-screen', '0', '1280x900x24', '-nolisten', 'tcp'],
+            stdout=subprocess.PIPE, stderr=log, text=True)
+        try:
+            with selectors.DefaultSelector() as selector:
+                selector.register(display.stdout, selectors.EVENT_READ)
+                if not selector.select(10):
+                    raise RuntimeError(f'Xvfb startup timed out; see {output / "xvfb.log"}.')
+            number = display.stdout.readline().strip()
+            if not number.isdecimal():
+                raise RuntimeError(f'Xvfb did not create a display; see {output / "xvfb.log"}.')
+            yield dict(env, DISPLAY=f':{number}', XDG_SESSION_TYPE='x11')
+        finally:
+            display.terminate()
+            try:
+                display.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                display.kill()
+                display.wait()
+            display.stdout.close()
+
+
 def prepare_run(root, dogfood=False):
     """Never reuse editor, package, workspace, or report state from another run."""
     parent = root / '.test-output' / ('dogfood' if dogfood else 'integration')
@@ -20,7 +79,7 @@ def prepare_run(root, dogfood=False):
     output = Path(tempfile.mkdtemp(prefix='run-', dir=parent))
     workspace = output / 'workspace'
     if dogfood:
-        for directory in ('racketdap', 'tests', 'examples'):
+        for directory in ('racketdap', 'tests', 'examples', 'vendor'):
             shutil.copytree(root / directory, workspace / directory,
                             ignore=shutil.ignore_patterns('compiled', '__pycache__'))
         for relative in ('.vscode/settings.json', 'experiments/lexical-eval.rkt'):
@@ -32,6 +91,11 @@ def prepare_run(root, dogfood=False):
                         ignore=shutil.ignore_patterns('compiled', '__pycache__'))
     shutil.copytree(root / 'tests', output / 'harness',
                     ignore=shutil.ignore_patterns('compiled', '__pycache__'))
+    # Keep controller-level checks on the same source snapshot as the verified artifact.
+    extension_source = output / 'harness' / 'extension'
+    extension_source.mkdir()
+    for source in (root / 'vscode').glob('*.js'):
+        shutil.copyfile(source, extension_source / source.name)
     for name in ('user', 'extensions', 'empty-racket-addon'):
         (output / name).mkdir()
     settings = output / 'user/User/settings.json'
@@ -62,11 +126,11 @@ def verify_artifact(artifact, installed=None):
     command = ['node', str(ROOT / 'scripts/artifact.js'), 'verify', str(artifact)]
     if installed:
         command.append(str(installed))
-    result = subprocess.run(command, cwd=ROOT, check=True, capture_output=True, text=True)
+    result = subprocess.run(command, cwd=ROOT, check=True, capture_output=True, encoding='utf-8')
     return json.loads(result.stdout)
 
 
-def run(args, executable, cli, selected):
+def run(args, executable, app, selected):
     identity = verify_artifact(selected)
     output = prepare_run(ROOT, args.dogfood)
     print(f'Editor run: {output}', flush=True)
@@ -78,7 +142,10 @@ def run(args, executable, cli, selected):
     shutil.copyfile(f'{selected}.build.json', f'{artifact}.build.json')
     evidence = {'passed': False, 'artifact': identity, 'run': str(output),
                 'mode': 'dogfood' if args.dogfood else 'integration',
-                'rhombusRequested': args.rhombus}
+                'rhombusRequested': args.rhombus, 'platform': sys.platform,
+                'editor': {'executable': str(executable),
+                           'version': json.loads((app / 'package.json').read_text(encoding='utf-8'))['version'],
+                           'commit': json.loads((app / 'product.json').read_text(encoding='utf-8')).get('commit')}}
     report.write_text(json.dumps(evidence, indent=2) + '\n')
     try:
         # Pin the run to this private artifact copy, including its content manifest.
@@ -98,46 +165,34 @@ def run(args, executable, cli, selected):
             env.update(PLTADDONDIR=evidence['rhombusRuntime']['addon'], RACKETDAP_TEST_RHOMBUS='1')
         isolated = [f'--user-data-dir={output / "user"}', f'--extensions-dir={output / "extensions"}']
         with (output / 'install.log').open('w') as install_log:
-            subprocess.run([str(cli), *isolated, '--install-extension', str(artifact), '--force'],
-                           env=env, stdout=install_log, stderr=subprocess.STDOUT, check=True, timeout=60)
+            # Use the CLI entry point with Electron's Node mode, as the shipped
+            # launchers do, without routing filesystem paths through a shell.
+            subprocess.run([str(executable), str(app / 'out/cli.js'), *isolated,
+                            '--install-extension', str(artifact), '--force'],
+                           env=dict(env, ELECTRON_RUN_AS_NODE='1'), stdout=install_log,
+                           stderr=subprocess.STDOUT, check=True, timeout=60)
         installed = output / 'extensions' / f'{identity["extension"]}-{identity["version"]}'
         verified = verify_artifact(artifact, installed)
         evidence['artifact'].update(installed=verified['installed'], verifiedFiles=verified['verifiedFiles'])
         test_entry = 'vscode-dogfood.js' if args.dogfood else 'vscode-integration.js'
-        with (output / 'xvfb.log').open('w') as xlog, (output / 'vscode.log').open('w') as log:
-            display = subprocess.Popen(
-                [args.xvfb, '-displayfd', '1', '-screen', '0', '1280x900x24', '-nolisten', 'tcp'],
-                stdout=subprocess.PIPE, stderr=xlog, text=True)
-            try:
-                with selectors.DefaultSelector() as selector:
-                    selector.register(display.stdout, selectors.EVENT_READ)
-                    if not selector.select(10):
-                        raise RuntimeError(f'Xvfb startup timed out; see {output / "xvfb.log"}.')
-                number = display.stdout.readline().strip()
-                if not number.isdecimal():
-                    raise RuntimeError(f'Xvfb did not create a display; see {output / "xvfb.log"}.')
-                env.update(DISPLAY=f':{number}', XDG_SESSION_TYPE='x11', RACKETDAP_TEST_REPORT=str(raw_report))
-                subprocess.run([
-                    str(executable), '--no-sandbox', '--disable-gpu', '--ozone-platform=x11',
-                    '--disable-extensions', '--disable-workspace-trust', '--skip-welcome',
-                    '--skip-release-notes', *isolated,
-                    f'--extensionDevelopmentPath={installed}',
-                    f'--extensionTestsPath={output / "harness" / test_entry}',
-                    str(output / 'workspace'),
-                ], env=env, stdout=log, stderr=subprocess.STDOUT, check=True, timeout=args.timeout)
-            finally:
-                display.terminate()
-                try:
-                    display.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    display.kill()
-                    display.wait()
-                display.stdout.close()
+        env['RACKETDAP_TEST_REPORT'] = str(raw_report)
+        platform_args = ['--no-sandbox', '--ozone-platform=x11'] if sys.platform == 'linux' else []
+        with editor_display(output, env, args.xvfb) as editor_env, (output / 'vscode.log').open('w') as log:
+            subprocess.run([
+                str(executable), '--disable-gpu', *platform_args,
+                '--disable-extensions', '--disable-workspace-trust', '--skip-welcome',
+                '--skip-release-notes', *isolated,
+                f'--extensionDevelopmentPath={installed}',
+                f'--extensionTestsPath={output / "harness" / test_entry}',
+                str(output / 'workspace'),
+            ], env=editor_env, stdout=log, stderr=subprocess.STDOUT, check=True, timeout=args.timeout)
         result = json.loads(raw_report.read_text())
         if not result.get('passed'):
             raise RuntimeError(f'Integration did not pass: {result}')
         if result.get('extension') != identity['extension'] or result.get('version') != identity['version']:
             raise RuntimeError('Editor report identifies a different extension from the selected artifact.')
+        if result.get('vscode') != evidence['editor']['version']:
+            raise RuntimeError('Editor report identifies a different VS Code version from the selected editor.')
         # Catch checkout edits made during the run; they require a new artifact/check.
         verify_artifact(artifact)
         evidence.update(result)
@@ -165,18 +220,17 @@ def main():
         parser.error('--timeout must be a positive number of seconds.')
     if args.rhombus and args.dogfood:
         parser.error('--rhombus selects integration acceptance and cannot be combined with --dogfood.')
-    if not args.code or not args.xvfb:
-        parser.error('VS Code and Xvfb are required; set --code and --xvfb if needed.')
-    code = Path(shutil.which(args.code) or args.code).resolve()
-    executable = code.parent.parent / 'code' if code.parent.name == 'bin' else code
-    cli = executable.parent / 'bin/code'
-    if not executable.is_file() or not cli.is_file():
-        parser.error('--code must select a standard Linux VS Code executable or bin/code launcher.')
+    if not args.code or (sys.platform == 'linux' and not args.xvfb):
+        parser.error('VS Code is required, plus Xvfb on Linux; set --code and --xvfb if needed.')
+    try:
+        executable, app = editor_layout(args.code, sys.platform)
+    except ValueError as error:
+        parser.error(str(error))
     manifest = json.loads((ROOT / 'vscode/package.json').read_text())
     selected = (args.artifact or ROOT / 'dist' / f'{manifest["name"]}-{manifest["version"]}.vsix').resolve()
     if not selected.is_file():
         parser.error('Build the VSIX first with node scripts/package-extension.js.')
-    run(args, executable, cli, selected)
+    run(args, executable, app, selected)
 
 
 if __name__ == '__main__':
