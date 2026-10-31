@@ -51,10 +51,7 @@
 
 ;; TODO: cache the namespace with some strategy
 (define (expand-source source in collector #:expand? [expand? #t])
-  ;; A virtual source without a directory of its own keeps the import base
-  ;; its analysis supplies.
-  (define src-dir (or (source-analysis-directory source)
-                      (current-load-relative-directory)))
+  (define src-dir (source-analysis-directory source))
   (define ns (make-base-namespace))
   (define-values (add-syntax done)
     (make-traversal ns src-dir))

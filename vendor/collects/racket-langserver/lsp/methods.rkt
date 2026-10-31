@@ -299,14 +299,7 @@
                  ['rootUri (? (or/c string? (json-null)) root-uri)]
                  ['rootPath (? (or/c string? (json-null)) root-path)])
      (record-client-capabilities! capabilities)
-     ;; Every listed folder is a root; `rootUri` covers clients without folders.
-     (match (hash-ref params 'workspaceFolders #f)
-       [(? list? folders)
-        (for ([folder (in-list folders)])
-          (define uri (hash-ref folder 'uri))
-          (when (file-uri? uri)
-            (workspace-add-folder! current-workspace (file-uri->identity-path uri))))]
-       [_ (initialize-workspace-root! root-uri root-path)])
+     (initialize-workspace-root! root-uri root-path)
      (success-response id (hasheq 'capabilities
                                   (server-capabilities-for-client capabilities)))]
     [_

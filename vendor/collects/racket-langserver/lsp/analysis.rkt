@@ -66,20 +66,18 @@
 ;;   compiled intermediates.
 ;; loaded: Mutable table this attempt's worker fills while it expands, from
 ;;   module file to the buffer text it read or `#f`. One table per attempt.
-;; untitled-base: Import base for untitled documents without a directory
-;;   of their own, or `#f`. Their relative imports are then refused.
 (struct/contract Analysis-Context
   ([buffers (hash/c path? (or/c #f string?) #:immutable #t)]
    [roots (listof path?)]
-   [loaded hash?]
-   [untitled-base (or/c #f path?)])
+   [loaded hash?])
   #:transparent)
+
+;; An untitled document's import base is its save location, when it has one.
+(define (untitled-source? source)
+  (equal? "untitled" (url-scheme (string->url (source-uri source)))))
 
 ;; Set by the scheduler for each attempt. `#f` analyses with ordinary loading.
 (define current-analysis-context (make-parameter #f))
-
-(define (uri->scheme uri)
-  (url-scheme (string->url uri)))
 
 ;; Terminal result of one Check Syntax or Resyntax attempt.
 ;;
@@ -147,17 +145,17 @@
   (define context (current-analysis-context))
   (define check-syntax-result
     (if context
-        (let* ([untitled? (equal? "untitled" (uri->scheme (source-uri source)))]
-               [directory (or (source-analysis-directory source)
-                              (and untitled? (Analysis-Context-untitled-base context)))]
-               [roots (Analysis-Context-roots context)])
+        (let ([roots (Analysis-Context-roots context)])
           (call-with-source-snapshot
-            directory (Analysis-Context-buffers context)
+            (let ([file (source-file-path source)]) (and file (path-only file)))
+            (Analysis-Context-buffers context)
             #:source? (lambda (path) (for/or ([root (in-list roots)]) (directory-contains? root path)))
             #:on-load (lambda (path)
                         (hash-set! (Analysis-Context-loaded context) path
                                    (hash-ref (Analysis-Context-buffers context) path #f)))
-            #:unbased (and untitled? (not directory) (source-syntax-source source))
+            ;; An untitled document without a save location has no import base.
+            #:unbased (and (untitled-source? source) (not (source-analysis-directory source))
+                           (source-syntax-source source))
             (lambda () (doc-check-syntax doc))))
         (doc-check-syntax doc)))
   (define trace (CSResult-trace check-syntax-result))

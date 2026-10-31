@@ -37,8 +37,7 @@
            source-controller-view
            source-controller-snapshot
            source-controller-ensure-analysis!
-           source-controller-refresh-analysis!
-           source-controller-refresh-untitled!))
+           source-controller-refresh-analysis!))
 
 ;; Commands on `events`, beside worker completions. Request threads never
 ;; construct these records; the functions below submit them.

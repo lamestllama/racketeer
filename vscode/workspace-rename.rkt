@@ -12,7 +12,6 @@
          drracket/check-syntax
          racket-langserver/common/source
          racket-langserver/common/source-snapshot
-         "source-document.rkt"
          syntax/modresolve
          syntax/modcollapse
          racket-langserver/common/interfaces
@@ -42,8 +41,7 @@
          (equal? text (format "~s" value)) value)))
 
 (define (in-snapshot path sources proc)
-  (call-with-source-snapshot (path-only path) sources proc
-                             #:unbased (and (source-document-unbased? path) path)))
+  (call-with-source-snapshot (path-only path) sources proc))
 
 (define (analyse path sources)
   (in-snapshot path sources
@@ -510,7 +508,7 @@
      (hasheq 'changes
              (for/hasheq ([(file ranges) (in-hash edits)] #:unless (null? ranges))
                (define doc (Source-doc (hash-ref docs file)))
-               (values (string->symbol (document-path->uri file))
+               (values (string->symbol (path->uri file))
                        (for/list ([range (in-list ranges)])
                          (->jsexpr (TextEdit #:range (Range (doc-abs-pos->pos doc (car range))
                                                          (doc-abs-pos->pos doc (cdr range)))

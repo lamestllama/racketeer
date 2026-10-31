@@ -1,0 +1,110 @@
+diff --git a/common/source-snapshot.rkt b/common/source-snapshot.rkt
+index 9745104..0f1c71a 100644
+--- a/common/source-snapshot.rkt
++++ b/common/source-snapshot.rkt
+@@ -5,17 +5,28 @@
+ ;; intermediates cannot retain an older macro expansion. Libraries outside the
+ ;; project keep their ordinary compiled loading policy.
+ (require racket/list
++         racket/match
+          racket/path
+          setup/dirs
+          syntax/modcode)
+ 
+ (provide call-with-source-snapshot)
+ 
++(define (relative-import? module)
++  (match module
++    [(? path-string?) (relative-path? module)]
++    [(list 'file (? path-string? file)) (relative-path? file)]
++    [(list* 'submod (and parent (not (or "." ".."))) _) (relative-import? parent)]
++    [_ #f]))
++
+ ;; sources: complete normalized path -> buffer text, or #f when two buffers
+ ;;   claim the same path.
+ ;; directory: load-relative directory, or #f.
+ ;; source?: whether a file outside `sources` loads from source.
+ ;; on-load: receives each module file the expansion loads.
++;; unbased: syntax source of a document without an import base. Its relative
++;;   imports are refused with a located error instead of resolving against an
++;;   unrelated directory.
+ ;; Installed collections keep compiled loading even below a project folder,
+ ;; for example when a workspace folder contains the Racket installation.
+ (define (installed-library? file)
+@@ -28,7 +39,22 @@
+ 
+ (define (call-with-source-snapshot directory sources proc
+                                    #:source? [source? (lambda (_) #f)]
+-                                   #:on-load [on-load void])
++                                   #:on-load [on-load void]
++                                   #:unbased [unbased #f])
++  (define ordinary-resolve (current-module-name-resolver))
++  (define (primary-module? relative-to)
++    (define name (and relative-to (resolved-module-path-name relative-to)))
++    (equal? unbased (if (pair? name) (car name) name)))
++  (define resolve
++    (case-lambda
++      [(name namespace) (ordinary-resolve name namespace)]
++      [(module relative-to stx load?)
++       (when (and unbased (relative-import? module)
++                  (or (primary-module? relative-to)
++                      (and stx (equal? (syntax-source stx) unbased))))
++         (raise-syntax-error #f
++           "Relative imports need a save location. Save this document to import files relative to it." stx))
++       (ordinary-resolve module relative-to stx load?)]))
+   (define ordinary-load (current-load/use-compiled))
+   (define ordinary-open (moddep-current-open-input-file))
+   (define (load-snapshot file expected)
+@@ -52,6 +78,7 @@
+                             #:choose (lambda _ 'src) #:compile eval)))]
+       [else (ordinary-load file expected)]))
+   (parameterize ([current-namespace (make-base-namespace)]
++                 [current-module-name-resolver resolve]
+                  [current-directory (or directory (current-directory))]
+                  [current-load-relative-directory directory]
+                  [current-load/use-compiled load-snapshot]
+diff --git a/doclib/check-syntax.rkt b/doclib/check-syntax.rkt
+index edabd35..3c0d8ff 100644
+--- a/doclib/check-syntax.rkt
++++ b/doclib/check-syntax.rkt
+@@ -113,6 +113,7 @@
+                 (and (ExpandResult-pre-syntax er) #t))))
+ 
+ (provide
++  source-analysis-directory
+   (struct-out CSResult)
+   (contract-out
+     [expand-source (->* (Source? input-port? (is-a?/c syncheck-annotations<%>))
+diff --git a/lsp/analysis.rkt b/lsp/analysis.rkt
+index 4bd02a4..4a15e72 100644
+--- a/lsp/analysis.rkt
++++ b/lsp/analysis.rkt
+@@ -5,6 +5,7 @@
+ ;; keeps that product's trace. Request threads receive an `Analysis-Summary`
+ ;; or an `Analysis-Outcome`. Lifetime and reuse are in `analysis-lifecycle.md`.
+ (require json
++         net/url
+          racket/path
+          racket/class
+          racket/contract
+@@ -71,6 +72,10 @@
+    [loaded hash?])
+   #:transparent)
+ 
++;; An untitled document's import base is its save location, when it has one.
++(define (untitled-source? source)
++  (equal? "untitled" (url-scheme (string->url (source-uri source)))))
++
+ ;; Set by the scheduler for each attempt. `#f` analyses with ordinary loading.
+ (define current-analysis-context (make-parameter #f))
+ 
+@@ -148,6 +153,9 @@
+             #:on-load (lambda (path)
+                         (hash-set! (Analysis-Context-loaded context) path
+                                    (hash-ref (Analysis-Context-buffers context) path #f)))
++            ;; An untitled document without a save location has no import base.
++            #:unbased (and (untitled-source? source) (not (source-analysis-directory source))
++                           (source-syntax-source source))
+             (lambda () (doc-check-syntax doc))))
+         (doc-check-syntax doc)))
+   (define trace (CSResult-trace check-syntax-result))

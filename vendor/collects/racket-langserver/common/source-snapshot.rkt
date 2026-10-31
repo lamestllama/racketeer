@@ -53,7 +53,7 @@
                   (or (primary-module? relative-to)
                       (and stx (equal? (syntax-source stx) unbased))))
          (raise-syntax-error #f
-           "Relative imports need a save location or a single workspace folder. Save this document or open its workspace." stx))
+           "Relative imports need a save location. Save this document to import files relative to it." stx))
        (ordinary-resolve module relative-to stx load?)]))
   (define ordinary-load (current-load/use-compiled))
   (define ordinary-open (moddep-current-open-input-file))

@@ -49,6 +49,11 @@ exports.run = async (extension, workspace) => {
     await until(() => error(document), 'untitled diagnostic');
     await replace(document, source);
     await until(() => !error(document), 'untitled diagnostic repair');
+    // A workspace folder is not an import base: only a save location is.
+    await replace(document, '#lang racket/base\n(require "dependency.rkt")\n');
+    await until(() => vscode.languages.getDiagnostics(document.uri).some(d => /save location/.test(d.message)), 'relative import without a save location is refused');
+    await replace(document, source);
+    await until(() => !error(document), 'untitled diagnostic repair after the refusal');
     await vscode.commands.executeCommand('workbench.action.revertAndCloseActiveEditor');
     await until(() => document.isClosed, 'discarding an untitled document closes its lifetime');
     await until(() => vscode.languages.getDiagnostics(document.uri).length === 0, 'closed untitled diagnostics clear');
@@ -62,8 +67,10 @@ exports.run = async (extension, workspace) => {
     opened.push(draft);
     await vscode.languages.setTextDocumentLanguage(draft, 'racket');
     await vscode.window.showTextDocument(draft);
+    await replace(draft, '#lang racket/base\n(require "missing.rkt")\n');
+    await until(() => error(draft), 'a missing relative import beside the save location');
     await replace(draft, '#lang racket/base\n(require "dependency.rkt")\n(define answer (inc 3))\nanswer\n');
-    await until(async () => (await definition(draft, new vscode.Position(2, 16)))?.some(item => locationUri(item) === dependency.toString()), 'relative import uses the associated save location');
+    await until(() => !error(draft), 'relative import uses the associated save location');
     assert.equal(fs.existsSync(savedUri.fsPath), false);
     const use = new vscode.Position(3, 2);
     await until(async () => (await definition(draft, use))?.some(item => locationUri(item) === draft.uri.toString()), 'draft definition keeps its untitled URI');
@@ -94,6 +101,7 @@ exports.run = async (extension, workspace) => {
   }
   return ['untitled completion, definitions, references and rename',
     'untitled diagnostics repair and close cleanup',
+    'untitled relative imports without a save location are refused',
     'untitled relative imports use the associated save location',
     'Save As and reopen replace untitled locations with file locations'];
 };

@@ -4,7 +4,9 @@ const vscode = require('vscode');
 const { createMessageConnection, StreamMessageReader, StreamMessageWriter } = require('vscode-languageclient/node');
 const { createLanguageProcess } = require('./language-process');
 
-const isSource = document => ['file', 'untitled'].includes(document.uri.scheme) && ['racket', 'rhombus'].includes(document.languageId);
+// The index covers saved files. Untitled documents keep the language server's
+// own document-local references and rename.
+const isSource = document => document.uri.scheme === 'file' && ['racket', 'rhombus'].includes(document.languageId);
 const excludedDefaults = ['.git', 'compiled', 'node_modules', '.test-output', 'dist', 'build'];
 
 // The index has its own document snapshots and transport. It never sends fake
@@ -128,11 +130,13 @@ function createWorkspaceIndex(context, { executable, timeout, output, onStatus }
   return {
     start, refresh,
     cancelStart: () => process.cancelStart(),
-    async prepareRename(document, position, token) {
+    async prepareRename(document, position, token, next) {
+      if (!isSource(document)) return next(document, position, token);
       const result = await renameRequest('prepareRename', document, position, token);
       return result && range(result);
     },
-    async provideRenameEdits(document, position, newName, token) {
+    async provideRenameEdits(document, position, newName, token, next) {
+      if (!isSource(document)) return next(document, position, newName, token);
       const result = await renameRequest('rename', document, position, token, newName);
       if (!result) return;
       const edit = new vscode.WorkspaceEdit();
@@ -144,7 +148,7 @@ function createWorkspaceIndex(context, { executable, timeout, output, onStatus }
     // A captured source supplies its file URI separately; its own document
     // owns the request even if VS Code closes the underlying file document.
     async provideReferences(document, position, options, token, next, sourceUri) {
-      if (!enabled()) return next(document, position, options, token);
+      if (!enabled() || (!sourceUri && !isSource(document))) return next(document, position, options, token);
       if (disposed || token.isCancellationRequested) return [];
       const version = document.version, owned = documentIdentity(document);
       const text = sourceUri && document.getText();

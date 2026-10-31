@@ -47,7 +47,6 @@
          source-controller-snapshot
          source-controller-ensure-analysis!
          source-controller-refresh-analysis!
-         source-controller-refresh-untitled!
          (struct-out Analysis-Handle)
          (struct-out Source-Result)
          (struct-out Source-Failure)
@@ -211,10 +210,9 @@
             (Source-Snapshot-revision (Available-Analysis-snapshot available)))
        (Available-Analysis-completion-evt available)))
 
-;; Editor state for one analysis: open file buffers supply imports, project
-;; folders and buffer directories load from source, and a single workspace
-;; folder is the import base of untitled documents. Reads every buffer under
-;; its read lock; call without holding a buffer lock.
+;; Editor state for one analysis: open file buffers supply imports, and
+;; project folders and buffer directories load from source. Reads every buffer
+;; under its read lock; call without holding a buffer lock.
 (define (analysis-context controller)
   (define buffers
     (for/fold ([buffers (hash)])
@@ -226,10 +224,7 @@
                          (string->immutable-string (with-read-doc (cdr entry) doc-get-text))))
           buffers)))
   (define folders (workspace-folders (Source-Controller-workspace controller)))
-  (Analysis-Context buffers
-                    (append folders (map path-only (hash-keys buffers)))
-                    (make-hash)
-                    (and (= 1 (length folders)) (car folders))))
+  (Analysis-Context buffers (append folders (map path-only (hash-keys buffers))) (make-hash)))
 
 ;; Whether the accepted analysis of `source`, or the attempt now running for
 ;; it, has loaded `path`. An attempt that has not reached `path` reads it from
@@ -277,14 +272,6 @@
        (let ([buffers (Analysis-Context-buffers (analysis-context controller))])
          (for/or ([(path text) (in-hash dependencies)])
            (not (equal? text (hash-ref buffers path #f)))))))
-
-;; Workspace folders supply the import base of untitled documents.
-(define (source-controller-refresh-untitled! controller)
-  (restart-buffers! controller
-                    (for/list ([entry (in-list (source-store-buffers (Source-Controller-store controller)))]
-                               #:when (regexp-match? #rx"^untitled:" (source-uri (car entry))))
-                      entry))
-  (source-controller-pump! controller))
 
 (define (source-controller-ensure-analysis! controller snapshot #:refresh? [refresh? #f])
   (cond

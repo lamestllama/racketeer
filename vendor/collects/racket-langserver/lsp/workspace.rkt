@@ -61,8 +61,7 @@
       (workspace-remove-folder! current-workspace
                                 (file-uri->identity-path uri))))
   (when (pair? added)
-    (republish-open-doc-contributions!))
-  (source-controller-refresh-untitled! (current-source-controller)))
+    (republish-open-doc-contributions!)))
 
 ;; Status: ignored. Watched-file events do not own the editor buffer or index.
 (define (didChangeWatchedFiles _params)

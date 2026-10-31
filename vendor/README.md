@@ -30,19 +30,17 @@ applies these patches:
   modules load from source to avoid retaining earlier macro expansions in
   compiled intermediates.
 
-- `untitled-documents.patch`: use a single workspace folder as the import base
-  of an untitled document and refuse its relative imports with a located
-  message when there is no base. Read every folder named at initialization,
-  reanalyse untitled documents when folders change and resolve definitions from
-  an untitled document into the files it imports. Other virtual documents, such
-  as revisions shown in a diff, stay isolated as upstream intends.
+- `untitled-relative-imports.patch`: refuse a relative import in an untitled
+  document without a save location with a located message, instead of
+  resolving it against the server's working directory. Untitled documents
+  otherwise follow upstream, and other virtual documents, such as revisions
+  shown in a diff, stay isolated as upstream intends.
 
 Workspace indexing belongs to Racketeer, in `vscode/workspace-analysis.rkt`,
 its request adapter `vscode/workspace-index.rkt` and the VS Code client. The
 separate process reuses the pinned analyser, the source-snapshot loader and the
-workspace store as libraries. `vscode/source-document.rkt` gives untitled
-documents file identities for indexing and rename only. No indexing hooks or
-index state are added to the language server.
+workspace store as libraries, and indexes saved files only. No indexing hooks
+or index state are added to the language server.
 
 Regression tests exercise these patches. Reproduction fails if any no longer
 applies. It does not change debugger instrumentation.

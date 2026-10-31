@@ -41,17 +41,19 @@ termination prevent stale results from appearing.
 
 ## New documents before saving
 
-The bundled language server supports untitled Racket documents: completion,
-diagnostics, definitions, references and rename use the current editor text.
-Locations and edit previews keep the document's untitled URI. Saving creates a
-new file-document lifetime; closing or replacing the draft retires its analysis.
-No placeholder source files are written.
+The bundled language server supports untitled Racket documents as upstream
+racket-langserver does: completion, diagnostics, definitions, references and
+rename use the current editor text and stay within the document. Locations and
+edit previews keep the document's untitled URI. Saving creates a new
+file-document lifetime; closing or replacing the draft retires its analysis.
+No placeholder source files are written. The workspace index covers saved
+files only.
 
 Relative imports use an associated save location when the document has one.
-Otherwise, a single open workspace folder supplies the base. With no folder or
-multiple folders, local analysis and collection imports still work; relative
-imports report that a save location or one workspace folder is required.
-Changing workspace folders refreshes affected untitled analysis.
+A workspace folder is not an import base: without a save location, local
+analysis and collection imports still work, and a relative import reports
+that a save location is required instead of resolving against the language
+server's working directory.
 
 Resyntax refactorings require a saved file. An externally installed language
 server retains its existing file-only document selection.
