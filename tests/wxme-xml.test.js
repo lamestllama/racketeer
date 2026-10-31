@@ -40,7 +40,8 @@ test('empty and mixed XML boxes render without evaluating their contents', async
   assert.throws(() => renderWxme({ parts: [{ kind: 'xml', parts: [] }] }, 'bad'), /Invalid.*mode/);
 });
 
-test('XML editing without a display preserves every source byte', async () => {
+// Only the Linux toolkit reads DISPLAY; macOS and Windows always provide a display.
+test('XML editing without a display preserves every source byte', { skip: process.platform !== 'linux' }, async () => {
   const previous = process.env.DISPLAY; process.env.DISPLAY = ':9876';
   try {
     for (const name of ['preserve', 'eliminate', 'boxes', 'mixed']) {
