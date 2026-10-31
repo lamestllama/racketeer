@@ -267,16 +267,21 @@
       [else
        (define resolved (simplify-path (path->complete-path path)))
        (define selected? (selected-source? resolved))
-       ;; Compare source loads on both sides of the equivalence harness. Only
-       ;; selected files bypass bytecode and permit binding assignment. Restore
-       ;; the caller's compilation policy for dependencies loaded inside them.
-       (parameterize ([compile-enforce-module-constants
-                       (if (and selected? instrument?) #f enforce-module-constants?)]
-                      [use-compiled-file-paths (if selected? '() compiled-paths)]
-                      [selected-load-request (and selected? resolved)]
-                      [current-compilation-policy-owner policy-owner]
-                      [current-eval ordinary-eval])
-         (ordinary-load path expected))]))
+       (define owner (current-compilation-policy-owner))
+       (if (and (not selected?) owner (not (eq? owner policy-owner)))
+           ;; A loader nested in this registry, such as a hosted debugger
+           ;; library, owns the policy of its own request. Keep that policy.
+           (ordinary-load path expected)
+           ;; Compare source loads on both sides of the equivalence harness. Only
+           ;; selected files bypass bytecode and permit binding assignment. Restore
+           ;; the caller's compilation policy for dependencies loaded inside them.
+           (parameterize ([compile-enforce-module-constants
+                           (if (and selected? instrument?) #f enforce-module-constants?)]
+                          [use-compiled-file-paths (if selected? '() compiled-paths)]
+                          [selected-load-request (and selected? resolved)]
+                          [current-compilation-policy-owner policy-owner]
+                          [current-eval ordinary-eval])
+             (ordinary-load path expected)))]))
   (define (open-source-snapshot resolved)
     ;; Capture before either callback can edit the file. The reader consumes
     ;; these same bytes, and source consumers never need to reopen the path.
