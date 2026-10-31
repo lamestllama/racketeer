@@ -26,11 +26,28 @@ test('build arguments preserve paths and task variables without shell interpreta
 
 test('invalid build definitions and direct input replacement are rejected', () => {
   const valid = { action: 'executable', source: 'main.rkt', output: 'app' };
-  for (const update of [{ action: 'unknown' }, { source: '' }, { output: 'bad\0name' }, { gui: 'true' },
-    { libraries: 'racket/math' }, { languages: [42] }, { output: 'main.rkt' }, { output: './main.rkt' },
-    { action: 'launcher', libraries: ['racket/math'] }, { action: 'distribution', gui: true }]) {
-    assert.throws(() => buildPlan({ ...valid, ...update }, '/project'));
+  for (const platform of ['linux', 'darwin', 'win32']) {
+    for (const update of [{ action: 'unknown' }, { source: '' }, { output: 'bad\0name' }, { gui: 'true' },
+      { libraries: 'racket/math' }, { languages: [42] },
+      { action: 'launcher', libraries: ['racket/math'] }, { action: 'distribution', gui: true },
+      { action: 'distribution', source: 'app', output: './app' }]) {
+      assert.throws(() => buildPlan({ ...valid, ...update }, '/project', platform));
+    }
   }
+  // An executable name receives its platform suffix before it is compared with the input.
+  for (const platform of ['linux', 'darwin']) {
+    for (const output of ['main.rkt', './main.rkt']) {
+      assert.throws(() => buildPlan({ ...valid, output }, '/project', platform), /different from the input/);
+    }
+  }
+  assert.equal(buildPlan({ ...valid, output: 'main.rkt' }, '/project', 'win32').output, 'main.rkt.exe');
+  assert.equal(buildPlan({ ...valid, output: 'main.rkt', gui: true }, '/project', 'darwin').output, 'main.rkt.app');
+  assert.throws(() => buildPlan({ ...valid, source: 'app.exe', output: 'app' }, '/project', 'win32'), /different from the input/);
+  // Windows and macOS file systems treat names that differ only in case as one file.
+  assert.throws(() => buildPlan({ ...valid, output: 'Main.rkt' }, '/project', 'darwin'), /different from the input/);
+  assert.throws(() => buildPlan({ ...valid, source: 'App.EXE', output: 'app' }, '/project', 'win32'), /different from the input/);
+  assert.equal(buildPlan({ ...valid, output: 'Main.rkt' }, '/project', 'linux').output, 'Main.rkt');
+  assert.equal(executablePath('APP.EXE', false, 'win32'), 'APP.EXE');
 });
 
 test('public tools build a user-package launcher, embed modules and relocate runtime files', { timeout: 120000 }, async t => {

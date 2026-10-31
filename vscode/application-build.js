@@ -11,9 +11,18 @@ function strings(value, name) {
   if (!Array.isArray(value)) throw new Error(`${name} must be an array.`);
   return value.map(item => text(item, name));
 }
+// Windows and macOS file systems compare names without regard to case by default.
+const foldsCase = platform => platform === 'win32' || platform === 'darwin';
 function executablePath(output, gui, platform = process.platform) {
   const extension = platform === 'win32' ? '.exe' : platform === 'darwin' && gui ? '.app' : '';
-  return extension && !output.endsWith(extension) ? output + extension : output;
+  const ending = output.slice(-extension.length);
+  const present = foldsCase(platform) ? ending.toLowerCase() === extension : ending === extension;
+  return extension && !present ? output + extension : output;
+}
+function sameFile(cwd, first, second, platform) {
+  const paths = platform === 'win32' ? path.win32 : path.posix;
+  const [a, b] = [first, second].map(name => paths.resolve(cwd, name));
+  return foldsCase(platform) ? a.toLowerCase() === b.toLowerCase() : a === b;
 }
 
 // Only public raco options are assembled here. ProcessExecution resolves native
@@ -31,7 +40,7 @@ function buildPlan(definition, cwd, platform = process.platform) {
     throw new Error('Additional libraries and languages apply to embedded executables.');
   if (action === 'distribution' && gui) throw new Error('The distribution inherits its GUI mode from the executable.');
   if (action !== 'distribution') output = executablePath(output, gui, platform);
-  if (source === output || (!source.includes('${') && !output.includes('${') && path.resolve(cwd, source) === path.resolve(cwd, output)))
+  if (source === output || (!source.includes('${') && !output.includes('${') && sameFile(cwd, source, output, platform)))
     throw new Error('Choose an output different from the input.');
   const args = action === 'distribution' ? ['distribute', '--', output, source] : [
     'exe', ...(gui ? ['--gui'] : []),
