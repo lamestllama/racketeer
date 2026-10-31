@@ -15,7 +15,7 @@ function registerFileRuns(sessions, output) {
       }, { noDebug: !debug });
       records.set(key, record);
       void record.done.then(() => { if (records.get(key) === record) records.delete(key); });
-      output.reveal(record, undefined, () => run(target, debug));
+      await output.reveal(record, undefined, () => run(target, debug));
       return record;
     });
     transitions.set(key, operation);

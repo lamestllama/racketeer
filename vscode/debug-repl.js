@@ -26,7 +26,7 @@ function registerDebugRepl(sessions, interactions) {
         if (modules.get(key) === record) modules.delete(key);
       });
     }
-    if (interactions) interactions.reveal(record, expression => evaluate(target, [expression]), () => open(target, true));
+    if (interactions) await interactions.reveal(record, expression => evaluate(target, [expression]), () => open(target, true));
     else await vscode.commands.executeCommand('workbench.debug.action.focusRepl');
     return record;
   }

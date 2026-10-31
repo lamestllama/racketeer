@@ -84,3 +84,51 @@ test('transcript memory and entry limits evict old output without reusing image 
   const id = output.entries.at(-1).id; output.clear(); output.append('stdout', 'λ'); assert.ok(output.entries[0].id > id);
   assert.throws(() => output.output({ category: 'image', mimeType: 'image/png', data: 'bad' }), /Invalid PNG/);
 });
+
+// VS Code activates a webview's editor group when it opens the panel beside
+// the source, even with preserveFocus. Commands then found no active Racket
+// editor, so starting the same module's Debug REPL a second time failed.
+test('revealing Interactions keeps the source editor group active', async t => {
+  const vm = require('node:vm');
+  const groups = { active: 1 }, revealed = [];
+  const source = { document: { uri: 'file:///main.rkt', languageId: 'racket' }, viewColumn: 1 };
+  const panel = { visible: true, webview: { postMessage: async () => {}, onDidReceiveMessage() {} }, onDidDispose() {},
+    reveal(column, preserveFocus) { revealed.push(preserveFocus); groups.active = 2; panel.visible = true; }, dispose() {} };
+  let factory;
+  const vscode = {
+    ViewColumn: { Beside: -2 }, Disposable: class { constructor(dispose) { this.dispose = dispose; } },
+    debug: {
+      registerDebugAdapterTrackerFactory(_type, value) { factory = value; return { dispose() {} }; },
+      onDidTerminateDebugSession: () => ({ dispose() {} })
+    },
+    window: {
+      createWebviewPanel() { groups.active = 2; return panel; },
+      get activeTextEditor() { return groups.active === source.viewColumn ? source : undefined; },
+      async showTextDocument(document, options) {
+        assert.equal(document, source.document);
+        // As observed in VS Code 1.98 and 1.144, only a focused editor activates its group.
+        if (!options.preserveFocus) groups.active = options.viewColumn;
+        return source;
+      }
+    }
+  };
+  const module = { exports: {} };
+  const local = { './error-sources': { registerErrorSources: () => ({}) } };
+  const filename = path.join(__dirname, '../vscode/interactions.js');
+  vm.runInNewContext(require('node:fs').readFileSync(filename, 'utf8'), { module, require: name =>
+    name === 'vscode' ? vscode : local[name] || require(name.startsWith('.') ? path.join(__dirname, '../vscode', name) : name) }, { filename });
+  const context = { subscriptions: [] };
+  t.after(() => context.subscriptions.forEach(item => item.dispose()));
+  const interactions = module.exports.registerInteractions(context, {});
+  const session = { id: 'repl', configuration: { program: '/main.rkt', interactive: true, racketdapRichInteractions: true } };
+  factory.createDebugAdapterTracker(session);
+  const owner = { session, stop: async () => {} };
+  assert.equal(vscode.window.activeTextEditor, undefined, 'Opening the panel beside activates its group');
+  await interactions.reveal(owner);
+  assert.deepEqual(revealed, [], 'A visible panel needs no reveal');
+  assert.equal(vscode.window.activeTextEditor, source, 'Opening the panel returns activity to the source');
+  panel.visible = false;
+  await interactions.reveal(owner);
+  assert.deepEqual(revealed, [true]);
+  assert.equal(vscode.window.activeTextEditor, source, 'Revealing a hidden panel returns activity to the source');
+});

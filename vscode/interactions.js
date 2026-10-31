@@ -22,10 +22,15 @@ function registerInteractions(context, images) {
     const interactive = !!session.configuration.interactive;
     let view = views.get(key);
     if (!view || view.closed) {
+      // VS Code activates the new editor group when it opens the panel beside
+      // the source, even with preserveFocus, and only showing an editor with
+      // focus activates the source group again. Reveal returns to this editor,
+      // so commands on the active Racket file still find it.
+      const origin = vscode.window.activeTextEditor;
       const panel = vscode.window.createWebviewPanel('racketeer.interactions', `${interactive ? 'Interactions' : 'Results'}: ${path.basename(session.configuration.program)}`,
         { viewColumn: vscode.ViewColumn.Beside, preserveFocus: true },
         { enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [] });
-      view = { panel, key, interactive };
+      view = { panel, key, interactive, origin };
       view.output = new InteractionOutput(message => { if (!view.closed) void panel.webview.postMessage(message); });
       panel.webview.html = interactionsHtml({ interactive });
       panel.onDidDispose(() => {
@@ -130,11 +135,16 @@ function registerInteractions(context, images) {
     if (view && !view.closed) { view.ended = true; view.output.finish(); status(view); }
   }), new vscode.Disposable(() => { for (const view of [...views.values()]) view.panel.dispose(); }));
   return {
-    reveal(owner, evaluate, restart) {
+    async reveal(owner, evaluate, restart) {
       const view = sessions.get(owner.session.id);
       if (!view || view.closed) { void owner.stop(); return; }
       Object.assign(view, { owner, evaluate, restart });
-      view.panel.reveal(undefined, true); status(view);
+      status(view);
+      const editor = view.origin || vscode.window.activeTextEditor;
+      view.origin = undefined;
+      if (!view.panel.visible) view.panel.reveal(undefined, true);
+      if (editor && !editor.document.isClosed && vscode.window.activeTextEditor?.document !== editor.document)
+        await vscode.window.showTextDocument(editor.document, { viewColumn: editor.viewColumn, preserveFocus: false });
     }
   };
 }
