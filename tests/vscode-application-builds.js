@@ -23,15 +23,20 @@ exports.run = async function (workspace, observe = async () => {}) {
   const started = vscode.tasks.onDidStartTask(event => { if (event.execution.task.definition.type === 'racket-build') live.add(event.execution); });
   const ended = vscode.tasks.onDidEndTask(event => live.delete(event.execution));
   const results = vscode.tasks.onDidEndTaskProcess(event => events.push(event));
+  const processes = new Map();
+  const processStarts = vscode.tasks.onDidStartTaskProcess(event => processes.set(event.execution, event.processId));
   const exists = async filename => { try { await fs.stat(filename); return true; } catch (error) { if (error.code !== 'ENOENT') throw error; return false; } };
-  async function until(check, label, timeout = 60000) {
+  async function until(check, label, timeout = 60000, details = () => '') {
     const deadline = Date.now() + timeout;
     while (Date.now() < deadline) {
       const result = await check(); if (result) return result;
       await new Promise(resolve => setTimeout(resolve, 40));
     }
-    throw new Error(`Timed out: ${label}`);
+    throw new Error(`Timed out: ${label}${details()}`);
   }
+  const alive = pid => {
+    try { process.kill(pid, 0); return true; } catch (error) { if (error.code === 'ESRCH') return false; throw error; }
+  };
   async function open(filename) { return vscode.window.showTextDocument(await vscode.workspace.openTextDocument(filename)); }
   async function build(command, request) {
     const result = await vscode.commands.executeCommand(`racketdap.${command}`, request);
@@ -145,9 +150,11 @@ exports.run = async function (workspace, observe = async () => {}) {
     await observe({ stage: 'cancellation', checks, task: running.task.definition, childPid });
     running.terminate();
     assert.match((await pending).message, /did not complete successfully/);
-    await until(() => {
-      try { process.kill(childPid, 0); return false; } catch (error) { if (error.code === 'ESRCH') return true; throw error; }
-    }, 'Compiler child stopped', 10000);
+    // Report which process outlived the task, to tell a compiler that ignored
+    // termination from a child that the termination did not reach.
+    const compilerPid = processes.get(running);
+    await until(() => !alive(childPid), 'Compiler child stopped', 10000,
+      () => ` (compiler process ${compilerPid ?? 'unknown'} ${compilerPid && alive(compilerPid) ? 'still running' : 'stopped'})`);
     childPid = undefined;
     checks.push('Native task cancellation stops a stalled compiler and its ordinary child process');
     await open(consoleSource);
@@ -158,7 +165,7 @@ exports.run = async function (workspace, observe = async () => {}) {
   } finally {
     for (const execution of live) execution.terminate();
     if (childPid) { try { process.kill(childPid, 'SIGKILL'); } catch (error) { if (error.code !== 'ESRCH') throw error; } }
-    started.dispose(); ended.dispose(); results.dispose();
+    started.dispose(); ended.dispose(); results.dispose(); processStarts.dispose();
     if (previousTasks) await fs.writeFile(taskConfig, previousTasks); else await fs.rm(taskConfig, { force: true });
     await fs.rm(root, { recursive: true, force: true });
     if (restoreLanguageServer) {
