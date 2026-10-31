@@ -78,7 +78,7 @@ exports.run = async function () {
       ['testing.runAll', true, false], ['testing.debugAll', false, false], ['testing.coverageAll', true, true]
     ]) {
       console.log(`${command}: repository suites through Test Explorer`);
-      const start = sessions.length;
+      const started = Date.now(), start = sessions.length;
       await vscode.commands.executeCommand(command);
       await until(() => sessions.length >= start + expected.size, 'Test Explorer runs every real suite');
       const profileSessions = sessions.slice(start);
@@ -102,6 +102,7 @@ exports.run = async function () {
         console.log(`${file}: ${summary.body.total} passed`);
       }
       assert.deepEqual(profileSessions.map(relative).sort(), [...expected.keys()].sort());
+      console.log(`${command} passed in ${Math.round((Date.now() - started) / 1000)} s`);
     }
 
     // Debug the transport regression: inspect a real local, then resume the

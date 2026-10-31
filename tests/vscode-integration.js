@@ -10,18 +10,29 @@ exports.run = async function () {
   assert.ok(extension, 'Packaged extension is available');
   await extension.activate();
   const workspace = vscode.workspace.workspaceFolders[0];
-  const testExplorerChecks = await require('./vscode-test-explorer').run(extension, workspace);
-  const languageChecks = await require('./vscode-language').run(extension, workspace);
-  const macroChecks = await require('./vscode-macro-stepper').run(extension, workspace);
+  // The console log records each stage's duration, so a run that exceeds its
+  // time limit shows where the time went.
+  async function stage(name, run) {
+    const started = Date.now();
+    console.log(`Integration stage ${name} started`);
+    const checks = await run();
+    console.log(`Integration stage ${name} passed in ${Math.round((Date.now() - started) / 1000)} s`);
+    return checks;
+  }
+  const testExplorerChecks = await stage('Test Explorer', () => require('./vscode-test-explorer').run(extension, workspace));
+  const languageChecks = await stage('language', () => require('./vscode-language').run(extension, workspace));
+  const macroChecks = await stage('macro stepper', () => require('./vscode-macro-stepper').run(extension, workspace));
   const rhombusChecks = process.env.RACKETDAP_TEST_RHOMBUS === '1'
-    ? await require('./vscode-rhombus').run(extension, workspace) : [];
-  const workflowChecks = await require('./vscode-workflows').run(workspace);
-  const packageChecks = await require('./vscode-packages').run(workspace);
-  const applicationChecks = await require('./vscode-application-builds').run(workspace);
-  const applicationLogChecks = await require('./vscode-application-logs').run(workspace);
-  const imageChecks = await require('./vscode-images').run(workspace);
-  const plotChecks = await require('./vscode-plots').run(workspace);
-  const wxmeChecks = await require('./vscode-wxme').run(extension, workspace);
+    ? await stage('Rhombus', () => require('./vscode-rhombus').run(extension, workspace)) : [];
+  const workflowChecks = await stage('workflows', () => require('./vscode-workflows').run(workspace));
+  const packageChecks = await stage('packages', () => require('./vscode-packages').run(workspace));
+  const applicationChecks = await stage('application builds', () => require('./vscode-application-builds').run(workspace));
+  const applicationLogChecks = await stage('application logs', () => require('./vscode-application-logs').run(workspace));
+  const imageChecks = await stage('images', () => require('./vscode-images').run(workspace));
+  const plotChecks = await stage('plots', () => require('./vscode-plots').run(workspace));
+  const wxmeChecks = await stage('WXME', () => require('./vscode-wxme').run(extension, workspace));
+  const debuggingStarted = Date.now();
+  console.log('Integration stage debugging started');
   const program = path.join(workspace.uri.fsPath, 'demo.rkt');
   const document = await vscode.workspace.openTextDocument(program);
   await vscode.window.showTextDocument(document, { preview: false });
@@ -385,6 +396,7 @@ exports.run = async function () {
         'print variable command', 'set variable command', 'continue to cursor command',
         'continue to cursor rejects another session’s captured source'] };
     if (process.env.RACKETDAP_TEST_REPORT) fs.writeFileSync(process.env.RACKETDAP_TEST_REPORT, JSON.stringify(report, null, 2));
+    console.log(`Integration stage debugging passed in ${Math.round((Date.now() - debuggingStarted) / 1000)} s`);
     console.log('Packaged VS Code integration passed:', JSON.stringify(report));
   } finally {
     vscode.debug.removeBreakpoints([breakpoint]);
