@@ -15,6 +15,7 @@
          "service/declaration.rkt"
          "service/highlight.rkt"
          "service/inlay-hint.rkt"
+         "service/tail.rkt"
          "service/tooltip-log.rkt"
          "service/typed-racket/service.rkt"
          "../common/interfaces.rkt"
@@ -52,6 +53,7 @@
         [lexer-state lexer-state]
         [declaration decls]
         [typed-racket typed-racket]))
+    (define tails (new tail% [src src] [lexer-state lexer-state]))
 
     (define services
       (list hovers
@@ -62,7 +64,8 @@
             typed-racket
             decls
             semantic-tokens
-            inlay-hints))
+            inlay-hints
+            tails))
 
     (define/public (reset)
       (for ([s services])
@@ -114,12 +117,13 @@
     (define/public (get-declaration) decls)
     (define/public (get-typed-racket) typed-racket)
     (define/public (get-inlay-hints) inlay-hints)
+    (define/public (get-tails) tails)
 
     ;; Derive accepted cross-file state from this trace's frozen editor.
     (define/public (get-contribution)
       (define (abs->pos pos)
         (match-define (list line char)
-          (send doc-text pos->line/char pos))
+          (send doc-text pos->lsp-position pos))
         (Pos line char))
 
       (define (range->location range)
@@ -227,6 +231,9 @@
               _end-src-obj end-left end-right
               _actual? _phase-level
               require-arrow? _name-dup?)))
+
+    (define/override (syncheck:add-tail-arrow from-source from to-source to)
+      (send tails syncheck:add-tail-arrow from-source from to-source to))
 
     ;; Unused requires
     (define/override (syncheck:add-unused-require src left right)

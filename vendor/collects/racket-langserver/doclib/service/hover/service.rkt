@@ -45,6 +45,10 @@
 
     ;; Character range -> one winning hover annotation.
     (define mouse-over-by-range (make-interval-map))
+    ;; Use range -> binding identity -> confirmed? for this expansion only.
+    ;; A confirmed edge supersedes the same prediction, but cannot confirm a
+    ;; different binding or phase that happens to share its source location.
+    (define bindings-by-range (make-interval-map))
     ;; Identifier range -> same-file `Hover-Detail` at declaration ranges.
     ;; `doc-hover` finds uses. We do not copy detail onto every use.
     (define detail-by-range (make-interval-map))
@@ -78,6 +82,14 @@
               (and stored-annotation
                    (Stored-Hover-Annotation-annotation stored-annotation))))
 
+    (define/public (predicted-binding-at pos)
+      (define-values (start end bindings)
+        (interval-map-ref/bounds bindings-by-range pos #f))
+      (if (and bindings (for/or ([actual? (in-hash-values bindings)]) (not actual?)))
+          (values start end
+                  (if (for/or ([actual? (in-hash-values bindings)]) actual?) 'mixed 'predicted))
+          (values #f #f #f)))
+
     ;; Do not expose interval-maps. Returns start, end, Hover-Detail, or #f #f #f.
     ;; Replay may return #f when a deletion broke the detail. Treat that as a miss.
     (define/public (source-detail-at pos)
@@ -95,12 +107,17 @@
 
     (define/override (reset)
       (set! mouse-over-by-range (make-interval-map))
+      (set! bindings-by-range (make-interval-map))
       (set! detail-by-range (make-interval-map))
       ;; Clear the journal with the maps. Values belong to one snapshot.
       (position-journal-reset! detail-journal)
       (set! definition-target-ranges (mutable-set))
       (set! local-declaration-ranges (mutable-set))
       (set! leading-comments-by-display-start (make-hash)))
+
+    ;; An edit anywhere can change a template's binding or expansion phase.
+    (define/override (text-replaced _start _end)
+      (set! bindings-by-range (make-interval-map)))
 
     ;; Detail values hold absolute ranges. Move map keys now. Journal the
     ;; ranges inside each detail so `source-detail-at` can replay them later.
@@ -148,9 +165,18 @@
                  (< start end))
         (set-add! definition-target-ranges (cons start end))))
 
-    (define/override (syncheck:add-arrow/name-dup _start-src start-left start-right
-                                                  _end-src _el _er
-                                                  _actual? _phase require-arrow? _dup?)
+    (define/override (syncheck:add-arrow/name-dup start-src start-left start-right
+                                                  end-src end-left end-right
+                                                  actual? phase require-arrow? _dup?)
+      (when (and (equal? src end-src)
+                 (exact-nonnegative-integer? end-left)
+                 (exact-nonnegative-integer? end-right)
+                 (< end-left end-right)
+                 (<= end-right (send doc-text end-pos)))
+        (define key (list start-src start-left start-right phase require-arrow?))
+        (define (record bindings)
+          (hash-set bindings key (or actual? (hash-ref bindings key #f))))
+        (interval-map-update*! bindings-by-range end-left end-right record (record (hash))))
       ;; Non-require arrows mark same-file local declarations that need detail.
       ;; Skip zero-width starts. Do not widen them.
       (when (and (not require-arrow?)

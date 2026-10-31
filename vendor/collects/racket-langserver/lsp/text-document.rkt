@@ -6,6 +6,7 @@
          racket/contract
          "../common/interfaces.rkt"
          "../common/json-util.rkt"
+         "../common/source-document.rkt"
          "responses.rkt"
          "safedoc.rkt"
          "../common/settings.rkt"
@@ -31,11 +32,14 @@
   (match-define (hash-table ['textDocument (^DocItem #:uri uri #:version version #:text text)]) params)
   (fetch-configuration request-client uri)
   (define safe-doc (lsp-open-doc! uri text version))
-  (safedoc-run-check-syntax! notify-client safe-doc))
+  (lsp-refresh-analysis! notify-client uri))
 
-(define (did-close! params)
+(define (did-close! params [notify-client void])
   (match-define (hash-table ['textDocument (DocItem-js #:uri uri)]) params)
-  (lsp-close-doc! uri))
+  (lsp-close-doc! uri)
+  (when (untitled-uri? uri)
+    (notify-client "textDocument/publishDiagnostics" (hasheq 'uri uri 'diagnostics '())))
+  (lsp-refresh-analysis! notify-client uri))
 
 (define (did-change! notify-client params)
   (match-define (hash-table ['textDocument (^DocIdentifier #:version version #:uri uri)]
@@ -60,7 +64,7 @@
 
       (doc-update-version! doc version)))
 
-  (safedoc-run-check-syntax! notify-client safe-doc))
+  (lsp-refresh-analysis! notify-client uri))
 
 ;; Hover request
 ;; Returns an object conforming to the Hover interface, to
@@ -135,7 +139,7 @@
                  ['position (as-Pos pos)])
      (define safe-doc (lsp-get-doc uri))
      (define result
-       (with-read-doc safe-doc
+       (with-read-analysis safe-doc
          (λ (doc) (doc-definition doc uri pos))))
      (success/enc id result)]
     [_
@@ -249,7 +253,11 @@
 
      (if hints
          (success/enc id hints)
-         (async-query-wait (SafeDoc-token safe-doc) respond-to-signal))]
+         (async-query-wait
+           (SafeDoc-token safe-doc) respond-to-signal
+           #:ready? (lambda ()
+                      (with-read-safedoc safe-doc
+                        (lambda (sd) (not (safedoc-check-syntax-running? sd)))))))]
     [_ (error-response id ErrorCode-InvalidParams "textDocument/inlayHint failed")]))
 
 ;; Full document formatting request
@@ -372,7 +380,11 @@
 
   (if tokens
       (success/enc id (hash 'data tokens))
-      (async-query-wait (SafeDoc-token safe-doc) respond-to-signal)))
+      (async-query-wait
+        (SafeDoc-token safe-doc) respond-to-signal
+        #:ready? (lambda ()
+                   (with-read-safedoc safe-doc
+                     (lambda (sd) (not (safedoc-check-syntax-running? sd))))))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
@@ -380,7 +392,7 @@
   did-open!
   did-change!
   (contract-out
-    [did-close! (jsexpr? . -> . void?)]
+    [did-close! (->* (jsexpr?) ((-> string? jsexpr? void?)) void?)]
     [hover (exact-nonnegative-integer? jsexpr? . -> . jsexpr?)]
     [code-action (exact-nonnegative-integer? jsexpr? . -> . jsexpr?)]
     [completion (exact-nonnegative-integer? jsexpr? . -> . jsexpr?)]

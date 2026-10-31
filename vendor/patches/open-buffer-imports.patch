@@ -1,0 +1,378 @@
+diff --git a/doclib/doc.rkt b/doclib/doc.rkt
+index 142051d..2c57e95 100644
+--- a/doclib/doc.rkt
++++ b/doclib/doc.rkt
+@@ -8,6 +8,7 @@
+ (require "../common/interfaces.rkt"
+          "editor.rkt"
+          "../common/path-util.rkt"
++         "../common/source-snapshot.rkt"
+          "lazy-cache.rkt"
+          "doc-trace.rkt"
+          "check-syntax-compat.rkt"
+@@ -246,6 +247,10 @@
+   (-> Doc? boolean?)
+   (equal? (Doc-version doc) (Doc-trace-version doc)))
+ 
++(define (doc-invalidate-analysis! doc)
++  (set-Doc-trace-version! doc #f)
++  (invalidate-resyntax-results! doc))
++
+ (define/contract (doc-expand! doc)
+   (-> Doc? boolean?)
+   (define result
+@@ -386,7 +391,8 @@
+ (define/contract (doc-get-definition-by-id path submods id)
+   (-> path? (listof symbol?) symbol? (or/c Range? #f))
+   (define doc-text (new lsp-editor%))
+-  (send doc-text load-file path)
++  (define source (source-snapshot-text path))
++  (if source (send doc-text insert source 0) (send doc-text load-file path))
+   (match (get-def path doc-text submods id)
+     [(cons start end)
+      (Range (abs-pos->Pos doc-text start)
+@@ -1243,6 +1249,7 @@
+          doc-expand
+          doc-update-trace!
+          doc-trace-latest?
++         doc-invalidate-analysis!
+          doc-expand!
+          doc-resyntax
+          doc-resyntax!
+diff --git a/lsp/lsp.rkt b/lsp/lsp.rkt
+index 69c9fcb..78f8e47 100644
+--- a/lsp/lsp.rkt
++++ b/lsp/lsp.rkt
+@@ -1,6 +1,11 @@
+ #lang racket/base
+ 
+ (require racket/contract
++         racket/path
++         "../common/path-util.rkt"
++         "../doclib/doc.rkt"
++         "../workspace/current.rkt"
++         "../workspace/state.rkt"
+          "safedoc.rkt"
+          "scheduler.rkt")
+ 
+@@ -41,7 +46,28 @@
+   (for ([safe-doc (in-list (hash-values open-docs))])
+     (proc safe-doc)))
+ 
++;; Freeze all editor text before scheduling any consumer. A dependency edit can
++;; change exports or macro expansion without changing the consumer's version.
++(define (lsp-refresh-analysis! notify-client uri)
++  (define changed (simple-form-path (uri->path uri)))
++  (define documents (hash-values open-docs))
++  (define sources
++    (for/fold ([sources (hash)]) ([sd (in-list documents)])
++      (with-read-doc sd
++        (lambda (doc)
++          (define path (simple-form-path (uri->path (Doc-uri doc))))
++          (hash-set sources path
++                    (and (not (hash-has-key? sources path)) (doc-get-text doc)))))))
++  (define roots
++    (append (workspace-folders current-workspace)
++            (map path-only (hash-keys sources))))
++  (for ([sd (in-list documents)]
++        #:when (or (with-read-doc sd (lambda (doc) (equal? changed (simple-form-path (uri->path (Doc-uri doc))))))
++                   (safedoc-depends-on? sd changed)))
++    (safedoc-run-check-syntax! notify-client sd #:sources sources #:roots roots)))
++
+ (provide lsp-get-doc
+          lsp-open-doc!
+          lsp-close-doc!
++         lsp-refresh-analysis!
+          lsp-for-each-open-doc)
+diff --git a/lsp/methods.rkt b/lsp/methods.rkt
+index ae13745..1ae59a5 100644
+--- a/lsp/methods.rkt
++++ b/lsp/methods.rkt
+@@ -199,7 +199,9 @@
+                                     (send-notification method params))
+                                   params)]
+         ["textDocument/didClose"
+-         (text-document/did-close! params)]
++         (text-document/did-close! params
++                                   (lambda (method params)
++                                     (send-notification method params)))]
+         ["textDocument/didChange"
+          (text-document/did-change! (λ (method params)
+                                       (send-notification method params))
+diff --git a/lsp/safedoc.rkt b/lsp/safedoc.rkt
+index 0297de9..aeb6f23 100644
+--- a/lsp/safedoc.rkt
++++ b/lsp/safedoc.rkt
+@@ -16,6 +16,8 @@
+          "scheduler.rkt"
+          racket/set
+          "../common/json-util.rkt"
++         "../common/path-util.rkt"
++         "../common/source-snapshot.rkt"
+          "../common/settings.rkt"
+          racket/class
+          racket/contract)
+@@ -34,7 +36,7 @@
+ ;; Exported field accessors: SafeDoc-doc, SafeDoc-check-syntax-status.
+ ;; Access fields only inside an eliminator that acquired the lock.
+ (struct SafeDoc
+-  (doc rwlock token check-syntax-status closed?)
++  (doc rwlock token check-syntax-status closed? analysis sources roots dependencies)
+   #:mutable
+   #:transparent)
+ 
+@@ -43,7 +45,7 @@
+   ;; Token identifies this opened document instance in scheduler/query state.
+   (define token (gensym 'doc-token))
+   (scheduler-register-doc! token)
+-  (SafeDoc doc (make-rwlock) token #f #f))
++  (SafeDoc doc (make-rwlock) token #f #f #f (hash) '() #f))
+ 
+ (define (with-read-doc safe-doc proc)
+   (call-with-read-lock
+@@ -55,6 +57,22 @@
+     (SafeDoc-rwlock safe-doc)
+     (λ () (proc (SafeDoc-doc safe-doc)))))
+ 
++(define (with-read-analysis safe-doc proc)
++  (with-read-safedoc safe-doc
++    (lambda (sd)
++      (define doc (SafeDoc-doc sd))
++      (call-with-source-snapshot (uri->path (Doc-uri doc)) (SafeDoc-sources sd)
++        #:source? (lambda (file)
++                    (for/or ([root (in-list (SafeDoc-roots sd))]) (directory-contains? root file)))
++        (lambda () (proc doc))))))
++
++(define (safedoc-depends-on? safe-doc path)
++  (with-read-safedoc safe-doc
++    (lambda (sd)
++      (or (not (SafeDoc-dependencies sd))
++          (safedoc-check-syntax-running? sd)
++          (hash-has-key? (SafeDoc-dependencies sd) path)))))
++
+ (define (with-read-safedoc safe-doc proc)
+   (call-with-read-lock
+     (SafeDoc-rwlock safe-doc)
+@@ -119,7 +137,8 @@
+                    (eq? finished-status (SafeDoc-check-syntax-status sd)))))))
+ 
+ ;; The only place that actually runs check-syntax.
+-(define (safedoc-run-check-syntax! notify-client safe-doc)
++(define (safedoc-run-check-syntax! notify-client safe-doc
++                                  #:sources [sources (hash)] #:roots [roots '()])
+   (define-values (uri working-version text-buffer-copy token)
+     (with-read-safedoc safe-doc
+       (lambda (sd)
+@@ -131,12 +150,16 @@
+ 
+   ;; Identity distinguishes reruns at the same document version.
+   (define running-status (Check-Syntax-Status 'running working-version))
++  (define dependencies (make-hash))
+   (with-current-safedoc safe-doc working-version
+                         (lambda (sd)
++                          (doc-invalidate-analysis! (SafeDoc-doc sd))
++                          (set-SafeDoc-analysis! sd running-status)
+                           (set-SafeDoc-check-syntax-status! sd running-status)))
+ 
+   (define (fail-analysis e)
+-    (publish-analysis! safe-doc running-status 'failed void)
++    (publish-analysis! safe-doc running-status 'failed
++                       (lambda (sd) (set-SafeDoc-dependencies! sd #f)))
+     ((error-display-handler)
+      (if (exn? e) (exn-message e) (format "check-syntax raised: ~e" e)) e))
+ 
+@@ -147,21 +170,26 @@
+   (define (publish-resyntax resyntax-results)
+     (with-current-safedoc safe-doc working-version
+                           (lambda (sd)
+-                            (define doc (SafeDoc-doc sd))
+-                            (doc-update-resyntax-result! doc resyntax-results)
+-                            (send-doc-diagnostics notify-client doc))))
++                            (when (eq? (SafeDoc-analysis sd) running-status)
++                              (define doc (SafeDoc-doc sd))
++                              (doc-update-resyntax-result! doc resyntax-results)
++                              (send-doc-diagnostics notify-client doc)))))
+ 
+   (define (check-syntax-task)
+-    (define text (send text-buffer-copy get-text))
+-    (define lexer-state (build-lexer-state text uri))
+-    (define result (doc-expand uri text-buffer-copy lexer-state))
+-    (define trace (CSResult-trace result))
+-    ;; Contribution derivation reads the candidate trace and frozen text. Keep
+-    ;; it outside the SafeDoc write lock so installation remains a short swap.
+-    (define contribution
+-      (and (CSResult-succeed? result)
+-           (send trace get-contribution)))
+-    (values result contribution (set->list (send trace get-warn-diags))))
++    (call-with-source-snapshot (uri->path uri) sources
++      #:source? (lambda (file) (for/or ([root (in-list roots)]) (directory-contains? root file)))
++      #:on-load (lambda (file) (hash-set! dependencies file #t))
++      (lambda ()
++        (define text (send text-buffer-copy get-text))
++        (define lexer-state (build-lexer-state text uri))
++        (define result (doc-expand uri text-buffer-copy lexer-state))
++        (define trace (CSResult-trace result))
++        ;; Derive contributions outside the document lock; publication only swaps
++        ;; the accepted trace and facts into place.
++        (define contribution
++          (and (CSResult-succeed? result)
++               (send trace get-contribution)))
++        (values result contribution (set->list (send trace get-warn-diags))))))
+ 
+   (define (publish-check-syntax result contribution diags)
+     (define trace (CSResult-trace result))
+@@ -169,9 +197,12 @@
+                        (if (CSResult-succeed? result) 'succeeded 'failed)
+                        (lambda (sd)
+                          (define doc (SafeDoc-doc sd))
++                         (set-SafeDoc-dependencies! sd (make-immutable-hash (hash->list dependencies)))
+                          (send-diagnostics notify-client uri diags)
+ 
+                          (when (CSResult-succeed? result)
++                           (set-SafeDoc-sources! sd sources)
++                           (set-SafeDoc-roots! sd roots)
+                            (doc-update-trace! doc trace contribution working-version)
+                            (workspace-set-contribution! current-workspace contribution)
+                            (when (and (get-resyntax-enabled) (resyntax-available?))
+@@ -192,6 +223,8 @@
+          safedoc-run-check-syntax!
+          safedoc-check-syntax-running?
+          with-read-doc
++         with-read-analysis
++         safedoc-depends-on?
+          with-write-doc
+          with-read-safedoc
+          with-write-safedoc)
+diff --git a/lsp/text-document.rkt b/lsp/text-document.rkt
+index cf63ddf..c86ef0f 100644
+--- a/lsp/text-document.rkt
++++ b/lsp/text-document.rkt
+@@ -31,11 +31,12 @@
+   (match-define (hash-table ['textDocument (^DocItem #:uri uri #:version version #:text text)]) params)
+   (fetch-configuration request-client uri)
+   (define safe-doc (lsp-open-doc! uri text version))
+-  (safedoc-run-check-syntax! notify-client safe-doc))
++  (lsp-refresh-analysis! notify-client uri))
+ 
+-(define (did-close! params)
++(define (did-close! params [notify-client void])
+   (match-define (hash-table ['textDocument (DocItem-js #:uri uri)]) params)
+-  (lsp-close-doc! uri))
++  (lsp-close-doc! uri)
++  (lsp-refresh-analysis! notify-client uri))
+ 
+ (define (did-change! notify-client params)
+   (match-define (hash-table ['textDocument (^DocIdentifier #:version version #:uri uri)]
+@@ -60,7 +61,7 @@
+ 
+       (doc-update-version! doc version)))
+ 
+-  (safedoc-run-check-syntax! notify-client safe-doc))
++  (lsp-refresh-analysis! notify-client uri))
+ 
+ ;; Hover request
+ ;; Returns an object conforming to the Hover interface, to
+@@ -135,7 +136,7 @@
+                  ['position (as-Pos pos)])
+      (define safe-doc (lsp-get-doc uri))
+      (define result
+-       (with-read-doc safe-doc
++       (with-read-analysis safe-doc
+          (λ (doc) (doc-definition doc uri pos))))
+      (success/enc id result)]
+     [_
+@@ -388,7 +389,7 @@
+   did-open!
+   did-change!
+   (contract-out
+-    [did-close! (jsexpr? . -> . void?)]
++    [did-close! (->* (jsexpr?) ((-> string? jsexpr? void?)) void?)]
+     [hover (exact-nonnegative-integer? jsexpr? . -> . jsexpr?)]
+     [code-action (exact-nonnegative-integer? jsexpr? . -> . jsexpr?)]
+     [completion (exact-nonnegative-integer? jsexpr? . -> . jsexpr?)]
+diff --git a/workspace/state.rkt b/workspace/state.rkt
+index f2469eb..4c04e67 100644
+--- a/workspace/state.rkt
++++ b/workspace/state.rkt
+@@ -12,6 +12,7 @@
+          workspace-add-folder!
+          workspace-remove-folder!
+          workspace-contains?
++         workspace-folders
+          workspace-set-contribution!
+          workspace-remove-path!
+          workspace-reference-sources
+@@ -67,6 +68,10 @@
+     (lambda ()
+       (folders-contain-path? (Workspace-folders workspace) path))))
+ 
++(define (workspace-folders workspace)
++  (call-with-semaphore (Workspace-lock workspace)
++    (lambda () (set->list (Workspace-folders workspace)))))
++
+ (define/contract (workspace-set-contribution! workspace contribution)
+   (-> Workspace? Doc-Contribution? void?)
+   (define path (Doc-Contribution-path contribution))
+diff --git a/common/source-snapshot.rkt b/common/source-snapshot.rkt
+new file mode 100644
+index 0000000..987b357
+--- /dev/null
++++ b/common/source-snapshot.rkt
+@@ -0,0 +1,57 @@
++#lang racket/base
++
++(require racket/path
++         syntax/modcode)
++
++(provide call-with-source-snapshot source-snapshot-text)
++
++(define current-sources (make-parameter (hash)))
++(define (source-snapshot-text path)
++  (define full (simple-form-path path))
++  (define text (hash-ref (current-sources) full #f))
++  (when (and (not text) (hash-has-key? (current-sources) full))
++    (error 'source-snapshot "conflicting buffers for ~a" full))
++  text)
++
++;; Loading is scoped to one analysis. Project dependencies are read from source
++;; so compiled intermediates cannot retain an older macro expansion. Libraries
++;; outside that scope keep their ordinary compiled loading policy.
++(define (call-with-source-snapshot path sources proc
++                                   #:source? [source? (lambda (_) #f)]
++                                   #:on-load [on-load void])
++  (define ordinary-load (current-load/use-compiled))
++  (define ordinary-open (moddep-current-open-input-file))
++  (define (load-snapshot file expected)
++    (define requested (simple-form-path file))
++    (define legacy (path-replace-extension requested #".ss"))
++    (define full
++      (if (and expected (equal? (path-get-extension requested) #".rkt")
++               (not (hash-has-key? sources requested)) (not (file-exists? requested))
++               (or (hash-has-key? sources legacy) (file-exists? legacy)))
++          legacy requested))
++    (when expected (on-load full))
++    (cond
++      [(and expected (or (hash-has-key? sources full) (and (file-exists? full) (source? full))))
++       ;; A #f-headed request permits independent compiled loading only. Let
++       ;; the resolver request the enclosing source module instead.
++       (unless (and (pair? expected) (not (car expected)))
++         (parameterize ([current-load-relative-directory (path-only full)]
++                        [current-module-declare-source full])
++           (get-module-code full #:sub-path '() #:rkt-try-ss? #f
++                            #:choose (lambda _ 'src) #:compile eval)))]
++      [else (ordinary-load file expected)]))
++  (parameterize ([current-namespace (make-base-namespace)]
++                 [current-sources sources]
++                 [current-directory (path-only path)]
++                 [current-load-relative-directory (path-only path)]
++                 [current-load/use-compiled load-snapshot]
++                 [moddep-current-open-input-file
++                  (lambda (file)
++                    (define full (simple-form-path file))
++                    (cond
++                      [(hash-has-key? sources full)
++                       (define text (hash-ref sources full))
++                       (unless text (error 'source-snapshot "conflicting buffers for ~a" full))
++                       (open-input-string text full)]
++                      [else (ordinary-open file)]))])
++    (proc)))

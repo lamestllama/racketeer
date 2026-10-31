@@ -7,6 +7,7 @@
          racket/class
          racket/async-channel
          racket/path
+         "../common/debug.rkt"
          "../common/interfaces.rkt"
          "../common/json-util.rkt"
          "responses.rkt"
@@ -171,7 +172,7 @@
           ["textDocument/semanticTokens/range"
            (text-document/range-semantic-tokens id params)]
           [_
-           (eprintf "invalid request for method ~v\n" method)
+           (log-racket-langserver-error "invalid request for method ~v" method)
            (define err (format "The method ~v was not found" method))
            (error-response id ErrorCode-MethodNotFound err)])))
 
@@ -184,7 +185,8 @@
         ["workspace/didRenameFiles"
          (workspace/didRenameFiles params)]
         ["workspace/didChangeWorkspaceFolders"
-         (workspace/didChangeWorkspaceFolders params)]
+         (workspace/didChangeWorkspaceFolders params
+           (lambda (method params) (send-notification method params)))]
         ["workspace/didChangeWatchedFiles"
          (workspace/didChangeWatchedFiles params)]
         ["workspace/didChangeConfiguration"
@@ -198,7 +200,9 @@
                                     (send-notification method params))
                                   params)]
         ["textDocument/didClose"
-         (text-document/did-close! params)]
+         (text-document/did-close! params
+                                   (lambda (method params)
+                                     (send-notification method params)))]
         ["textDocument/didChange"
          (text-document/did-change! (λ (method params)
                                       (send-notification method params))
@@ -207,7 +211,7 @@
     ))
 
 (define ((report-request-error id method) exn)
-  (eprintf "Caught exn in request ~v\n~a\n" method (exn->string exn))
+  (log-racket-langserver-error "Caught exn in request ~v\n~a" method (exn->string exn))
   (define err (format "internal error in method ~v" method))
   (error-response id ErrorCode-InternalError err))
 
@@ -252,6 +256,9 @@
      ;; If both `rootPath` and `rootUri` are set, then `rootUri` wins.
      ;; null is there are no folder is open.
      (cond
+       [(list? (hash-ref params 'workspaceFolders #f))
+        (for ([folder (in-list (hash-ref params 'workspaceFolders))])
+          (workspace-add-folder! current-workspace (uri->path (hash-ref folder 'uri))))]
        [(not (equal? root-uri (json-null)))
         (workspace-add-folder! current-workspace (uri->path root-uri))]
        [(not (equal? root-path (json-null)))
@@ -296,4 +303,3 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (provide server%)
-

@@ -51,7 +51,8 @@
     (if (= line prev-line)
         (- char prev-char)
         char))
-  (define len (- (SemanticToken-end token) (SemanticToken-start token)))
+  (define end (abs-pos->pos (SemanticToken-end token)))
+  (define len (- (Pos-char end) char))
   (define type (token-type-encoding token))
   (define modifier (token-modifier-encoding token))
   (values delta-line delta-start len type modifier))
@@ -70,4 +71,3 @@
             (SemanticToken-start token))))
 
 (provide encode-semantic-tokens)
-

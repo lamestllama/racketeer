@@ -9,18 +9,19 @@
          uri->path
          directory-contains?)
 
-(require net/url
+(require "source-document.rkt"
+         net/url
          racket/contract
          racket/list
          racket/path)
 
 (define/contract (path->uri path)
   (-> path? string?)
-  (url->string (path->url path)))
+  (or (source-document-uri (simple-form-path path)) (url->string (path->url path))))
 
 (define/contract (uri->path uri)
   (-> string? path?)
-  (url->path (string->url uri)))
+  (or (source-document-path uri) (url->path (string->url uri))))
 
 (define/contract (directory-contains? dir filepath)
   (-> path-string? path-string? boolean?)

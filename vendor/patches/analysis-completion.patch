@@ -1,0 +1,806 @@
+diff --git a/lsp/lsp.rkt b/lsp/lsp.rkt
+index 93d7f3f..69c9fcb 100644
+--- a/lsp/lsp.rkt
++++ b/lsp/lsp.rkt
+@@ -30,6 +30,7 @@
+   (when safe-doc
+     (define token (SafeDoc-token safe-doc))
+     (scheduler-close-doc! token)
++    (safedoc-close! safe-doc)
+     (clear-old-queries/doc-close token))
+   (hash-remove! open-docs uri-sym))
+ 
+diff --git a/lsp/safedoc.rkt b/lsp/safedoc.rkt
+index f32bec5..0297de9 100644
+--- a/lsp/safedoc.rkt
++++ b/lsp/safedoc.rkt
+@@ -34,7 +34,7 @@
+ ;; Exported field accessors: SafeDoc-doc, SafeDoc-check-syntax-status.
+ ;; Access fields only inside an eliminator that acquired the lock.
+ (struct SafeDoc
+-  (doc rwlock token check-syntax-status)
++  (doc rwlock token check-syntax-status closed?)
+   #:mutable
+   #:transparent)
+ 
+@@ -43,7 +43,7 @@
+   ;; Token identifies this opened document instance in scheduler/query state.
+   (define token (gensym 'doc-token))
+   (scheduler-register-doc! token)
+-  (SafeDoc doc (make-rwlock) token #f))
++  (SafeDoc doc (make-rwlock) token #f #f))
+ 
+ (define (with-read-doc safe-doc proc)
+   (call-with-read-lock
+@@ -65,6 +65,20 @@
+     (SafeDoc-rwlock safe-doc)
+     (λ () (proc safe-doc))))
+ 
++;; Retirement and publication use the same lock, so work from a closed
++;; document cannot restore diagnostics or workspace contributions.
++(define (safedoc-close! safe-doc)
++  (with-write-safedoc safe-doc
++    (lambda (sd)
++      (set-SafeDoc-closed?! sd #t))))
++
++(define (with-current-safedoc safe-doc version proc)
++  (with-write-safedoc safe-doc
++    (lambda (sd)
++      (and (not (SafeDoc-closed? sd))
++           (equal? version (Doc-version (SafeDoc-doc sd)))
++           (begin (proc sd) #t)))))
++
+ (define (safedoc-check-syntax-running? sd)
+   (define doc (SafeDoc-doc sd))
+   (define status (SafeDoc-check-syntax-status sd))
+@@ -86,6 +100,24 @@
+                     (Doc-uri doc)
+                     (doc-diagnostics doc)))
+ 
++;; Success and failure share the same retirement and replacement guards.
++(define (publish-analysis! safe-doc running-status state update)
++  (define version (Check-Syntax-Status-version running-status))
++  (define finished-status (Check-Syntax-Status state version))
++  (with-current-safedoc safe-doc version
++                        (lambda (sd)
++                          (when (eq? running-status (SafeDoc-check-syntax-status sd))
++                            (update sd)
++                            (set-SafeDoc-check-syntax-status! sd finished-status))))
++  ;; Query callbacks acquire document read locks. Check this run's identity
++  ;; under the query semaphore, after releasing the document write lock.
++  (clear-old-queries/check-syntax-finished
++    (SafeDoc-token safe-doc)
++    #:ready? (lambda ()
++               (with-read-safedoc safe-doc
++                 (lambda (sd)
++                   (eq? finished-status (SafeDoc-check-syntax-status sd)))))))
++
+ ;; The only place that actually runs check-syntax.
+ (define (safedoc-run-check-syntax! notify-client safe-doc)
+   (define-values (uri working-version text-buffer-copy token)
+@@ -97,22 +129,27 @@
+                 (doc-copy-text-buffer doc)
+                 (SafeDoc-token sd)))))
+ 
+-  (with-write-safedoc safe-doc
+-    (lambda (sd)
+-      (define doc (SafeDoc-doc sd))
+-      (when (equal? working-version (Doc-version doc))
+-        (set-SafeDoc-check-syntax-status!
+-          sd
+-          (Check-Syntax-Status 'running working-version)))))
++  ;; Identity distinguishes reruns at the same document version.
++  (define running-status (Check-Syntax-Status 'running working-version))
++  (with-current-safedoc safe-doc working-version
++                        (lambda (sd)
++                          (set-SafeDoc-check-syntax-status! sd running-status)))
++
++  (define (fail-analysis e)
++    (publish-analysis! safe-doc running-status 'failed void)
++    ((error-display-handler)
++     (if (exn? e) (exn-message e) (format "check-syntax raised: ~e" e)) e))
+ 
+   (define (resyntax-task)
+     (define text (send text-buffer-copy get-text))
+-    (define resyntax-results (run-resyntax/in-place text uri))
+-    (with-write-doc safe-doc
+-      (lambda (doc)
+-        (when (equal? working-version (Doc-version doc))
+-          (doc-update-resyntax-result! doc resyntax-results)
+-          (send-doc-diagnostics notify-client doc)))))
++    (run-resyntax/in-place text uri))
++
++  (define (publish-resyntax resyntax-results)
++    (with-current-safedoc safe-doc working-version
++                          (lambda (sd)
++                            (define doc (SafeDoc-doc sd))
++                            (doc-update-resyntax-result! doc resyntax-results)
++                            (send-doc-diagnostics notify-client doc))))
+ 
+   (define (check-syntax-task)
+     (define text (send text-buffer-copy get-text))
+@@ -124,32 +161,26 @@
+     (define contribution
+       (and (CSResult-succeed? result)
+            (send trace get-contribution)))
++    (values result contribution (set->list (send trace get-warn-diags))))
+ 
+-    (with-write-safedoc safe-doc
+-      (lambda (sd)
+-        (define doc (SafeDoc-doc sd))
+-        (define cur-version (Doc-version doc))
+-        (define diags (set->list (send trace get-warn-diags)))
+-        (send-diagnostics notify-client uri diags)
+-
+-        (when (and (CSResult-succeed? result)
+-                   (equal? working-version cur-version))
+-          (doc-update-trace! doc trace contribution cur-version)
+-          (workspace-set-contribution! current-workspace contribution)
+-          (when (and (get-resyntax-enabled) (resyntax-available?))
+-            (scheduler-push-task! token 'resyntax resyntax-task)))
+-        (when (equal? working-version (Doc-version doc))
+-          (set-SafeDoc-check-syntax-status!
+-            sd
+-            (Check-Syntax-Status
+-              (if (CSResult-succeed? result)
+-                  'succeeded
+-                  'failed)
+-              working-version)))))
+-    (clear-old-queries/check-syntax-finished token))
++  (define (publish-check-syntax result contribution diags)
++    (define trace (CSResult-trace result))
++    (publish-analysis! safe-doc running-status
++                       (if (CSResult-succeed? result) 'succeeded 'failed)
++                       (lambda (sd)
++                         (define doc (SafeDoc-doc sd))
++                         (send-diagnostics notify-client uri diags)
++
++                         (when (CSResult-succeed? result)
++                           (doc-update-trace! doc trace contribution working-version)
++                           (workspace-set-contribution! current-workspace contribution)
++                           (when (and (get-resyntax-enabled) (resyntax-available?))
++                             (scheduler-push-task! token 'resyntax resyntax-task
++                                                   #:publish publish-resyntax))))))
+ 
+   (scheduler-stop-all-tasks! token)
+-  (scheduler-push-task! token 'check-syntax check-syntax-task))
++  (scheduler-push-task! token 'check-syntax check-syntax-task
++                        #:publish publish-check-syntax #:fail fail-analysis))
+ 
+ (provide SafeDoc-token
+          SafeDoc?
+@@ -157,10 +188,10 @@
+          SafeDoc-check-syntax-status
+          (struct-out Check-Syntax-Status)
+          new-safedoc
++         safedoc-close!
+          safedoc-run-check-syntax!
+          safedoc-check-syntax-running?
+          with-read-doc
+          with-write-doc
+          with-read-safedoc
+          with-write-safedoc)
+-
+diff --git a/lsp/scheduler.rkt b/lsp/scheduler.rkt
+index 9b1fbee..d7d28fe 100644
+--- a/lsp/scheduler.rkt
++++ b/lsp/scheduler.rkt
+@@ -7,7 +7,7 @@
+          racket/sandbox)
+ 
+ (struct PushTask
+-  (token type task)
++  (token type task publish fail)
+   #:transparent)
+ 
+ (struct RegisterToken
+@@ -22,13 +22,21 @@
+   (token)
+   #:transparent)
+ 
+-(define (handle-timeout-or-break time-sec task)
++(define (handle-timeout-or-break time-sec task publish [fail #f])
+   (λ ()
+-    ;; The scheduler predates request dispatch and needs its own stdout scope.
+     (parameterize ([current-output-port (open-output-nowhere)])
+-      (with-handlers ([exn:break? (λ (_e) (void))]
+-                      [exn:fail:resource? (λ (_e) (void))])
+-        (with-limits time-sec #f (task))))))
++      (with-handlers ([exn:break? (λ (_e) (void))])
++        ;; Failure completion must remain cancellable, just like publication.
++        (with-handlers* ([(lambda (e) (not (exn:break? e)))
++                          (lambda (e)
++                            (cond
++                              [fail (fail e)]
++                              [(not (exn:fail:resource? e)) (raise e)]))])
++          ;; Publication runs outside the hard timeout: killing its custodian while
++          ;; it holds a document lock would strand that lock.
++          (call-with-values
++            (lambda () (with-limits time-sec #f (task)))
++            publish))))))
+ 
+ ;; Scheduler
+ 
+@@ -50,13 +58,13 @@
+       (break-running-thread! th))
+     (hash-remove! token->tasks token)))
+ 
+-(define (handle-push-task! token->tasks active-tokens token type task)
++(define (handle-push-task! token->tasks active-tokens token type task publish fail)
+   (when (set-member? active-tokens token)
+     (define doc (hash-ref! token->tasks token make-hash))
+     (when (hash-has-key? doc type)
+       (break-running-thread! (hash-ref doc type)))
+     ;; Each scheduled task is bounded to avoid zombie long-running jobs.
+-    (define handled-task (handle-timeout-or-break 90 task))
++    (define handled-task (handle-timeout-or-break 90 task publish fail))
+     (hash-set! doc type (thread handled-task))))
+ 
+ ;; new incoming task will replace the old task immediately
+@@ -67,8 +75,8 @@
+   (let loop ()
+     (define job (async-channel-get incoming-jobs-ch))
+     (match job
+-      [(PushTask token type task)
+-       (handle-push-task! token->tasks active-tokens token type task)]
++      [(PushTask token type task publish fail)
++       (handle-push-task! token->tasks active-tokens token type task publish fail)]
+       [(RegisterToken token)
+        (cancel-tasks! token->tasks token)
+        (set-add! active-tokens token)]
+@@ -91,14 +99,17 @@
+   ;; Stop all running tasks for this token, but keep token active for future tasks.
+   (async-channel-put incoming-jobs-ch (StopTokenTasks token)))
+ 
+-(define (scheduler-push-task! token type task)
+-  (async-channel-put incoming-jobs-ch (PushTask token type task)))
++(define (scheduler-push-task! token type task #:publish [publish void] #:fail [fail #f])
++  (async-channel-put incoming-jobs-ch (PushTask token type task publish fail)))
+ 
+ (provide scheduler-register-doc!
+          scheduler-close-doc!
+          scheduler-stop-all-tasks!
+          scheduler-push-task!)
+ 
++(module+ test-support
++  (provide handle-timeout-or-break))
++
+ ;; schedule queries
+ 
+ ;; All awaiting queries are run before next document change
+@@ -131,15 +142,19 @@
+     (async-channel-put ch (task signal)))
+   (hash-remove! *await-queries* token))
+ 
+-(define (async-query-wait token task)
++(define (async-query-wait token task #:ready? [ready? (lambda () #f)])
+   (define query-ch (make-async-channel))
+   (call-with-semaphore
+     *await-queries-semaphore*
+     (λ ()
+-      (hash-update! *await-queries*
+-                    token
+-                    (λ (old) (cons (list task query-ch) old))
+-                    '())))
++      ;; Completion and registration share this semaphore. Recheck after the
++      ;; caller's document read so an already-finished run cannot lose a waiter.
++      (if (ready?)
++          (async-channel-put query-ch (task *check-syntax-finished-signal*))
++          (hash-update! *await-queries*
++                        token
++                        (λ (old) (cons (list task query-ch) old))
++                        '()))))
+ 
+   (λ () (sync query-ch)))
+ 
+@@ -153,11 +168,12 @@
+ 
+ ;; Send check-syntax completion signal and wait for all waiting queries to be
+ ;; processed.
+-(define (clear-old-queries/check-syntax-finished token)
++(define (clear-old-queries/check-syntax-finished token #:ready? [ready? (lambda () #t)])
+   (call-with-semaphore
+     *await-queries-semaphore*
+     (λ ()
+-      (run-and-remove-queries token *check-syntax-finished-signal*))))
++      (when (ready?)
++        (run-and-remove-queries token *check-syntax-finished-signal*)))))
+ 
+ ;; send doc close signal so waiting query threads can finish and release any
+ ;; document state they captured.
+diff --git a/lsp/text-document.rkt b/lsp/text-document.rkt
+index 9689ad5..cf63ddf 100644
+--- a/lsp/text-document.rkt
++++ b/lsp/text-document.rkt
+@@ -249,7 +249,11 @@
+ 
+      (if hints
+          (success/enc id hints)
+-         (async-query-wait (SafeDoc-token safe-doc) respond-to-signal))]
++         (async-query-wait
++           (SafeDoc-token safe-doc) respond-to-signal
++           #:ready? (lambda ()
++                      (with-read-safedoc safe-doc
++                        (lambda (sd) (not (safedoc-check-syntax-running? sd)))))))]
+     [_ (error-response id ErrorCode-InvalidParams "textDocument/inlayHint failed")]))
+ 
+ ;; Full document formatting request
+@@ -372,7 +376,11 @@
+ 
+   (if tokens
+       (success/enc id (hash 'data tokens))
+-      (async-query-wait (SafeDoc-token safe-doc) respond-to-signal)))
++      (async-query-wait
++        (SafeDoc-token safe-doc) respond-to-signal
++        #:ready? (lambda ()
++                   (with-read-safedoc safe-doc
++                     (lambda (sd) (not (safedoc-check-syntax-running? sd))))))))
+ 
+ ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+ 
+diff --git a/tests/lib/scheduler-test.rkt b/tests/lib/scheduler-test.rkt
+index 42b42df..45e45a4 100644
+--- a/tests/lib/scheduler-test.rkt
++++ b/tests/lib/scheduler-test.rkt
+@@ -2,7 +2,159 @@
+ 
+ (module+ test
+   (require rackunit
+-           "../../lsp/scheduler.rkt")
++           racket/sandbox
++           "../../lsp/scheduler.rkt"
++           (submod "../../lsp/scheduler.rkt" test-support)
++           "../../common/rwlock.rkt")
++
++  (test-case
++    "a computation timeout cannot publish partial results"
++    (define entered (make-semaphore))
++    (define published? #f)
++    (define worker
++      (thread
++        (handle-timeout-or-break
++          0.1
++          (lambda ()
++            (semaphore-post entered)
++            (sync never-evt))
++          (lambda _results (set! published? #t)))))
++    (check-not-false (sync/timeout 5 entered))
++    (check-eq? (sync/timeout 5 worker) worker)
++    (check-false published?))
++
++  (test-case
++    "publication is outside the hard timeout and releases its lock after cancellation"
++    (define custodian (make-custodian))
++    (dynamic-wind
++      void
++      (lambda ()
++        (parameterize ([current-custodian custodian])
++          (define lock (make-rwlock))
++          (define entered (make-semaphore))
++          (define release (make-semaphore))
++          (define worker
++            (thread
++              (handle-timeout-or-break
++                0.1
++                (lambda () (values 'result 'contribution))
++                (lambda (result contribution)
++                  (call-with-write-lock lock
++                    (lambda ()
++                      (check-eq? result 'result)
++                      (check-eq? contribution 'contribution)
++                      (semaphore-post entered)
++                      (semaphore-wait release)))))))
++          (check-not-false (sync/timeout 5 entered))
++          ;; Longer than the private computation limit: the publisher survives.
++          (check-false (sync/timeout 0.3 worker))
++          (break-thread worker)
++          (semaphore-post release)
++          (check-eq? (sync/timeout 5 worker) worker)
++          (define reader (thread (lambda () (call-with-read-lock lock void))))
++          (check-eq? (sync/timeout 5 reader) reader)))
++      (lambda () (custodian-shutdown-all custodian))))
++
++  (test-case
++    "failed computations report exceptions and arbitrary raised values"
++    (for ([failure (list (exn:fail "analysis error" (current-continuation-marks)) 'analysis-error)])
++      (define received #f)
++      (define published? #f)
++      ((handle-timeout-or-break
++         1 (lambda () (raise failure))
++         (lambda _ (set! published? #t))
++         (lambda (e) (set! received e))))
++      (check-eq? received failure)
++      (check-false published?)))
++
++  (test-case
++    "timeout failure publication survives the computation time limit"
++    (define entered (make-semaphore))
++    (define release (make-semaphore))
++    (define received #f)
++    (define worker
++      (thread
++        (handle-timeout-or-break
++          0.1 (lambda () (sync never-evt))
++          (lambda _ (fail "timed-out computation was published"))
++          (lambda (e)
++            (set! received e)
++            (semaphore-post entered)
++            (semaphore-wait release)))))
++    (dynamic-wind
++      void
++      (lambda ()
++        (check-not-false (sync/timeout 5 entered))
++        (check-true (exn:fail:resource? received))
++        (check-false (sync/timeout 0.2 worker))
++        (semaphore-post release)
++        (check-eq? (sync/timeout 5 worker) worker))
++      (lambda () (semaphore-post release) (sync/timeout 5 worker))))
++
++  (test-case
++    "cancelling a computation does not report failure or completion"
++    (define entered (make-semaphore))
++    (define called? #f)
++    (define worker
++      (thread
++        (handle-timeout-or-break
++          5 (lambda () (semaphore-post entered) (sync never-evt))
++          (lambda _ (set! called? #t))
++          (lambda (_e) (set! called? #t)))))
++    (check-not-false (sync/timeout 5 entered))
++    (break-thread worker)
++    (check-eq? (sync/timeout 5 worker) worker)
++    (check-false called?))
++
++  (test-case
++    "cancelling failure completion releases a document read lock"
++    (define lock (make-rwlock))
++    (define entered (make-semaphore))
++    (define release (make-semaphore))
++    (define worker
++      (thread
++        (handle-timeout-or-break
++          1 (lambda () (error 'test "analysis failed")) void
++          (lambda (_e)
++            (call-with-read-lock lock
++              (lambda ()
++                (semaphore-post entered)
++                (semaphore-wait release)))))))
++    (dynamic-wind
++      void
++      (lambda ()
++        (check-not-false (sync/timeout 5 entered))
++        (break-thread worker)
++        (check-eq? (sync/timeout 2 worker) worker
++                   "cancellation must finish before the read gate is released")
++        (define writer (thread (lambda () (call-with-write-lock lock void))))
++        (check-eq? (sync/timeout 2 writer) writer))
++      (lambda () (semaphore-post release) (sync/timeout 5 worker))))
++
++  (test-case
++    "a query registered after completion is answered immediately"
++    (define token (gensym 'completed-doc))
++    (clear-old-queries/check-syntax-finished token)
++    (define response
++      (async-query-wait token signal-check-syntax-finished? #:ready? (lambda () #t)))
++    (define result (make-channel))
++    (define waiter (thread (lambda () (channel-put result (response)))))
++    (dynamic-wind
++      void
++      (lambda () (check-true (sync/timeout 2 result)))
++      (lambda () (clear-old-queries/doc-close token) (kill-thread waiter))))
++
++  (test-case
++    "a superseded completion leaves a newer run's query queued"
++    (define token (gensym 'superseded-doc))
++    (define observed #f)
++    (define response
++      (async-query-wait token (lambda (signal) (set! observed signal) signal)))
++    (clear-old-queries/check-syntax-finished token #:ready? (lambda () #f))
++    (check-false observed)
++    (clear-old-queries/check-syntax-finished token #:ready? (lambda () #t))
++    (check-true (signal-check-syntax-finished? observed))
++    (check-eq? (response) observed))
+ 
+   (test-case
+     "clear-old-queries/check-syntax-finished releases waiting queries"
+diff --git a/tests/lsp/analysis-failure-test.rkt b/tests/lsp/analysis-failure-test.rkt
+new file mode 100644
+index 0000000..870c583
+--- /dev/null
++++ b/tests/lsp/analysis-failure-test.rkt
+@@ -0,0 +1,87 @@
++#lang racket/base
++
++(require rackunit
++         racket/async-channel
++         racket/file
++         "../../common/path-util.rkt"
++         "../../common/settings.rkt"
++         "../../doclib/doc.rkt"
++         "../../lsp/lsp.rkt"
++         "../../lsp/safedoc.rkt"
++         "../../lsp/text-document.rkt"
++         "analysis-test-support.rkt")
++
++(define source "#lang racket/base\n(require racket/list)\nfirst\n")
++(define analysis-started
++  (make-log-receiver (current-logger) 'info 'analysis-failure-test))
++(define (failure-source mode)
++  (string-append
++    source
++    "(require (for-syntax racket/base))\n"
++    "(begin-for-syntax\n"
++    "  (define release (make-semaphore))\n"
++    "  (log-message (current-logger) 'info 'analysis-failure-test \"started\" release)\n"
++    "  (semaphore-wait release)\n"
++    (if (eq? mode 'raised-value) "  (raise 'analysis-failure))\n" ")\n")))
++
++(module+ test
++  (for ([mode '(raised-value publication-error)])
++    (test-case
++      (format "analysis ~a releases requests and retains accepted facts" mode)
++      (define directory (make-temporary-file "analysis-failure~a" 'directory))
++      (define path (build-path directory "source.rkt"))
++      (define uri (path->uri path))
++      (define enabled (get-resyntax-enabled))
++      (define waiters '())
++      (define release #f)
++      (dynamic-wind
++        void
++        (lambda ()
++          (set-resyntax-enabled! #f)
++          (display-to-file source path)
++          (define sd (lsp-open-doc! uri source 2))
++          (analyze! sd)
++          (define accepted (with-read-doc sd Doc-contribution))
++          (with-write-doc sd
++            (lambda (doc)
++              (doc-reset! doc (failure-source mode))
++              (doc-update-version! doc 3)))
++          ;; Hold expansion at the fixture's semaphore until both requests are
++          ;; registered, without suspending the scheduler's async-channel wait.
++          (safedoc-run-check-syntax!
++            (if (eq? mode 'publication-error)
++                (lambda (_method _params) (error 'test "diagnostic delivery failed"))
++                void)
++            sd)
++          (define started (sync/timeout 20 analysis-started))
++          (check-not-false started "analysis reached the expansion gate")
++          (set! release (vector-ref started 2))
++          (define responses (make-async-channel))
++          (define replies
++            (list
++              (full-semantic-tokens 1 (hasheq 'textDocument (hasheq 'uri uri)))
++              (inlay-hint 2
++                          (hasheq 'textDocument (hasheq 'uri uri)
++                                  'range (hasheq 'start (hasheq 'line 0 'character 0)
++                                                 'end (hasheq 'line 1 'character 0))))))
++          (for ([reply (in-list replies)])
++            (check-true (procedure? reply))
++            (set! waiters
++                  (cons (thread (lambda () (async-channel-put responses (reply)))) waiters)))
++          (semaphore-post release)
++          (for ([_ (in-list replies)])
++            (define reply (sync/timeout 20 responses))
++            (check-true (hash? reply) "analysis failure releases the pending request")
++            (check-true (hash-has-key? reply 'result)))
++          (check-eq? (Check-Syntax-Status-state
++                       (with-read-safedoc sd SafeDoc-check-syntax-status))
++                     'failed)
++          (check-eq? (with-read-doc sd Doc-contribution) accepted)
++          (check-false (procedure?
++                         (full-semantic-tokens 3 (hasheq 'textDocument (hasheq 'uri uri))))))
++        (lambda ()
++          (when release (semaphore-post release))
++          (lsp-close-doc! uri)
++          (for ([waiter (in-list waiters)]) (sync/timeout 5 waiter))
++          (set-resyntax-enabled! enabled)
++          (delete-directory/files directory))))))
+diff --git a/tests/lsp/analysis-publication-test.rkt b/tests/lsp/analysis-publication-test.rkt
+new file mode 100644
+index 0000000..9bacbe8
+--- /dev/null
++++ b/tests/lsp/analysis-publication-test.rkt
+@@ -0,0 +1,175 @@
++#lang racket/base
++
++(require rackunit
++         racket/async-channel
++         racket/file
++         "../../common/path-util.rkt"
++         "../../lsp/lsp.rkt"
++         "../../lsp/safedoc.rkt"
++         "../../lsp/scheduler.rkt"
++         (submod "../../lsp/scheduler.rkt" test-support)
++         "../../lsp/text-document.rkt")
++
++(require/expose "../../lsp/safedoc.rkt" (publish-analysis!))
++(require/expose "../../lsp/scheduler.rkt" (_scheduler *await-queries-semaphore*))
++
++(define scheduler-custodian (current-custodian))
++(define (suspend-scheduler!)
++  (parameterize ([current-custodian scheduler-custodian])
++    (thread-suspend _scheduler)))
++
++(define (with-suspended-document proc)
++  (define path (make-temporary-file "analysis-publication~a.rkt"))
++  (define uri (path->uri path))
++  (dynamic-wind
++    (lambda () (suspend-scheduler!))
++    (lambda () (proc (lsp-open-doc! uri "#lang racket/base\n(define x 1)\n" 1) uri))
++    (lambda ()
++      (lsp-close-doc! uri)
++      (thread-resume _scheduler)
++      (delete-file path))))
++
++(define (start! sd)
++  (safedoc-run-check-syntax! void sd)
++  (with-read-safedoc sd SafeDoc-check-syntax-status))
++
++(module+ test
++  (test-case
++    "superseded same-version success and failure cannot release newer waiters"
++    (with-suspended-document
++      (lambda (sd _uri)
++        (define old (start! sd))
++        (define current (start! sd))
++        (check-false (eq? old current))
++        (define observed #f)
++        (define response
++          (async-query-wait (SafeDoc-token sd)
++                            (lambda (signal) (set! observed signal) signal)))
++        (for ([state '(succeeded failed)])
++          (publish-analysis! sd old state
++                             (lambda (_sd) (fail "superseded analysis updated the document")))
++          (check-eq? (with-read-safedoc sd SafeDoc-check-syntax-status) current)
++          (check-false observed))
++        (publish-analysis! sd current 'failed void)
++        (check-true (signal-check-syntax-finished? observed))
++        (check-eq? (response) observed))))
++
++  (test-case
++    "an accepted completion cannot drain a replacement run's newer query"
++    (with-suspended-document
++      (lambda (sd _uri)
++        (define old (start! sd))
++        (define gate-held? #f)
++        (define completer #f)
++        (dynamic-wind
++          void
++          (lambda ()
++            (semaphore-wait *await-queries-semaphore*)
++            (set! gate-held? #t)
++            (set! completer (thread (lambda () (publish-analysis! sd old 'succeeded void))))
++            (check-not-false (sync/timeout 5 (system-idle-evt)))
++            (check-eq? (Check-Syntax-Status-state
++                         (with-read-safedoc sd SafeDoc-check-syntax-status))
++                       'succeeded)
++            (check-false (thread-dead? completer))
++            (thread-suspend completer)
++            (define current (start! sd))
++            (semaphore-post *await-queries-semaphore*)
++            (set! gate-held? #f)
++            (define observed #f)
++            (define response
++              (async-query-wait (SafeDoc-token sd)
++                                (lambda (signal) (set! observed signal) signal)))
++            (thread-resume completer)
++            (check-eq? (sync/timeout 5 completer) completer)
++            (check-false observed "old completion must leave the new waiter queued")
++            (check-eq? (with-read-safedoc sd SafeDoc-check-syntax-status) current)
++            (publish-analysis! sd current 'failed void)
++            (check-true (signal-check-syntax-finished? (response))))
++          (lambda ()
++            (when gate-held? (semaphore-post *await-queries-semaphore*))
++            (when completer
++              (thread-resume completer)
++              (sync/timeout 5 completer)))))))
++
++  (test-case
++    "a retired lifetime rejects late failure publication"
++    (with-suspended-document
++      (lambda (sd uri)
++        (define running (start! sd))
++        (lsp-close-doc! uri)
++        (define reopened (lsp-open-doc! uri "#lang racket/base\n" 1))
++        (define current (start! reopened))
++        (define observed #f)
++        (async-query-wait (SafeDoc-token reopened)
++                          (lambda (signal) (set! observed signal)))
++        (publish-analysis! sd running 'failed
++                           (lambda (_sd) (fail "retired analysis updated the document")))
++        (check-eq? (with-read-safedoc reopened SafeDoc-check-syntax-status) current)
++        (check-false observed))))
++
++  (test-case
++    "a real computation timeout completes document status and waiting queries"
++    (with-suspended-document
++      (lambda (sd uri)
++        (define running (start! sd))
++        (define response (full-semantic-tokens 1 (hasheq 'textDocument (hasheq 'uri uri))))
++        (check-true (procedure? response))
++        (define worker
++          (thread
++            (handle-timeout-or-break
++              0.1 (lambda () (sync never-evt))
++              (lambda _ (fail "timed-out computation published success"))
++              (lambda (_e) (publish-analysis! sd running 'failed void)))))
++        (check-eq? (sync/timeout 5 worker) worker)
++        (check-eq? (Check-Syntax-Status-state
++                     (with-read-safedoc sd SafeDoc-check-syntax-status))
++                   'failed)
++        (check-true (hash-has-key? (response) 'result)))))
++
++  (for ([method '(tokens hints)])
++    (test-case
++      (format "~a registration after the completion drain cannot lose its response" method)
++      (with-suspended-document
++        (lambda (sd uri)
++          (define running (start! sd))
++          (define responses (make-async-channel))
++          (define gate-held? #f)
++          (define requester #f)
++          (define completer #f)
++          (dynamic-wind
++            void
++            (lambda ()
++              (semaphore-wait *await-queries-semaphore*)
++              (set! gate-held? #t)
++              (set! requester
++                    (thread
++                      (lambda ()
++                        (define reply
++                          (if (eq? method 'tokens)
++                              (full-semantic-tokens 1 (hasheq 'textDocument (hasheq 'uri uri)))
++                              (inlay-hint 1
++                                          (hasheq 'textDocument (hasheq 'uri uri)
++                                                  'range
++                                                  (hasheq 'start (hasheq 'line 0 'character 0)
++                                                          'end (hasheq 'line 1 'character 0))))))
++                        (async-channel-put responses (if (procedure? reply) (reply) reply)))))
++              ;; The requester has read 'running and is parked at registration.
++              (check-not-false (sync/timeout 5 (system-idle-evt)))
++              (check-false (thread-dead? requester))
++              (thread-suspend requester)
++              (set! completer (thread (lambda () (publish-analysis! sd running 'failed void))))
++              (check-not-false (sync/timeout 5 (system-idle-evt)))
++              (semaphore-post *await-queries-semaphore*)
++              (set! gate-held? #f)
++              (check-eq? (sync/timeout 5 completer) completer)
++              (thread-resume requester)
++              (define reply (sync/timeout 5 responses))
++              (check-true (hash? reply) "registration must notice completed analysis")
++              (check-true (hash-has-key? reply 'result)))
++            (lambda ()
++              (when gate-held? (semaphore-post *await-queries-semaphore*))
++              (when requester (thread-resume requester))
++              (lsp-close-doc! uri)
++              (when requester (sync/timeout 5 requester))
++              (when completer (sync/timeout 5 completer)))))))))
+diff --git a/tests/lsp/analysis-test-support.rkt b/tests/lsp/analysis-test-support.rkt
+new file mode 100644
+index 0000000..e810faa
+--- /dev/null
++++ b/tests/lsp/analysis-test-support.rkt
+@@ -0,0 +1,21 @@
++#lang racket/base
++
++(require rackunit
++         racket/async-channel
++         "../../lsp/safedoc.rkt")
++
++(provide analyze!)
++
++(define (analyze! sd [state 'succeeded])
++  (define analyzed (make-async-channel))
++  (safedoc-run-check-syntax!
++    (lambda (_method _params)
++      (async-channel-put analyzed (current-thread)))
++    sd)
++  (define worker (sync/timeout 20 analyzed))
++  (check-true (thread? worker) "analysis publishes diagnostics")
++  (check-eq? (sync/timeout 20 worker) worker "analysis finishes publication")
++  (check-eq?
++    (Check-Syntax-Status-state
++      (with-read-safedoc sd SafeDoc-check-syntax-status))
++    state))

@@ -8,6 +8,7 @@
 (require "../common/interfaces.rkt"
          "editor.rkt"
          "../common/path-util.rkt"
+         "../common/source-snapshot.rkt"
          "lazy-cache.rkt"
          "doc-trace.rkt"
          "check-syntax-compat.rkt"
@@ -246,6 +247,10 @@
   (-> Doc? boolean?)
   (equal? (Doc-version doc) (Doc-trace-version doc)))
 
+(define (doc-invalidate-analysis! doc)
+  (set-Doc-trace-version! doc #f)
+  (invalidate-resyntax-results! doc))
+
 (define/contract (doc-expand! doc)
   (-> Doc? boolean?)
   (define result
@@ -264,11 +269,11 @@
 
 (define/contract (doc-pos->abs-pos doc pos)
   (-> Doc? Pos? exact-nonnegative-integer?)
-  (send (Doc-text doc) line/char->pos (Pos-line pos) (Pos-char pos)))
+  (send (Doc-text doc) lsp-position->pos (Pos-line pos) (Pos-char pos)))
 
 (define/contract (doc-abs-pos->pos doc pos)
   (-> Doc? exact-nonnegative-integer? Pos?)
-  (match-define (list line char) (send (Doc-text doc) pos->line/char pos))
+  (match-define (list line char) (send (Doc-text doc) pos->lsp-position pos))
   (Pos line char))
 
 (define/contract (doc-line-start-abs-pos doc line)
@@ -386,7 +391,8 @@
 (define/contract (doc-get-definition-by-id path submods id)
   (-> path? (listof symbol?) symbol? (or/c Range? #f))
   (define doc-text (new lsp-editor%))
-  (send doc-text load-file path)
+  (define source (source-snapshot-text path))
+  (if source (send doc-text insert source 0) (send doc-text load-file path))
   (match (get-def path doc-text submods id)
     [(cons start end)
      (Range (abs-pos->Pos doc-text start)
@@ -726,6 +732,43 @@
   (define typed-racket-service
     (send doc-trace get-typed-racket))
   (define pos* (doc-pos->abs-pos doc pos))
+  (define-values (prediction-start prediction-end prediction-kind)
+    (if (doc-trace-latest? doc)
+        (send hover-service predicted-binding-at pos*)
+        (values #f #f #f)))
+  (define prediction-text
+    (and prediction-kind
+         (string-append
+          "**Predicted binding**\n\n"
+          (if (eq? prediction-kind 'mixed)
+              "This source location has confirmed bindings and syntax-template predictions. "
+              "Binding information for this syntax-template occurrence is predicted. ")
+          "Expansion can give the template a different binding.")))
+  (define-values (tail-start tail-end tail-parents tail-children)
+    (if (doc-trace-latest? doc)
+        (send (send doc-trace get-tails) at pos*)
+        (values #f #f '() '())))
+  (define (tail-locations positions)
+    (define shown (take positions (min 8 (length positions))))
+    (string-append
+     (string-join
+      (for/list ([position (in-list shown)])
+        (define point (doc-abs-pos->pos doc position))
+        (format "line ~a, column ~a" (add1 (Pos-line point)) (add1 (Pos-char point))))
+      "; ")
+     (if (> (length positions) 8) (format "; and ~a more" (- (length positions) 8)) "")))
+  (define tail-text
+    (and tail-start
+         (string-join
+          (filter values
+                  (list "**Tail position**"
+                        (and (pair? tail-parents)
+                             (string-append "In tail position relative to the expression at "
+                                            (tail-locations tail-parents) "."))
+                        (and (pair? tail-children)
+                             (string-append "Expressions in tail position relative to this one: "
+                                            (tail-locations tail-children) "."))))
+          "\n\n")))
   (define-values (start end annotation)
     (send hover-service annotation-at pos*))
   (define-values (type-start type-end type-text)
@@ -744,7 +787,7 @@
     ;; Docs alone do not open a card. Type text, an annotation, or
     ;; same-file source summary each can. Stored source detail may still
     ;; supply summary and range when check-syntax produced no hover text.
-    [(and (not type-text) (not annotation) (not source-summary)) #f]
+    [(and (not type-text) (not annotation) (not source-summary) (not tail-text) (not prediction-text)) #f]
     [else
      (match-define (list link tag)
        (interval-map-ref (send doc-trace get-docs) pos* (list #f #f)))
@@ -760,13 +803,16 @@
                          #:signature signature
                          #:source-summary source-summary
                          #:documentation-text documentation-text))
-     (Hover #:contents (render-hover-card hover-card)
+     (Hover #:contents (string-join (filter non-empty-string?
+                                           (list (or prediction-text "") (or tail-text "")
+                                                 (render-hover-card hover-card)))
+                                   "\n\n")
             ;; Prefer inferred-type intervals, including literal and expression
             ;; delimiter spans Typed Racket can publish without an annotation.
             ;; Fall back to the winning annotation or kept source-detail range.
             #:range (abs-range->range doc
-                                      (or type-start start use-start)
-                                      (or type-end end use-end)))]))
+                                      (or prediction-start type-start start use-start tail-start)
+                                      (or prediction-end type-end end use-end tail-end)))]))
 
 ;; Some clients spell a viewport end as a line past the last one. The range is
 ;; only a filter bound here, so clamp instead of failing the request.
@@ -1243,6 +1289,7 @@
          doc-expand
          doc-update-trace!
          doc-trace-latest?
+         doc-invalidate-analysis!
          doc-expand!
          doc-resyntax
          doc-resyntax!
