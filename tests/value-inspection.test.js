@@ -13,7 +13,9 @@ async function ok(promise) {
 }
 
 async function prepare(t, lines, breakpoint, config = {}) {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'racketeer-inspection-'));
+  // Racket reports the directory the operating system resolved, such as
+  // /private/var for /var on macOS, so the expected paths use that form too.
+  const directory = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'racketeer-inspection-')));
   const program = path.join(directory, 'specimen.rkt');
   await fs.writeFile(program, lines.join('\n') + '\n');
   const client = new DapClient();
