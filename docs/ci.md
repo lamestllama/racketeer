@@ -25,7 +25,8 @@ requests retain their shorter deadlines. A blocked suite fails before the
 overall job deadline.
 
 Editor jobs download VS Code through the locked `@vscode/test-electron` development
-dependency. The declared minimum is 1.90.0: earlier versions do not expose the
+dependency. The declared minimum is 1.91.0, the oldest version supported by
+the bundled `vscode-languageclient` 11. Versions before 1.90.0 also lack the
 selected debug stack frame API used by frame-sensitive commands. The resolved
 editor version and commit are recorded, including when the requested version is
 `stable`.

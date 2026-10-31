@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const fs = require('node:fs');
 const path = require('node:path');
-const rpc = require('../vscode/node_modules/vscode-jsonrpc/node');
+const rpc = require(require.resolve('vscode-jsonrpc/node', { paths: [require('node:path').join(__dirname, '../vscode')] }));
 const { root, definition, uses, uri, addon } = require('./workspace-index-project');
 
 function event() {

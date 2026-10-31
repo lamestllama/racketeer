@@ -10,7 +10,9 @@
          racket/promise
          racket/string
          drracket/check-syntax
+         racket-langserver/common/source
          racket-langserver/common/source-snapshot
+         "source-document.rkt"
          syntax/modresolve
          syntax/modcollapse
          racket-langserver/common/interfaces
@@ -40,7 +42,8 @@
          (equal? text (format "~s" value)) value)))
 
 (define (in-snapshot path sources proc)
-  (call-with-source-snapshot path sources proc))
+  (call-with-source-snapshot (path-only path) sources proc
+                             #:unbased (and (source-document-unbased? path) path)))
 
 (define (analyse path sources)
   (in-snapshot path sources
@@ -61,9 +64,9 @@
                                  '()))
                  (super syncheck:add-arrow/name-dup/pxpy from left right px py
                         to start end qx qy actual? phase imported? dup?)))
-             [src path] [doc-text buffer] [lexer-state lexer]))
+             [source (path->source path)] [doc-text buffer] [lexer-state lexer]))
       (define expand? (Language-Policy-expand? (LexerState-language-policy lexer)))
-      (define result (expand-source path (open-input-string text) trace #:expand? expand?))
+      (define result (expand-source (path->source path) (open-input-string text) trace #:expand? expand?))
       (unless (and (ExpandResult-pre-syntax result)
                    (or (not expand?) (ExpandResult-post-syntax result)))
         (refuse (format "Cannot analyse ~a with the proposed names and current buffers." path)))
@@ -507,7 +510,7 @@
      (hasheq 'changes
              (for/hasheq ([(file ranges) (in-hash edits)] #:unless (null? ranges))
                (define doc (Source-doc (hash-ref docs file)))
-               (values (string->symbol (path->uri file))
+               (values (string->symbol (document-path->uri file))
                        (for/list ([range (in-list ranges)])
                          (->jsexpr (TextEdit #:range (Range (doc-abs-pos->pos doc (car range))
                                                          (doc-abs-pos->pos doc (cdr range)))

@@ -5,7 +5,7 @@ const path = require('node:path');
 const os = require('node:os');
 const { spawn } = require('node:child_process');
 const { once } = require('node:events');
-const rpc = require('../vscode/node_modules/vscode-jsonrpc/node');
+const rpc = require(require.resolve('vscode-jsonrpc/node', { paths: [require('node:path').join(__dirname, '../vscode')] }));
 const { root, uri, addon } = require('./workspace-index-project');
 
 async function until(check, description, diagnostics = () => '', timeout = 15000) {

@@ -10,7 +10,7 @@ live lexical variables. The extension also bundles `racket-langserver`, REPL
 workflows, Test Explorer integration, and package management.
 
 **Status:** development release, version 0.8.6. Tested on Linux ARM64
-with Racket 9.1 CS and VS Code 1.98.1. Requires **VS Code 1.90 or newer** and the
+with Racket 9.1 CS and VS Code 1.98.1. Requires **VS Code 1.91 or newer** and the
 **full Racket 9.1 or newer distribution**. No separate language-server installation, Magic Racket, Node.js,
 or npm is needed to use the extension. It does not automatically install Racket packages.
 

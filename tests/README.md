@@ -144,10 +144,12 @@ PLTCOLLECTS="$PWD/vendor/collects:" raco test \
   vendor/collects/racket-langserver/tests/lsp/workspace-lifecycle-test.rkt
 ```
 
-This includes the upstream document cases, viewport bounds, and preservation
-of editor buffers through watched-file and rename notifications. The remaining
-analysis-completion patch is recorded in `vendor/patches/` and applied by the
-pinned-source reproduction script.
+This includes the upstream document cases, viewport bounds and preservation
+of editor buffers through watched-file and rename notifications. The local
+server patches recorded in `vendor/patches/` are exercised by
+`tests/source-feedback.test.js`, `tests/predicted-bindings.test.js`,
+`tests/unsaved-imports.test.js`, `tests/untitled-documents.test.js`,
+`tests/source-positions.rkt` and `tests/predicted-bindings.rkt`.
 
 The loader-isolation regression covers nested module and plain-file executions
 with both Run and Debug policies. Each loader changes evaluation and compilation

@@ -2,7 +2,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const fs = require('node:fs');
-const rpc = require('../vscode/node_modules/vscode-jsonrpc/node');
+const rpc = require(require.resolve('vscode-jsonrpc/node', { paths: [require('node:path').join(__dirname, '../vscode')] }));
 const { definition, uri, project } = require('./workspace-index-project');
 
 const from = (locations, source) => locations.filter(location => location.uri === source);

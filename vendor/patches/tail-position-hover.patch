@@ -1,8 +1,8 @@
 diff --git a/common/interfaces.rkt b/common/interfaces.rkt
-index b9c4022..8915c6b 100644
+index 33241bb..dd9f85f 100644
 --- a/common/interfaces.rkt
 +++ b/common/interfaces.rkt
-@@ -357,7 +357,7 @@
+@@ -364,7 +364,7 @@
    (list SemanticTokenModifier-definition))
  
  (define (abs-pos->Pos editor pos)
@@ -11,13 +11,13 @@ index b9c4022..8915c6b 100644
    (Pos #:line line #:char char))
  
  ;; Resyntax-Result: result of a resyntax refactoring suggestion
-@@ -367,4 +367,3 @@
+@@ -374,4 +374,3 @@
    [message string?]
    [rule-name symbol?]
    [new-text string?])
 -
 diff --git a/doclib/doc-trace.rkt b/doclib/doc-trace.rkt
-index f635fc1..4973c30 100644
+index 03ec53f..4bf73a3 100644
 --- a/doclib/doc-trace.rkt
 +++ b/doclib/doc-trace.rkt
 @@ -15,6 +15,7 @@
@@ -28,7 +28,7 @@ index f635fc1..4973c30 100644
           "service/tooltip-log.rkt"
           "service/typed-racket/service.rkt"
           "../common/interfaces.rkt"
-@@ -52,6 +53,7 @@
+@@ -51,6 +52,7 @@
          [lexer-state lexer-state]
          [declaration decls]
          [typed-racket typed-racket]))
@@ -36,7 +36,7 @@ index f635fc1..4973c30 100644
  
      (define services
        (list hovers
-@@ -62,7 +64,8 @@
+@@ -61,7 +63,8 @@
              typed-racket
              decls
              semantic-tokens
@@ -46,22 +46,24 @@ index f635fc1..4973c30 100644
  
      (define/public (reset)
        (for ([s services])
-@@ -114,12 +117,13 @@
+@@ -113,6 +116,7 @@
      (define/public (get-declaration) decls)
      (define/public (get-typed-racket) typed-racket)
      (define/public (get-inlay-hints) inlay-hints)
 +    (define/public (get-tails) tails)
  
      ;; Derive accepted cross-file state from this trace's frozen editor.
-     (define/public (get-contribution)
-       (define (abs->pos pos)
-         (match-define (list line char)
--          (send doc-text pos->line/char pos))
-+          (send doc-text pos->lsp-position pos))
-         (Pos line char))
+     ;; Restoration supplies the incoming descriptor so locations use its current URI.
+@@ -121,7 +125,7 @@
+            (let ()
+              (define (abs->pos pos)
+                (match-define (list line char)
+-                 (send doc-text pos->line/char pos))
++                 (send doc-text pos->lsp-position pos))
+                (Pos line char))
  
-       (define (range->location range)
-@@ -228,6 +232,9 @@
+              (define (range->location range)
+@@ -230,6 +234,9 @@
                _actual? _phase-level
                require-arrow? _name-dup?)))
  
@@ -72,10 +74,10 @@ index f635fc1..4973c30 100644
      (define/override (syncheck:add-unused-require src left right)
        (for ([s services])
 diff --git a/doclib/doc.rkt b/doclib/doc.rkt
-index 2c57e95..00613d6 100644
+index 7fe59bc..ab3608d 100644
 --- a/doclib/doc.rkt
 +++ b/doclib/doc.rkt
-@@ -269,11 +269,11 @@
+@@ -294,11 +294,11 @@
  
  (define/contract (doc-pos->abs-pos doc pos)
    (-> Doc? Pos? exact-nonnegative-integer?)
@@ -89,10 +91,16 @@ index 2c57e95..00613d6 100644
    (Pos line char))
  
  (define/contract (doc-line-start-abs-pos doc line)
-@@ -732,6 +732,31 @@
-   (define typed-racket-service
-     (send doc-trace get-typed-racket))
-   (define pos* (doc-pos->abs-pos doc pos))
+@@ -738,6 +738,49 @@
+     [else
+      (values #f #f #f)]))
+ 
++;; Notes from analysis facts that are not part of a binding's hover card:
++;; relative tail positions. Returns Markdown text and its range, or #f #f. Facts from an older expansion are suppressed until it is replaced.
++(define/contract (doc-hover-notes doc pos)
++  (-> Doc? Pos? (values (or/c string? #f) (or/c Range? #f)))
++  (define doc-trace (Doc-trace doc))
++  (define pos* (doc-pos->abs-pos doc pos))
 +  (define-values (tail-start tail-end tail-parents tail-children)
 +    (if (doc-trace-latest? doc)
 +        (send (send doc-trace get-tails) at pos*)
@@ -118,42 +126,46 @@ index 2c57e95..00613d6 100644
 +                             (string-append "Expressions in tail position relative to this one: "
 +                                            (tail-locations tail-children) "."))))
 +          "\n\n")))
-   (define-values (start end annotation)
-     (send hover-service annotation-at pos*))
-   (define-values (type-start type-end type-text)
-@@ -750,7 +775,7 @@
-     ;; Docs alone do not open a card. Type text, an annotation, or
-     ;; same-file source summary each can. Stored source detail may still
-     ;; supply summary and range when check-syntax produced no hover text.
--    [(and (not type-text) (not annotation) (not source-summary)) #f]
-+    [(and (not type-text) (not annotation) (not source-summary) (not tail-text)) #f]
-     [else
-      (match-define (list link tag)
-        (interval-map-ref (send doc-trace get-docs) pos* (list #f #f)))
-@@ -766,13 +791,15 @@
-                          #:signature signature
-                          #:source-summary source-summary
-                          #:documentation-text documentation-text))
--     (Hover #:contents (render-hover-card hover-card)
-+     (Hover #:contents (string-join (filter non-empty-string?
-+                                           (list (or tail-text "") (render-hover-card hover-card)))
-+                                   "\n\n")
-             ;; Prefer inferred-type intervals, including literal and expression
-             ;; delimiter spans Typed Racket can publish without an annotation.
-             ;; Fall back to the winning annotation or kept source-detail range.
-             #:range (abs-range->range doc
--                                      (or type-start start use-start)
--                                      (or type-end end use-end)))]))
-+                                      (or type-start start use-start tail-start)
-+                                      (or type-end end use-end tail-end)))]))
++  (if tail-text
++      (values tail-text (abs-range->range doc tail-start tail-end))
++      (values #f #f)))
++
++;; Join analysis notes with a hover card. Notes open a hover on their own.
++(define/contract (hover-with-notes card range notes notes-range)
++  (-> Hover-Card? (or/c Range? #f) (or/c string? #f) (or/c Range? #f) (or/c Hover? #f))
++  (and (or notes (hover-card-opens? card))
++       (Hover #:contents (string-join (filter non-empty-string? (list (or notes "") (render-hover-card card)))
++                                      "\n\n")
++              #:range (or range notes-range))))
++
+ (define/contract (doc-hover-data doc pos)
+   (-> Doc? Pos? (values Hover-Card? (or/c Range? #f)))
+   (define doc-trace (Doc-trace doc))
+@@ -781,8 +824,8 @@
+ (define/contract (doc-hover doc pos)
+   (-> Doc? Pos? (or/c Hover? #f))
+   (define-values (card range) (doc-hover-data doc pos))
+-  (and (hover-card-opens? card)
+-       (Hover #:contents (render-hover-card card) #:range range)))
++  (define-values (notes notes-range) (doc-hover-notes doc pos))
++  (hover-with-notes card range notes notes-range))
  
- ;; Some clients spell a viewport end as a line past the last one. The range is
- ;; only a filter bound here, so clamp instead of failing the request.
+ ;; Extract bounded declaration summaries while the worker owns the completed
+ ;; Doc. Freeze text; response threads never consult its mutable services/buffer.
+@@ -1290,6 +1333,8 @@
+          resyntax-result->code-action
+          doc-hover
+          doc-hover-data
++         doc-hover-notes
++         hover-with-notes
+          doc-hover-summaries
+          doc-inlay-hints
+          doc-code-action
 diff --git a/doclib/service/diagnostic.rkt b/doclib/service/diagnostic.rkt
-index ce30da5..a19cbae 100644
+index e0022ad..3b9127a 100644
 --- a/doclib/service/diagnostic.rkt
 +++ b/doclib/service/diagnostic.rkt
-@@ -198,11 +198,17 @@
+@@ -199,11 +199,17 @@
       (define srclocs ((exn:srclocs-accessor exn) exn))
       (for/list ([sl (in-list srclocs)])
         (match-define (srcloc src line col pos span) sl)
@@ -174,6 +186,81 @@ index ce30da5..a19cbae 100644
                         #:severity DiagnosticSeverity-Error
                         #:source "Racket"
                         #:message diagnostic-msg)
+diff --git a/doclib/service/tail.rkt b/doclib/service/tail.rkt
+new file mode 100644
+index 0000000..ac1ada8
+--- /dev/null
++++ b/doclib/service/tail.rkt
+@@ -0,0 +1,69 @@
++#lang racket/base
++
++(require racket/class racket/list racket/set data/interval-map
++         drracket/check-syntax "interface.rkt" "../lexer.rkt"
++         "../../common/interfaces.rkt")
++(provide tail%)
++
++;; Keep the public analysis callback's relative relationship. A branch can be
++;; tail-positioned within an `if` whose result is an argument to another call.
++;; That does not make the branch a tail call of its enclosing function.
++(define tail%
++  (class base-service%
++    (init-field src lexer-state)
++    (super-new)
++    (define anchors (make-hash))
++    (define ranges (make-interval-map))
++    (define parents (make-hash))
++    (define children (make-hash))
++
++    (define/override (reset)
++      (hash-clear! anchors)
++      (hash-clear! parents)
++      (hash-clear! children)
++      (set! ranges (make-interval-map)))
++
++    ;; Any edit can change tail context outside the edited span. Suppress the
++    ;; old facts until expansion supplies a fresh trace; never shift guesses.
++    (define/override (text-replaced _start _end) (send this reset))
++
++    (define/private (anchor-end pos)
++      (hash-ref!
++       anchors pos
++       (lambda ()
++         (define token (lexer-state-token-at lexer-state pos))
++         (and token (= pos (LexerEntry-start token))
++              (let ([end (LexerEntry-end token)])
++                ;; Include the operator after an opening delimiter, but no
++                ;; arguments or nested forms. Comments stop the extension.
++                (if (member (LexerEntry-text token) '("(" "[" "{"))
++                    (let loop ([next end])
++                      (define head (lexer-state-token-at lexer-state next))
++                      (cond
++                        [(not head) end]
++                        [(eq? (LexerEntry-type head) 'white-space)
++                         (loop (LexerEntry-end head))]
++                        [(eq? (LexerEntry-type head) 'symbol) (LexerEntry-end head)]
++                        [else end]))
++                    end))))))
++
++    (define/override (syncheck:add-tail-arrow from-source from to-source to)
++      (when (and (equal? from-source src) (equal? to-source src)
++                 (exact-nonnegative-integer? from) (exact-nonnegative-integer? to)
++                 (not (= from to)))
++        (define from-end (anchor-end from))
++        (define to-end (anchor-end to))
++        (when (and from-end to-end)
++          (interval-map-set! ranges from from-end from)
++          (interval-map-set! ranges to to-end to)
++          (set-add! (hash-ref! parents to mutable-set) from)
++          (set-add! (hash-ref! children from mutable-set) to))))
++
++    ;; Bounds and source positions belong to the same accepted snapshot.
++    (define/public (at pos)
++      (define key (interval-map-ref ranges pos #f))
++      (if key
++          (values key (hash-ref anchors key)
++                  (sort (set->list (hash-ref parents key (set))) <)
++                  (sort (set->list (hash-ref children key (set))) <))
++          (values #f #f '() '())))))
 diff --git a/doclib/textbuffer/editor-rope.rkt b/doclib/textbuffer/editor-rope.rkt
 index c5f2f76..26c5cd0 100644
 --- a/doclib/textbuffer/editor-rope.rkt
@@ -255,6 +342,41 @@ index c5f2f76..26c5cd0 100644
  
      (super-new)))
 -
+diff --git a/lsp/compose/hover.rkt b/lsp/compose/hover.rkt
+index c808f02..e0539e7 100644
+--- a/lsp/compose/hover.rkt
++++ b/lsp/compose/hover.rkt
+@@ -21,17 +21,18 @@
+   (define deadline (+ (current-deadline-milliseconds)
+                       (* 1000 (current-analysis-request-timeout))))
+   (define controller (current-source-controller))
+-  (define-values (view target card range)
++  (define-values (view target card range notes notes-range)
+     (with-read-safedoc safe-doc
+       (lambda (sd)
+         (define doc (SafeDoc-doc sd))
+         (define-values (card range) (doc-hover-data doc pos))
++        (define-values (notes notes-range) (doc-hover-notes doc pos))
+         (values (SafeDoc-source-view sd)
+                 ;; Documentation excludes a source snippet, so do not resolve
+                 ;; another file when the card already has documentation.
+                 (and (not (Hover-Card-documentation card))
+                      (doc-definition doc (Doc-uri doc) pos))
+-                card range))))
++                card range notes notes-range))))
+   ;; Use definition kind `'source`. `hover-card-opens?` does not open a card
+   ;; whose only definition is a signature.
+   (define (compose _snapshot summary)
+@@ -39,8 +40,7 @@
+       (if summary
+           (struct-copy Hover-Card card [definition (Hover-Definition 'source summary)])
+           card))
+-    (and (hover-card-opens? joined)
+-         (Hover #:contents (render-hover-card joined) #:range range)))
++    (hover-with-notes joined range notes notes-range))
+   ;; A module binding uses `target-query`. Every other position
+   ;; skips the cross-file lookup and runs `compose` with no added summary.
+   (if (Module-Binding? target)
 diff --git a/lsp/semantic-token-lsp.rkt b/lsp/semantic-token-lsp.rkt
 index 4291987..2af0ce0 100644
 --- a/lsp/semantic-token-lsp.rkt
@@ -274,75 +396,3 @@ index 4291987..2af0ce0 100644
  
  (provide encode-semantic-tokens)
 -
---- /dev/null
-+++ b/doclib/service/tail.rkt
-@@ -0,0 +1,69 @@
-+#lang racket/base
-+
-+(require racket/class racket/list racket/set data/interval-map
-+         drracket/check-syntax "interface.rkt" "../lexer.rkt"
-+         "../../common/interfaces.rkt")
-+(provide tail%)
-+
-+;; Keep the public analysis callback's relative relationship. A branch can be
-+;; tail-positioned within an `if` whose result is an argument to another call.
-+;; That does not make the branch a tail call of its enclosing function.
-+(define tail%
-+  (class base-service%
-+    (init-field src lexer-state)
-+    (super-new)
-+    (define anchors (make-hash))
-+    (define ranges (make-interval-map))
-+    (define parents (make-hash))
-+    (define children (make-hash))
-+
-+    (define/override (reset)
-+      (hash-clear! anchors)
-+      (hash-clear! parents)
-+      (hash-clear! children)
-+      (set! ranges (make-interval-map)))
-+
-+    ;; Any edit can change tail context outside the edited span. Suppress the
-+    ;; old facts until expansion supplies a fresh trace; never shift guesses.
-+    (define/override (text-replaced _start _end) (send this reset))
-+
-+    (define/private (anchor-end pos)
-+      (hash-ref!
-+       anchors pos
-+       (lambda ()
-+         (define token (lexer-state-token-at lexer-state pos))
-+         (and token (= pos (LexerEntry-start token))
-+              (let ([end (LexerEntry-end token)])
-+                ;; Include the operator after an opening delimiter, but no
-+                ;; arguments or nested forms. Comments stop the extension.
-+                (if (member (LexerEntry-text token) '("(" "[" "{"))
-+                    (let loop ([next end])
-+                      (define head (lexer-state-token-at lexer-state next))
-+                      (cond
-+                        [(not head) end]
-+                        [(eq? (LexerEntry-type head) 'white-space)
-+                         (loop (LexerEntry-end head))]
-+                        [(eq? (LexerEntry-type head) 'symbol) (LexerEntry-end head)]
-+                        [else end]))
-+                    end))))))
-+
-+    (define/override (syncheck:add-tail-arrow from-source from to-source to)
-+      (when (and (equal? from-source src) (equal? to-source src)
-+                 (exact-nonnegative-integer? from) (exact-nonnegative-integer? to)
-+                 (not (= from to)))
-+        (define from-end (anchor-end from))
-+        (define to-end (anchor-end to))
-+        (when (and from-end to-end)
-+          (interval-map-set! ranges from from-end from)
-+          (interval-map-set! ranges to to-end to)
-+          (set-add! (hash-ref! parents to mutable-set) from)
-+          (set-add! (hash-ref! children from mutable-set) to))))
-+
-+    ;; Bounds and source positions belong to the same accepted snapshot.
-+    (define/public (at pos)
-+      (define key (interval-map-ref ranges pos #f))
-+      (if key
-+          (values key (hash-ref anchors key)
-+                  (sort (set->list (hash-ref parents key (set))) <)
-+                  (sort (set->list (hash-ref children key (set))) <))
-+          (values #f #f '() '())))))

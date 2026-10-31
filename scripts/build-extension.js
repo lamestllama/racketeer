@@ -5,7 +5,6 @@ const root = path.resolve(__dirname, '../vscode');
 const esbuild = require(require.resolve('esbuild', { paths: [root] }));
 
 async function build() {
-  require('./patch-language-client');
   require('./stage-extension');
   fs.mkdirSync(path.join(root, 'out'), { recursive: true });
   const result = await esbuild.build({
@@ -18,7 +17,10 @@ async function build() {
   for (const input of Object.keys(result.metafile.inputs)) {
     if (!input.includes('node_modules/')) continue;
     let directory = path.dirname(path.resolve(root, input));
-    while (!fs.existsSync(path.join(directory, 'package.json'))) {
+    // Dual-format packages mark dist/commonjs with an unnamed package.json.
+    const named = directory => fs.existsSync(path.join(directory, 'package.json')) &&
+      JSON.parse(fs.readFileSync(path.join(directory, 'package.json'), 'utf8')).name;
+    while (!named(directory)) {
       const parent = path.dirname(directory);
       if (parent === directory) throw new Error(`No package for ${input}`);
       directory = parent;

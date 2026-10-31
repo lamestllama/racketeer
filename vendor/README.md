@@ -3,24 +3,16 @@
 `collects/` contains upstream source packages with the local patches noted below. `sources.json` pins
 each archive URL and SHA-256. Run `python3 scripts/vendor-language-server.py`
 to reproduce these directories. The VSIX includes these sources, this file,
-the manifest, and the license texts. No Racket package is installed globally.
+the manifest and the license texts. No Racket package is installed globally.
 
 The server is pinned to upstream commit
-`5029bdb7d22b4ce7848fbd74d34224c450e2da16`, which includes the watched-file,
-diagnostic logging and rename notification fixes. The reproduction script
-verifies the archive and then applies these patches:
-
-- `analysis-completion.patch`: complete requests after analysis failure and reject
-  results from superseded or closed documents. Changes four production files;
-  document analysis does not inspect disk state or track index generations.
-- `open-buffer-imports.patch`: analyse imports using immutable snapshots of
-  open documents, refresh affected consumers when buffers change or close, and
-  resolve definitions against the accepted snapshot. Project modules load from
-  source to avoid retaining earlier macro expansions in compiled intermediates.
-
-- `untitled-documents.patch`: retain untitled document URIs while analysing
-  in-memory source identities, select an explicit import base, and retire
-  analysis when documents close or workspace folders change.
+`b7c4642055ccda877e3e6380e76e2776031a3c52`, which includes the watched-file,
+diagnostic logging and rename notification fixes and the background analysis
+architecture of [PR #245](https://github.com/jeapostrophe/racket-langserver/pull/245).
+That architecture completes or ends every waiting request when analysis fails,
+times out or is superseded, and never publishes results from a closed or
+replaced document. The reproduction script verifies the archive and then
+applies these patches:
 
 - `tail-position-hover.patch`: expose relative tail-position relationships from
   the documented analysis callback through standard LSP hover. Suppress those
@@ -32,17 +24,28 @@ verifies the archive and then applies these patches:
   hover using the public analysis callback. Keep binding identities and phases
   distinct, and discard predictions after source edits.
 
-These patches do not introduce closed-file retention rules or
-URI-alias restoration. Rename ownership is provided by upstream
-[PR #244](https://github.com/jeapostrophe/racket-langserver/pull/244).
+- `open-buffer-imports.patch`: analyse imports using one immutable snapshot of
+  the open buffers, record the module files each analysis loads, and refresh
+  affected consumers when a dependency opens, changes or closes. Project
+  modules load from source to avoid retaining earlier macro expansions in
+  compiled intermediates.
+
+- `untitled-documents.patch`: use a single workspace folder as the import base
+  of an untitled document and refuse its relative imports with a located
+  message when there is no base. Read every folder named at initialization,
+  reanalyse untitled documents when folders change and resolve definitions from
+  an untitled document into the files it imports. Other virtual documents, such
+  as revisions shown in a diff, stay isolated as upstream intends.
 
 Workspace indexing belongs to Racketeer, in `vscode/workspace-analysis.rkt`,
-its request adapter `vscode/workspace-index.rkt`, and the VS Code client. The separate process reuses the pinned analyser and workspace store
-as libraries. No indexing hooks or index state are added to the language server.
+its request adapter `vscode/workspace-index.rkt` and the VS Code client. The
+separate process reuses the pinned analyser, the source-snapshot loader and the
+workspace store as libraries. `vscode/source-document.rkt` gives untitled
+documents file identities for indexing and rename only. No indexing hooks or
+index state are added to the language server.
 
 Regression tests exercise these patches. Reproduction fails if any no longer
-applies. It does not change debugger instrumentation. The JavaScript
-client patch below is applied by npm installation and the extension build.
+applies. It does not change debugger instrumentation.
 
 For offline regeneration, supply the pinned ZIP with `--package racket-langserver
 --archive /path/to/archive.zip`; its checksum is still checked against
@@ -56,7 +59,7 @@ For offline regeneration, supply the pinned ZIP with `--package racket-langserve
   <https://github.com/6cdh/racket-fixw>, commit
   `036d0f2cd2d6e061f5acf0835662f194509f2a46`. MIT or Apache 2.0;
   both license texts are included in its directory.
-- **html-parsing 11.0**, **mcfly 2.2**, and **overeasy 4.3**:
+- **html-parsing 11.0**, **mcfly 2.2** and **overeasy 4.3**:
   Copyright Neil Van Dyke, with exact notices in each package's `info.rkt`.
   LGPL version 3 or later. Full LGPLv3 and GPLv3 texts are in `licenses/`.
   These components are provided as source, can be modified or replaced in
@@ -67,31 +70,3 @@ For offline regeneration, supply the pinned ZIP with `--package racket-langserve
 The installed full Racket distribution supplies standard libraries and
 documentation. Optional third-party formatters/refactoring tools (`fmt` and
 `resyntax`) are not bundled. The default formatter uses bundled `fixw`.
-
-## JavaScript language client reliability
-
-`patches/vscode-languageclient-start-promise.patch` corrects one line in the
-pinned Microsoft `vscode-languageclient` 9.0.1 dependency (MIT license). Its
-`start()` method must return the promise created for that attempt. A connection
-closing during initialization clears the instance field before `start()`
-returns; returning that field instead loses the rejected promise and causes an
-unhandled rejection when cancelling a stalled startup.
-
-Microsoft merged this fix in
-[PR #1867](https://github.com/microsoft/vscode-languageserver-node/pull/1867)
-on 29 September 2026. As of 1 October 2026, the latest published client,
-10.1.2, still lacks the fix. Retain this backport until Racketeer adopts a
-compatible release containing it, then remove the patch and its build hooks.
-
-`patches/vscode-jsonrpc-write-rejection.patch` removes a redundant throw from
-the pinned `vscode-jsonrpc` 8.2.0 request writer (MIT license). A failed write
-already rejects the caller's request and releases its cancellation subscription.
-Throwing again inside the asynchronous promise executor creates an unhandled
-rejection. Keep this correction until the pinned dependency includes it.
-
-`npm ci` applies both patches through `scripts/patch-language-client.js`. The script
-verifies each dependency version and SHA-256 of both the original and patched
-source, supports an already patched installation, and needs no network or
-external patch utility. Unexpected versions or contents fail explicitly.
-Each dependency's original MIT license remains in `node_modules` and is included
-in the bundled `out/THIRD_PARTY_NOTICES.txt` by the extension build.

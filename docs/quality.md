@@ -93,11 +93,10 @@ thread sharing the controller's module-loading state. Regression checks cover
 active expansion cancellation, worker failure and recovery, and references across
 unopened files.
 
-The pinned `vscode-jsonrpc` dependency has a narrow write-failure correction:
-failed requests reject their callers without an additional unhandled rejection.
-The public transport regression exercises failed header writes, body writes and
-encoding with Node's strict unhandled-rejection handling. See the
-[dependency patch record](../vendor/README.md#javascript-language-client-reliability).
+The bundled `vscode-jsonrpc` 10 rejects a failed request write without an
+additional unhandled rejection. The public transport regression exercises
+failed header writes, body writes and encoding with Node's strict
+unhandled-rejection handling.
 
 Known product boundaries remain explicit:
 

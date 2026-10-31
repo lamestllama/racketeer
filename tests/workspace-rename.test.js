@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const fs = require('node:fs');
 const { fileURLToPath } = require('node:url');
-const rpc = require('../vscode/node_modules/vscode-jsonrpc/node');
+const rpc = require(require.resolve('vscode-jsonrpc/node', { paths: [require('node:path').join(__dirname, '../vscode')] }));
 const { definition, uses, uri, edited, project } = require('./workspace-index-project');
 
 test('workspace rename follows imports and previews edits without changing files', { timeout: 120000 }, async t => {

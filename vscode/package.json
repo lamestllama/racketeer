@@ -2,7 +2,7 @@
   "name": "racketeer",
   "displayName": "Racketeer: Organised Racket",
   "description": "Racket source debugging and execution, with Racket and Rhombus editing for VS Code.",
-  "version": "0.8.47",
+  "version": "0.8.48",
   "publisher": "lamestllama",
   "author": {
     "name": "Eric Parsonage",
@@ -13,7 +13,7 @@
   "license": "(Apache-2.0 OR MIT)",
   "private": true,
   "engines": {
-    "vscode": "^1.90.0"
+    "vscode": "^1.91.0"
   },
   "categories": [
     "Debuggers",
@@ -46,7 +46,6 @@
     "virtualWorkspaces": false
   },
   "scripts": {
-    "postinstall": "node ../scripts/patch-language-client.js",
     "stage": "node ../scripts/stage-extension.js",
     "test": "node ../scripts/test-headless.js",
     "package": "node ../scripts/package-extension.js",
@@ -875,7 +874,7 @@
     ]
   },
   "dependencies": {
-    "vscode-languageclient": "9.0.1"
+    "vscode-languageclient": "11.0.0"
   },
   "devDependencies": {
     "@vscode/test-electron": "2.5.2",

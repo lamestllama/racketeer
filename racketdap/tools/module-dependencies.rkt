@@ -29,7 +29,7 @@
             'submodules submodules))
   (define modules '())
   (define count 0)
-  (call-with-source-snapshot source sources
+  (call-with-source-snapshot (path-only source) sources
     (lambda ()
       ;; Always compile the selected source; project intermediates and open
       ;; buffers use the same source-snapshot loader as language analysis.

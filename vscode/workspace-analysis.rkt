@@ -12,7 +12,7 @@
          racket/port
          racket/set
          racket-langserver/common/path-util
-         racket-langserver/common/source-document
+         racket-langserver/common/source
          racket-langserver/common/source-snapshot
          racket-langserver/common/interfaces
          racket-langserver/common/json-util
@@ -20,6 +20,7 @@
          racket-langserver/doclib/internal-types
          racket-langserver/workspace/api
          racket-langserver/lsp/compose/references
+         "source-document.rkt"
          "workspace-rename.rkt")
 
 (struct Settings (enabled? excluded max-files max-bytes timeout) #:transparent)
@@ -191,8 +192,9 @@
       (changed (list #f text 0 #f #f)))
     ;; Trace construction and queries use a fresh namespace as well as expansion.
     ;; A previously loaded dependency must not survive a watched change.
-    (call-with-source-snapshot path buffers
+    (call-with-source-snapshot (path-only path) buffers
       #:source? (lambda (file) (for/or ([root (in-list roots)]) (directory-contains? root file)))
+      #:unbased (and (source-document-unbased? path) path)
       (lambda ()
       (define doc (make-doc (path->uri path) text 0))
       (unless (doc-expand! doc) (error 'workspace-analysis "analysis failed: ~a" path))
@@ -218,6 +220,13 @@
                               (and (Document-Reference-Result-module-binding result)
                                    (binding->datum (Document-Reference-Result-module-binding result)))))))
             disk-current?)))))
+
+;; Untitled documents are analysed under identity paths; report their URIs.
+(define (present-location location)
+  (define uri (hash-ref location 'uri))
+  (if (file-uri? uri)
+      (hash-set location 'uri (document-path->uri (uri->path uri)))
+      location))
 
 (define (binding->datum binding)
   (list (Module-Binding-filepath binding) (Module-Binding-submods binding)
@@ -315,7 +324,7 @@
     (for/hash ([doc (in-list (hash-ref params 'documents))]) (values (hash-ref doc 'uri) doc)))
   (define buffers
     (for/fold ([buffers (hash)]) ([(uri doc) (in-hash documents)])
-      (define path (parameterize ([current-source-documents paths]) (uri->path uri)))
+      (define path (parameterize ([current-source-documents paths]) (document-uri->path uri)))
       (if (or (untitled-uri? uri) (workspace-contains? workspace path))
           (hash-set buffers path (and (not (hash-has-key? buffers path)) (hash-ref doc 'text)))
           buffers)))
@@ -375,7 +384,7 @@
             (equal? (hash-ref doc 'version) (hash-ref params 'version)) doc)]))
   (let retry ()
     (define run (call-with-semaphore (WorkspaceAnalysis-lock engine) (lambda () (WorkspaceAnalysis-current-run engine))))
-    (define path (and run (parameterize ([current-source-documents (Run-paths run)]) (uri->path uri))))
+    (define path (and run (parameterize ([current-source-documents (Run-paths run)]) (document-uri->path uri))))
     (define doc (and run (current-document run path)))
     (cond
       [(sync/timeout 0 cancel) (AnalysisFailure 'cancelled "Request cancelled")]
@@ -426,11 +435,13 @@
                                           [(list 'ok _ _ _ (list locations binding) _)
                                            (define live
                                              (Document-Reference-Result
-                                               (Reference-Source path (map jsexpr->Location locations))
+                                               (Reference-Source (source-id (path->source path))
+                                                                 (map jsexpr->Location locations))
                                                (and binding (apply Module-Binding binding))))
                                            (accepted run
-                                                             (->jsexpr (reference-sources->locations
-                                                                         (merge-reference-sources (Run-workspace run) live include?))))]
+                                                     (parameterize ([current-source-documents (Run-paths run)])
+                                                       (for/list ([location (in-list (reference-locations (Run-workspace run) live include?))])
+                                                         (present-location (->jsexpr location)))))]
                                           [failure (AnalysisFailure 'failed (analysis-failure failure))])))))
           (or answer (retry))])])))
 

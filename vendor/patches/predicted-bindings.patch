@@ -1,14 +1,21 @@
 diff --git a/doclib/doc.rkt b/doclib/doc.rkt
-index 00613d6..5d647d9 100644
+index ab3608d..f4a2165 100644
 --- a/doclib/doc.rkt
 +++ b/doclib/doc.rkt
-@@ -732,6 +732,18 @@
-   (define typed-racket-service
-     (send doc-trace get-typed-racket))
+@@ -739,11 +739,24 @@
+      (values #f #f #f)]))
+ 
+ ;; Notes from analysis facts that are not part of a binding's hover card:
+-;; relative tail positions. Returns Markdown text and its range, or #f #f. Facts from an older expansion are suppressed until it is replaced.
++;; syntax-template binding predictions and relative tail positions. Returns
++;; Markdown text and its range, or #f #f. Facts from an older expansion are suppressed until it is replaced.
+ (define/contract (doc-hover-notes doc pos)
+   (-> Doc? Pos? (values (or/c string? #f) (or/c Range? #f)))
+   (define doc-trace (Doc-trace doc))
    (define pos* (doc-pos->abs-pos doc pos))
 +  (define-values (prediction-start prediction-end prediction-kind)
 +    (if (doc-trace-latest? doc)
-+        (send hover-service predicted-binding-at pos*)
++        (send (send doc-trace get-hover) predicted-binding-at pos*)
 +        (values #f #f #f)))
 +  (define prediction-text
 +    (and prediction-kind
@@ -21,34 +28,19 @@ index 00613d6..5d647d9 100644
    (define-values (tail-start tail-end tail-parents tail-children)
      (if (doc-trace-latest? doc)
          (send (send doc-trace get-tails) at pos*)
-@@ -775,7 +787,7 @@
-     ;; Docs alone do not open a card. Type text, an annotation, or
-     ;; same-file source summary each can. Stored source detail may still
-     ;; supply summary and range when check-syntax produced no hover text.
--    [(and (not type-text) (not annotation) (not source-summary) (not tail-text)) #f]
-+    [(and (not type-text) (not annotation) (not source-summary) (not tail-text) (not prediction-text)) #f]
-     [else
-      (match-define (list link tag)
-        (interval-map-ref (send doc-trace get-docs) pos* (list #f #f)))
-@@ -792,14 +804,15 @@
-                          #:source-summary source-summary
-                          #:documentation-text documentation-text))
-      (Hover #:contents (string-join (filter non-empty-string?
--                                           (list (or tail-text "") (render-hover-card hover-card)))
-+                                           (list (or prediction-text "") (or tail-text "")
-+                                                 (render-hover-card hover-card)))
-                                    "\n\n")
-             ;; Prefer inferred-type intervals, including literal and expression
-             ;; delimiter spans Typed Racket can publish without an annotation.
-             ;; Fall back to the winning annotation or kept source-detail range.
-             #:range (abs-range->range doc
--                                      (or type-start start use-start tail-start)
--                                      (or type-end end use-end tail-end)))]))
-+                                      (or prediction-start type-start start use-start tail-start)
-+                                      (or prediction-end type-end end use-end tail-end)))]))
+@@ -769,8 +782,10 @@
+                              (string-append "Expressions in tail position relative to this one: "
+                                             (tail-locations tail-children) "."))))
+           "\n\n")))
+-  (if tail-text
+-      (values tail-text (abs-range->range doc tail-start tail-end))
++  (define notes (filter values (list prediction-text tail-text)))
++  (if (pair? notes)
++      (values (string-join notes "\n\n")
++              (abs-range->range doc (or prediction-start tail-start) (or prediction-end tail-end)))
+       (values #f #f)))
  
- ;; Some clients spell a viewport end as a line past the last one. The range is
- ;; only a filter bound here, so clamp instead of failing the request.
+ ;; Join analysis notes with a hover card. Notes open a hover on their own.
 diff --git a/doclib/service/hover/service.rkt b/doclib/service/hover/service.rkt
 index acd9a34..f332fee 100644
 --- a/doclib/service/hover/service.rkt

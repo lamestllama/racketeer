@@ -1,12 +1,17 @@
 #lang racket/base
 
-(require file/sha1 net/url racket/path)
+(require file/sha1 net/url racket/path
+         racket-langserver/common/path-util)
 
 (provide current-source-documents make-source-documents
-         untitled-uri? source-document-path source-document-uri source-document-unbased?)
+         untitled-uri? source-document-path source-document-uri source-document-unbased?
+         document-uri->path document-path->uri)
 
-;; An immutable view belongs to one analysis. These paths are source identities;
-;; no placeholder files are created, and they never replace a proposed save path.
+;; Workspace analysis gives each untitled document a file identity in its
+;; import base, so the document can be expanded, indexed and renamed like a
+;; saved module. An immutable view belongs to one analysis. These paths are
+;; source identities; no placeholder files are created, and they never replace
+;; a proposed save path.
 (define current-source-documents (make-parameter (hash)))
 (define (untitled-uri? uri) (equal? (url-scheme (string->url uri)) "untitled"))
 
@@ -32,6 +37,13 @@
 (define (source-document-uri path)
   (for/first ([(uri source) (in-hash (current-source-documents))]
               #:when (equal? path (car source))) uri))
+
+(define (document-uri->path uri)
+  (or (source-document-path uri) (uri->path uri)))
+
+;; Results name an untitled document by its URI, never by its identity path.
+(define (document-path->uri path)
+  (or (source-document-uri (simple-form-path path)) (path->uri path)))
 
 (define (source-document-unbased? path)
   (for/or ([source (in-hash-values (current-source-documents))])

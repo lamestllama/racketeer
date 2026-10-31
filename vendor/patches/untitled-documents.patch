@@ -1,368 +1,285 @@
-diff --git a/common/path-util.rkt b/common/path-util.rkt
-index f804fc2..924f472 100644
---- a/common/path-util.rkt
-+++ b/common/path-util.rkt
-@@ -9,18 +9,19 @@
-          uri->path
-          directory-contains?)
- 
--(require net/url
-+(require "source-document.rkt"
-+         net/url
-          racket/contract
-          racket/list
-          racket/path)
- 
- (define/contract (path->uri path)
-   (-> path? string?)
--  (url->string (path->url path)))
-+  (or (source-document-uri (simple-form-path path)) (url->string (path->url path))))
- 
- (define/contract (uri->path uri)
-   (-> string? path?)
--  (url->path (string->url uri)))
-+  (or (source-document-path uri) (url->path (string->url uri))))
- 
- (define/contract (directory-contains? dir filepath)
-   (-> path-string? path-string? boolean?)
 diff --git a/common/source-snapshot.rkt b/common/source-snapshot.rkt
-index 987b357..d4e565b 100644
+index 9745104..8143674 100644
 --- a/common/source-snapshot.rkt
 +++ b/common/source-snapshot.rkt
-@@ -1,6 +1,8 @@
- #lang racket/base
- 
--(require racket/path
-+(require "source-document.rkt"
+@@ -5,17 +5,28 @@
+ ;; intermediates cannot retain an older macro expansion. Libraries outside the
+ ;; project keep their ordinary compiled loading policy.
+ (require racket/list
 +         racket/match
-+         racket/path
+          racket/path
+          setup/dirs
           syntax/modcode)
  
- (provide call-with-source-snapshot source-snapshot-text)
-@@ -19,6 +21,26 @@
- (define (call-with-source-snapshot path sources proc
+ (provide call-with-source-snapshot)
+ 
++(define (relative-import? module)
++  (match module
++    [(? path-string?) (relative-path? module)]
++    [(list 'file (? path-string? file)) (relative-path? file)]
++    [(list* 'submod (and parent (not (or "." ".."))) _) (relative-import? parent)]
++    [_ #f]))
++
+ ;; sources: complete normalized path -> buffer text, or #f when two buffers
+ ;;   claim the same path.
+ ;; directory: load-relative directory, or #f.
+ ;; source?: whether a file outside `sources` loads from source.
+ ;; on-load: receives each module file the expansion loads.
++;; unbased: syntax source of a document without an import base. Its relative
++;;   imports are refused with a located error instead of resolving against an
++;;   unrelated directory.
+ ;; Installed collections keep compiled loading even below a project folder,
+ ;; for example when a workspace folder contains the Racket installation.
+ (define (installed-library? file)
+@@ -28,7 +39,22 @@
+ 
+ (define (call-with-source-snapshot directory sources proc
                                     #:source? [source? (lambda (_) #f)]
-                                    #:on-load [on-load void])
+-                                   #:on-load [on-load void])
++                                   #:on-load [on-load void]
++                                   #:unbased [unbased #f])
 +  (define ordinary-resolve (current-module-name-resolver))
-+  (define (relative-import? module)
-+    (match module
-+      [(? path-string?) (relative-path? module)]
-+      [(list 'file (? path-string? file)) (relative-path? file)]
-+      [(list* 'submod (and parent (not (or "." ".."))) _) (relative-import? parent)]
-+      [_ #f]))
 +  (define (primary-module? relative-to)
 +    (define name (and relative-to (resolved-module-path-name relative-to)))
-+    (equal? path (if (pair? name) (car name) name)))
++    (equal? unbased (if (pair? name) (car name) name)))
 +  (define resolve
 +    (case-lambda
 +      [(name namespace) (ordinary-resolve name namespace)]
 +      [(module relative-to stx load?)
-+       (when (and (source-document-unbased? path) (relative-import? module)
++       (when (and unbased (relative-import? module)
 +                  (or (primary-module? relative-to)
-+                      (and stx (equal? (syntax-source stx) path))))
++                      (and stx (equal? (syntax-source stx) unbased))))
 +         (raise-syntax-error #f
 +           "Relative imports need a save location or a single workspace folder. Save this document or open its workspace." stx))
 +       (ordinary-resolve module relative-to stx load?)]))
    (define ordinary-load (current-load/use-compiled))
    (define ordinary-open (moddep-current-open-input-file))
    (define (load-snapshot file expected)
-@@ -42,6 +64,7 @@
+@@ -52,6 +78,7 @@
+                             #:choose (lambda _ 'src) #:compile eval)))]
        [else (ordinary-load file expected)]))
    (parameterize ([current-namespace (make-base-namespace)]
-                  [current-sources sources]
 +                 [current-module-name-resolver resolve]
-                  [current-directory (path-only path)]
-                  [current-load-relative-directory (path-only path)]
+                  [current-directory (or directory (current-directory))]
+                  [current-load-relative-directory directory]
                   [current-load/use-compiled load-snapshot]
-diff --git a/lsp/lsp.rkt b/lsp/lsp.rkt
-index 78f8e47..128c6a1 100644
---- a/lsp/lsp.rkt
-+++ b/lsp/lsp.rkt
-@@ -3,6 +3,7 @@
- (require racket/contract
+diff --git a/doclib/check-syntax.rkt b/doclib/check-syntax.rkt
+index edabd35..aa4819e 100644
+--- a/doclib/check-syntax.rkt
++++ b/doclib/check-syntax.rkt
+@@ -51,7 +51,10 @@
+ 
+ ;; TODO: cache the namespace with some strategy
+ (define (expand-source source in collector #:expand? [expand? #t])
+-  (define src-dir (source-analysis-directory source))
++  ;; A virtual source without a directory of its own keeps the import base
++  ;; its analysis supplies.
++  (define src-dir (or (source-analysis-directory source)
++                      (current-load-relative-directory)))
+   (define ns (make-base-namespace))
+   (define-values (add-syntax done)
+     (make-traversal ns src-dir))
+@@ -113,6 +116,7 @@
+                 (and (ExpandResult-pre-syntax er) #t))))
+ 
+ (provide
++  source-analysis-directory
+   (struct-out CSResult)
+   (contract-out
+     [expand-source (->* (Source? input-port? (is-a?/c syncheck-annotations<%>))
+diff --git a/lsp/analysis.rkt b/lsp/analysis.rkt
+index 4bd02a4..463df7a 100644
+--- a/lsp/analysis.rkt
++++ b/lsp/analysis.rkt
+@@ -5,6 +5,7 @@
+ ;; keeps that product's trace. Request threads receive an `Analysis-Summary`
+ ;; or an `Analysis-Outcome`. Lifetime and reuse are in `analysis-lifecycle.md`.
+ (require json
++         net/url
           racket/path
-          "../common/path-util.rkt"
-+         "../common/source-document.rkt"
-          "../doclib/doc.rkt"
-          "../workspace/current.rkt"
-          "../workspace/state.rkt"
-@@ -36,6 +37,9 @@
-     (define token (SafeDoc-token safe-doc))
-     (scheduler-close-doc! token)
-     (safedoc-close! safe-doc)
-+    (when (untitled-uri? uri)
-+      (with-read-doc safe-doc
-+        (lambda (_) (workspace-remove-path! current-workspace (uri->path uri)))))
-     (clear-old-queries/doc-close token))
-   (hash-remove! open-docs uri-sym))
- 
-@@ -49,22 +53,23 @@
- ;; Freeze all editor text before scheduling any consumer. A dependency edit can
- ;; change exports or macro expansion without changing the consumer's version.
- (define (lsp-refresh-analysis! notify-client uri)
--  (define changed (simple-form-path (uri->path uri)))
-   (define documents (hash-values open-docs))
--  (define sources
--    (for/fold ([sources (hash)]) ([sd (in-list documents)])
--      (with-read-doc sd
--        (lambda (doc)
--          (define path (simple-form-path (uri->path (Doc-uri doc))))
--          (hash-set sources path
--                    (and (not (hash-has-key? sources path)) (doc-get-text doc)))))))
--  (define roots
--    (append (workspace-folders current-workspace)
--            (map path-only (hash-keys sources))))
--  (for ([sd (in-list documents)]
--        #:when (or (with-read-doc sd (lambda (doc) (equal? changed (simple-form-path (uri->path (Doc-uri doc))))))
--                   (safedoc-depends-on? sd changed)))
--    (safedoc-run-check-syntax! notify-client sd #:sources sources #:roots roots)))
-+  (define texts
-+    (for/list ([sd (in-list documents)])
-+      (with-read-doc sd (lambda (doc) (cons (Doc-uri doc) (doc-get-text doc))))))
-+  (define paths (make-source-documents (cons uri (map car texts)) (workspace-folders current-workspace)))
-+  (parameterize ([current-source-documents paths])
-+    (define changed (simple-form-path (uri->path uri)))
-+    (define sources
-+      (for/fold ([sources (hash)]) ([entry (in-list texts)])
-+        (define path (simple-form-path (uri->path (car entry))))
-+        (hash-set sources path (and (not (hash-has-key? sources path)) (cdr entry)))))
-+    (define roots
-+      (append (workspace-folders current-workspace) (map path-only (hash-keys sources))))
-+    (for ([sd (in-list documents)]
-+          #:when (or (with-read-doc sd (lambda (doc) (equal? uri (Doc-uri doc))))
-+                     (safedoc-depends-on? sd changed)))
-+      (safedoc-run-check-syntax! notify-client sd #:sources sources #:roots roots #:paths paths))))
- 
- (provide lsp-get-doc
-          lsp-open-doc!
-diff --git a/lsp/methods.rkt b/lsp/methods.rkt
-index 1ae59a5..87f9dec 100644
---- a/lsp/methods.rkt
-+++ b/lsp/methods.rkt
-@@ -185,7 +185,8 @@
-         ["workspace/didRenameFiles"
-          (workspace/didRenameFiles params)]
-         ["workspace/didChangeWorkspaceFolders"
--         (workspace/didChangeWorkspaceFolders params)]
-+         (workspace/didChangeWorkspaceFolders params
-+           (lambda (method params) (send-notification method params)))]
-         ["workspace/didChangeWatchedFiles"
-          (workspace/didChangeWatchedFiles params)]
-         ["workspace/didChangeConfiguration"
-@@ -255,6 +256,9 @@
-      ;; If both `rootPath` and `rootUri` are set, then `rootUri` wins.
-      ;; null is there are no folder is open.
-      (cond
-+       [(list? (hash-ref params 'workspaceFolders #f))
-+        (for ([folder (in-list (hash-ref params 'workspaceFolders))])
-+          (workspace-add-folder! current-workspace (uri->path (hash-ref folder 'uri))))]
-        [(not (equal? root-uri (json-null)))
-         (workspace-add-folder! current-workspace (uri->path root-uri))]
-        [(not (equal? root-path (json-null)))
-diff --git a/lsp/safedoc.rkt b/lsp/safedoc.rkt
-index aeb6f23..cc73864 100644
---- a/lsp/safedoc.rkt
-+++ b/lsp/safedoc.rkt
-@@ -18,6 +18,7 @@
-          "../common/json-util.rkt"
-          "../common/path-util.rkt"
-          "../common/source-snapshot.rkt"
-+         "../common/source-document.rkt"
-          "../common/settings.rkt"
           racket/class
-          racket/contract)
-@@ -36,26 +37,23 @@
- ;; Exported field accessors: SafeDoc-doc, SafeDoc-check-syntax-status.
- ;; Access fields only inside an eliminator that acquired the lock.
- (struct SafeDoc
--  (doc rwlock token check-syntax-status closed? analysis sources roots dependencies)
-+  (doc rwlock token check-syntax-status closed? analysis sources roots dependencies paths)
-   #:mutable
+          racket/contract
+@@ -65,15 +66,21 @@
+ ;;   compiled intermediates.
+ ;; loaded: Mutable table this attempt's worker fills while it expands, from
+ ;;   module file to the buffer text it read or `#f`. One table per attempt.
++;; untitled-base: Import base for untitled documents without a directory
++;;   of their own, or `#f`. Their relative imports are then refused.
+ (struct/contract Analysis-Context
+   ([buffers (hash/c path? (or/c #f string?) #:immutable #t)]
+    [roots (listof path?)]
+-   [loaded hash?])
++   [loaded hash?]
++   [untitled-base (or/c #f path?)])
    #:transparent)
  
- (define (new-safedoc uri text version)
--  (define doc (make-doc uri text version))
-+  (define paths (make-source-documents (list uri) (workspace-folders current-workspace)))
-+  (define doc (parameterize ([current-source-documents paths]) (make-doc uri text version)))
-   ;; Token identifies this opened document instance in scheduler/query state.
-   (define token (gensym 'doc-token))
-   (scheduler-register-doc! token)
--  (SafeDoc doc (make-rwlock) token #f #f #f (hash) '() #f))
-+  (SafeDoc doc (make-rwlock) token #f #f #f (hash) '() #f paths))
+ ;; Set by the scheduler for each attempt. `#f` analyses with ordinary loading.
+ (define current-analysis-context (make-parameter #f))
  
- (define (with-read-doc safe-doc proc)
--  (call-with-read-lock
--    (SafeDoc-rwlock safe-doc)
--    (λ () (proc (SafeDoc-doc safe-doc)))))
-+  (with-read-safedoc safe-doc (lambda (sd) (proc (SafeDoc-doc sd)))))
++(define (uri->scheme uri)
++  (url-scheme (string->url uri)))
++
+ ;; Terminal result of one Check Syntax or Resyntax attempt.
+ ;;
+ ;; state: `succeeded` when Check Syntax produced facts, or when Resyntax
+@@ -140,14 +147,17 @@
+   (define context (current-analysis-context))
+   (define check-syntax-result
+     (if context
+-        (let ([roots (Analysis-Context-roots context)])
++        (let* ([untitled? (equal? "untitled" (uri->scheme (source-uri source)))]
++               [directory (or (source-analysis-directory source)
++                              (and untitled? (Analysis-Context-untitled-base context)))]
++               [roots (Analysis-Context-roots context)])
+           (call-with-source-snapshot
+-            (let ([file (source-file-path source)]) (and file (path-only file)))
+-            (Analysis-Context-buffers context)
++            directory (Analysis-Context-buffers context)
+             #:source? (lambda (path) (for/or ([root (in-list roots)]) (directory-contains? root path)))
+             #:on-load (lambda (path)
+                         (hash-set! (Analysis-Context-loaded context) path
+                                    (hash-ref (Analysis-Context-buffers context) path #f)))
++            #:unbased (and untitled? (not directory) (source-syntax-source source))
+             (lambda () (doc-check-syntax doc))))
+         (doc-check-syntax doc)))
+   (define trace (CSResult-trace check-syntax-result))
+diff --git a/lsp/compose/definition.rkt b/lsp/compose/definition.rkt
+index 8bf0c90..d741409 100644
+--- a/lsp/compose/definition.rkt
++++ b/lsp/compose/definition.rkt
+@@ -2,7 +2,8 @@
  
- (define (with-write-doc safe-doc proc)
--  (call-with-write-lock
--    (SafeDoc-rwlock safe-doc)
--    (λ () (proc (SafeDoc-doc safe-doc)))))
-+  (with-write-safedoc safe-doc (lambda (sd) (proc (SafeDoc-doc sd)))))
+ ;; textDocument/definition. A local location, or no binding, is returned
+ ;; immediately. A module binding is resolved by `target-query`.
+-(require "../../common/interfaces.rkt"
++(require net/url
++         "../../common/interfaces.rkt"
+          "../../common/time.rkt"
+          "../../doclib/doc.rkt"
+          "target.rkt"
+@@ -15,6 +16,9 @@
  
- (define (with-read-analysis safe-doc proc)
-   (with-read-safedoc safe-doc
-@@ -76,12 +74,12 @@
- (define (with-read-safedoc safe-doc proc)
-   (call-with-read-lock
-     (SafeDoc-rwlock safe-doc)
--    (λ () (proc safe-doc))))
-+    (λ () (parameterize ([current-source-documents (SafeDoc-paths safe-doc)]) (proc safe-doc)))))
+ (provide definition-query)
  
- (define (with-write-safedoc safe-doc proc)
-   (call-with-write-lock
-     (SafeDoc-rwlock safe-doc)
--    (λ () (proc safe-doc))))
-+    (λ () (parameterize ([current-source-documents (SafeDoc-paths safe-doc)]) (proc safe-doc)))))
- 
- ;; Retirement and publication use the same lock, so work from a closed
- ;; document cannot restore diagnostics or workspace contributions.
-@@ -138,7 +136,8 @@
- 
- ;; The only place that actually runs check-syntax.
- (define (safedoc-run-check-syntax! notify-client safe-doc
--                                  #:sources [sources (hash)] #:roots [roots '()])
-+                                  #:sources [sources (hash)] #:roots [roots '()]
-+                                  #:paths [paths (SafeDoc-paths safe-doc)])
-   (define-values (uri working-version text-buffer-copy token)
++(define (untitled-uri? uri)
++  (equal? "untitled" (url-scheme (string->url uri))))
++
+ (define (definition-query safe-doc id uri pos)
+   (define deadline (+ (current-deadline-milliseconds)
+                       (* 1000 (current-analysis-request-timeout))))
+@@ -22,7 +26,13 @@
+   (define-values (view target)
      (with-read-safedoc safe-doc
        (lambda (sd)
-@@ -153,6 +152,11 @@
-   (define dependencies (make-hash))
-   (with-current-safedoc safe-doc working-version
-                         (lambda (sd)
-+                          (define old-path (uri->path uri))
-+                          (define new-path (parameterize ([current-source-documents paths]) (uri->path uri)))
-+                          (unless (equal? old-path new-path)
-+                            (workspace-remove-path! current-workspace old-path))
-+                          (set-SafeDoc-paths! sd paths)
-                           (doc-invalidate-analysis! (SafeDoc-doc sd))
-                           (set-SafeDoc-analysis! sd running-status)
-                           (set-SafeDoc-check-syntax-status! sd running-status)))
-@@ -176,6 +180,7 @@
-                               (send-doc-diagnostics notify-client doc)))))
+-        (values (SafeDoc-source-view sd) (doc-definition (SafeDoc-doc sd) uri pos)))))
++        (define doc (SafeDoc-doc sd))
++        (values (SafeDoc-source-view sd)
++                (or (doc-definition doc uri pos)
++                    ;; An untitled draft imports ordinary files; find their
++                    ;; definitions as for a saved file. Hover and other
++                    ;; virtual documents stay document-local.
++                    (and (untitled-uri? uri) (doc-module-binding-at doc pos)))))))
+   (cond
+     [(Module-Binding? target)
+      (target-query id controller deadline view target "Definition"
+diff --git a/lsp/methods.rkt b/lsp/methods.rkt
+index c9a2d73..b417100 100644
+--- a/lsp/methods.rkt
++++ b/lsp/methods.rkt
+@@ -299,7 +299,14 @@
+                  ['rootUri (? (or/c string? (json-null)) root-uri)]
+                  ['rootPath (? (or/c string? (json-null)) root-path)])
+      (record-client-capabilities! capabilities)
+-     (initialize-workspace-root! root-uri root-path)
++     ;; Every listed folder is a root; `rootUri` covers clients without folders.
++     (match (hash-ref params 'workspaceFolders #f)
++       [(? list? folders)
++        (for ([folder (in-list folders)])
++          (define uri (hash-ref folder 'uri))
++          (when (file-uri? uri)
++            (workspace-add-folder! current-workspace (file-uri->identity-path uri))))]
++       [_ (initialize-workspace-root! root-uri root-path)])
+      (success-response id (hasheq 'capabilities
+                                   (server-capabilities-for-client capabilities)))]
+     [_
+diff --git a/lsp/source-controller.rkt b/lsp/source-controller.rkt
+index 91b1a53..5e6de22 100644
+--- a/lsp/source-controller.rkt
++++ b/lsp/source-controller.rkt
+@@ -37,7 +37,8 @@
+            source-controller-view
+            source-controller-snapshot
+            source-controller-ensure-analysis!
+-           source-controller-refresh-analysis!))
++           source-controller-refresh-analysis!
++           source-controller-refresh-untitled!))
  
-   (define (check-syntax-task)
-+    (parameterize ([current-source-documents paths])
-     (call-with-source-snapshot (uri->path uri) sources
-       #:source? (lambda (file) (for/or ([root (in-list roots)]) (directory-contains? root file)))
-       #:on-load (lambda (file) (hash-set! dependencies file #t))
-@@ -189,7 +194,7 @@
-         (define contribution
-           (and (CSResult-succeed? result)
-                (send trace get-contribution)))
--        (values result contribution (set->list (send trace get-warn-diags))))))
-+        (values result contribution (set->list (send trace get-warn-diags)))))))
+ ;; Commands on `events`, beside worker completions. Request threads never
+ ;; construct these records; the functions below submit them.
+diff --git a/lsp/source-controller/source-owner.rkt b/lsp/source-controller/source-owner.rkt
+index eab88c4..7279cd1 100644
+--- a/lsp/source-controller/source-owner.rkt
++++ b/lsp/source-controller/source-owner.rkt
+@@ -47,6 +47,7 @@
+          source-controller-snapshot
+          source-controller-ensure-analysis!
+          source-controller-refresh-analysis!
++         source-controller-refresh-untitled!
+          (struct-out Analysis-Handle)
+          (struct-out Source-Result)
+          (struct-out Source-Failure)
+@@ -210,9 +211,10 @@
+             (Source-Snapshot-revision (Available-Analysis-snapshot available)))
+        (Available-Analysis-completion-evt available)))
  
-   (define (publish-check-syntax result contribution diags)
-     (define trace (CSResult-trace result))
-@@ -205,7 +210,7 @@
-                            (set-SafeDoc-roots! sd roots)
-                            (doc-update-trace! doc trace contribution working-version)
-                            (workspace-set-contribution! current-workspace contribution)
--                           (when (and (get-resyntax-enabled) (resyntax-available?))
-+                           (when (and (not (untitled-uri? uri)) (get-resyntax-enabled) (resyntax-available?))
-                              (scheduler-push-task! token 'resyntax resyntax-task
-                                                    #:publish publish-resyntax))))))
+-;; Editor state for one analysis: open file buffers supply imports, and
+-;; project folders and buffer directories load from source. Reads every buffer
+-;; under its read lock; call without holding a buffer lock.
++;; Editor state for one analysis: open file buffers supply imports, project
++;; folders and buffer directories load from source, and a single workspace
++;; folder is the import base of untitled documents. Reads every buffer under
++;; its read lock; call without holding a buffer lock.
+ (define (analysis-context controller)
+   (define buffers
+     (for/fold ([buffers (hash)])
+@@ -224,7 +226,10 @@
+                          (string->immutable-string (with-read-doc (cdr entry) doc-get-text))))
+           buffers)))
+   (define folders (workspace-folders (Source-Controller-workspace controller)))
+-  (Analysis-Context buffers (append folders (map path-only (hash-keys buffers))) (make-hash)))
++  (Analysis-Context buffers
++                    (append folders (map path-only (hash-keys buffers)))
++                    (make-hash)
++                    (and (= 1 (length folders)) (car folders))))
  
-diff --git a/lsp/text-document.rkt b/lsp/text-document.rkt
-index c86ef0f..99b47cf 100644
---- a/lsp/text-document.rkt
-+++ b/lsp/text-document.rkt
-@@ -6,6 +6,7 @@
-          racket/contract
-          "../common/interfaces.rkt"
-          "../common/json-util.rkt"
-+         "../common/source-document.rkt"
-          "responses.rkt"
-          "safedoc.rkt"
-          "../common/settings.rkt"
-@@ -36,6 +37,8 @@
- (define (did-close! params [notify-client void])
-   (match-define (hash-table ['textDocument (DocItem-js #:uri uri)]) params)
-   (lsp-close-doc! uri)
-+  (when (untitled-uri? uri)
-+    (notify-client "textDocument/publishDiagnostics" (hasheq 'uri uri 'diagnostics '())))
-   (lsp-refresh-analysis! notify-client uri))
+ ;; Whether the accepted analysis of `source`, or the attempt now running for
+ ;; it, has loaded `path`. An attempt that has not reached `path` reads it from
+@@ -273,6 +278,14 @@
+          (for/or ([(path text) (in-hash dependencies)])
+            (not (equal? text (hash-ref buffers path #f)))))))
  
- (define (did-change! notify-client params)
++;; Workspace folders supply the import base of untitled documents.
++(define (source-controller-refresh-untitled! controller)
++  (restart-buffers! controller
++                    (for/list ([entry (in-list (source-store-buffers (Source-Controller-store controller)))]
++                               #:when (regexp-match? #rx"^untitled:" (source-uri (car entry))))
++                      entry))
++  (source-controller-pump! controller))
++
+ (define (source-controller-ensure-analysis! controller snapshot #:refresh? [refresh? #f])
+   (cond
+     [(or (source-controller-stopped? controller) (not (snapshot-current? controller snapshot)))
 diff --git a/lsp/workspace.rkt b/lsp/workspace.rkt
-index 9a9439e..07283e9 100644
+index 78e51a8..9ebcce1 100644
 --- a/lsp/workspace.rkt
 +++ b/lsp/workspace.rkt
-@@ -11,6 +11,7 @@
-          racket/match)
- (require "../common/json-util.rkt"
-          "../common/path-util.rkt"
-+         "../common/source-document.rkt"
-          "../common/interfaces.rkt"
-          "lsp.rkt"
-          "safedoc.rkt"
-@@ -36,7 +37,7 @@
-     (match-define (FileRename #:oldUri old-uri #:newUri _) f)
-     (workspace-remove-path! current-workspace (uri->path old-uri))))
- 
--(define (didChangeWorkspaceFolders params)
-+(define (didChangeWorkspaceFolders params [notify-client void])
-   (match-define (^DidChangeWorkspaceFoldersParams #:event event) params)
-   (match-define (WorkspaceFoldersChangeEvent #:added added #:removed removed) event)
-   (for ([f added])
-@@ -46,7 +47,11 @@
-     (match-define (WorkspaceFolder #:uri uri #:name _) f)
-     (workspace-remove-folder! current-workspace (uri->path uri)))
+@@ -61,7 +61,8 @@
+       (workspace-remove-folder! current-workspace
+                                 (file-uri->identity-path uri))))
    (when (pair? added)
 -    (republish-open-doc-contributions!)))
 +    (republish-open-doc-contributions!))
-+  (lsp-for-each-open-doc
-+    (lambda (sd)
-+      (define uri (with-read-doc sd Doc-uri))
-+      (when (untitled-uri? uri) (lsp-refresh-analysis! notify-client uri)))))
++  (source-controller-refresh-untitled! (current-source-controller)))
  
- (define (didChangeWatchedFiles params)
-   (void))
-diff --git a/common/source-document.rkt b/common/source-document.rkt
-new file mode 100644
-index 0000000..f0fbd49
---- /dev/null
-+++ b/common/source-document.rkt
-@@ -0,0 +1,38 @@
-+#lang racket/base
-+
-+(require file/sha1 net/url racket/path)
-+
-+(provide current-source-documents make-source-documents
-+         untitled-uri? source-document-path source-document-uri source-document-unbased?)
-+
-+;; An immutable view belongs to one analysis. These paths are source identities;
-+;; no placeholder files are created, and they never replace a proposed save path.
-+(define current-source-documents (make-parameter (hash)))
-+(define (untitled-uri? uri) (equal? (url-scheme (string->url uri)) "untitled"))
-+
-+(define (make-source-documents uris roots)
-+  (for/hash ([uri (in-list uris)] #:when (untitled-uri? uri))
-+    (define url (string->url uri))
-+    (define base
-+      (cond [(url-path-absolute? url) (path-only (url->path url))]
-+            [(= (length roots) 1) (car roots)]
-+            [else #f]))
-+    (define path
-+      (simple-form-path
-+        (build-path (or base (find-system-path 'temp-dir))
-+                    (format ".racketeer-untitled-~a.rkt" (sha1 (open-input-string uri))))))
-+    (when (or (file-exists? path) (directory-exists? path) (link-exists? path))
-+      (error 'source-document "Cannot assign an analysis location for ~a" uri))
-+    (values uri (cons path base))))
-+
-+(define (source-document-path uri)
-+  (define source (hash-ref (current-source-documents) uri #f))
-+  (and source (car source)))
-+
-+(define (source-document-uri path)
-+  (for/first ([(uri source) (in-hash (current-source-documents))]
-+              #:when (equal? path (car source))) uri))
-+
-+(define (source-document-unbased? path)
-+  (for/or ([source (in-hash-values (current-source-documents))])
-+    (and (equal? path (car source)) (not (cdr source)))))
+ ;; Status: ignored. Watched-file events do not own the editor buffer or index.
+ (define (didChangeWatchedFiles _params)

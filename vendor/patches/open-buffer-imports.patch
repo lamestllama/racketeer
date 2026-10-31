@@ -1,297 +1,507 @@
-diff --git a/doclib/doc.rkt b/doclib/doc.rkt
-index 142051d..2c57e95 100644
---- a/doclib/doc.rkt
-+++ b/doclib/doc.rkt
-@@ -8,6 +8,7 @@
- (require "../common/interfaces.rkt"
-          "editor.rkt"
-          "../common/path-util.rkt"
-+         "../common/source-snapshot.rkt"
-          "lazy-cache.rkt"
-          "doc-trace.rkt"
-          "check-syntax-compat.rkt"
-@@ -246,6 +247,10 @@
-   (-> Doc? boolean?)
-   (equal? (Doc-version doc) (Doc-trace-version doc)))
- 
-+(define (doc-invalidate-analysis! doc)
-+  (set-Doc-trace-version! doc #f)
-+  (invalidate-resyntax-results! doc))
+diff --git a/common/source-snapshot.rkt b/common/source-snapshot.rkt
+new file mode 100644
+index 0000000..9745104
+--- /dev/null
++++ b/common/source-snapshot.rkt
+@@ -0,0 +1,67 @@
++#lang racket/base
 +
- (define/contract (doc-expand! doc)
-   (-> Doc? boolean?)
-   (define result
-@@ -386,7 +391,8 @@
- (define/contract (doc-get-definition-by-id path submods id)
-   (-> path? (listof symbol?) symbol? (or/c Range? #f))
-   (define doc-text (new lsp-editor%))
--  (send doc-text load-file path)
-+  (define source (source-snapshot-text path))
-+  (if source (send doc-text insert source 0) (send doc-text load-file path))
-   (match (get-def path doc-text submods id)
-     [(cons start end)
-      (Range (abs-pos->Pos doc-text start)
-@@ -1243,6 +1249,7 @@
-          doc-expand
-          doc-update-trace!
-          doc-trace-latest?
-+         doc-invalidate-analysis!
-          doc-expand!
-          doc-resyntax
-          doc-resyntax!
-diff --git a/lsp/lsp.rkt b/lsp/lsp.rkt
-index 69c9fcb..78f8e47 100644
---- a/lsp/lsp.rkt
-+++ b/lsp/lsp.rkt
-@@ -1,6 +1,11 @@
- #lang racket/base
- 
- (require racket/contract
++;; Module loading for one analysis that reads open editor buffers instead of
++;; disk files. Project dependencies are read from source so compiled
++;; intermediates cannot retain an older macro expansion. Libraries outside the
++;; project keep their ordinary compiled loading policy.
++(require racket/list
 +         racket/path
-+         "../common/path-util.rkt"
-+         "../doclib/doc.rkt"
-+         "../workspace/current.rkt"
-+         "../workspace/state.rkt"
-          "safedoc.rkt"
-          "scheduler.rkt")
- 
-@@ -41,7 +46,28 @@
-   (for ([safe-doc (in-list (hash-values open-docs))])
-     (proc safe-doc)))
- 
-+;; Freeze all editor text before scheduling any consumer. A dependency edit can
-+;; change exports or macro expansion without changing the consumer's version.
-+(define (lsp-refresh-analysis! notify-client uri)
-+  (define changed (simple-form-path (uri->path uri)))
-+  (define documents (hash-values open-docs))
-+  (define sources
-+    (for/fold ([sources (hash)]) ([sd (in-list documents)])
-+      (with-read-doc sd
-+        (lambda (doc)
-+          (define path (simple-form-path (uri->path (Doc-uri doc))))
-+          (hash-set sources path
-+                    (and (not (hash-has-key? sources path)) (doc-get-text doc)))))))
-+  (define roots
-+    (append (workspace-folders current-workspace)
-+            (map path-only (hash-keys sources))))
-+  (for ([sd (in-list documents)]
-+        #:when (or (with-read-doc sd (lambda (doc) (equal? changed (simple-form-path (uri->path (Doc-uri doc))))))
-+                   (safedoc-depends-on? sd changed)))
-+    (safedoc-run-check-syntax! notify-client sd #:sources sources #:roots roots)))
++         setup/dirs
++         syntax/modcode)
 +
- (provide lsp-get-doc
-          lsp-open-doc!
-          lsp-close-doc!
-+         lsp-refresh-analysis!
-          lsp-for-each-open-doc)
-diff --git a/lsp/methods.rkt b/lsp/methods.rkt
-index ae13745..1ae59a5 100644
---- a/lsp/methods.rkt
-+++ b/lsp/methods.rkt
-@@ -199,7 +199,9 @@
-                                     (send-notification method params))
-                                   params)]
-         ["textDocument/didClose"
--         (text-document/did-close! params)]
-+         (text-document/did-close! params
-+                                   (lambda (method params)
-+                                     (send-notification method params)))]
-         ["textDocument/didChange"
-          (text-document/did-change! (λ (method params)
-                                       (send-notification method params))
-diff --git a/lsp/safedoc.rkt b/lsp/safedoc.rkt
-index 0297de9..aeb6f23 100644
---- a/lsp/safedoc.rkt
-+++ b/lsp/safedoc.rkt
-@@ -16,6 +16,8 @@
-          "scheduler.rkt"
-          racket/set
-          "../common/json-util.rkt"
-+         "../common/path-util.rkt"
-+         "../common/source-snapshot.rkt"
-          "../common/settings.rkt"
++(provide call-with-source-snapshot)
++
++;; sources: complete normalized path -> buffer text, or #f when two buffers
++;;   claim the same path.
++;; directory: load-relative directory, or #f.
++;; source?: whether a file outside `sources` loads from source.
++;; on-load: receives each module file the expansion loads.
++;; Installed collections keep compiled loading even below a project folder,
++;; for example when a workspace folder contains the Racket installation.
++(define (installed-library? file)
++  (define parts (explode-path file))
++  (for/or ([dir (in-list (filter values (list* (find-collects-dir) (find-pkgs-dir)
++                                               (find-user-collects-dir) (find-user-pkgs-dir)
++                                               (current-library-collection-paths))))])
++    (define root (explode-path (simplify-path (path->complete-path dir) #f)))
++    (and (<= (length root) (length parts)) (equal? root (take parts (length root))))))
++
++(define (call-with-source-snapshot directory sources proc
++                                   #:source? [source? (lambda (_) #f)]
++                                   #:on-load [on-load void])
++  (define ordinary-load (current-load/use-compiled))
++  (define ordinary-open (moddep-current-open-input-file))
++  (define (load-snapshot file expected)
++    (define requested (simple-form-path file))
++    (define legacy (path-replace-extension requested #".ss"))
++    (define full
++      (if (and expected (equal? (path-get-extension requested) #".rkt")
++               (not (hash-has-key? sources requested)) (not (file-exists? requested))
++               (or (hash-has-key? sources legacy) (file-exists? legacy)))
++          legacy requested))
++    (when expected (on-load full))
++    (cond
++      [(and expected (or (hash-has-key? sources full)
++                         (and (file-exists? full) (source? full) (not (installed-library? full)))))
++       ;; A #f-headed request permits independent compiled loading only. Let
++       ;; the resolver request the enclosing source module instead.
++       (unless (and (pair? expected) (not (car expected)))
++         (parameterize ([current-load-relative-directory (path-only full)]
++                        [current-module-declare-source full])
++           (get-module-code full #:sub-path '() #:rkt-try-ss? #f
++                            #:choose (lambda _ 'src) #:compile eval)))]
++      [else (ordinary-load file expected)]))
++  (parameterize ([current-namespace (make-base-namespace)]
++                 [current-directory (or directory (current-directory))]
++                 [current-load-relative-directory directory]
++                 [current-load/use-compiled load-snapshot]
++                 [moddep-current-open-input-file
++                  (lambda (file)
++                    (define full (simple-form-path file))
++                    (cond
++                      [(hash-has-key? sources full)
++                       (define text (hash-ref sources full))
++                       (unless text (error 'source-snapshot "conflicting buffers for ~a" full))
++                       (open-input-string text full)]
++                      [else (ordinary-open file)]))])
++    (proc)))
+diff --git a/lsp/analysis.rkt b/lsp/analysis.rkt
+index dc4717a..4bd02a4 100644
+--- a/lsp/analysis.rkt
++++ b/lsp/analysis.rkt
+@@ -5,6 +5,7 @@
+ ;; keeps that product's trace. Request threads receive an `Analysis-Summary`
+ ;; or an `Analysis-Outcome`. Lifetime and reuse are in `analysis-lifecycle.md`.
+ (require json
++         racket/path
           racket/class
-          racket/contract)
-@@ -34,7 +36,7 @@
- ;; Exported field accessors: SafeDoc-doc, SafeDoc-check-syntax-status.
- ;; Access fields only inside an eliminator that acquired the lock.
- (struct SafeDoc
--  (doc rwlock token check-syntax-status closed?)
-+  (doc rwlock token check-syntax-status closed? analysis sources roots dependencies)
-   #:mutable
+          racket/contract
+          racket/set
+@@ -15,9 +16,14 @@
+          "../doclib/check-syntax.rkt"
+          "../doclib/doc-trace.rkt"
+          "../doclib/internal-types.rkt"
++         "../common/path-util.rkt"
++         "../common/source.rkt"
++         "../common/source-snapshot.rkt"
+          "../workspace/source-store.rkt")
+ 
+ (provide analyze-source
++         current-analysis-context
++         (struct-out Analysis-Context)
+          (struct-out Analysis-Summary)
+          (struct-out Analysis-Product)
+          (struct-out Analysis-Outcome)
+@@ -40,14 +46,34 @@
+ ;; trace: Mutable trace. The source controller is its only consumer.
+ ;; contribution: Workspace contribution after successful analysis of a file.
+ ;;   `#f` when the run produced no facts or the source has no file path.
++;; dependencies: Module file the expansion loaded -> the buffer text it read,
++;;   or `#f` when it read the file. `#f` when unknown.
+ (struct/contract Analysis-Product
+   ([succeeded? boolean?]
+    [summary (or/c #f Analysis-Summary?)]
+    [diagnostics (listof jsexpr?)]
+    [trace (is-a?/c build-trace%)]
+-   [contribution (or/c #f Doc-Contribution?)])
++   [contribution (or/c #f Doc-Contribution?)]
++   [dependencies (or/c #f (hash/c path? (or/c #f string?) #:immutable #t))])
    #:transparent)
  
-@@ -43,7 +45,7 @@
-   ;; Token identifies this opened document instance in scheduler/query state.
-   (define token (gensym 'doc-token))
-   (scheduler-register-doc! token)
--  (SafeDoc doc (make-rwlock) token #f #f))
-+  (SafeDoc doc (make-rwlock) token #f #f #f (hash) '() #f))
- 
- (define (with-read-doc safe-doc proc)
-   (call-with-read-lock
-@@ -55,6 +57,22 @@
-     (SafeDoc-rwlock safe-doc)
-     (λ () (proc (SafeDoc-doc safe-doc)))))
- 
-+(define (with-read-analysis safe-doc proc)
-+  (with-read-safedoc safe-doc
-+    (lambda (sd)
-+      (define doc (SafeDoc-doc sd))
-+      (call-with-source-snapshot (uri->path (Doc-uri doc)) (SafeDoc-sources sd)
-+        #:source? (lambda (file)
-+                    (for/or ([root (in-list (SafeDoc-roots sd))]) (directory-contains? root file)))
-+        (lambda () (proc doc))))))
++;; Immutable view of the session's editor state for one analysis attempt.
++;;
++;; buffers: Complete normalized path -> open buffer text, or `#f` when two
++;;   buffers claim one path. Imports read these instead of disk files.
++;; roots: Directories whose modules load from source rather than from
++;;   compiled intermediates.
++;; loaded: Mutable table this attempt's worker fills while it expands, from
++;;   module file to the buffer text it read or `#f`. One table per attempt.
++(struct/contract Analysis-Context
++  ([buffers (hash/c path? (or/c #f string?) #:immutable #t)]
++   [roots (listof path?)]
++   [loaded hash?])
++  #:transparent)
 +
-+(define (safedoc-depends-on? safe-doc path)
-+  (with-read-safedoc safe-doc
-+    (lambda (sd)
-+      (or (not (SafeDoc-dependencies sd))
-+          (safedoc-check-syntax-running? sd)
-+          (hash-has-key? (SafeDoc-dependencies sd) path)))))
++;; Set by the scheduler for each attempt. `#f` analyses with ordinary loading.
++(define current-analysis-context (make-parameter #f))
 +
- (define (with-read-safedoc safe-doc proc)
-   (call-with-read-lock
-     (SafeDoc-rwlock safe-doc)
-@@ -119,7 +137,8 @@
-                    (eq? finished-status (SafeDoc-check-syntax-status sd)))))))
+ ;; Terminal result of one Check Syntax or Resyntax attempt.
+ ;;
+ ;; state: `succeeded` when Check Syntax produced facts, or when Resyntax
+@@ -109,8 +135,21 @@
+ ;; the trace on that document before copying definition and hover facts.
+ ;; Those extractors read the document after that installation.
+ (define (analyze-source snapshot)
+-  (define doc (make-source-doc (Source-Snapshot-source snapshot) (Source-Snapshot-text snapshot)))
+-  (define check-syntax-result (doc-check-syntax doc))
++  (define source (Source-Snapshot-source snapshot))
++  (define doc (make-source-doc source (Source-Snapshot-text snapshot)))
++  (define context (current-analysis-context))
++  (define check-syntax-result
++    (if context
++        (let ([roots (Analysis-Context-roots context)])
++          (call-with-source-snapshot
++            (let ([file (source-file-path source)]) (and file (path-only file)))
++            (Analysis-Context-buffers context)
++            #:source? (lambda (path) (for/or ([root (in-list roots)]) (directory-contains? root path)))
++            #:on-load (lambda (path)
++                        (hash-set! (Analysis-Context-loaded context) path
++                                   (hash-ref (Analysis-Context-buffers context) path #f)))
++            (lambda () (doc-check-syntax doc))))
++        (doc-check-syntax doc)))
+   (define trace (CSResult-trace check-syntax-result))
+   (define succeeded? (CSResult-succeed? check-syntax-result))
+   (define contribution (and succeeded? (send trace get-contribution)))
+@@ -120,4 +159,6 @@
+                     (and succeeded? (Analysis-Summary (doc-definition-ranges doc)
+                                                       (doc-hover-summaries doc)))
+                     (freeze-json (->jsexpr (set->list (send trace get-warn-diags))))
+-                    trace contribution))
++                    trace contribution
++                    (and context
++                         (make-immutable-hash (hash->list (Analysis-Context-loaded context))))))
+diff --git a/lsp/source-controller/analysis-scheduler.rkt b/lsp/source-controller/analysis-scheduler.rkt
+index 2bc7de5..92b2f57 100644
+--- a/lsp/source-controller/analysis-scheduler.rkt
++++ b/lsp/source-controller/analysis-scheduler.rkt
+@@ -13,7 +13,9 @@
+ (provide Analysis-Scheduler?
+          make-analysis-scheduler
+          scheduled-analysis-event
++         scheduled-analysis-context
+          request-analysis!
++         restart-analysis!
+          schedule-resyntax!
+          cancel-source-analysis!
+          stop-analysis-scheduler!
+@@ -22,9 +24,11 @@
+          finish-analysis-task!)
  
- ;; The only place that actually runs check-syntax.
--(define (safedoc-run-check-syntax! notify-client safe-doc)
-+(define (safedoc-run-check-syntax! notify-client safe-doc
-+                                  #:sources [sources (hash)] #:roots [roots '()])
-   (define-values (uri working-version text-buffer-copy token)
-     (with-read-safedoc safe-doc
+ ;; parent-completion identifies the accepted analysis refined by Resyntax.
++;; context is the editor state imports read, or #f for ordinary loading.
+ ;; worker is #f until execution starts. Terminal attempts leave the registry.
+ (struct/contract Analysis-Attempt
+   ([snapshot Source-Snapshot?]
++   [context (or/c #f Analysis-Context?)]
+    [kind (or/c 'analysis 'resyntax)]
+    [parent-completion (or/c #f evt?)]
+    [completion Completion-Event?]
+@@ -62,9 +66,15 @@
+     (hash-ref (Analysis-Scheduler-attempts scheduler) (cons (source-id source) 'analysis) #f))
+   (and attempt (Analysis-Attempt-completion attempt)))
+ 
+-(define (enqueue! scheduler snapshot kind parent-completion)
++;; Import context of the queued or running analysis for `source`, or #f.
++(define (scheduled-analysis-context scheduler source)
+   (define attempt
+-    (Analysis-Attempt snapshot kind parent-completion (make-completion-event) 'queued #f))
++    (hash-ref (Analysis-Scheduler-attempts scheduler) (cons (source-id source) 'analysis) #f))
++  (and attempt (Analysis-Attempt-context attempt)))
++
++(define (enqueue! scheduler snapshot kind parent-completion [context #f])
++  (define attempt
++    (Analysis-Attempt snapshot context kind parent-completion (make-completion-event) 'queued #f))
+   (hash-set! (Analysis-Scheduler-attempts scheduler) (attempt-key attempt) attempt)
+   (set-Analysis-Scheduler-queue! scheduler
+                                  (append (Analysis-Scheduler-queue scheduler) (list attempt)))
+@@ -72,7 +82,7 @@
+ 
+ ;; Requests for the same revision share an attempt. A successor revision
+ ;; supersedes outstanding work for this source, including its Resyntax.
+-(define (request-analysis! scheduler snapshot)
++(define (request-analysis! scheduler snapshot #:context [context #f])
+   (define source (Source-Snapshot-source snapshot))
+   (define active
+     (hash-ref (Analysis-Scheduler-attempts scheduler) (cons (source-id source) 'analysis) #f))
+@@ -84,7 +94,16 @@
+      (Analysis-Attempt-completion active)]
+     [else
+      (cancel-source-analysis! scheduler source)
+-     (enqueue! scheduler snapshot 'analysis #f)]))
++     (enqueue! scheduler snapshot 'analysis #f context)]))
++
++;; Imported text changed under an unchanged revision. Supersede outstanding
++;; work for this source with a new attempt that reads the given context.
++(define (restart-analysis! scheduler snapshot #:context context)
++  (cond
++    [(Analysis-Scheduler-stopped? scheduler) (ready-evt (Analysis-Outcome 'stopped 'shutdown))]
++    [else
++     (cancel-source-analysis! scheduler (Source-Snapshot-source snapshot) 'dependency-changed)
++     (enqueue! scheduler snapshot 'analysis #f context)]))
+ 
+ (define (schedule-resyntax! scheduler snapshot parent-completion)
+   (when (and (not (Analysis-Scheduler-stopped? scheduler))
+@@ -146,7 +165,9 @@
+     (start-supervised-worker!
+       (Analysis-Scheduler-events scheduler) (Analysis-Scheduler-timeout scheduler)
+       (if analysis?
+-          (lambda () ((Analysis-Scheduler-analyze scheduler) snapshot))
++          (lambda ()
++            (parameterize ([current-analysis-context (Analysis-Attempt-context attempt)])
++              ((Analysis-Scheduler-analyze scheduler) snapshot)))
+           (lambda () ((Analysis-Scheduler-resyntax scheduler)
+                       (Source-Snapshot-text snapshot) (Source-Snapshot-uri snapshot))))
+       #:fail (lambda (reason) (Analysis-Outcome 'failed reason))
+diff --git a/lsp/source-controller/source-owner.rkt b/lsp/source-controller/source-owner.rkt
+index a4e6534..eab88c4 100644
+--- a/lsp/source-controller/source-owner.rkt
++++ b/lsp/source-controller/source-owner.rkt
+@@ -8,6 +8,7 @@
+          racket/class
+          racket/contract
+          racket/match
++         racket/path
+          "../../common/debug.rkt"
+          "../../common/source.rkt"
+          "../../common/settings.rkt"
+@@ -15,6 +16,7 @@
+          "../../doclib/external/resyntax.rkt"
+          "../../workspace/source-store.rkt"
+          "../../workspace/current.rkt"
++         "../../workspace/state.rkt"
+          "../analysis.rkt"
+          "../safedoc.rkt"
+          "../resyntax-place.rkt"
+@@ -74,8 +76,13 @@
+ 
+ ;; Private composition root. Subsystem representations and mutable fields
+ ;; are available only through their own operations.
++;;
++;; dependencies: Source-Id of an open buffer -> module files its accepted
++;;   analysis loaded, or #f when unknown. Consumer-only.
+ (struct/contract Source-Controller
+-  ([store Source-Store?]
++  ([workspace any/c]
++   [dependencies (hash/c Source-Id? (or/c #f hash?) #:immutable #f)]
++   [store Source-Store?]
+    [events async-channel?]
+    [shutdown semaphore?]
+    [reader Disk-Reader?]
+@@ -95,7 +102,7 @@
+                                 #:closed-analysis-limit [closed-analysis-limit 64]
+                                 #:resyntax [resyntax (and (resyntax-available?) run-resyntax/in-place)])
+   (define events (make-async-channel))
+-  (Source-Controller (make-source-store) events (make-semaphore 0)
++  (Source-Controller workspace (make-hash) (make-source-store) events (make-semaphore 0)
+                      (make-disk-reader events #:read read #:timeout read-timeout)
+                      (make-analysis-scheduler events #:analyze analyze #:resyntax resyntax
+                                               #:slots slots #:timeout analysis-timeout)
+@@ -203,6 +210,69 @@
+             (Source-Snapshot-revision (Available-Analysis-snapshot available)))
+        (Available-Analysis-completion-evt available)))
+ 
++;; Editor state for one analysis: open file buffers supply imports, and
++;; project folders and buffer directories load from source. Reads every buffer
++;; under its read lock; call without holding a buffer lock.
++(define (analysis-context controller)
++  (define buffers
++    (for/fold ([buffers (hash)])
++              ([entry (in-list (source-store-buffers (Source-Controller-store controller)))])
++      (define path (source-file-path (car entry)))
++      (if path
++          (hash-set buffers path
++                    (and (not (hash-has-key? buffers path))
++                         (string->immutable-string (with-read-doc (cdr entry) doc-get-text))))
++          buffers)))
++  (define folders (workspace-folders (Source-Controller-workspace controller)))
++  (Analysis-Context buffers (append folders (map path-only (hash-keys buffers))) (make-hash)))
++
++;; Whether the accepted analysis of `source`, or the attempt now running for
++;; it, has loaded `path`. An attempt that has not reached `path` reads it from
++;; its own context and is checked again at acceptance.
++(define (loads? controller source path)
++  (define accepted (hash-ref (Source-Controller-dependencies controller) (source-id source) #f))
++  (define context (scheduled-analysis-context (Source-Controller-scheduler controller) source))
++  (or (and accepted (hash-has-key? accepted path))
++      (and context (hash-has-key? (Analysis-Context-loaded context) path))))
++
++;; Restart analysis of every other open buffer that loaded `changed`. Exact
++;; availability is cleared first, so queries wait for facts computed from the
++;; new text.
++(define (refresh-dependents! controller changed)
++  (define path (source-file-path changed))
++  (when path
++    (restart-buffers! controller
++                      (for/list ([entry (in-list (source-store-buffers (Source-Controller-store controller)))]
++                                 #:unless (equal? (source-id (car entry)) (source-id changed))
++                                 #:when (loads? controller (car entry) path))
++                        entry))
++    (source-controller-pump! controller)))
++
++;; Enqueue fresh attempts; the caller pumps.
++(define (restart-buffers! controller entries)
++  (unless (null? entries)
++    (define context (analysis-context controller))
++    (define scheduler (Source-Controller-scheduler controller))
++    (for ([entry (in-list entries)])
++      (define snapshot (source-controller-snapshot controller (car entry)))
++      (when snapshot
++        (with-write-safedoc (cdr entry)
++          (lambda (sd)
++            (set-SafeDoc-available! sd #f)
++            (set-SafeDoc-analysis-completion!
++              sd (restart-analysis! scheduler snapshot
++                                    #:context (struct-copy Analysis-Context context
++                                                           [loaded (make-hash)])))))))))
++
++;; An analysis read its imports from the buffers open when it started. Any
++;; that have since changed, opened or closed make the result stale.
++(define (stale-imports? controller product)
++  (define dependencies (Analysis-Product-dependencies product))
++  (and dependencies
++       (let ([buffers (Analysis-Context-buffers (analysis-context controller))])
++         (for/or ([(path text) (in-hash dependencies)])
++           (not (equal? text (hash-ref buffers path #f)))))))
++
+ (define (source-controller-ensure-analysis! controller snapshot #:refresh? [refresh? #f])
+   (cond
+     [(or (source-controller-stopped? controller) (not (snapshot-current? controller snapshot)))
+@@ -212,7 +282,8 @@
+      (define scheduler (Source-Controller-scheduler controller))
+      (define active (scheduled-analysis-event scheduler source))
+      (define reused (and (not refresh?) (not active) (reusable-completion controller snapshot)))
+-     (define event (or reused (request-analysis! scheduler snapshot)))
++     (define event (or reused (request-analysis! scheduler snapshot
++                                                 #:context (analysis-context controller))))
+      (define buffer (source-buffer controller source))
+      (when buffer
+        (with-write-safedoc buffer (lambda (sd) (set-SafeDoc-analysis-completion! sd event))))
+@@ -246,6 +317,9 @@
+                        (if (source-file-path source) contribution (not contribution)))))
+     (error 'record-analysis! "successful analysis requires facts and a file-only contribution"))
+   (define buffer (source-buffer controller source))
++  (when buffer
++    (hash-set! (Source-Controller-dependencies controller) (source-id source)
++               (Analysis-Product-dependencies product)))
+   (cond
+     [buffer
+      (with-write-safedoc buffer
+@@ -266,6 +340,9 @@
+       (cond
+         [(not (snapshot-current? controller snapshot)) (Analysis-Outcome 'stopped 'source-changed)]
+         [(Analysis-Outcome? result) result]
++        [(and (eq? kind 'analysis) (source-buffer controller source) (stale-imports? controller result))
++         (restart-buffers! controller (list (cons source (source-buffer controller source))))
++         (Analysis-Outcome 'stopped 'dependency-changed)]
+         [(eq? kind 'analysis) (record-analysis! controller snapshot result completion)]
+         [else
+          (define buffer (source-buffer controller source))
+@@ -277,6 +354,8 @@
+   (define succeeded? (eq? 'succeeded (Analysis-Outcome-state outcome)))
+   (case kind
+     [(analysis)
++     (when (eq? 'failed (Analysis-Outcome-state outcome))
++       (hash-set! (Source-Controller-dependencies controller) (source-id source) #f))
+      (unless succeeded? (discard-analysis! controller source))
+      (when (and succeeded? (source-buffer controller source) (get-resyntax-enabled))
+        (schedule-resyntax! (Source-Controller-scheduler controller) snapshot completion))]
+@@ -311,7 +390,8 @@
+     (with-write-safedoc safe-doc
        (lambda (sd)
-@@ -131,12 +150,16 @@
+         (publish-document-analysis! (Source-Controller-publisher controller) sd snapshot restored-product))))
+-  (source-controller-refresh-analysis! controller source))
++  (source-controller-refresh-analysis! controller source)
++  (refresh-dependents! controller source))
  
-   ;; Identity distinguishes reruns at the same document version.
-   (define running-status (Check-Syntax-Status 'running working-version))
-+  (define dependencies (make-hash))
-   (with-current-safedoc safe-doc working-version
-                         (lambda (sd)
-+                          (doc-invalidate-analysis! (SafeDoc-doc sd))
-+                          (set-SafeDoc-analysis! sd running-status)
-                           (set-SafeDoc-check-syntax-status! sd running-status)))
+ ;; Clear the buffer's fresh completion and available result. The document
+ ;; trace stays in place.
+@@ -336,7 +416,8 @@
+         (cancel-source-analysis! (Source-Controller-scheduler controller) source)
+         (mutate-doc (SafeDoc-doc sd))
+         source)))
+-  (source-controller-refresh-analysis! controller source))
++  (source-controller-refresh-analysis! controller source)
++  (refresh-dependents! controller source))
  
-   (define (fail-analysis e)
--    (publish-analysis! safe-doc running-status 'failed void)
-+    (publish-analysis! safe-doc running-status 'failed
-+                       (lambda (sd) (set-SafeDoc-dependencies! sd #f)))
-     ((error-display-handler)
-      (if (exn? e) (exn-message e) (format "check-syntax raised: ~e" e)) e))
+ ;; Drop buffer authority without a read. File content becomes unknown; virtual
+ ;; sources are removed because they have no disk fallback. Retain a completed
+@@ -358,8 +439,10 @@
+         (clear-analysis-projections! sd)
+         (Doc-uri (SafeDoc-doc sd)))))
+   (cancel-source-analysis! (Source-Controller-scheduler controller) source)
++  (hash-remove! (Source-Controller-dependencies controller) (source-id source))
+   (withdraw-document-analysis! (Source-Controller-publisher controller) source uri)
+   (cancel-read! controller source)
++  (refresh-dependents! controller source)
+   ;; Invalidation freed slots; start queued attempts for other sources.
+   (source-controller-pump! controller))
  
-@@ -147,21 +170,26 @@
-   (define (publish-resyntax resyntax-results)
-     (with-current-safedoc safe-doc working-version
-                           (lambda (sd)
--                            (define doc (SafeDoc-doc sd))
--                            (doc-update-resyntax-result! doc resyntax-results)
--                            (send-doc-diagnostics notify-client doc))))
-+                            (when (eq? (SafeDoc-analysis sd) running-status)
-+                              (define doc (SafeDoc-doc sd))
-+                              (doc-update-resyntax-result! doc resyntax-results)
-+                              (send-doc-diagnostics notify-client doc)))))
+@@ -380,6 +463,7 @@
+     (cancel-source-analysis! (Source-Controller-scheduler controller) source)
+     (cancel-read! controller source)
+     (when buffer (source-controller-refresh-analysis! controller source))
++    (refresh-dependents! controller source)
+     ;; Invalidation freed slots; start queued attempts for other sources.
+     (source-controller-pump! controller)))
  
-   (define (check-syntax-task)
--    (define text (send text-buffer-copy get-text))
--    (define lexer-state (build-lexer-state text uri))
--    (define result (doc-expand uri text-buffer-copy lexer-state))
--    (define trace (CSResult-trace result))
--    ;; Contribution derivation reads the candidate trace and frozen text. Keep
--    ;; it outside the SafeDoc write lock so installation remains a short swap.
--    (define contribution
--      (and (CSResult-succeed? result)
--           (send trace get-contribution)))
--    (values result contribution (set->list (send trace get-warn-diags))))
-+    (call-with-source-snapshot (uri->path uri) sources
-+      #:source? (lambda (file) (for/or ([root (in-list roots)]) (directory-contains? root file)))
-+      #:on-load (lambda (file) (hash-set! dependencies file #t))
-+      (lambda ()
-+        (define text (send text-buffer-copy get-text))
-+        (define lexer-state (build-lexer-state text uri))
-+        (define result (doc-expand uri text-buffer-copy lexer-state))
-+        (define trace (CSResult-trace result))
-+        ;; Derive contributions outside the document lock; publication only swaps
-+        ;; the accepted trace and facts into place.
-+        (define contribution
-+          (and (CSResult-succeed? result)
-+               (send trace get-contribution)))
-+        (values result contribution (set->list (send trace get-warn-diags))))))
+diff --git a/tests/lsp/analysis-controller-test.rkt b/tests/lsp/analysis-controller-test.rkt
+index 9ceb442..22c54de 100644
+--- a/tests/lsp/analysis-controller-test.rkt
++++ b/tests/lsp/analysis-controller-test.rkt
+@@ -610,7 +610,7 @@
+         #:analyze (lambda (snapshot)
+                     (define product ((controlled-analyzer probes) snapshot))
+                     (if fail-next?
+-                        (Analysis-Product #f #f '() (Analysis-Product-trace product) #f)
++                        (Analysis-Product #f #f '() (Analysis-Product-trace product) #f #f)
+                         product)))
+       (lambda (session)
+         (define path (build-path scratch "unchanged-client-version.rkt"))
+@@ -663,7 +663,7 @@
+                     (define path (source-file-path (Source-Snapshot-source snapshot)))
+                     (if (regexp-match? #rx"bad-product" (path->string path))
+                         (Analysis-Product #t (Analysis-Product-summary product) '()
+-                                          (Analysis-Product-trace product) #f)
++                                          (Analysis-Product-trace product) #f #f)
+                         product)))
+       (lambda (session)
+         (define a (build-path scratch "bad-product.rkt"))
+diff --git a/tests/lsp/closed-analysis-test.rkt b/tests/lsp/closed-analysis-test.rkt
+index b95ee0b..1dd4ebf 100644
+--- a/tests/lsp/closed-analysis-test.rkt
++++ b/tests/lsp/closed-analysis-test.rkt
+@@ -25,7 +25,7 @@
+       [(errors)
+        (define product (analyze-source snapshot))
+        (Analysis-Product #f #f (list (hasheq 'message "fresh analysis error"))
+-                         (Analysis-Product-trace product) #f)]
++                         (Analysis-Product-trace product) #f #f)]
+       [else (analyze-source snapshot)])))
  
-   (define (publish-check-syntax result contribution diags)
-     (define trace (CSResult-trace result))
-@@ -169,9 +197,12 @@
-                        (if (CSResult-succeed? result) 'succeeded 'failed)
-                        (lambda (sd)
-                          (define doc (SafeDoc-doc sd))
-+                         (set-SafeDoc-dependencies! sd (make-immutable-hash (hash->list dependencies)))
-                          (send-diagnostics notify-client uri diags)
+ ;; Real expansion can exceed the short waits used for gate coordination.
+diff --git a/workspace/source-store.rkt b/workspace/source-store.rkt
+index aefbdd9..1450227 100644
+--- a/workspace/source-store.rkt
++++ b/workspace/source-store.rkt
+@@ -26,6 +26,7 @@
+          make-source-store
+          source-store-view
+          source-store-buffer
++         source-store-buffers
+          source-store-open!
+          source-store-edit!
+          source-store-close!
+@@ -136,6 +137,12 @@
+   (define record (record-for store source))
+   (and record (Source-Record-buffer record)))
  
-                          (when (CSResult-succeed? result)
-+                           (set-SafeDoc-sources! sd sources)
-+                           (set-SafeDoc-roots! sd roots)
-                            (doc-update-trace! doc trace contribution working-version)
-                            (workspace-set-contribution! current-workspace contribution)
-                            (when (and (get-resyntax-enabled) (resyntax-available?))
-@@ -192,6 +223,8 @@
-          safedoc-run-check-syntax!
-          safedoc-check-syntax-running?
-          with-read-doc
-+         with-read-analysis
-+         safedoc-depends-on?
-          with-write-doc
-          with-read-safedoc
-          with-write-safedoc)
-diff --git a/lsp/text-document.rkt b/lsp/text-document.rkt
-index cf63ddf..c86ef0f 100644
---- a/lsp/text-document.rkt
-+++ b/lsp/text-document.rkt
-@@ -31,11 +31,12 @@
-   (match-define (hash-table ['textDocument (^DocItem #:uri uri #:version version #:text text)]) params)
-   (fetch-configuration request-client uri)
-   (define safe-doc (lsp-open-doc! uri text version))
--  (safedoc-run-check-syntax! notify-client safe-doc))
-+  (lsp-refresh-analysis! notify-client uri))
- 
--(define (did-close! params)
-+(define (did-close! params [notify-client void])
-   (match-define (hash-table ['textDocument (DocItem-js #:uri uri)]) params)
--  (lsp-close-doc! uri))
-+  (lsp-close-doc! uri)
-+  (lsp-refresh-analysis! notify-client uri))
- 
- (define (did-change! notify-client params)
-   (match-define (hash-table ['textDocument (^DocIdentifier #:version version #:uri uri)]
-@@ -60,7 +61,7 @@
- 
-       (doc-update-version! doc version)))
- 
--  (safedoc-run-check-syntax! notify-client safe-doc))
-+  (lsp-refresh-analysis! notify-client uri))
- 
- ;; Hover request
- ;; Returns an object conforming to the Hover interface, to
-@@ -135,7 +136,7 @@
-                  ['position (as-Pos pos)])
-      (define safe-doc (lsp-get-doc uri))
-      (define result
--       (with-read-doc safe-doc
-+       (with-read-analysis safe-doc
-          (λ (doc) (doc-definition doc uri pos))))
-      (success/enc id result)]
-     [_
-@@ -388,7 +389,7 @@
-   did-open!
-   did-change!
-   (contract-out
--    [did-close! (jsexpr? . -> . void?)]
-+    [did-close! (->* (jsexpr?) ((-> string? jsexpr? void?)) void?)]
-     [hover (exact-nonnegative-integer? jsexpr? . -> . jsexpr?)]
-     [code-action (exact-nonnegative-integer? jsexpr? . -> . jsexpr?)]
-     [completion (exact-nonnegative-integer? jsexpr? . -> . jsexpr?)]
++;; Open buffers as (cons source buffer), in no particular order.
++(define (source-store-buffers store)
++  (for/list ([record (in-hash-values (Source-Store-table store))]
++             #:when (Source-Record-buffer record))
++    (cons (Source-View-source (Source-Record-view record)) (Source-Record-buffer record))))
++
+ ;; Install the complete successor record before posting the replaced view's
+ ;; signal, so a waiter that wakes always observes the new record.
+ (define (replace-view! store source origin content-state buffer disk-text)
 diff --git a/workspace/state.rkt b/workspace/state.rkt
-index f2469eb..4c04e67 100644
+index 8dab376..922f6e1 100644
 --- a/workspace/state.rkt
 +++ b/workspace/state.rkt
 @@ -12,6 +12,7 @@
@@ -313,66 +523,3 @@ index f2469eb..4c04e67 100644
  (define/contract (workspace-set-contribution! workspace contribution)
    (-> Workspace? Doc-Contribution? void?)
    (define path (Doc-Contribution-path contribution))
-diff --git a/common/source-snapshot.rkt b/common/source-snapshot.rkt
-new file mode 100644
-index 0000000..987b357
---- /dev/null
-+++ b/common/source-snapshot.rkt
-@@ -0,0 +1,57 @@
-+#lang racket/base
-+
-+(require racket/path
-+         syntax/modcode)
-+
-+(provide call-with-source-snapshot source-snapshot-text)
-+
-+(define current-sources (make-parameter (hash)))
-+(define (source-snapshot-text path)
-+  (define full (simple-form-path path))
-+  (define text (hash-ref (current-sources) full #f))
-+  (when (and (not text) (hash-has-key? (current-sources) full))
-+    (error 'source-snapshot "conflicting buffers for ~a" full))
-+  text)
-+
-+;; Loading is scoped to one analysis. Project dependencies are read from source
-+;; so compiled intermediates cannot retain an older macro expansion. Libraries
-+;; outside that scope keep their ordinary compiled loading policy.
-+(define (call-with-source-snapshot path sources proc
-+                                   #:source? [source? (lambda (_) #f)]
-+                                   #:on-load [on-load void])
-+  (define ordinary-load (current-load/use-compiled))
-+  (define ordinary-open (moddep-current-open-input-file))
-+  (define (load-snapshot file expected)
-+    (define requested (simple-form-path file))
-+    (define legacy (path-replace-extension requested #".ss"))
-+    (define full
-+      (if (and expected (equal? (path-get-extension requested) #".rkt")
-+               (not (hash-has-key? sources requested)) (not (file-exists? requested))
-+               (or (hash-has-key? sources legacy) (file-exists? legacy)))
-+          legacy requested))
-+    (when expected (on-load full))
-+    (cond
-+      [(and expected (or (hash-has-key? sources full) (and (file-exists? full) (source? full))))
-+       ;; A #f-headed request permits independent compiled loading only. Let
-+       ;; the resolver request the enclosing source module instead.
-+       (unless (and (pair? expected) (not (car expected)))
-+         (parameterize ([current-load-relative-directory (path-only full)]
-+                        [current-module-declare-source full])
-+           (get-module-code full #:sub-path '() #:rkt-try-ss? #f
-+                            #:choose (lambda _ 'src) #:compile eval)))]
-+      [else (ordinary-load file expected)]))
-+  (parameterize ([current-namespace (make-base-namespace)]
-+                 [current-sources sources]
-+                 [current-directory (path-only path)]
-+                 [current-load-relative-directory (path-only path)]
-+                 [current-load/use-compiled load-snapshot]
-+                 [moddep-current-open-input-file
-+                  (lambda (file)
-+                    (define full (simple-form-path file))
-+                    (cond
-+                      [(hash-has-key? sources full)
-+                       (define text (hash-ref sources full))
-+                       (unless text (error 'source-snapshot "conflicting buffers for ~a" full))
-+                       (open-input-string text full)]
-+                      [else (ordinary-open file)]))])
-+    (proc)))

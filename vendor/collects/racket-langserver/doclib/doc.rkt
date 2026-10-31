@@ -7,11 +7,9 @@
 
 (require "../common/interfaces.rkt"
          "editor.rkt"
-         "../common/path-util.rkt"
-         "../common/source-snapshot.rkt"
+         "../common/source.rkt"
          "lazy-cache.rkt"
          "doc-trace.rkt"
-         "check-syntax-compat.rkt"
          "formatting.rkt"
          (only-in "formatter/fmt.rkt" empty-fmt-settings)
          "internal-types.rkt"
@@ -43,11 +41,10 @@
          "external/resyntax.rkt"
          "docs-helpers.rkt"
          "documentation-parser.rkt"
-         drracket/check-syntax
          racket/format)
 
 (struct/contract Doc
-  ([uri string?]
+  ([source Source?]
    [text (is-a?/c lsp-editor%)]
    [trace (is-a?/c build-trace%)]
    [contribution (or/c #f Doc-Contribution?)]
@@ -57,7 +54,7 @@
    [lexer-state (lazy-cache-of LexerState?)])
   #:mutable)
 
-(define (make-Doc #:uri uri
+(define (make-Doc #:source source
                   #:text text
                   #:trace trace
                   #:contribution [contribution #f]
@@ -65,7 +62,7 @@
                   #:trace-version [trace-version #f]
                   #:resyntax-results [resyntax-results (list)]
                   #:lexer-state [lexer-state (make-lazy-cache)])
-  (Doc uri
+  (Doc source
        text
        trace
        contribution
@@ -74,20 +71,29 @@
        resyntax-results
        lexer-state))
 
+(define (Doc-uri doc)
+  (source-uri (Doc-source doc)))
+
 (define/contract (make-doc uri text [version 0])
   (->* (string? string?)
        (exact-nonnegative-integer?)
        Doc?)
+  (make-source-doc (uri->source uri) text version))
+
+(define/contract (make-source-doc source text [version 0])
+  (->* (Source? string?)
+       (exact-nonnegative-integer?)
+       Doc?)
   (define doc-text (new lsp-editor%))
   (send doc-text insert text 0)
-  (define lexer-state (build-lexer-state text uri))
+  (define lexer-state (build-lexer-state text (source-uri source)))
   ;; the init trace should not be #f
   (define doc-trace
     (new build-trace%
-      [src (uri->path uri)]
+      [source source]
       [doc-text doc-text]
       [lexer-state lexer-state]))
-  (make-Doc #:uri uri
+  (make-Doc #:source source
             #:text doc-text
             #:trace doc-trace
             #:version version))
@@ -151,7 +157,7 @@
 
 (define/contract (doc-update-uri! doc new-uri)
   (-> Doc? string? void?)
-  (set-Doc-uri! doc new-uri))
+  (set-Doc-source! doc (uri->source new-uri)))
 
 (define/contract (doc-reset! doc new-text)
   (-> Doc? string? void?)
@@ -229,34 +235,49 @@
                                 (text-edit-end doc edit)
                                 (TextEdit-newText edit)))))
 
-(define/contract (doc-expand uri doc-text lexer-state)
-  (-> string? (is-a?/c lsp-editor%) LexerState? CSResult?)
-  (check-syntax uri doc-text lexer-state))
+(define/contract (doc-expand source doc-text lexer-state)
+  (-> Source? (is-a?/c lsp-editor%) LexerState? CSResult?)
+  (check-syntax source doc-text lexer-state))
 
 (define/contract (doc-update-trace! doc new-trace new-contribution new-version)
   (-> Doc?
       (is-a?/c build-trace%)
-      Doc-Contribution?
+      (or/c #f Doc-Contribution?)
       exact-nonnegative-integer?
       void?)
   (set-Doc-trace! doc new-trace)
   (set-Doc-contribution! doc new-contribution)
   (set-Doc-trace-version! doc new-version))
 
+;; Release a trace before transferring it to retained storage. Old SafeDoc
+;; holders must never mutate the trace subsequently installed in a new buffer.
+(define/contract (doc-detach-analysis! doc)
+  (-> Doc? void?)
+  (set-Doc-trace! doc
+                  (new build-trace%
+                    [source (Doc-source doc)]
+                    [doc-text (Doc-text doc)]
+                    [lexer-state (doc-lexer-state doc)]))
+  (set-Doc-contribution! doc #f)
+  (set-Doc-trace-version! doc #f)
+  (invalidate-resyntax-results! doc))
+
 (define/contract (doc-trace-latest? doc)
   (-> Doc? boolean?)
   (equal? (Doc-version doc) (Doc-trace-version doc)))
 
-(define (doc-invalidate-analysis! doc)
-  (set-Doc-trace-version! doc #f)
-  (invalidate-resyntax-results! doc))
+;; Extract while the worker exclusively owns an unedited, completed Doc.
+;; Shared queries retain ranges, never the mutable declaration service.
+(define/contract (doc-definition-ranges doc)
+  (-> Doc? (hash/c Module-Binding? Range? #:immutable #t))
+  (for/hash ([(binding location) (in-hash (if (Doc-contribution doc)
+                                              (Doc-Contribution-definitions (Doc-contribution doc))
+                                              (hash)))])
+    (values binding (Location-range location))))
 
 (define/contract (doc-expand! doc)
   (-> Doc? boolean?)
-  (define result
-    (doc-expand (Doc-uri doc)
-                (Doc-text doc)
-                (doc-lexer-state doc)))
+  (define result (doc-check-syntax doc))
   (define new-trace (CSResult-trace result))
   (cond [(CSResult-succeed? result)
          (define new-contribution (send new-trace get-contribution))
@@ -266,6 +287,10 @@
                             (Doc-version doc))
          #t]
         [else #f]))
+
+(define/contract (doc-check-syntax doc)
+  (-> Doc? CSResult?)
+  (doc-expand (Doc-source doc) (Doc-text doc) (doc-lexer-state doc)))
 
 (define/contract (doc-pos->abs-pos doc pos)
   (-> Doc? Pos? exact-nonnegative-integer?)
@@ -360,54 +385,14 @@
 (define (doc-body-forest doc)
   (lexer-state-body-forest (doc-lexer-state doc)))
 
-;; definition BEG ;;
-
-;; Cross-file Go to Definition expands the defining file and looks up a span
-;; by submodule path and defining id. Check Syntax jump also reports
-;; phase+space, but that value is the import shift at the use, not the
-;; definition phase in the target file. Do not put it in this key.
-(define (get-def path doc-text submods id)
-  (define collector
-    (new (class (check-syntax-annotations-mixin object%)
-           (define defs (make-hash))
-           (define/public (get submods id)
-             (hash-ref defs (list submods id) #f))
-           (define/override (syncheck:add-definition-target/phase-level+space
-                              _source-obj start end id submods _phase+space)
-             ;; Last one wins when one submodule defines the same id at more
-             ;; than one phase or space. Jump cannot tell those spans apart:
-             ;; it does not pass identifier-binding source-phase. Chosen over
-             ;; returning #f: Go to Definition should still land somewhere.
-             ;; Same last-wins table as DrRacket's syncheck:add-definition-target,
-             ;; which keys only (id, submods).
-             (hash-set! defs (list submods id) (cons start end)))
-           (super-new))))
-  (define in (open-input-string (send doc-text get-text)))
-
-  ;; expand-source handles traversal and adding syntax to collector
-  (expand-source path in collector)
-  (send collector get submods id))
-
-(define/contract (doc-get-definition-by-id path submods id)
-  (-> path? (listof symbol?) symbol? (or/c Range? #f))
-  (define doc-text (new lsp-editor%))
-  (define source (source-snapshot-text path))
-  (if source (send doc-text insert source 0) (send doc-text load-file path))
-  (match (get-def path doc-text submods id)
-    [(cons start end)
-     (Range (abs-pos->Pos doc-text start)
-            (abs-pos->Pos doc-text end))]
-    [_ #f]))
-
-;; definition END ;;
-
 ;; formatting ;;
 
 (define (doc-src-dir doc)
-  (with-handlers ([exn:fail? (λ (_exn) #f)])
-    (define doc-path (uri->path (Doc-uri doc)))
-    (define-values (base _name _must-be-dir?) (split-path doc-path))
-    base))
+  (define file-path (source-file-path (Doc-source doc)))
+  (and file-path
+       (let-values ([(base _name _must-be-dir?)
+                     (split-path (path->complete-path file-path))])
+         base)))
 
 (define (formatting-range->lines doc-text fmt-range)
   (define last-line (send doc-text at-line (send doc-text end-pos)))
@@ -486,10 +471,8 @@
                        #:formatting-options opts)]
     [else '()]))
 
-;; get the tokens whose range are contained in interval [pos-start, pos-end)
-;; the tokens whose range intersects the given range is included.
-;; the previous token of the first token in the result is defined as a zero length fake token which
-;; has line number 0 and character position 0.
+;; Return semantic tokens whose spans intersect [pos-start, pos-end), merging
+;; trace tokens with current lexer-derived sexp-comment tokens.
 (define/contract (doc-range-tokens doc range)
   (-> Doc? Range? (listof SemanticToken?))
   (define pos-start (clamped-abs-pos doc (Range-start range)))
@@ -614,9 +597,10 @@
 (define max-hover-source-characters 1000)
 
 ;; Apply `max-hover-source-lines` and `max-hover-source-characters`.
+;; Return the retained text and whether the excerpt omitted source.
 ;; `truncated-after?` is true when detail ranges end before `source-end`, even
 ;; if the buffer read itself is shorter.
-(define (source-text->hover-excerpt text #:truncated-after? [truncated-after? #f])
+(define (bound-hover-source text #:truncated-after? [truncated-after? #f])
   (define newline-positions
     (regexp-match-positions* #px"\n" text))
   (define source-line-end
@@ -630,12 +614,31 @@
   (define truncated?
     (or truncated-after?
         (< source-character-end (string-length text))))
-  ;; Append indented `...` only at the end. Do not add a leading marker or fake
-  ;; closing delimiters for a truncated form.
-  (and (not (string=? retained-text ""))
-       (if truncated?
-           (string-append retained-text "\n  ...")
-           retained-text)))
+  (values retained-text truncated?))
+
+;; Ranges begin at a form/comment token, not at its physical line start.
+;; Restore its column before measuring the shared indent. Tabs count as one
+;; whitespace character. Dedenting is display-only and also applies to
+;; continuation lines inside multiline literals.
+(define (hover-source-lines doc start text)
+  (define column (Pos-char (doc-abs-pos->pos doc start)))
+  (string-split (string-append (make-string column #\space) text)
+                "\n" #:trim? #f))
+
+(define (hover-line-indentation line)
+  (string-length (car (regexp-match #px"^[ \t]*" line))))
+
+(define (hover-common-indentation lines)
+  (define indentations
+    (for/list ([line (in-list lines)]
+               ;; Ignore blank lines so their whitespace does not constrain the shared indent.
+               #:unless (regexp-match? #px"^[ \t\r]*$" line))
+      (hover-line-indentation line)))
+  (if (null? indentations) 0 (apply min indentations)))
+
+(define (dedent-hover-line line indentation)
+  ;; Short blank lines can have less whitespace than the shared indent.
+  (substring line (min indentation (hover-line-indentation line))))
 
 (define (hover-comment-line-in-bounds? line doc-end)
   (define line-start (Hover-Comment-Line-start line))
@@ -647,28 +650,11 @@
   (for/and ([line (in-list comment-lines)])
     (hover-comment-line-in-bounds? line doc-end)))
 
-(define (hover-comment-line->text doc line)
+(define (hover-comment-line->lines doc line)
   (define line-start (Hover-Comment-Line-start line))
   (define line-end (Hover-Comment-Line-end line))
   (define line-text (send (Doc-text doc) get-text line-start line-end))
-  (if (Hover-Comment-Line-truncated? line)
-      (string-append line-text "...")
-      line-text))
-
-;; Read leading-comment lines from the live buffer. Return #f when any stored
-;; range is past the end of the document.
-(define (hover-detail->comment-excerpt doc detail)
-  (define comment-lines (Hover-Detail-comment-lines detail))
-  (define doc-end (doc-end-abs-pos doc))
-  (and (pair? comment-lines)
-       (hover-comment-lines-in-bounds? comment-lines doc-end)
-       (string-join
-         (append (for/list ([line (in-list comment-lines)])
-                   (hover-comment-line->text doc line))
-                 (if (Hover-Detail-comments-truncated? detail)
-                     (list "...")
-                     '()))
-         "\n")))
+  (hover-source-lines doc line-start line-text))
 
 (define (hover-detail-ranges-valid? detail doc-end)
   (define source-start (Hover-Detail-source-start detail))
@@ -686,28 +672,56 @@
   (or (< read-end display-end)
       (< display-end source-end)))
 
-(define (hover-detail->code-excerpt doc detail)
+(define (hover-detail->code-lines doc detail)
   (define display-start (Hover-Detail-display-start detail))
   (define display-end (Hover-Detail-display-end detail))
   (define read-end (min display-end
                         (+ display-start max-hover-source-characters)))
   (define source-text (send (Doc-text doc) get-text display-start read-end))
-  (source-text->hover-excerpt
-    source-text
-    #:truncated-after? (hover-detail-truncated-after? detail read-end)))
+  (define-values (retained-text truncated?)
+    (bound-hover-source
+      source-text
+      #:truncated-after? (hover-detail-truncated-after? detail read-end)))
+  (values (hover-source-lines doc display-start retained-text) truncated?))
 
 (define (hover-detail->summary doc detail)
   (define doc-end (doc-end-abs-pos doc))
   (and (hover-detail-ranges-valid? detail doc-end)
-       (let ([code-excerpt (hover-detail->code-excerpt doc detail)])
-         (and code-excerpt
-              (Hover-Code-Summary
-                (string-join
-                  (filter values
-                          (list (hover-detail->comment-excerpt doc detail)
-                                code-excerpt))
-                  "\n")
-                (Hover-Detail-fence-language detail))))))
+       (let ()
+         (define-values (code-lines code-truncated?)
+           (hover-detail->code-lines doc detail))
+         (define stored-comment-lines (Hover-Detail-comment-lines detail))
+         (define comment-lines
+           (if (hover-comment-lines-in-bounds? stored-comment-lines doc-end)
+               stored-comment-lines
+               '()))
+         (define comment-line-groups
+           (for/list ([line (in-list comment-lines)])
+             (hover-comment-line->lines doc line)))
+         ;; Measure retained source only. Generated markers must not set the minimum.
+         (define indentation
+           (hover-common-indentation (append (append* comment-line-groups) code-lines)))
+         (Hover-Code-Summary
+           (string-join
+             (append
+               (for/list ([line (in-list comment-lines)]
+                          [lines (in-list comment-line-groups)])
+                 (string-append
+                   (string-join
+                     (for/list ([comment-line (in-list lines)])
+                       (dedent-hover-line comment-line indentation))
+                     "\n")
+                   (if (Hover-Comment-Line-truncated? line) "..." "")))
+               (if (and (pair? comment-lines) (Hover-Detail-comments-truncated? detail))
+                   (list "...")
+                   '())
+               (for/list ([line (in-list code-lines)])
+                 (dedent-hover-line line indentation))
+               ;; A truncated code excerpt ends with its own indented marker.
+               ;; Do not add a leading marker or invent closing delimiters.
+               (if code-truncated? (list "  ...") '()))
+             "\n")
+           (Hover-Detail-fence-language detail)))))
 
 ;; Find same-file detail through the resolved binding. Keep the use span
 ;; even when no stored detail exists yet, so annotation-range fallback works.
@@ -724,17 +738,16 @@
     [else
      (values #f #f #f)]))
 
-(define/contract (doc-hover doc pos)
-  (-> Doc? Pos? (or/c Hover? #f))
+;; Notes from analysis facts that are not part of a binding's hover card:
+;; syntax-template binding predictions and relative tail positions. Returns
+;; Markdown text and its range, or #f #f. Facts from an older expansion are suppressed until it is replaced.
+(define/contract (doc-hover-notes doc pos)
+  (-> Doc? Pos? (values (or/c string? #f) (or/c Range? #f)))
   (define doc-trace (Doc-trace doc))
-  (define hover-service (send doc-trace get-hover))
-  (define declaration-service (send doc-trace get-declaration))
-  (define typed-racket-service
-    (send doc-trace get-typed-racket))
   (define pos* (doc-pos->abs-pos doc pos))
   (define-values (prediction-start prediction-end prediction-kind)
     (if (doc-trace-latest? doc)
-        (send hover-service predicted-binding-at pos*)
+        (send (send doc-trace get-hover) predicted-binding-at pos*)
         (values #f #f #f)))
   (define prediction-text
     (and prediction-kind
@@ -769,6 +782,28 @@
                              (string-append "Expressions in tail position relative to this one: "
                                             (tail-locations tail-children) "."))))
           "\n\n")))
+  (define notes (filter values (list prediction-text tail-text)))
+  (if (pair? notes)
+      (values (string-join notes "\n\n")
+              (abs-range->range doc (or prediction-start tail-start) (or prediction-end tail-end)))
+      (values #f #f)))
+
+;; Join analysis notes with a hover card. Notes open a hover on their own.
+(define/contract (hover-with-notes card range notes notes-range)
+  (-> Hover-Card? (or/c Range? #f) (or/c string? #f) (or/c Range? #f) (or/c Hover? #f))
+  (and (or notes (hover-card-opens? card))
+       (Hover #:contents (string-join (filter non-empty-string? (list (or notes "") (render-hover-card card)))
+                                      "\n\n")
+              #:range (or range notes-range))))
+
+(define/contract (doc-hover-data doc pos)
+  (-> Doc? Pos? (values Hover-Card? (or/c Range? #f)))
+  (define doc-trace (Doc-trace doc))
+  (define hover-service (send doc-trace get-hover))
+  (define declaration-service (send doc-trace get-declaration))
+  (define typed-racket-service
+    (send doc-trace get-typed-racket))
+  (define pos* (doc-pos->abs-pos doc pos))
   (define-values (start end annotation)
     (send hover-service annotation-at pos*))
   (define-values (type-start type-end type-text)
@@ -781,38 +816,51 @@
     (if detail
         (values detail-start detail-end detail)
         (hover-detail-via-declaration hover-service declaration-service pos*)))
+  (match-define (list link tag)
+    (interval-map-ref (send doc-trace get-docs) pos* (list #f #f)))
   (define source-summary
-    (and resolved-detail (hover-detail->summary doc resolved-detail)))
-  (cond
-    ;; Docs alone do not open a card. Type text, an annotation, or
-    ;; same-file source summary each can. Stored source detail may still
-    ;; supply summary and range when check-syntax produced no hover text.
-    [(and (not type-text) (not annotation) (not source-summary) (not tail-text) (not prediction-text)) #f]
-    [else
-     (match-define (list link tag)
-       (interval-map-ref (send doc-trace get-docs) pos* (list #f #f)))
-     (define signature (hover-tag->signature tag))
-     (define documentation-text
-       (hover-documentation-text link signature))
-     (define hover-card
-       (build-hover-card #:type-text type-text
-                         #:type-stale? (not (doc-trace-latest? doc))
-                         #:annotation annotation
-                         #:link (and link
-                                     (make-proper-url-for-online-documentation link))
-                         #:signature signature
-                         #:source-summary source-summary
-                         #:documentation-text documentation-text))
-     (Hover #:contents (string-join (filter non-empty-string?
-                                           (list (or prediction-text "") (or tail-text "")
-                                                 (render-hover-card hover-card)))
-                                   "\n\n")
-            ;; Prefer inferred-type intervals, including literal and expression
-            ;; delimiter spans Typed Racket can publish without an annotation.
-            ;; Fall back to the winning annotation or kept source-detail range.
-            #:range (abs-range->range doc
-                                      (or prediction-start type-start start use-start tail-start)
-                                      (or prediction-end type-end end use-end tail-end)))]))
+    (and (not link) resolved-detail (hover-detail->summary doc resolved-detail)))
+  (define signature (hover-tag->signature tag))
+  (define card
+    (build-hover-card #:type-text type-text
+                      #:type-stale? (not (doc-trace-latest? doc))
+                      #:annotation annotation
+                      #:link (and link (make-proper-url-for-online-documentation link))
+                      #:signature signature
+                      #:source-summary source-summary
+                      #:documentation-text (hover-documentation-text link signature)))
+  (define occurrence (send declaration-service occurrence-at pos*))
+  (define range-start (or type-start start use-start
+                          (and occurrence (CharRange-start occurrence))))
+  (define range-end (or type-end end use-end
+                        (and occurrence (CharRange-end occurrence))))
+  (values card (and range-start (abs-range->range doc range-start range-end))))
+
+(define/contract (doc-hover doc pos)
+  (-> Doc? Pos? (or/c Hover? #f))
+  (define-values (card range) (doc-hover-data doc pos))
+  (define-values (notes notes-range) (doc-hover-notes doc pos))
+  (hover-with-notes card range notes notes-range))
+
+;; Extract bounded declaration summaries while the worker owns the completed
+;; Doc. Freeze text; response threads never consult its mutable services/buffer.
+(define/contract (doc-hover-summaries doc)
+  (-> Doc? (hash/c Module-Binding? Hover-Code-Summary? #:immutable #t))
+  (define service (send (Doc-trace doc) get-hover))
+  (for/fold ([summaries (hash)])
+            ([(binding location) (in-hash (if (Doc-contribution doc)
+                                              (Doc-Contribution-definitions (Doc-contribution doc))
+                                              (hash)))])
+    (define-values (_start _end detail)
+      (send service source-detail-at
+            (doc-pos->abs-pos doc (Range-start (Location-range location)))))
+    (define summary (and detail (hover-detail->summary doc detail)))
+    (if summary
+        (hash-set summaries binding
+                  (Hover-Code-Summary
+                    (string->immutable-string (Hover-Code-Summary-text summary))
+                    (string->immutable-string (Hover-Code-Summary-fence-language summary))))
+        summaries)))
 
 ;; Some clients spell a viewport end as a line past the last one. The range is
 ;; only a filter bound here, so clamp instead of failing the request.
@@ -990,22 +1038,18 @@
   (CompletionList #:isIncomplete #t
                   #:items result))
 
-;; Definition: returns a Location or #f.
+;; Document-local capture only. A cross-file import is returned as a
+;; `Module-Binding`. LSP composition turns that binding into a location only
+;; on the shared analysis route, after this document's lock is released.
 (define/contract (doc-definition doc uri pos)
-  (-> Doc? string? Pos? (or/c Location? #f))
+  (-> Doc? string? Pos? (or/c Location? Module-Binding? #f))
   (define definition-range (doc-definition-at doc pos))
   (cond
     [definition-range
      (Location #:uri uri
                #:range definition-range)]
-    [else
-     (match (doc-module-binding-at doc pos)
-       [(Module-Binding path submods _phase+space id)
-        (define def-range (doc-get-definition-by-id path submods id))
-        (and def-range
-             (Location #:uri (path->uri path)
-                       #:range def-range))]
-       [#f #f])]))
+    [(not (source-file-path (Doc-source doc))) #f]
+    [else (doc-module-binding-at doc pos)]))
 
 ;; References: live locations for this document, plus an optional Module-Binding
 ;; for workspace lookup when the identifier is module-backed.
@@ -1022,8 +1066,9 @@
        (for/list ([range (in-list ranges)])
          (Location #:uri uri #:range range)))
      (Document-Reference-Result
-       (Reference-Source (uri->path uri) local-locations)
-       (doc-module-binding-at doc pos))]
+       (Reference-Source (source-id (Doc-source doc)) local-locations)
+       (and (source-file-path (Doc-source doc))
+            (doc-module-binding-at doc pos)))]
     [else #f]))
 
 ;; Document Highlight: returns binding highlights or an empty list.
@@ -1261,9 +1306,11 @@
 (provide Doc?
          Doc-version
          Doc-uri
+         Doc-source
          Doc-contribution
          (struct-out Doc-Contribution)
          make-doc
+         make-source-doc
          doc-apply-edit!
          doc-apply-edits!
          doc-reset!
@@ -1278,7 +1325,6 @@
          doc-line-start-abs-pos
          doc-line-end-abs-pos
          doc-find-containing-paren
-         doc-get-definition-by-id
          doc-format-edits
          doc-on-type-format-edits
          doc-range-tokens
@@ -1287,10 +1333,12 @@
          doc-language-policy
          doc-body-forest
          doc-expand
+         doc-detach-analysis!
          doc-update-trace!
          doc-trace-latest?
-         doc-invalidate-analysis!
          doc-expand!
+         doc-check-syntax
+         doc-definition-ranges
          doc-resyntax
          doc-resyntax!
          doc-resyntax-available?
@@ -1299,6 +1347,10 @@
          resyntax-result->diag
          resyntax-result->code-action
          doc-hover
+         doc-hover-data
+         doc-hover-notes
+         hover-with-notes
+         doc-hover-summaries
          doc-inlay-hints
          doc-code-action
          doc-signature-help

@@ -14,7 +14,8 @@ const racketFormattingOnly = (document, ...args) => document.languageId === 'rho
   ? [] : args.pop()(document, ...args);
 
 function registerLanguageTools(context, debugSources) {
-  const output = vscode.window.createOutputChannel('Racket Language Server');
+  // The language client logs through a LogOutputChannel and follows its level.
+  const output = vscode.window.createOutputChannel('Racket Language Server', { log: true });
   const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 10);
   status.command = 'racketdap.showLanguageServerOutput';
   let client;

@@ -15,7 +15,7 @@ test('JSON-RPC write failures reject the request without an unhandled rejection'
   const result = spawnSync(process.execPath, ['--unhandled-rejections=strict', '-e', `
     const assert = require('node:assert/strict');
     const { PassThrough, Writable } = require('node:stream');
-    const rpc = require(${JSON.stringify(require.resolve('../vscode/node_modules/vscode-jsonrpc/node'))});
+    const rpc = require(${JSON.stringify(require.resolve('vscode-jsonrpc/node', { paths: [require('node:path').join(__dirname, '../vscode')] }))});
     (async () => {
       for (const failure of ['header', 'body', 'encoding']) {
         let writes = 0;
