@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const assert = require('node:assert/strict');
-const test = require('node:test');
+const test = require('./support/node-test');
 const { EventEmitter } = require('node:events');
 const { PassThrough } = require('node:stream');
 const { DapClient } = require('./dap-client');

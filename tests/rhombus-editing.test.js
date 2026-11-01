@@ -4,7 +4,7 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const test = require('node:test');
+const test = require('./support/node-test');
 const { createRequire } = require('node:module');
 const extensionRequire = createRequire(path.join(__dirname, '../vscode/package.json'));
 const { Registry } = extensionRequire('vscode-textmate');

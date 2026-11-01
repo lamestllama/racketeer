@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Eric Parsonage
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
-const test = require('node:test'), assert = require('node:assert/strict');
+const test = require('./support/node-test'), assert = require('node:assert/strict');
 const { languageServer } = require('./language-server-project');
 const { uri, project, edited } = require('./workspace-index-project');
 const text = hover => typeof hover?.contents === 'string' ? hover.contents : hover?.contents?.value || '';

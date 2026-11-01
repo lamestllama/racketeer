@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const assert = require('node:assert/strict');
-const test = require('node:test');
+const test = require('./support/node-test');
 const fs = require('node:fs');
 const { uri: fileUri } = require('./workspace-index-project');
 const { languageServer, until } = require('./language-server-project');

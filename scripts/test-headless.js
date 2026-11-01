@@ -18,7 +18,10 @@ function run() {
   for (const [command, args] of [
     [process.execPath, ['scripts/stage-extension.js']],
     ['raco', ['test', '--timeout', '180', ...suites.racket]],
-    [process.execPath, ['--test', '--test-concurrency=1', '--test-timeout=180000', ...suites.node]]
+    // Each test has its own deadline (tests/support/node-test.js), so a file
+    // takes the sum of its tests' times. The runner's limit is only a ceiling
+    // for a file whose process never exits, within the CI job's 45 minutes.
+    [process.execPath, ['--test', '--test-concurrency=1', '--test-timeout=1800000', ...suites.node]]
   ]) {
     const result = spawnSync(command, args, { cwd: root, stdio: 'inherit' });
     if (result.error) throw result.error;

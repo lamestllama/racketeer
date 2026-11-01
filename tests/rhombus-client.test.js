@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
-const test = require('node:test');
+const test = require('./support/node-test');
 
 // These contract tests supplement tests/vscode-rhombus.js, which requires the
 // real server and private Rhombus runtime in the installed-editor harness.

@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Eric Parsonage
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
-const test = require('node:test');
+const test = require('./support/node-test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');

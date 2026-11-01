@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const assert = require('node:assert/strict');
-const test = require('node:test');
+const test = require('./support/node-test');
 const { execFileSync } = require('node:child_process');
 const fs = require('node:fs/promises');
 const os = require('node:os');

@@ -3,7 +3,7 @@
 'use strict';
 // Behavioral tests: no imports of the instrumentation implementation.
 const assert = require('node:assert/strict');
-const test = require('node:test');
+const test = require('./support/node-test');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
