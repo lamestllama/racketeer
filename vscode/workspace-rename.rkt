@@ -8,6 +8,7 @@
          racket/match
          racket/path
          racket/promise
+         racket/set
          racket/string
          drracket/check-syntax
          racket-langserver/common/source
@@ -83,6 +84,8 @@
 
 ;; Source identifiers in the expansion retain their defining module and phase,
 ;; including references that Check Syntax cannot attach to relative imports.
+;; One written name can carry several bindings, as when Rhombus's fun binds the
+;; function and a generated helper at its name, so each range keeps them all.
 (define (expansion-bindings doc expanded file)
   (define bindings (make-hash))
   (define text (doc-get-text doc))
@@ -105,7 +108,7 @@
                  (Module-Binding path (if (pair? module) (cddr module) '())
                    (if (pair? export-phase) (cons (list-ref binding 4) (cdr export-phase)) (list-ref binding 4))
                    (cadr binding)))
-               (hash-update! bindings range (lambda (old) (if (equal? old normalized) old 'ambiguous)) normalized))))
+               (hash-update! bindings range (lambda (old) (set-add old normalized)) (set)))))
          (define parts (syntax->list value))
          (define head (and (pair? parts) (syntax-e (car parts))))
          (case head
@@ -134,12 +137,18 @@
   (walk expanded 0)
   bindings)
 
-(define (source-binding-at source position)
+(define (source-bindings-at source position)
   (define doc (Source-doc source))
   (define occurrence (doc-occurrence-at doc position))
-  (define binding (and occurrence (hash-ref (Source-bindings source) (absolute-range doc occurrence) #f)))
-  (when (eq? binding 'ambiguous) (refuse "This source identifier represents more than one binding."))
-  (or binding (doc-module-binding-at doc position)))
+  (or (and occurrence (hash-ref (Source-bindings source) (absolute-range doc occurrence) #f))
+      (let ([binding (doc-module-binding-at doc position)])
+        (if binding (set binding) (set)))))
+
+;; Only the identifier being renamed must name one binding.
+(define (source-binding-at source position)
+  (define bindings (source-bindings-at source position))
+  (when (> (set-count bindings) 1) (refuse "This source identifier represents more than one binding."))
+  (and (= (set-count bindings) 1) (set-first bindings)))
 
 (define (absolute-range doc range)
   (cons (doc-pos->abs-pos doc (Range-start range))
@@ -376,14 +385,15 @@
   (for/list ([token (in-lexer-snapshot (build-lexer-snapshot text (Doc-uri doc)))]
              #:when (eq? (LexerEntry-type token) 'symbol))
     (define position (doc-abs-pos->pos doc (LexerEntry-start token)))
-    (define module-binding (source-binding-at source position))
-    (define local-definition (and (not module-binding) (doc-definition-at doc position)))
+    (define module-bindings (source-bindings-at source position))
+    (define local-definition (and (set-empty? module-bindings) (doc-definition-at doc position)))
     (list (shift (LexerEntry-start token)) (shift (LexerEntry-end token))
           (cond
-            [module-binding
-             (if (equal? module-binding target)
-                 (struct-copy Module-Binding module-binding [id (identifier-name new-name)])
-                 module-binding)]
+            [(not (set-empty? module-bindings))
+             (for/set ([binding (in-set module-bindings)])
+               (if (equal? binding target)
+                   (struct-copy Module-Binding binding [id (identifier-name new-name)])
+                   binding))]
             [local-definition
              (define range (absolute-range doc local-definition))
              (cons (shift (car range)) (shift (cdr range)))]
@@ -467,12 +477,12 @@
               (define queried (or target module-target))
               (define declaration (and target (hash-ref (Doc-Contribution-definitions contribution) target #f)))
               (append (if declaration (list (Location-range declaration)) '())
-                      (for/list ([(range binding) (in-hash (Source-bindings source))]
-                                  #:when (equal? binding queried))
+                      (for/list ([(range bindings) (in-hash (Source-bindings source))]
+                                  #:when (set-member? bindings queried))
                         (Range (doc-abs-pos->pos doc (car range)) (doc-abs-pos->pos doc (cdr range))))
                       (for*/list ([locations (in-hash-values (Doc-Contribution-references contribution))]
                                   [location (in-list locations)]
-                                  #:when (equal? queried (source-binding-at source (Range-start (Location-range location)))))
+                                  #:when (set-member? (source-bindings-at source (Range-start (Location-range location))) queried))
                         (Location-range location)))]
              [(equal? file path) (doc-binding-ranges-at doc (if alias (doc-abs-pos->pos doc (car alias)) pos))]
              [else '()]))

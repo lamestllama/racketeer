@@ -31,6 +31,23 @@ test('workspace rename follows imports and previews edits without changing files
   assert.equal(fs.readFileSync(p.filename('unrelated.rkt'), 'utf8'), untouched);
 });
 
+test('one source identifier with several bindings blocks only its own rename', { timeout: 120000 }, async t => {
+  // A macro can bind one written name more than once, as Rhombus's fun binds
+  // the function and a generated helper at its name.
+  const p = await project(t), consumer = p.open('uses.rkt', uses);
+  const twice = '#lang racket/base\n(require (for-syntax racket/base))\n' +
+    '(define-syntax (define-twice stx)\n  (syntax-case stx ()\n    [(_ name value)\n' +
+    '     (with-syntax ([hidden ((make-syntax-introducer) #\'name)])\n' +
+    '       #\'(begin (define hidden value) (define name hidden)))]))\n(define-twice square 7)\n(display square)\n';
+  p.write('twice.rkt', twice);
+  const bound = p.open('twice.rkt', twice);
+  await p.update();
+  const { changes } = await p.rename(consumer, 'squared', { line: 2, character: 2 });
+  assert.deepEqual(Object.keys(changes).sort(), [p.origin, consumer].sort());
+  await assert.rejects(p.rename(bound, 'squared', { line: 7, character: 15 }), /more than one binding/);
+  assert.equal(fs.readFileSync(p.filename('twice.rkt'), 'utf8'), twice);
+});
+
 test('workspace rename rejects capture, conflicting imports, and invalid names', { timeout: 120000 }, async t => {
   const p = await project(t);
   p.write('other.rkt', '#lang racket/base\n(provide squared)\n(define squared 4)\n');
