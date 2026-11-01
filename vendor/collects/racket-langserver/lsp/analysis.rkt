@@ -5,8 +5,6 @@
 ;; keeps that product's trace. Request threads receive an `Analysis-Summary`
 ;; or an `Analysis-Outcome`. Lifetime and reuse are in `analysis-lifecycle.md`.
 (require json
-         net/url
-         racket/path
          racket/class
          racket/contract
          racket/set
@@ -18,7 +16,6 @@
          "../doclib/doc-trace.rkt"
          "../doclib/internal-types.rkt"
          "../common/path-util.rkt"
-         "../common/source.rkt"
          "../common/source-snapshot.rkt"
          "../workspace/source-store.rkt")
 
@@ -71,10 +68,6 @@
    [roots (listof path?)]
    [loaded hash?])
   #:transparent)
-
-;; An untitled document's import base is its save location, when it has one.
-(define (untitled-source? source)
-  (equal? "untitled" (url-scheme (string->url (source-uri source)))))
 
 ;; Set by the scheduler for each attempt. `#f` analyses with ordinary loading.
 (define current-analysis-context (make-parameter #f))
@@ -140,22 +133,17 @@
 ;; the trace on that document before copying definition and hover facts.
 ;; Those extractors read the document after that installation.
 (define (analyze-source snapshot)
-  (define source (Source-Snapshot-source snapshot))
-  (define doc (make-source-doc source (Source-Snapshot-text snapshot)))
+  (define doc (make-source-doc (Source-Snapshot-source snapshot) (Source-Snapshot-text snapshot)))
   (define context (current-analysis-context))
   (define check-syntax-result
     (if context
         (let ([roots (Analysis-Context-roots context)])
           (call-with-source-snapshot
-            (let ([file (source-file-path source)]) (and file (path-only file)))
             (Analysis-Context-buffers context)
             #:source? (lambda (path) (for/or ([root (in-list roots)]) (directory-contains? root path)))
             #:on-load (lambda (path)
                         (hash-set! (Analysis-Context-loaded context) path
                                    (hash-ref (Analysis-Context-buffers context) path #f)))
-            ;; An untitled document without a save location has no import base.
-            #:unbased (and (untitled-source? source) (not (source-analysis-directory source))
-                           (source-syntax-source source))
             (lambda () (doc-check-syntax doc))))
         (doc-check-syntax doc)))
   (define trace (CSResult-trace check-syntax-result))

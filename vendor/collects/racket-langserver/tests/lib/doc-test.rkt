@@ -14,6 +14,7 @@
            "../../doclib/formatter/fmt.rkt"
            "../../common/interfaces.rkt"
            "../../common/path-util.rkt"
+           "../../lsp/semantic-token-lsp.rkt"
            racket/class
            racket/file
            drracket/check-syntax
@@ -28,6 +29,14 @@
     (check-equal? (doc-range-tokens d (Range (Pos 0 0) (Pos 3 0))) bounded)
     (check-equal? (doc-range-tokens d (Range (Pos 0 0) (Pos 0 100))) bounded)
     (check-equal? (doc-range-tokens d (Range (Pos 3 0) (Pos 4 0))) '()))
+
+  (test-case
+    "Semantic tokens count UTF-16 code units after and within astral characters"
+    ;; U+1F600 is one character and two UTF-16 code units.
+    (define d (make-doc "file:///utf16-tokens.rkt" "\U0001F600 #; (\U0001F600)"))
+    (define tokens (doc-range-tokens d (Range (Pos 0 0) (Pos 0 10))))
+    (check-equal? (take (encode-semantic-tokens (lambda (pos) (doc-abs-pos->pos d pos)) tokens) 3)
+                  '(0 3 7)))
 
   (test-case
     "Document creation and basic accessors"
@@ -534,6 +543,45 @@
     (check-equal? (language-header-diagnostics diags) '()))
 
   (test-case
+    "Relative imports in a document without a directory are refused, not resolved from the working directory"
+    (define root (make-temporary-file "unbased-import~a" 'directory))
+    (dynamic-wind
+      void
+      (lambda ()
+        (display-to-file "#lang racket/base\n(provide value)\n(define value 1)\n"
+                         (build-path root "dependency.rkt"))
+        (parameterize ([current-directory root])
+          (define message
+            "Relative imports need a save location. Save this document to import files relative to it.")
+          ;; Older Racket versions pass no syntax for a require to the module
+          ;; name resolver, so the refusal is reported on the first line.
+          (define resolver-receives-syntax?
+            (let ([resolve (current-module-name-resolver)]
+                  [received #f])
+              (parameterize ([current-namespace (make-base-namespace)]
+                             [current-module-name-resolver
+                              (case-lambda
+                                [(name namespace) (resolve name namespace)]
+                                [(module relative-to stx load?)
+                                 (when (equal? module "dependency.rkt") (set! received (syntax? stx)))
+                                 (resolve module relative-to stx load?)])])
+                (expand '(module probe racket/base (require "dependency.rkt"))))
+              received))
+          (define (located range)
+            (if resolver-receives-syntax? range (Range (Pos 0 0) (Pos 0 17))))
+          (define (refusals text)
+            (for/list ([diag (in-list (check-syntax-diagnostics (uri->source "untitled:Untitled-1") text))]
+                       #:when (string-contains? (Diagnostic-message diag) message))
+              (Diagnostic-range diag)))
+          (check-equal? (refusals "#lang racket/base\n(require \"dependency.rkt\")\nvalue\n")
+                        (list (located (Range (Pos 1 9) (Pos 1 25)))))
+          (check-equal? (refusals "#lang racket/base\n(require (submod \"dependency.rkt\" x))\n")
+                        (list (located (Range (Pos 1 9) (Pos 1 36)))))
+          (check-equal? (refusals "#lang racket/base\n(require racket/list (file \"/no/such/file.rkt\"))\n")
+                        '())))
+      (lambda () (delete-directory/files root))))
+
+  (test-case
     "Document diagnostics simplify missing collection messages"
     (define text "#lang racke\n")
     (define diags
@@ -579,6 +627,21 @@
           "Check that the module name is correct and the package is installed.")))
     (check-not-false diag)
     (check-equal? (Diagnostic-source diag) "Racket"))
+
+  (test-case
+    "Document diagnostics count UTF-16 code units after astral characters"
+    ;; U+1F600 is one character and two UTF-16 code units, so the unbound
+    ;; identifier starts at character 4 and at LSP column 5.
+    (define text "#lang racket/base\n\"\U0001F600\" unbound-name\n")
+    (define diags
+      (check-syntax-diagnostics (uri->source "file:///tmp/utf16-diagnostic-test.rkt")
+                                text))
+    (define diag
+      (for/first ([diag (in-list diags)]
+                  #:when (regexp-match? #rx"unbound-name" (Diagnostic-message diag)))
+        diag))
+    (check-not-false diag)
+    (check-equal? (Diagnostic-range diag) (Range (Pos 1 5) (Pos 1 17))))
 
   (test-case
     "Document diagnostics accept wrapped #lang headers"
@@ -1218,6 +1281,21 @@ END
     (check-equal? (Location-uri result) uri)
     (check-equal? (Location-range result)
                   (Range (Pos 1 8) (Pos 1 9))))
+
+  (test-case
+    "Document positions count UTF-16 code units after astral characters"
+    ;; U+1F600 is one character and two UTF-16 code units, so `x` in
+    ;; `(define x 1)` is at character 12 and at LSP column 13, and its use at
+    ;; character 17 is at LSP column 18.
+    (define uri "file:///tmp/doc-utf16-test.rkt")
+    (define d (make-doc uri "#lang racket\n\"\U0001F600\" (define x 1) x\n"))
+    (check-equal? (doc-pos->abs-pos d (Pos 1 13)) 25)
+    (check-equal? (doc-abs-pos->pos d 25) (Pos 1 13))
+    (doc-expand! d)
+    (check-equal? (Location-range (doc-definition d uri (Pos 1 18)))
+                  (Range (Pos 1 13) (Pos 1 14)))
+    (doc-apply-edit! d (Range (Pos 1 18) (Pos 1 19)) "y")
+    (check-equal? (doc-get-text d) "#lang racket\n\"\U0001F600\" (define x 1) y\n"))
 
   (test-case
     "doc-definition for imported define"

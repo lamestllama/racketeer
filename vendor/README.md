@@ -1,6 +1,6 @@
 # Bundled language server sources
 
-`collects/` contains upstream source packages with the local patches noted below. `sources.json` pins
+`collects/` contains upstream source packages with the patches noted below. `sources.json` pins
 each archive URL and SHA-256. Run `python3 scripts/vendor-language-server.py`
 to reproduce these directories. The VSIX includes these sources, this file,
 the manifest and the license texts. No Racket package is installed globally.
@@ -12,34 +12,47 @@ architecture of [PR #245](https://github.com/jeapostrophe/racket-langserver/pull
 That architecture completes or ends every waiting request when analysis fails,
 times out or is superseded, and never publishes results from a closed or
 replaced document. The reproduction script verifies the archive and then
-applies these patches:
+applies these patches in order. The first three are upstream pull requests, generated with
+`git format-patch` from the commits exactly as submitted; drop each one when
+upstream merges it:
+
+- `pr-246-utf16-positions.patch`:
+  [PR #246](https://github.com/jeapostrophe/racket-langserver/pull/246),
+  "Count LSP columns in UTF-16 code units" (913dabb). Convert between UTF-16
+  protocol columns and Racket character offsets at the editor boundary,
+  including semantic-token lengths and diagnostic ranges.
+
+- `pr-247-open-buffer-imports.patch`:
+  [PR #247](https://github.com/jeapostrophe/racket-langserver/pull/247),
+  "Read imports from open editor buffers" (50d6f8d and ea54295). Analyse
+  imports using one immutable snapshot of the open buffers, record the module
+  files each analysis loads, and refresh affected consumers when a dependency
+  opens, changes or closes. Project modules load from source.
+
+- `pr-248-relative-import-without-directory.patch`:
+  [PR #248](https://github.com/jeapostrophe/racket-langserver/pull/248),
+  "Refuse relative imports in documents without a directory" (2e29f52 and
+  53e8dcd). A relative import in a document without an analysis directory,
+  such as an untitled document without a save location, reports that a save
+  location is required instead of resolving against the server's working
+  directory.
+
+Racketeer's own patches follow:
 
 - `tail-position-hover.patch`: expose relative tail-position relationships from
   the documented analysis callback through standard LSP hover. Suppress those
-  facts after edits until a fresh expansion succeeds. Convert between UTF-16
-  protocol columns and Racket character offsets at the shared editor boundary,
-  including semantic-token lengths and diagnostic ranges.
+  facts after edits until a fresh expansion succeeds.
 
 - `predicted-bindings.patch`: identify unconfirmed syntax-template bindings in
   hover using the public analysis callback. Keep binding identities and phases
   distinct, and discard predictions after source edits.
 
-- `open-buffer-imports.patch`: analyse imports using one immutable snapshot of
-  the open buffers, record the module files each analysis loads, and refresh
-  affected consumers when a dependency opens, changes or closes. Project
-  modules load from source to avoid retaining earlier macro expansions in
-  compiled intermediates.
-
-- `untitled-relative-imports.patch`: refuse a relative import in an untitled
-  document without a save location with a located message, instead of
-  resolving it against the server's working directory. Untitled documents
-  otherwise follow upstream, and other virtual documents, such as revisions
-  shown in a diff, stay isolated as upstream intends.
-
 Workspace indexing belongs to Racketeer, in `vscode/workspace-analysis.rkt`,
 its request adapter `vscode/workspace-index.rkt` and the VS Code client. The
 separate process reuses the pinned analyser, the source-snapshot loader and the
-workspace store as libraries, and indexes saved files only. No indexing hooks
+workspace store as libraries, and indexes saved files only. It gives each
+analysis a fresh namespace and the file's directory, which the submitted
+source-snapshot loader leaves to its caller. No indexing hooks
 or index state are added to the language server.
 
 Regression tests exercise these patches. Reproduction fails if any no longer

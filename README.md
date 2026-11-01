@@ -192,7 +192,7 @@ bytecode caches, and does not overwrite `.zo` files. The expression instrumenter
 and frame/binding runtime are under `racketdap/instrumentation/`; their
 [component design](racketdap/instrumentation/DESIGN.md) describes the shared API.
 The bundled language server uses Racket’s installed language-analysis libraries,
-including check-syntax. Its sources, pinned archive hashes, local patch,
+including check-syntax. Its sources, pinned archive hashes, patches,
 and licence notices are documented in [vendor/README.md](vendor/README.md).
 
 [DESIGN.md](DESIGN.md) records the longer-term architecture and acceptance plan;

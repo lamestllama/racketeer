@@ -199,11 +199,11 @@
      (define srclocs ((exn:srclocs-accessor exn) exn))
      (for/list ([sl (in-list srclocs)])
        (match-define (srcloc src line col pos span) sl)
+       ;; Source location columns count characters. Convert through the
+       ;; character offset so the range uses LSP columns.
        (define start
-         (or (and (exact-positive-integer? pos) (sub1 pos))
-             (and (exact-positive-integer? line) (exact-nonnegative-integer? col)
-                  (with-handlers ([exn:fail? (lambda (_) #f)])
-                    (+ (send doc-text line-start-pos (sub1 line)) col)))))
+         (and (exact-positive-integer? line) (exact-nonnegative-integer? col)
+              (+ (send doc-text line-start-pos (sub1 line)) col)))
        (if (and start (exact-nonnegative-integer? span)
                 (<= (+ start span) (send doc-text end-pos)))
            (Diagnostic #:range (nonempty-diagnostic-range

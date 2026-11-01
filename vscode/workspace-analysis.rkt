@@ -221,7 +221,10 @@
       (changed (list #f text 0 #f #f)))
     ;; Trace construction and queries use a fresh namespace as well as expansion.
     ;; A previously loaded dependency must not survive a watched change.
-    (call-with-source-snapshot (path-only path) buffers
+    (parameterize ([current-namespace (make-base-namespace)]
+                   [current-directory (path-only path)]
+                   [current-load-relative-directory (path-only path)])
+    (call-with-source-snapshot buffers
       #:source? (lambda (file) (for/or ([root (in-list roots)]) (directory-contains? root file)))
       (lambda ()
       (define doc (make-doc (path->uri path) text 0))
@@ -247,7 +250,7 @@
                         (list (map ->jsexpr (Reference-Source-locations (Document-Reference-Result-source result)))
                               (and (Document-Reference-Result-module-binding result)
                                    (binding->datum (Document-Reference-Result-module-binding result)))))))
-            disk-current?)))))
+            disk-current?))))))
 
 (define (binding->datum binding)
   (list (Module-Binding-filepath binding) (Module-Binding-submods binding)

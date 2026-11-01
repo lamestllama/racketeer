@@ -3,6 +3,7 @@
          racket/class
          racket/contract
          racket/logging
+         racket/match
          syntax/modread
          racket/path
          racket/port
@@ -49,6 +50,36 @@
             (check-false (source-analysis-directory (uri->source uri))))))
       (lambda () (delete-directory/files root)))))
 
+(define (relative-module-path? module)
+  (match module
+    [(? path-string?) (relative-path? module)]
+    [(list 'file (? path-string? file)) (relative-path? file)]
+    [(list* 'submod (and parent (not (or "." ".."))) _) (relative-module-path? parent)]
+    [_ #f]))
+
+;; The module name resolver resolves a relative module path against the module
+;; that requires it. A document without an analysis directory has no file to
+;; resolve against, so the resolver would use the server's working directory.
+;; Refuse such an import instead. Modules loaded from files are unaffected.
+;; Older Racket versions pass no syntax for the require, so the refusal then
+;; names only the document.
+(define (refuse-unbased-relative-imports resolve document)
+  (case-lambda
+    [(name namespace) (resolve name namespace)]
+    [(module relative-to stx load?)
+     (define base
+       (and relative-to
+            (let ([name (resolved-module-path-name relative-to)])
+              (if (pair? name) (car name) name))))
+     (when (and (relative-module-path? module)
+                (not (path? base))
+                (not (current-load-relative-directory)))
+       (raise-syntax-error
+         #f
+         "Relative imports need a save location. Save this document to import files relative to it."
+         (or stx (datum->syntax #f module (vector document #f #f #f #f)))))
+     (resolve module relative-to stx load?)]))
+
 ;; TODO: cache the namespace with some strategy
 (define (expand-source source in collector #:expand? [expand? #t])
   (define src-dir (source-analysis-directory source))
@@ -58,6 +89,11 @@
   (port-count-lines! in)
 
   (parameterize ([current-load-relative-directory src-dir]
+                 [current-module-name-resolver
+                  (if src-dir
+                      (current-module-name-resolver)
+                      (refuse-unbased-relative-imports (current-module-name-resolver)
+                                                       (source-syntax-source source)))]
                  [current-namespace ns]
                  [current-annotations collector])
     (define stx
@@ -113,7 +149,6 @@
                 (and (ExpandResult-pre-syntax er) #t))))
 
 (provide
-  source-analysis-directory
   (struct-out CSResult)
   (contract-out
     [expand-source (->* (Source? input-port? (is-a?/c syncheck-annotations<%>))

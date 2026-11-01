@@ -41,7 +41,10 @@
          (equal? text (format "~s" value)) value)))
 
 (define (in-snapshot path sources proc)
-  (call-with-source-snapshot (path-only path) sources proc))
+  (parameterize ([current-namespace (make-base-namespace)]
+                 [current-directory (path-only path)]
+                 [current-load-relative-directory (path-only path)])
+    (call-with-source-snapshot sources proc)))
 
 (define (analyse path sources)
   (in-snapshot path sources

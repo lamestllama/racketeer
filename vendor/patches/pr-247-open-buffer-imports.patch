@@ -1,9 +1,41 @@
+From 50d6f8d7e1f65de798ec9e3a95362a6de969f1e9 Mon Sep 17 00:00:00 2001
+From: Eric Parsonage <eric@eparsonage.com>
+Date: Sun, 1 Nov 2026 09:41:13 +1030
+Subject: [PATCH 1/2] Read imports from open editor buffers
+
+Analysis read every imported module from disk, so an unsaved change to an
+open dependency had no effect on the documents that require it. A compiled
+file in the project could also keep a macro expansion older than its
+source.
+
+Give each analysis attempt the open buffers as an immutable table. An
+import with an open buffer reads that buffer, and modules below a
+workspace folder or the directory of an open buffer load from source.
+Installed collections keep compiled loading. The controller records the
+module files each accepted analysis loaded and analyses those documents
+again when one of those buffers opens, changes or closes. A result that
+read a buffer which has since changed is discarded and analysed again.
+---
+ common/source-snapshot.rkt                   |  63 ++++++++++++
+ lsp/analysis-lifecycle.md                    |  23 +++++
+ lsp/analysis.rkt                             |  43 +++++++-
+ lsp/source-controller/analysis-scheduler.rkt |  31 +++++-
+ lsp/source-controller/source-owner.rkt       |  94 ++++++++++++++++-
+ tests/lsp/analysis-controller-test.rkt       |   4 +-
+ tests/lsp/closed-analysis-test.rkt           |   2 +-
+ tests/lsp/open-buffer-imports-test.rkt       | 100 +++++++++++++++++++
+ workspace/source-store.rkt                   |   7 ++
+ workspace/state.rkt                          |   5 +
+ 10 files changed, 356 insertions(+), 16 deletions(-)
+ create mode 100644 common/source-snapshot.rkt
+ create mode 100644 tests/lsp/open-buffer-imports-test.rkt
+
 diff --git a/common/source-snapshot.rkt b/common/source-snapshot.rkt
 new file mode 100644
-index 0000000..9745104
+index 0000000..c8e2d7b
 --- /dev/null
 +++ b/common/source-snapshot.rkt
-@@ -0,0 +1,67 @@
+@@ -0,0 +1,63 @@
 +#lang racket/base
 +
 +;; Module loading for one analysis that reads open editor buffers instead of
@@ -19,7 +51,6 @@ index 0000000..9745104
 +
 +;; sources: complete normalized path -> buffer text, or #f when two buffers
 +;;   claim the same path.
-+;; directory: load-relative directory, or #f.
 +;; source?: whether a file outside `sources` loads from source.
 +;; on-load: receives each module file the expansion loads.
 +;; Installed collections keep compiled loading even below a project folder,
@@ -32,7 +63,7 @@ index 0000000..9745104
 +    (define root (explode-path (simplify-path (path->complete-path dir) #f)))
 +    (and (<= (length root) (length parts)) (equal? root (take parts (length root))))))
 +
-+(define (call-with-source-snapshot directory sources proc
++(define (call-with-source-snapshot sources proc
 +                                   #:source? [source? (lambda (_) #f)]
 +                                   #:on-load [on-load void])
 +  (define ordinary-load (current-load/use-compiled))
@@ -54,13 +85,10 @@ index 0000000..9745104
 +       (unless (and (pair? expected) (not (car expected)))
 +         (parameterize ([current-load-relative-directory (path-only full)]
 +                        [current-module-declare-source full])
-+           (get-module-code full #:sub-path '() #:rkt-try-ss? #f
-+                            #:choose (lambda _ 'src) #:compile eval)))]
++           (eval (get-module-code full #:sub-path '() #:rkt-try-ss? #f
++                                  #:choose (lambda _ 'src)))))]
 +      [else (ordinary-load file expected)]))
-+  (parameterize ([current-namespace (make-base-namespace)]
-+                 [current-directory (or directory (current-directory))]
-+                 [current-load-relative-directory directory]
-+                 [current-load/use-compiled load-snapshot]
++  (parameterize ([current-load/use-compiled load-snapshot]
 +                 [moddep-current-open-input-file
 +                  (lambda (file)
 +                    (define full (simple-form-path file))
@@ -71,24 +99,49 @@ index 0000000..9745104
 +                       (open-input-string text full)]
 +                      [else (ordinary-open file)]))])
 +    (proc)))
+diff --git a/lsp/analysis-lifecycle.md b/lsp/analysis-lifecycle.md
+index 719f3c9..0b3cba3 100644
+--- a/lsp/analysis-lifecycle.md
++++ b/lsp/analysis-lifecycle.md
+@@ -119,6 +119,29 @@ The controller receives its publication workspace through `#:workspace`.
+ The default remains the process's `current-workspace`, also used by existing
+ workspace requests. Injecting a different publication workspace alone does not
+ create an isolated LSP session; the request layer must use that same workspace.
++Its folders are also project roots for imported modules, as described below.
++
++## Imports from open buffers
++
++Each analysis attempt carries an `Analysis-Context`: an immutable table of the
++open file buffers taken when the attempt is requested, the project roots, and a
++table the worker fills with every module file the expansion loads. An import
++of a file with an open buffer reads that buffer, unsaved edits included. Two
++buffers for one path make that import an error rather than a choice between
++them. Modules below a workspace folder or the directory of an open buffer load
++from source, so a compiled file written before an unsaved or saved change
++cannot keep an older macro expansion. Libraries in installed collections keep
++ordinary compiled loading, even below a project root. Analysis never writes
++compiled files.
++
++The controller keeps, for each open buffer, the module files its accepted
++analysis loaded. Opening, editing or closing a buffer starts a new attempt for
++every other open buffer whose accepted analysis, or whose running attempt, has
++loaded that file. The new attempt supersedes outstanding work for the same
++revision and clears exact availability first, so queries wait for facts from
++the new text. Acceptance compares the buffer texts an analysis read with the
++current buffers; a product that read a buffer since changed, opened or closed
++is not installed, and another attempt starts in its place.
+ 
+ ## Available results and fresh completion
+ 
 diff --git a/lsp/analysis.rkt b/lsp/analysis.rkt
-index dc4717a..4bd02a4 100644
+index dc4717a..6f3d67f 100644
 --- a/lsp/analysis.rkt
 +++ b/lsp/analysis.rkt
-@@ -5,6 +5,7 @@
- ;; keeps that product's trace. Request threads receive an `Analysis-Summary`
- ;; or an `Analysis-Outcome`. Lifetime and reuse are in `analysis-lifecycle.md`.
- (require json
-+         racket/path
-          racket/class
-          racket/contract
-          racket/set
-@@ -15,9 +16,14 @@
+@@ -15,9 +15,13 @@
           "../doclib/check-syntax.rkt"
           "../doclib/doc-trace.rkt"
           "../doclib/internal-types.rkt"
 +         "../common/path-util.rkt"
-+         "../common/source.rkt"
 +         "../common/source-snapshot.rkt"
           "../workspace/source-store.rkt")
  
@@ -98,7 +151,7 @@ index dc4717a..4bd02a4 100644
           (struct-out Analysis-Summary)
           (struct-out Analysis-Product)
           (struct-out Analysis-Outcome)
-@@ -40,14 +46,34 @@
+@@ -40,14 +44,34 @@
  ;; trace: Mutable trace. The source controller is its only consumer.
  ;; contribution: Workspace contribution after successful analysis of a file.
  ;;   `#f` when the run produced no facts or the source has no file path.
@@ -134,20 +187,16 @@ index dc4717a..4bd02a4 100644
  ;; Terminal result of one Check Syntax or Resyntax attempt.
  ;;
  ;; state: `succeeded` when Check Syntax produced facts, or when Resyntax
-@@ -109,8 +135,21 @@
- ;; the trace on that document before copying definition and hover facts.
+@@ -110,7 +134,18 @@
  ;; Those extractors read the document after that installation.
  (define (analyze-source snapshot)
--  (define doc (make-source-doc (Source-Snapshot-source snapshot) (Source-Snapshot-text snapshot)))
+   (define doc (make-source-doc (Source-Snapshot-source snapshot) (Source-Snapshot-text snapshot)))
 -  (define check-syntax-result (doc-check-syntax doc))
-+  (define source (Source-Snapshot-source snapshot))
-+  (define doc (make-source-doc source (Source-Snapshot-text snapshot)))
 +  (define context (current-analysis-context))
 +  (define check-syntax-result
 +    (if context
 +        (let ([roots (Analysis-Context-roots context)])
 +          (call-with-source-snapshot
-+            (let ([file (source-file-path source)]) (and file (path-only file)))
 +            (Analysis-Context-buffers context)
 +            #:source? (lambda (path) (for/or ([root (in-list roots)]) (directory-contains? root path)))
 +            #:on-load (lambda (path)
@@ -158,7 +207,7 @@ index dc4717a..4bd02a4 100644
    (define trace (CSResult-trace check-syntax-result))
    (define succeeded? (CSResult-succeed? check-syntax-result))
    (define contribution (and succeeded? (send trace get-contribution)))
-@@ -120,4 +159,6 @@
+@@ -120,4 +155,6 @@
                      (and succeeded? (Analysis-Summary (doc-definition-ranges doc)
                                                        (doc-hover-summaries doc)))
                      (freeze-json (->jsexpr (set->list (send trace get-warn-diags))))
@@ -249,7 +298,7 @@ index 2bc7de5..92b2f57 100644
                        (Source-Snapshot-text snapshot) (Source-Snapshot-uri snapshot))))
        #:fail (lambda (reason) (Analysis-Outcome 'failed reason))
 diff --git a/lsp/source-controller/source-owner.rkt b/lsp/source-controller/source-owner.rkt
-index a4e6534..eab88c4 100644
+index a4e6534..238defb 100644
 --- a/lsp/source-controller/source-owner.rkt
 +++ b/lsp/source-controller/source-owner.rkt
 @@ -8,6 +8,7 @@
@@ -277,7 +326,7 @@ index a4e6534..eab88c4 100644
 +;;   analysis loaded, or #f when unknown. Consumer-only.
  (struct/contract Source-Controller
 -  ([store Source-Store?]
-+  ([workspace any/c]
++  ([workspace Workspace?]
 +   [dependencies (hash/c Source-Id? (or/c #f hash?) #:immutable #f)]
 +   [store Source-Store?]
     [events async-channel?]
@@ -348,7 +397,7 @@ index a4e6534..eab88c4 100644
 +            (set-SafeDoc-analysis-completion!
 +              sd (restart-analysis! scheduler snapshot
 +                                    #:context (struct-copy Analysis-Context context
-+                                                           [loaded (make-hash)])))))))))
++                                                [loaded (make-hash)])))))))))
 +
 +;; An analysis read its imports from the buffers open when it started. Any
 +;; that have since changed, opened or closed make the result stale.
@@ -475,6 +524,112 @@ index b95ee0b..1dd4ebf 100644
        [else (analyze-source snapshot)])))
  
  ;; Real expansion can exceed the short waits used for gate coordination.
+diff --git a/tests/lsp/open-buffer-imports-test.rkt b/tests/lsp/open-buffer-imports-test.rkt
+new file mode 100644
+index 0000000..a37b1b6
+--- /dev/null
++++ b/tests/lsp/open-buffer-imports-test.rkt
+@@ -0,0 +1,100 @@
++#lang racket/base
++
++;; Analysis reads an imported module from its open buffer, including unsaved
++;; edits, and analyses again the open documents that loaded it when that
++;; buffer opens, changes or closes.
++(require rackunit
++         racket/file
++         compiler/cm
++         "../../common/path-util.rkt"
++         "../../common/time.rkt"
++         "../../lsp/source-controller.rkt"
++         "controller-support.rkt")
++
++(define (write-text path text)
++  (display-to-file text path #:exists 'truncate))
++
++(define (provider name)
++  (format "#lang racket/base\n(provide ~a)\n(define (~a x) (+ x 1))\n" name name))
++
++;; Wait for diagnostics published for `path` that do, or do not, include an
++;; error. Earlier publications for the same document are skipped.
++(define (await-errors session path errors?)
++  (define uri (path->uri path))
++  (define deadline (+ (current-deadline-milliseconds) 60000))
++  (let loop ()
++    (when (>= (current-deadline-milliseconds) deadline)
++      (error 'await-errors "no diagnostics for ~a with errors? = ~a" path errors?))
++    (define message (await (Session-notifications session) 60))
++    (define params (hash-ref message 'params (hasheq)))
++    (define published-errors
++      (for/list ([diagnostic (in-list (hash-ref params 'diagnostics '()))]
++                 #:when (equal? (hash-ref diagnostic 'severity #f) 1))
++        diagnostic))
++    (unless (and (equal? (hash-ref message 'method #f) "textDocument/publishDiagnostics")
++                 (equal? (hash-ref params 'uri #f) uri)
++                 (eq? errors? (pair? published-errors)))
++      (loop))))
++
++;; The project lives outside every collection directory: modules below one
++;; keep compiled loading.
++(define (with-project proc)
++  (define root (make-temporary-file "open-buffer-imports~a" 'directory))
++  (dynamic-wind
++    void
++    (lambda ()
++      (with-session (make-source-controller #:resyntax #f)
++                    (lambda (session) (proc session root))))
++    (lambda () (delete-directory/files root))))
++
++(module+ test
++  (test-case "imports read open buffers, and consumers follow their edits and close"
++    (with-project
++      (lambda (session root)
++        (define dependency (build-path root "dependency.rkt"))
++        (define consumer (build-path root "consumer.rkt"))
++        (write-text dependency (provider "before"))
++        (write-text consumer "#lang racket/base\n(require \"dependency.rkt\")\n(after 3)\n")
++        (open! session consumer (file->string consumer))
++        (await-errors session consumer #t)
++        (open! session dependency (provider "after"))
++        (await-errors session consumer #f)
++        (change! session dependency (provider "before") 1)
++        (await-errors session consumer #t)
++        (change! session dependency (provider "after") 2)
++        (await-errors session consumer #f)
++        ;; Closing the buffer returns the import to the file on disk.
++        (close! session dependency)
++        (await-errors session consumer #t)
++        (check-equal? (file->string dependency) (provider "before")))))
++
++  (test-case "project modules load from source, not from older compiled files"
++    (with-project
++      (lambda (session root)
++        (define (leaf value) (format "#lang racket/base\n(provide stamp)\n(define stamp '~a)\n" value))
++        (define leaf-path (build-path root "leaf.rkt"))
++        (define bridge (build-path root "bridge.rkt"))
++        (define consumer (build-path root "consumer.rkt"))
++        (write-text leaf-path (leaf "old"))
++        ;; The compiled bridge keeps the value of `stamp` it saw at compile time.
++        (write-text bridge
++                    (string-append
++                      "#lang racket/base\n"
++                      "(require (for-syntax racket/base \"leaf.rkt\"))\n"
++                      "(provide stamp)\n"
++                      "(define-syntax (bake stx) (datum->syntax stx (list 'quote stamp)))\n"
++                      "(define stamp (bake))\n"))
++        (parameterize ([current-namespace (make-base-namespace)])
++          (managed-compile-zo bridge))
++        (define consumer-text
++          (string-append
++            "#lang racket/base\n"
++            "(require (for-syntax racket/base \"bridge.rkt\"))\n"
++            "(begin-for-syntax\n"
++            "  (unless (eq? stamp 'new) (raise-syntax-error #f \"stale import\" #'stamp)))\n"))
++        (write-text consumer consumer-text)
++        (open! session consumer consumer-text)
++        (await-errors session consumer #t)
++        (open! session leaf-path (leaf "new"))
++        (await-errors session consumer #f)
++        (check-equal? (file->string leaf-path) (leaf "old"))))))
 diff --git a/workspace/source-store.rkt b/workspace/source-store.rkt
 index aefbdd9..1450227 100644
 --- a/workspace/source-store.rkt
@@ -501,7 +656,7 @@ index aefbdd9..1450227 100644
  ;; signal, so a waiter that wakes always observes the new record.
  (define (replace-view! store source origin content-state buffer disk-text)
 diff --git a/workspace/state.rkt b/workspace/state.rkt
-index 8dab376..922f6e1 100644
+index 8dab376..913dbd2 100644
 --- a/workspace/state.rkt
 +++ b/workspace/state.rkt
 @@ -12,6 +12,7 @@
@@ -518,8 +673,41 @@ index 8dab376..922f6e1 100644
  
 +(define (workspace-folders workspace)
 +  (call-with-semaphore (Workspace-lock workspace)
-+    (lambda () (set->list (Workspace-folders workspace)))))
++                       (lambda () (set->list (Workspace-folders workspace)))))
 +
  (define/contract (workspace-set-contribution! workspace contribution)
    (-> Workspace? Doc-Contribution? void?)
    (define path (Doc-Contribution-path contribution))
+-- 
+2.43.0
+
+
+From ea54295f388690264e2e464084f5500846e9ced2 Mon Sep 17 00:00:00 2001
+From: Eric Parsonage <eric@eparsonage.com>
+Date: Sun, 1 Nov 2026 10:35:30 +1030
+Subject: [PATCH 2/2] Load project modules from source on Racket 8.0
+
+get-module-code requires #:sub-path to be a relative path on Racket 8.0
+and earlier, so every analysis that loaded a project module from source
+failed there. The argument names the compiled subdirectory, which
+source loading does not use.
+---
+ common/source-snapshot.rkt | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/common/source-snapshot.rkt b/common/source-snapshot.rkt
+index c8e2d7b..b75abd6 100644
+--- a/common/source-snapshot.rkt
++++ b/common/source-snapshot.rkt
+@@ -47,7 +47,7 @@
+        (unless (and (pair? expected) (not (car expected)))
+          (parameterize ([current-load-relative-directory (path-only full)]
+                         [current-module-declare-source full])
+-           (eval (get-module-code full #:sub-path '() #:rkt-try-ss? #f
++           (eval (get-module-code full #:rkt-try-ss? #f
+                                   #:choose (lambda _ 'src)))))]
+       [else (ordinary-load file expected)]))
+   (parameterize ([current-load/use-compiled load-snapshot]
+-- 
+2.43.0
+

@@ -49,8 +49,10 @@ for package in packages:
         shutil.copytree(source, destination)
     print(f"Verified and copied {package['name']}")
 
-server_patches = ('tail-position-hover.patch', 'predicted-bindings.patch', 'open-buffer-imports.patch',
-                  'untitled-relative-imports.patch')
+# Upstream pull requests first, as submitted, then the local patches.
+server_patches = ('pr-246-utf16-positions.patch', 'pr-247-open-buffer-imports.patch',
+                  'pr-248-relative-import-without-directory.patch',
+                  'tail-position-hover.patch', 'predicted-bindings.patch')
 for patch_name in server_patches if any(p['name'] == 'racket-langserver' for p in packages) else ():
     patch = root / 'vendor/patches' / patch_name
     subprocess.run(['git', 'apply', '--directory=vendor/collects/racket-langserver', str(patch)],

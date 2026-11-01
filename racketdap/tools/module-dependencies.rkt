@@ -29,7 +29,10 @@
             'submodules submodules))
   (define modules '())
   (define count 0)
-  (call-with-source-snapshot (path-only source) sources
+  (parameterize ([current-namespace (make-base-namespace)]
+                 [current-directory (path-only source)]
+                 [current-load-relative-directory (path-only source)])
+  (call-with-source-snapshot sources
     (lambda ()
       ;; Always compile the selected source; project intermediates and open
       ;; buffers use the same source-snapshot loader as language analysis.
@@ -50,7 +53,7 @@
                                                (map symbol->string (cdr (module-compiled-name child))))) modules))
         (for ([child (in-list children)]) (visit child (map symbol->string (cdr (module-compiled-name child))))))
       (visit code '()))
-    #:source? project? #:on-load record!)
+    #:source? project? #:on-load record!))
   (hasheq 'version 1 'path (path->string source) 'modules (reverse modules)
           'files (sort (hash-keys loaded) string<?)
           'stamps (for/list ([(file hash) (in-hash loaded)] #:unless (eq? hash 'buffer))

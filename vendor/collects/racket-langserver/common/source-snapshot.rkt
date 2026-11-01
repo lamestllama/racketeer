@@ -5,28 +5,16 @@
 ;; intermediates cannot retain an older macro expansion. Libraries outside the
 ;; project keep their ordinary compiled loading policy.
 (require racket/list
-         racket/match
          racket/path
          setup/dirs
          syntax/modcode)
 
 (provide call-with-source-snapshot)
 
-(define (relative-import? module)
-  (match module
-    [(? path-string?) (relative-path? module)]
-    [(list 'file (? path-string? file)) (relative-path? file)]
-    [(list* 'submod (and parent (not (or "." ".."))) _) (relative-import? parent)]
-    [_ #f]))
-
 ;; sources: complete normalized path -> buffer text, or #f when two buffers
 ;;   claim the same path.
-;; directory: load-relative directory, or #f.
 ;; source?: whether a file outside `sources` loads from source.
 ;; on-load: receives each module file the expansion loads.
-;; unbased: syntax source of a document without an import base. Its relative
-;;   imports are refused with a located error instead of resolving against an
-;;   unrelated directory.
 ;; Installed collections keep compiled loading even below a project folder,
 ;; for example when a workspace folder contains the Racket installation.
 (define (installed-library? file)
@@ -37,24 +25,9 @@
     (define root (explode-path (simplify-path (path->complete-path dir) #f)))
     (and (<= (length root) (length parts)) (equal? root (take parts (length root))))))
 
-(define (call-with-source-snapshot directory sources proc
+(define (call-with-source-snapshot sources proc
                                    #:source? [source? (lambda (_) #f)]
-                                   #:on-load [on-load void]
-                                   #:unbased [unbased #f])
-  (define ordinary-resolve (current-module-name-resolver))
-  (define (primary-module? relative-to)
-    (define name (and relative-to (resolved-module-path-name relative-to)))
-    (equal? unbased (if (pair? name) (car name) name)))
-  (define resolve
-    (case-lambda
-      [(name namespace) (ordinary-resolve name namespace)]
-      [(module relative-to stx load?)
-       (when (and unbased (relative-import? module)
-                  (or (primary-module? relative-to)
-                      (and stx (equal? (syntax-source stx) unbased))))
-         (raise-syntax-error #f
-           "Relative imports need a save location. Save this document to import files relative to it." stx))
-       (ordinary-resolve module relative-to stx load?)]))
+                                   #:on-load [on-load void])
   (define ordinary-load (current-load/use-compiled))
   (define ordinary-open (moddep-current-open-input-file))
   (define (load-snapshot file expected)
@@ -74,14 +47,10 @@
        (unless (and (pair? expected) (not (car expected)))
          (parameterize ([current-load-relative-directory (path-only full)]
                         [current-module-declare-source full])
-           (get-module-code full #:sub-path '() #:rkt-try-ss? #f
-                            #:choose (lambda _ 'src) #:compile eval)))]
+           (eval (get-module-code full #:rkt-try-ss? #f
+                                  #:choose (lambda _ 'src)))))]
       [else (ordinary-load file expected)]))
-  (parameterize ([current-namespace (make-base-namespace)]
-                 [current-module-name-resolver resolve]
-                 [current-directory (or directory (current-directory))]
-                 [current-load-relative-directory directory]
-                 [current-load/use-compiled load-snapshot]
+  (parameterize ([current-load/use-compiled load-snapshot]
                  [moddep-current-open-input-file
                   (lambda (file)
                     (define full (simple-form-path file))

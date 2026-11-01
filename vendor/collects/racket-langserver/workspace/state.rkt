@@ -70,7 +70,7 @@
 
 (define (workspace-folders workspace)
   (call-with-semaphore (Workspace-lock workspace)
-    (lambda () (set->list (Workspace-folders workspace)))))
+                       (lambda () (set->list (Workspace-folders workspace)))))
 
 (define/contract (workspace-set-contribution! workspace contribution)
   (-> Workspace? Doc-Contribution? void?)

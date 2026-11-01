@@ -80,7 +80,7 @@
 ;; dependencies: Source-Id of an open buffer -> module files its accepted
 ;;   analysis loaded, or #f when unknown. Consumer-only.
 (struct/contract Source-Controller
-  ([workspace any/c]
+  ([workspace Workspace?]
    [dependencies (hash/c Source-Id? (or/c #f hash?) #:immutable #f)]
    [store Source-Store?]
    [events async-channel?]
@@ -262,7 +262,7 @@
             (set-SafeDoc-analysis-completion!
               sd (restart-analysis! scheduler snapshot
                                     #:context (struct-copy Analysis-Context context
-                                                           [loaded (make-hash)])))))))))
+                                                [loaded (make-hash)])))))))))
 
 ;; An analysis read its imports from the buffers open when it started. Any
 ;; that have since changed, opened or closed make the result stale.
