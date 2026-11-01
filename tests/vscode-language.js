@@ -17,6 +17,10 @@ async function until(check, description, timeout = 30000) {
   throw new Error(`Timed out: ${description}`);
 }
 
+// The console log names each check group as it starts, so a run that stops
+// responding shows which group it reached.
+const step = name => console.log(`Language check: ${name}`);
+
 exports.run = async (extension, workspace) => {
   const directory = path.join(workspace.uri.fsPath, 'development checks');
   fs.mkdirSync(directory, { recursive: true });
@@ -55,6 +59,7 @@ exports.run = async (extension, workspace) => {
   const editor = await vscode.window.showTextDocument(document);
   await extension.exports.languageServerReady();
   const call = new vscode.Position(4, 18);
+  step('definitions, references and the workspace index');
   const definitions = await until(async () => {
     const result = await vscode.commands.executeCommand('vscode.executeDefinitionProvider', document.uri, call);
     return result?.length && result;
@@ -96,6 +101,7 @@ exports.run = async (extension, workspace) => {
   assert.ok(syntax.some(token => token.c.includes('(values 1 2)') && token.t.includes('string')));
   const completion = await vscode.commands.executeCommand('vscode.executeCompletionItemProvider', document.uri, call);
   assert.ok(completion.items.some(item => (typeof item.label === 'string' ? item.label : item.label.label) === 'square'), 'Completion includes the local function');
+  step('rename');
   // The package example is deliberately uninstalled until the package suite.
   // An incomplete index must refuse rename, then honor an explicit scope.
   await assert.rejects(vscode.commands.executeCommand('vscode.executeDocumentRenameProvider', document.uri, call, 'squared'),
@@ -126,6 +132,7 @@ exports.run = async (extension, workspace) => {
   } finally {
     await analysisConfig.update('workspaceAnalysis.excludedDirectories', excluded, vscode.ConfigurationTarget.Workspace);
   }
+  step('formatting and diagnostics');
   const formatting = await vscode.commands.executeCommand('vscode.executeFormatDocumentProvider', document.uri, { tabSize: 2, insertSpaces: true });
   assert.ok(formatting.length, 'Bundled fixw returns formatting edits');
   const formatEdit = new vscode.WorkspaceEdit();
@@ -145,6 +152,7 @@ exports.run = async (extension, workspace) => {
   await until(() => !vscode.languages.getDiagnostics(document.uri).some(diagnostic => /unknown-racket-name/.test(diagnostic.message)), 'diagnostic cleared after repair');
   await document.save();
 
+  step('run, test and REPL commands');
   const execution = await vscode.commands.executeCommand('racketdap.runFile');
   assert.ok(execution?.session, 'Run starts an owned file execution');
   assert.equal(execution.session.configuration.noDebug, true);
@@ -170,6 +178,7 @@ exports.run = async (extension, workspace) => {
     'multiple selections evaluate in source order, ignoring the empty primary cursor');
   terminal.dispose();
 
+  step('language server disable, enable and restart');
   await vscode.workspace.getConfiguration('racketdap').update('languageServer.enabled', false, vscode.ConfigurationTarget.Workspace);
   await extension.exports.languageServerReady();
   assert.equal((await vscode.commands.executeCommand('vscode.executeDefinitionProvider', document.uri, call)).length, 0);
@@ -179,9 +188,13 @@ exports.run = async (extension, workspace) => {
   await vscode.commands.executeCommand('racketdap.restartLanguageServer');
   await until(async () => (await vscode.commands.executeCommand('vscode.executeDefinitionProvider', document.uri, call))?.length, 'language server restarted');
 
+  step('REPL sessions');
   const replChecks = await require('./vscode-repl').run(workspace);
+  step('unsaved imports');
   const importChecks = await require('./vscode-unsaved-imports').run(extension, workspace);
+  step('untitled documents');
   const untitledChecks = await require('./vscode-untitled').run(extension, workspace);
+  step('rename forms');
   const renameChecks = await require('./vscode-rename-forms').run(extension, workspace);
   return [process.env.RACKETDAP_TEST_RHOMBUS === '1'
     ? 'bundled language server with isolated Rhombus runtime addon'
