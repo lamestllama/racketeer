@@ -142,10 +142,13 @@ exports.run = async function (extension, workspace) {
       const pid = Number(fs.readFileSync(marker, 'utf8'));
       cancellation.cancel();
       assert.equal((await pending).get(blocked.id).status, 'skipped');
+      // Reaping has its own deadline from the cancellation, not what remains
+      // of the one for starting the process.
+      const reaped = Date.now() + 30000;
       for (;;) {
         try { process.kill(pid, 0); }
         catch (error) { if (error.code === 'ESRCH') break; throw error; }
-        assert.ok(Date.now() < deadline, 'Native test cancellation reaps the child');
+        assert.ok(Date.now() < reaped, `Native test cancellation reaps the child ${pid} within 30 seconds`);
         await new Promise(resolve => setTimeout(resolve, 30));
       }
     } finally { cancellation.dispose(); }
