@@ -462,7 +462,7 @@ for (const mode of ['cancel', 'reject', 'timeout']) test({
     vscode,
     'vscode-languageclient/node': { LanguageClient: Client, State: {}, CloseAction: { DoNotRestart: 'stop' } },
     './workspace-index': { createWorkspaceIndex: () => ({ cancelStart() {}, async dispose() {} }) },
-    './language-process': { createLanguageProcess: (_command, _args, _options, lifecycle) => {
+    './language-process': { ownedArgs: require('../vscode/language-process').ownedArgs, createLanguageProcess: (_command, _args, _options, lifecycle) => {
       assert.equal(lifecycle.timeout, mode === 'timeout' ? 1000 : mode === 'cancel' ? 240000 : 180000);
       return createLanguageProcess(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {}, lifecycle);
     } }

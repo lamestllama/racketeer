@@ -58,6 +58,9 @@
                (define cancel (hash-ref pending (hash-ref params 'id) #f))
                (when cancel (semaphore-post cancel))]
               [_ (when id (reply (error-response id -32601 "Unknown index method")))])))))
-    (lambda () (workspace-analysis-close! engine))))
+    ;; The client has gone once its input ends. Reap the workers if that is
+    ;; quick, then exit even if one is wedged: the owning supervisor ends
+    ;; anything left in the process tree.
+    (lambda () (sync/timeout 5 (thread (lambda () (workspace-analysis-close! engine)))))))
 
-(module+ main (serve))
+(module+ main (serve) (exit 0))

@@ -62,4 +62,11 @@ function createLanguageProcess(command, args, options, { timeout = 180000, onTim
   };
 }
 
-module.exports = { createLanguageProcess };
+// A server runs in a process tree the extension owns. The tree ends when the
+// server ends, which it does when its input closes, including when the
+// extension host exits without warning.
+function ownedArgs(context, args) {
+  return [context.asAbsolutePath('runtime/racketdap/tools/owned-command.rkt'), ...args];
+}
+
+module.exports = { createLanguageProcess, ownedArgs };

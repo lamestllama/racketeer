@@ -9,6 +9,7 @@
 - Workspace references keep their analysis while unchanged documents open and close. A pass in progress, or a partial index, continues under the new document set, and a complete index is still verified against the disk, so Find All References no longer waits for a pause in editor activity.
 - Image results keep one editor group, release their snapshot when the last tab closes and save from the active tab in VS Code 1.144 and later, whose built-in image editor tabs expose no input to extensions.
 - A build runs in a process tree Racketeer owns, as the debugger's workers do, so terminating its task also ends processes it started on macOS and Windows.
+- The language server and the workspace index also run in owned process trees, so they and the processes their analysis starts end with the extension host, even when it exits without warning. The index server exits once its input closes instead of waiting for a stalled worker.
 - Attach to cooperative Racket hosts through a token authenticated loopback listener.
 - Reuse source selection, breakpoints and inspection without owning or killing the host.
 - Resolve attach configurations without a program; input and interrupt stay with the host.

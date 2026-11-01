@@ -2,7 +2,7 @@
 const path = require('node:path');
 const vscode = require('vscode');
 const { createMessageConnection, StreamMessageReader, StreamMessageWriter } = require('vscode-languageclient/node');
-const { createLanguageProcess } = require('./language-process');
+const { createLanguageProcess, ownedArgs } = require('./language-process');
 
 // The index covers saved files. Untitled documents keep the language server's
 // own document-local references and rename.
@@ -28,7 +28,7 @@ function createWorkspaceIndex(context, { executable, timeout, output, onStatus }
     output.appendLine(`Workspace index: ${error.message || error}`);
     onStatus({ state: 'failed', indexed: 0, failures: 1 });
   }
-  const process = createLanguageProcess(executable, [context.asAbsolutePath('workspace-index-server.rkt')],
+  const process = createLanguageProcess(executable, ownedArgs(context, [context.asAbsolutePath('workspace-index-server.rkt')]),
     { cwd: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath },
     { timeout, name: 'Workspace index', onTimeout: failure });
   function snapshot(documentsOnly = false) {

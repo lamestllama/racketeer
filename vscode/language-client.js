@@ -1,7 +1,7 @@
 'use strict';
 const vscode = require('vscode');
 const { LanguageClient, State, CloseAction } = require('vscode-languageclient/node');
-const { createLanguageProcess } = require('./language-process');
+const { createLanguageProcess, ownedArgs } = require('./language-process');
 const { createWorkspaceIndex } = require('./workspace-index');
 
 const languageIds = ['racket', 'rhombus'];
@@ -82,7 +82,7 @@ function registerLanguageTools(context, debugSources) {
     const executable = vscode.workspace.getConfiguration('racketdap', folder?.uri)
       .get('racketExecutable', 'racket');
     const process = createLanguageProcess(executable,
-      installed ? ['-l', 'racket-langserver'] : [context.asAbsolutePath('language-server.rkt')],
+      ownedArgs(context, installed ? ['-l', 'racket-langserver'] : [context.asAbsolutePath('language-server.rkt')]),
       { cwd: folder?.uri.fsPath }, {
         timeout: startupTimeoutSeconds * 1000,
         onTimeout: error => reportFailure(error,

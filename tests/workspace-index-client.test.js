@@ -14,7 +14,7 @@ function event() {
 function client(t, processFactory) {
   const vm = require('node:vm');
   const { fileURLToPath } = require('node:url');
-  const { createLanguageProcess } = require('../vscode/language-process');
+  const { createLanguageProcess, ownedArgs } = require('../vscode/language-process');
   fs.mkdirSync(path.join(root, '.test-output'), { recursive: true });
   const directory = fs.mkdtempSync(path.join(root, '.test-output', 'separate-index-'));
   const changed = event(), opened = event(), closed = event(), disk = event();
@@ -35,7 +35,7 @@ function client(t, processFactory) {
       TextEdit: class { constructor(range, newText) { this.range = range; this.newText = newText; } },
       WorkspaceEdit: class extends Map { set(uri, edits) { return super.set(uri.toString(), edits); } } },
     'node:path': path, 'vscode-languageclient/node': rpc,
-    './language-process': { createLanguageProcess: processFactory || ((command, args, options, lifecycle) =>
+    './language-process': { ownedArgs, createLanguageProcess: processFactory || ((command, args, options, lifecycle) =>
       createLanguageProcess(command, args, { ...options, env: { ...process.env, PLTADDONDIR: addon } }, lifecycle)) }
   };
   const module = { exports: {} };
