@@ -3,7 +3,7 @@
 'use strict';
 const path = require('node:path');
 const vscode = require('vscode');
-const { createMessageConnection, StreamMessageReader, StreamMessageWriter } = require('vscode-languageclient/node');
+const { createMessageConnection, StreamMessageReader, StreamMessageWriter, CancellationTokenSource } = require('vscode-languageclient/node');
 const { createLanguageProcess, ownedArgs } = require('./language-process');
 
 // The index covers saved files. Untitled documents keep the language server's
@@ -15,7 +15,7 @@ const excludedDefaults = ['.git', 'compiled', 'node_modules', '.test-output', 'd
 // document opens to the language server or consumes the server's live traces.
 function createWorkspaceIndex(context, { executable, timeout, output, onStatus }) {
   let connection, starting, disposed = false, requested = false, synchronized = false;
-  let revision = 0, identity = 0;
+  let revision = 0, identity = 0, heard = Date.now();
   const identities = new WeakMap();
   const versions = new WeakMap();
   const documentIdentity = document => {
@@ -54,7 +54,7 @@ function createWorkspaceIndex(context, { executable, timeout, output, onStatus }
       child.stderr.setEncoding('utf8');
       child.stderr.on('data', text => output.append(text));
       connection = createMessageConnection(new StreamMessageReader(child.stdout), new StreamMessageWriter(child.stdin));
-      connection.onNotification('status', onStatus);
+      connection.onNotification('status', status => { heard = Date.now(); onStatus(status); });
       connection.onError(([error]) => failure(error));
       connection.onClose(() => {
         synchronized = false;
@@ -108,13 +108,33 @@ function createWorkspaceIndex(context, { executable, timeout, output, onStatus }
     })
   ];
   const range = value => new vscode.Range(value.start.line, value.start.character, value.end.line, value.end.character);
+  // The index reports after each file it analyses and bounds each request's
+  // work, so it is never silent for long. A request it leaves unanswered and
+  // silent for as long as it may take to start is withdrawn: references then
+  // come from the language server alone, and rename reports the stall.
+  const silent = Symbol('silent');
+  function ask(method, params, token) {
+    const source = new CancellationTokenSource();
+    const linked = token.onCancellationRequested(() => source.cancel());
+    heard = Date.now();
+    return new Promise((resolve, reject) => {
+      const check = setInterval(() => {
+        if (Date.now() - heard < timeout) return;
+        source.cancel();
+        failure(new Error(`no answer to ${method} for ${timeout / 1000} seconds.`));
+        resolve(silent);
+      }, Math.min(1000, timeout));
+      connection.sendRequest(method, params, source.token).then(resolve, reject)
+        .finally(() => { clearInterval(check); linked.dispose(); source.dispose(); });
+    }).then(value => { if (value !== silent) heard = Date.now(); return value; });
+  }
   async function renameRequest(method, document, position, token, newName) {
     if (!enabled()) throw new Error('Enable workspace analysis to rename safely across files.');
     if (disposed || token.isCancellationRequested) return;
     const version = document.version, owned = documentIdentity(document);
     await start();
     if (disposed || token.isCancellationRequested) return;
-    const response = await connection.sendRequest(method, {
+    const response = await ask(method, {
       uri: document.uri.toString(), identity: owned, version,
       position: { line: position.line, character: position.character },
       ...(newName === undefined ? {} : { newName })
@@ -122,6 +142,7 @@ function createWorkspaceIndex(context, { executable, timeout, output, onStatus }
       if (!disposed && !token.isCancellationRequested) throw error;
     });
     if (disposed || token.isCancellationRequested) return;
+    if (response === silent) throw new Error('The workspace index stopped answering. Run Racket: Restart Language Server.');
     if (response.revision !== revision || version !== document.version ||
         identities.get(document) !== owned || document.isClosed ||
         !vscode.workspace.textDocuments.includes(document)) {
@@ -157,12 +178,13 @@ function createWorkspaceIndex(context, { executable, timeout, output, onStatus }
       try {
         await start();
         if (disposed || token.isCancellationRequested) return [];
-        const locations = await connection.sendRequest('references', {
+        const locations = await ask('references', {
           uri: (sourceUri || document.uri).toString(),
           ...(sourceUri ? { text } : { identity: owned, version }),
           position: { line: position.line, character: position.character },
           includeDeclaration: options.includeDeclaration
         }, token);
+        if (locations === silent) return next(document, position, options, token);
         if (disposed || token.isCancellationRequested || version !== document.version ||
             identities.get(document) !== owned || !vscode.workspace.textDocuments.includes(document)) return [];
         return locations.map(location => new vscode.Location(vscode.Uri.parse(location.uri),

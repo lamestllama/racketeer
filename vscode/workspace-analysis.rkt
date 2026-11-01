@@ -100,6 +100,10 @@
 (define (compute/slot run seconds request cancel)
   ;; Cancellation must discard the runtime doing the work, including its module
   ;; loading state. The controlling thread only exchanges immutable snapshots.
+  ;; Starting and stopping a worker are bounded too, and a stall is logged, so
+  ;; a worker that never starts or never stops cannot hold the slot.
+  (define watch
+    (thread (lambda () (sleep 30) (eprintf "Workspace analysis worker has not started after 30 seconds\n"))))
   (define worker
     (place channel
       (custodian-limit-memory (current-custodian) (* 256 1024 1024))
@@ -132,6 +136,7 @@
       (place-channel-put channel result)
       ;; Keep a successful reply distinguishable from an abnormal early exit.
       (place-channel-get channel)))
+  (kill-thread watch)
   (define dead (place-dead-evt worker))
   (dynamic-wind
     void
@@ -144,7 +149,9 @@
             [(pair? finished) finished]
             [(eq? finished dead) (cons 'failed "analysis worker exited")]
             [else #f]))
-    (lambda () (place-kill worker) (place-wait worker))))
+    (lambda ()
+      (unless (sync/timeout 10 (thread (lambda () (place-kill worker) (place-wait worker))))
+        (eprintf "Workspace analysis worker did not stop within 10 seconds\n")))))
 
 (define (discover roots excluded limit)
   (define module-suffix-regexp (get-module-suffix-regexp))

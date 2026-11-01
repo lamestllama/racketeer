@@ -13,7 +13,7 @@ function event() {
   return { listen(callback) { listeners.add(callback); return { dispose() { listeners.delete(callback); } }; },
     emit(value) { for (const listener of listeners) listener(value); } };
 }
-function client(t, processFactory) {
+function client(t, processFactory, timeout = 60000) {
   const vm = require('node:vm');
   const { fileURLToPath } = require('node:url');
   const { createLanguageProcess, ownedArgs } = require('../vscode/language-process');
@@ -42,9 +42,9 @@ function client(t, processFactory) {
   };
   const module = { exports: {} };
   const filename = path.join(root, 'vscode/workspace-index.js');
-  vm.runInNewContext(fs.readFileSync(filename, 'utf8'), { module, require: name => dependencies[name] }, { filename });
+  vm.runInNewContext(fs.readFileSync(filename, 'utf8'), { module, require: name => dependencies[name], setInterval, clearInterval }, { filename });
   const index = module.exports.createWorkspaceIndex({ asAbsolutePath: file => path.join(root, 'vscode', file) }, {
-    executable: 'racket', timeout: 60000, output: { append() {}, appendLine() {} }, onStatus: value => statuses.push(value)
+    executable: 'racket', timeout, output: { append() {}, appendLine() {} }, onStatus: value => statuses.push(value)
   });
   t.after(async () => { await index.dispose(); fs.rmSync(directory, { recursive: true, force: true }); });
   const open = (name, text) => {
@@ -57,7 +57,7 @@ function client(t, processFactory) {
   return { index, directory, open, refs, closed, changed, disk, parse, workspace, statuses, vscode: dependencies.vscode };
 }
 
-function indexPeer(t, initialize = () => ({}), starting = Promise.resolve()) {
+function indexPeer(t, initialize = () => ({}), starting = Promise.resolve(), timeout) {
   const { PassThrough } = require('node:stream');
   const child = { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough() };
   const connection = rpc.createMessageConnection(new rpc.StreamMessageReader(child.stdin), new rpc.StreamMessageWriter(child.stdout));
@@ -72,7 +72,7 @@ function indexPeer(t, initialize = () => ({}), starting = Promise.resolve()) {
       connection.dispose();
       for (const stream of Object.values(child)) stream.destroy();
     }
-  }));
+  }), timeout);
   return { ...c, snapshots, connection, disconnect: () => child.stdout.destroy() };
 }
 
@@ -99,6 +99,17 @@ for (const method of ['initialize', 'references', 'prepareRename', 'rename']) {
     assert.equal(c.statuses.at(-1).state, 'failed');
   });
 }
+
+test('an index that stops answering leaves references to the language server and refuses rename', { timeout: 20000 }, async t => {
+  const c = indexPeer(t, undefined, undefined, 1500), doc = c.open('definition.rkt', definition);
+  await c.index.start();
+  for (const method of ['references', 'rename']) c.connection.onRequest(method, () => new Promise(() => {}));
+  const position = { line: 2, character: 10 }, token = rpc.CancellationToken.None;
+  assert.equal(await c.index.provideReferences(doc, position, { includeDeclaration: false }, token, () => 'language server'),
+    'language server');
+  assert.equal(c.statuses.at(-1).state, 'failed');
+  await assert.rejects(c.index.provideRenameEdits(doc, position, 'squared', token), /stopped answering/);
+});
 
 test('index skips a duplicate startup snapshot', async t => {
   const c = indexPeer(t), doc = c.open('definition.rkt', definition);
