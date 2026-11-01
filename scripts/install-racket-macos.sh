@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Eric Parsonage
+# SPDX-License-Identifier: Apache-2.0 OR MIT
 set -euo pipefail
 
 # Preserve the distribution's source and bytecode timestamps. A plain recursive

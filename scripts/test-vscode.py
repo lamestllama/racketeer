@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 Eric Parsonage
+# SPDX-License-Identifier: Apache-2.0 OR MIT
 """Test one verified VSIX in a fresh editor, workspace, and Racket addon directory."""
 import argparse
 from contextlib import contextmanager

@@ -1,4 +1,6 @@
 #lang racket/base
+;; Copyright (c) 2026 Eric Parsonage
+;; SPDX-License-Identifier: Apache-2.0 OR MIT
 (require racket/list "../source.rkt" "../instrumentation/runtime.rkt"
          (only-in "../test-discovery.rkt" test-source-hash))
 (provide coverage-files)

@@ -1,4 +1,6 @@
 #lang racket/base
+;; Copyright (c) 2026 Eric Parsonage
+;; SPDX-License-Identifier: Apache-2.0 OR MIT
 (require file/sha1 racket/list racket/path syntax/modcode syntax/modresolve
          racket-langserver/common/source-snapshot)
 (provide module-dependencies)

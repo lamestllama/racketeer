@@ -1,4 +1,6 @@
 #lang racket/base
+;; Copyright (c) 2026 Eric Parsonage
+;; SPDX-License-Identifier: Apache-2.0 OR MIT
 
 ;; Workspace analysis accepts complete source views and returns domain results.
 ;; Each instance owns its runs and disposable workers. No editor connection or

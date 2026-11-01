@@ -1,4 +1,6 @@
 #lang racket/base
+;; Copyright (c) 2026 Eric Parsonage
+;; SPDX-License-Identifier: Apache-2.0 OR MIT
 
 ;; Rename is a proposed edit over one immutable workspace snapshot. Expansion
 ;; validates the proposal in memory; neither source files nor editor buffers are

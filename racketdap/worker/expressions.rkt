@@ -1,4 +1,6 @@
 #lang racket/base
+;; Copyright (c) 2026 Eric Parsonage
+;; SPDX-License-Identifier: Apache-2.0 OR MIT
 (require racket/port racket/string racket/list)
 (provide read-expression (struct-out expression) (struct-out breakpoint-rule)
          compile-breakpoint-rule render-log-message)

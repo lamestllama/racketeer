@@ -1,4 +1,6 @@
 #lang racket/base
+;; Copyright (c) 2026 Eric Parsonage
+;; SPDX-License-Identifier: Apache-2.0 OR MIT
 (require file/convertible net/base64 "plots.rkt")
 (provide image-value? render-image)
 

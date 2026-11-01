@@ -1,4 +1,6 @@
 #lang racket/base
+;; Copyright (c) 2026 Eric Parsonage
+;; SPDX-License-Identifier: Apache-2.0 OR MIT
 (require "support/events.rkt" rackunit racket/file racket/port racket/string
          "../racketdap/worker/load.rkt" "../racketdap/instrumentation/instrument.rkt")
 (define (with-program text proc)

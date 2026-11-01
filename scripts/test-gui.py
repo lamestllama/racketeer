@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 Eric Parsonage
+# SPDX-License-Identifier: Apache-2.0 OR MIT
 """Exercise GUI callbacks in a private virtual display."""
 import argparse
 import os

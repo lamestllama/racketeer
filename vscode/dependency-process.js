@@ -1,3 +1,5 @@
+// Copyright (c) 2026 Eric Parsonage
+// SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const path = require('node:path');
 const { createLanguageProcess } = require('./language-process');

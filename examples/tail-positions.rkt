@@ -1,4 +1,6 @@
 #lang racket/base
+;; Copyright (c) 2026 Eric Parsonage
+;; SPDX-License-Identifier: Apache-2.0 OR MIT
 
 ;; Hover the recursive calls. sum/tail returns the recursive call's result
 ;; directly; sum still has an addition to perform after its call returns.

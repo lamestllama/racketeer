@@ -1,4 +1,6 @@
 #lang racket/base
+;; Copyright (c) 2026 Eric Parsonage
+;; SPDX-License-Identifier: Apache-2.0 OR MIT
 (require rackunit racket/file racket/runtime-path json
          "../racketdap/wxme-source.rkt" "../racketdap/worker/load.rkt")
 (define-runtime-path fixtures "fixtures/wxme-debug")

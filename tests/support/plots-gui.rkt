@@ -1,4 +1,6 @@
 #lang racket/base
+;; Copyright (c) 2026 Eric Parsonage
+;; SPDX-License-Identifier: Apache-2.0 OR MIT
 (require json racket/async-channel racket/class racket/file racket/gui/base
          racket/list plot file/convertible
          "../../racketdap/worker/plot-window.rkt")

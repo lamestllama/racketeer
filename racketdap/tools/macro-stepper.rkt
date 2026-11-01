@@ -1,4 +1,6 @@
 #lang racket/base
+;; Copyright (c) 2026 Eric Parsonage
+;; SPDX-License-Identifier: Apache-2.0 OR MIT
 
 (require racket/runtime-path "macro-source.rkt" "../tool-worker.rkt")
 (provide open-macro-stepper wait-for-macro-stepper)

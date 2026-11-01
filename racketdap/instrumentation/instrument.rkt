@@ -1,4 +1,6 @@
 #lang racket/base
+;; Copyright (c) 2026 Eric Parsonage
+;; SPDX-License-Identifier: Apache-2.0 OR MIT
 (require racket/list racket/path syntax/id-table "runtime.rkt")
 (provide instrument-module instrumented-procedure-name instrumented-port?
          make-module-binding-context record-module-bindings!

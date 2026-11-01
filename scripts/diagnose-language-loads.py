@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 Eric Parsonage
+# SPDX-License-Identifier: Apache-2.0 OR MIT
 """Record fresh-process language-load diagnostics without changing the Racket installation."""
 import argparse
 import json

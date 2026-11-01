@@ -1,4 +1,6 @@
 #lang racket/base
+;; Copyright (c) 2026 Eric Parsonage
+;; SPDX-License-Identifier: Apache-2.0 OR MIT
 
 ;; Acceptance through public GUI APIs only. No macro-debugger internals.
 (require json racket/class racket/gui/base racket/string

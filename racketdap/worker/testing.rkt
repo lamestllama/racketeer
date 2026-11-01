@@ -1,4 +1,6 @@
 #lang racket/base
+;; Copyright (c) 2026 Eric Parsonage
+;; SPDX-License-Identifier: Apache-2.0 OR MIT
 
 ;; Loaded in the program's namespace, so these parameters and counters are the
 ;; same instances used by its tests. Framework access uses public exports.

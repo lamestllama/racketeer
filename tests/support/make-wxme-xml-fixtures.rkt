@@ -1,4 +1,6 @@
 #lang racket/gui
+;; Copyright (c) 2026 Eric Parsonage
+;; SPDX-License-Identifier: Apache-2.0 OR MIT
 (require racket/class racket/file framework "../../racketdap/tools/wxme-xml.rkt")
 (define directory (vector-ref (current-command-line-arguments) 0))
 (make-directory* directory)

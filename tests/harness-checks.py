@@ -1,3 +1,5 @@
+# Copyright (c) 2026 Eric Parsonage
+# SPDX-License-Identifier: Apache-2.0 OR MIT
 """Editor orchestration regressions without launching an editor."""
 import importlib.util
 import json

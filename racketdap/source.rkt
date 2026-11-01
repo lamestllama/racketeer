@@ -1,4 +1,6 @@
 #lang racket/base
+;; Copyright (c) 2026 Eric Parsonage
+;; SPDX-License-Identifier: Apache-2.0 OR MIT
 (require racket/file racket/path racket/string racket/list "instrumentation/instrument.rkt")
 (provide (struct-out source-file) capture-source source-location choose-sites)
 (struct source-file (path text id starts) #:transparent)

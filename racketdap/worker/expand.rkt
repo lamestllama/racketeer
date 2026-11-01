@@ -1,4 +1,6 @@
 #lang racket/base
+;; Copyright (c) 2026 Eric Parsonage
+;; SPDX-License-Identifier: Apache-2.0 OR MIT
 
 (require (for-syntax racket/base syntax/kerncase))
 (provide instrument-form define-instrumented-module-begin)

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 Eric Parsonage
+// SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const { createHash } = require('node:crypto');
 const limit = 32 * 1024 * 1024;

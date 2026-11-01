@@ -1,4 +1,6 @@
 #lang racket/base
+;; Copyright (c) 2026 Eric Parsonage
+;; SPDX-License-Identifier: Apache-2.0 OR MIT
 (require json net/base64 racket/runtime-path "wxme-view.rkt" "wxme-editable.rkt")
 (define-runtime-path codec "wxme-codec.rkt")
 

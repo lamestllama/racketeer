@@ -1,4 +1,6 @@
 #lang racket/base
+;; Copyright (c) 2026 Eric Parsonage
+;; SPDX-License-Identifier: Apache-2.0 OR MIT
 (require json racket/port racket/runtime-path "../tool-worker.rkt" "module-dependencies.rkt")
 (define-runtime-path self "dependency-worker.rkt")
 (module+ main

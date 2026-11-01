@@ -1,4 +1,6 @@
 #lang racket/base
+;; Copyright (c) 2026 Eric Parsonage
+;; SPDX-License-Identifier: Apache-2.0 OR MIT
 (require (only-in "../instrumentation/runtime.rkt" debugger-active-key))
 (provide make-evaluations queue-evaluation! forget-evaluation! call-with-evaluation cancel-evaluations!
          current-evaluation-owner exn:fail:cancelled?)

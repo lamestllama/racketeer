@@ -1,4 +1,6 @@
 #lang racket/base
+;; Copyright (c) 2026 Eric Parsonage
+;; SPDX-License-Identifier: Apache-2.0 OR MIT
 (require rackunit racket/runtime-path racket/list racket/file
          "../racketdap/worker/load.rkt"
          "../racketdap/instrumentation/instrument.rkt"

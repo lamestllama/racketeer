@@ -1,4 +1,6 @@
 #lang racket/base
+;; Copyright (c) 2026 Eric Parsonage
+;; SPDX-License-Identifier: Apache-2.0 OR MIT
 (require "../instrumentation/instrument.rkt")
 (provide make-step step-reason)
 (struct step (mode target))

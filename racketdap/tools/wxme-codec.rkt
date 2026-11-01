@@ -1,4 +1,6 @@
 #lang racket/base
+;; Copyright (c) 2026 Eric Parsonage
+;; SPDX-License-Identifier: Apache-2.0 OR MIT
 (require racket/class racket/gui/base racket/list racket/string net/base64 wxme framework "wxme-view.rkt" "wxme-editable.rkt" "wxme-xml.rkt")
 (provide encode-wxme)
 

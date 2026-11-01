@@ -1,3 +1,5 @@
+// Copyright (c) 2026 Eric Parsonage
+// SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 
 // Exclusions apply to descendants even when the request explicitly includes
