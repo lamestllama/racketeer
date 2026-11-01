@@ -7,7 +7,7 @@ const vm = require('node:vm');
 
 function harness(t) {
   const commands = new Map(), requests = [], opened = [], contexts = [];
-  let factory, terminated, choose, picked;
+  let factory, terminated, choose, picked, provider, tabsChanged;
   const selection = new Promise(resolve => { choose = resolve; });
   const pickerOpened = new Promise(resolve => { picked = resolve; });
   const disposable = () => ({ dispose() {} });
@@ -18,11 +18,12 @@ function harness(t) {
   const vscode = {
     EventEmitter: class { event = disposable; dispose() {} },
     Disposable: class { constructor(dispose) { this.dispose = dispose; } },
-    Uri: { from: ({ scheme, path }) => ({ scheme, toString: () => `${scheme}:${path}` }) },
+    Uri: { from: ({ scheme, path }) => ({ scheme, toString: () => `${scheme}:${path}`, with() { return this; } }) },
+    FileSystemError: { FileNotFound: uri => new Error(`${uri} not found`) }, FileType: { File: 1 },
     ProgressLocation: { Window: 10 }, ViewColumn: { Beside: -2 },
-    workspace: { registerFileSystemProvider: disposable },
+    workspace: { registerFileSystemProvider(_scheme, value) { provider = value; return disposable(); } },
     window: {
-      tabGroups: { all: [], onDidChangeTabs: disposable }, showErrorMessage() {},
+      tabGroups: { all: [], onDidChangeTabs(listener) { tabsChanged = listener; return disposable(); } }, showErrorMessage() {},
       showQuickPick(items) { picked(items); return selection; },
       withProgress(_options, task) { return task(); }
     },
@@ -59,7 +60,8 @@ function harness(t) {
   }
   evaluate(1, result);
   return { plot: commands.get('racketdap.openPlot'), view: commands.get('racketdap.viewImage'), choose, pickerOpened, requests, opened, contexts,
-    tracker, evaluate, result, terminate: () => terminated(session), vscode };
+    tracker, evaluate, result, terminate: () => terminated(session), vscode,
+    stat: uri => provider.stat(uri), closeTabs: closed => tabsChanged({ opened: [], changed: [], closed }) };
 }
 
 test('image picker uses original result positions and the owning session after focus changes', async t => {
@@ -119,6 +121,21 @@ test('variable images use the menu session and retained reference without changi
   assert.deepEqual(Array.from(choices, item => item.label), ['value 1', 'value 3']);
   h.choose(undefined);
   await viewing;
+});
+
+test('image tabs that expose no input keep one group and release their snapshot when closed', async t => {
+  const h = harness(t);
+  const context = { sessionId: 'owner', variable: { name: 'picture', variablesReference: 42 } };
+  const first = await h.view(context);
+  // Since VS Code 1.144 a tab of the built-in image editor has a label but no input.
+  const tab = { label: 'Racket image 1.png', input: undefined };
+  h.vscode.window.tabGroups.all = [{ viewColumn: 3, tabs: [tab] }];
+  const second = await h.view(context);
+  assert.equal(h.opened[1].options.viewColumn, 3, 'reuse the image editor group');
+  h.vscode.window.tabGroups.all = [{ viewColumn: 3, tabs: [{ label: 'Racket image 2.png', input: undefined }] }];
+  h.closeTabs([tab]);
+  assert.throws(() => h.stat(first), /not found/, 'closing the final tab releases its snapshot');
+  assert.ok(h.stat(second).size > 0);
 });
 
 test('invalid or ended variable contexts never fall back to the active session', async t => {

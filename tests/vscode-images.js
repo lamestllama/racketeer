@@ -4,6 +4,14 @@ const path = require('node:path');
 const fs = require('node:fs/promises');
 const vscode = require('vscode');
 
+// Since VS Code 1.144 a tab of the built-in image editor exposes no input; its
+// label is then the snapshot's file name.
+function showsSnapshot(tab, uri) {
+  return tab.input === undefined ? tab.label === path.posix.basename(uri.path)
+    : tab.input.uri?.toString() === uri.toString();
+}
+exports.showsSnapshot = showsSnapshot;
+
 exports.run = async function (workspace) {
   const events = [], sessions = [], previews = [], requests = [], breakpoints = [], ended = new Set();
   const variableProgram = path.join(workspace.uri.fsPath, 'image-variables.rkt');
@@ -55,9 +63,8 @@ exports.run = async function (workspace) {
       previews.push(uri);
       await ready(session);
       const tab = await until(() => vscode.window.tabGroups.all.flatMap(group => group.tabs)
-        .find(tab => tab.input instanceof vscode.TabInputCustom && tab.input.uri.toString() === uri.toString()),
-      'native image editor opens');
-      assert.equal(tab.input.viewType, 'imagePreview.previewEditor');
+        .find(tab => showsSnapshot(tab, uri)), 'native image editor opens');
+      if (tab.input) assert.equal(tab.input.viewType, 'imagePreview.previewEditor');
       const png = Buffer.from(await vscode.workspace.fs.readFile(uri));
       assert.deepEqual(Buffer.from(await vscode.workspace.fs.readFile(uri.with({ query: 'version=1' }))), png,
         'image viewer cache queries resolve to the same immutable snapshot');
@@ -126,7 +133,7 @@ exports.run = async function (workspace) {
     assert.deepEqual(await viewVariable(results, returned.variables[1]), direct);
     assert.equal(requests.filter(request => request.session.id === paused.id && request.command === 'evaluate').length, 0,
       'viewing locals, fields and returned values never evaluates an expression');
-    assert.equal(vscode.window.tabGroups.all.filter(group => group.tabs.some(tab => tab.input?.uri?.scheme === 'racketeer-image')).length, 1,
+    assert.equal(vscode.window.tabGroups.all.filter(group => group.tabs.some(tab => previews.some(uri => showsSnapshot(tab, uri)))).length, 1,
       'image previews share one editor group');
     await vscode.debug.stopDebugging(paused);
     await event(paused, 'terminated');
@@ -137,7 +144,7 @@ exports.run = async function (workspace) {
       'rendered snapshots remain available after the debug session ends');
     const closed = previews[0];
     const tabs = vscode.window.tabGroups.all.flatMap(group => group.tabs)
-      .filter(tab => tab.input?.uri?.toString() === closed.toString());
+      .filter(tab => showsSnapshot(tab, closed));
     assert.equal(await vscode.window.tabGroups.close(tabs), true);
     await until(async () => {
       try { await vscode.workspace.fs.stat(closed); return false; } catch (_) { return true; }
@@ -151,7 +158,7 @@ exports.run = async function (workspace) {
     vscode.debug.removeBreakpoints(breakpoints);
     await fs.rm(variableProgram, { force: true });
     const tabs = vscode.window.tabGroups.all.flatMap(group => group.tabs)
-      .filter(tab => previews.some(uri => tab.input?.uri?.toString() === uri.toString()));
+      .filter(tab => previews.some(uri => showsSnapshot(tab, uri)));
     await vscode.window.tabGroups.close(tabs);
     tracker.dispose();
   }

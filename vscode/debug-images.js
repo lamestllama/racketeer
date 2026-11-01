@@ -12,6 +12,12 @@ function registerDebugImages(context) {
     if (!entry) throw vscode.FileSystemError.FileNotFound(uri);
     return entry;
   }
+  // VS Code 1.144 shows images in a workbench editor whose tabs expose no
+  // input to extensions; the tab label is then the snapshot's unique name.
+  function snapshotOf(tab) {
+    if (tab.input === undefined) return [...images].find(([, entry]) => entry.name === tab.label)?.[0];
+    if (tab.input?.uri?.scheme === scheme) return tab.input.uri.toString();
+  }
   function readOnly() { throw vscode.FileSystemError.NoPermissions('Image results are read-only. Use Save Image As.'); }
   function imageResults(result) {
     return result?.racketdapImage || result?.racketdapPlot ? [result] : result?.racketdapImages || [];
@@ -65,9 +71,10 @@ function registerDebugImages(context) {
     if (data.length > 8 * 1024 * 1024 || !data.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) {
       throw new Error('The debugger returned an invalid PNG image.');
     }
-    const uri = vscode.Uri.from({ scheme, path: `/Racket image ${++nextImage}.png` });
-    images.set(uri.toString(), { data, time: Date.now() });
-    const group = vscode.window.tabGroups.all.find(group => group.tabs.some(tab => tab.input?.uri?.scheme === scheme));
+    const name = `Racket image ${++nextImage}.png`;
+    const uri = vscode.Uri.from({ scheme, path: `/${name}` });
+    images.set(uri.toString(), { data, time: Date.now(), name, uri });
+    const group = vscode.window.tabGroups.all.find(group => group.tabs.some(snapshotOf));
     try { await vscode.commands.executeCommand('vscode.open', uri, { viewColumn: group?.viewColumn ?? vscode.ViewColumn.Beside, preview: false }); }
     catch (error) { images.delete(uri.toString()); throw error; }
     return uri;
@@ -115,16 +122,16 @@ function registerDebugImages(context) {
     vscode.debug.onDidTerminateDebugSession(session => { sessions.delete(session.id); updateContext(); }),
     vscode.window.tabGroups.onDidChangeTabs(event => {
       for (const tab of event.closed) {
-        const uri = tab.input?.uri;
-        if (uri?.scheme === scheme && !vscode.window.tabGroups.all.some(group =>
-          group.tabs.some(open => open.input?.uri?.toString() === uri.toString()))) images.delete(uri.toString());
+        const key = snapshotOf(tab);
+        if (key && !vscode.window.tabGroups.all.some(group => group.tabs.some(open => snapshotOf(open) === key))) images.delete(key);
       }
     }),
     vscode.commands.registerCommand('racketdap.viewImage', context => viewValue(context)),
     vscode.commands.registerCommand('racketdap.openPlot', context => viewValue(context, true)),
     vscode.commands.registerCommand('racketdap.saveImage', async uri => {
       try {
-        uri ||= vscode.window.tabGroups.activeTabGroup.activeTab?.input?.uri;
+        const active = vscode.window.tabGroups.activeTabGroup.activeTab;
+        uri ||= active && images.get(snapshotOf(active))?.uri;
         if (uri?.scheme !== scheme) throw new Error('Open a Racket image result first.');
         const entry = image(uri);
         const destination = await vscode.window.showSaveDialog({ title: 'Save Racket Image', filters: { 'PNG image': ['png'] } });

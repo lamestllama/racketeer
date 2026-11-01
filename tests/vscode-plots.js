@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const vscode = require('vscode');
+const { showsSnapshot } = require('./vscode-images');
 
 exports.run = async function (workspace, observe = async () => {}) {
   const events = [], sessions = [], requests = [], breakpoints = [];
@@ -111,7 +112,7 @@ exports.run = async function (workspace, observe = async () => {}) {
     tracker.dispose();
     await fs.rm(variableProgram, { force: true });
     if (snapshot) {
-      const tabs = vscode.window.tabGroups.all.flatMap(group => group.tabs).filter(tab => tab.input?.uri?.toString() === snapshot.toString());
+      const tabs = vscode.window.tabGroups.all.flatMap(group => group.tabs).filter(tab => showsSnapshot(tab, snapshot));
       await vscode.window.tabGroups.close(tabs);
     }
   }
