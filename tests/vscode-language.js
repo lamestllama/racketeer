@@ -21,6 +21,17 @@ async function until(check, description, timeout = 30000) {
 // responding shows which group it reached.
 const step = name => console.log(`Language check: ${name}`);
 
+// A reference request waits longer than the index's own three-minute deadline,
+// so a stall fails here and names the request.
+function findReferences(document, position, description) {
+  let timer;
+  const deadline = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`Timed out: references ${description}`)), 240000);
+  });
+  return Promise.race([vscode.commands.executeCommand('vscode.executeReferenceProvider', document.uri, position), deadline])
+    .finally(() => clearTimeout(timer));
+}
+
 exports.run = async (extension, workspace) => {
   const directory = path.join(workspace.uri.fsPath, 'development checks');
   fs.mkdirSync(directory, { recursive: true });
@@ -67,7 +78,7 @@ exports.run = async (extension, workspace) => {
   const definition = definitions[0];
   assert.equal((definition.targetUri || definition.uri).fsPath, program);
   assert.equal((definition.targetSelectionRange || definition.range).start.line, 2);
-  const references = await vscode.commands.executeCommand('vscode.executeReferenceProvider', document.uri, call);
+  const references = await findReferences(document, call, 'through the workspace index');
   assert.ok(references.some(reference => reference.range.start.line === 4));
   assert.ok(references.some(reference => reference.uri.fsPath === unopened && reference.range.start.line === 2),
     'References include a workspace module that has never been opened');
@@ -75,16 +86,16 @@ exports.run = async (extension, workspace) => {
     'Background analysis leaves unopened files closed in the editor');
   fs.appendFileSync(unopened, '(square 5)\n');
   await until(async () => {
-    const updated = await vscode.commands.executeCommand('vscode.executeReferenceProvider', document.uri, call);
+    const updated = await findReferences(document, call, 'after an external write');
     return updated.some(reference => reference.uri.fsPath === unopened && reference.range.start.line === 3);
   }, 'workspace references refresh after an external write');
   const analysisConfig = vscode.workspace.getConfiguration('racket-langserver');
   await analysisConfig.update('workspaceAnalysis.enabled', false, vscode.ConfigurationTarget.Workspace);
-  const localReferences = await vscode.commands.executeCommand('vscode.executeReferenceProvider', document.uri, call);
+  const localReferences = await findReferences(document, call, 'with workspace analysis disabled');
   assert.ok(localReferences.some(reference => reference.uri.fsPath === program));
   assert.ok(!localReferences.some(reference => reference.uri.fsPath === unopened));
   await analysisConfig.update('workspaceAnalysis.enabled', true, vscode.ConfigurationTarget.Workspace);
-  await until(async () => (await vscode.commands.executeCommand('vscode.executeReferenceProvider', document.uri, call))
+  await until(async () => (await findReferences(document, call, 'with workspace analysis enabled again'))
     .some(reference => reference.uri.fsPath === unopened), 'workspace index re-enabled independently');
   const hover = await vscode.commands.executeCommand('vscode.executeHoverProvider', document.uri, new vscode.Position(5, 22));
   assert.ok(hover.some(item => item.contents.length), 'Hover includes documentation for list');
