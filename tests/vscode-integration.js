@@ -69,12 +69,14 @@ exports.run = async function () {
   let referenceLocations;
   async function waitUntil(predicate, description) {
     const deadline = Date.now() + 20000;
-    while (!await predicate()) {
+    let result;
+    while (!(result = await predicate())) {
       if (Date.now() >= deadline) {
         const editor = vscode.window.activeTextEditor;
         const item = vscode.debug.activeStackItem;
         throw new Error(`Timed out: ${description}. ${JSON.stringify({
           editor: editor?.document.uri.toString(), selection: editor?.selection,
+          visible: vscode.window.visibleTextEditors.map(visible => visible.document.uri.toString()),
           sourceDocument: { closed: document.isClosed, version: document.version },
           workspaceAnalysis: vscode.workspace.getConfiguration('racket-langserver', workspace.uri).get('workspaceAnalysis'),
           stackItem: item && { sessionId: item.session.id, threadId: item.threadId, frameId: item.frameId },
@@ -83,6 +85,7 @@ exports.run = async function () {
       }
       await new Promise(resolve => setTimeout(resolve, 20));
     }
+    return result;
   }
   async function selectedFrame(session, stop) {
     await waitUntil(() => {
@@ -106,9 +109,12 @@ exports.run = async function () {
     assert.equal(stackFrames[0].line, 4);
     const frameId = stackFrames[0].id;
     const capturedUri = vscode.debug.asDebugSourceUri(stackFrames[0].source, session).toString();
-    await waitUntil(() => vscode.window.activeTextEditor?.document.uri.toString() === capturedUri,
-      'debugger opens captured source');
-    const capturedEditor = vscode.window.activeTextEditor;
+    // The debugger shows the stopped frame's captured source. Whether its
+    // editor also takes focus depends on the window having focus, which a
+    // macOS runner's window need not have; focus it before using it.
+    const shown = await waitUntil(() => vscode.window.visibleTextEditors.find(editor =>
+      editor.document.uri.toString() === capturedUri), 'debugger opens captured source');
+    const capturedEditor = await vscode.window.showTextDocument(shown.document, { viewColumn: shown.viewColumn, preview: false });
     assert.equal(capturedEditor.document.languageId, 'racket', 'Captured source enables Racket breakpoint controls');
     const capturedDocument = capturedEditor.document;
     const highlightedValues = async () => (await semanticTokens(capturedDocument))
