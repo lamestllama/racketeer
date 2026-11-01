@@ -3,8 +3,8 @@
 name: CI
 
 # A push or pull request runs Linux only. Windows and macOS runners cost more,
-# macOS ten times Linux, so they run on demand: dispatch the workflow with
-# platforms linux-windows, then all, once Linux is green.
+# macOS ten times Linux, so they run on demand: once Linux is green, dispatch
+# the workflow with platforms macos, then windows, then all.
 on:
   push:
   pull_request:
@@ -13,7 +13,7 @@ on:
       platforms:
         description: Platforms to test
         type: choice
-        options: [linux, linux-windows, all]
+        options: [linux, macos, windows, all]
         default: linux
 
 permissions:
@@ -33,7 +33,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJSON(inputs.platforms == 'all' && '["ubuntu-24.04","windows-2022","macos-15"]' || inputs.platforms == 'linux-windows' && '["ubuntu-24.04","windows-2022"]' || '["ubuntu-24.04"]') }}
+        os: ${{ fromJSON(inputs.platforms == 'all' && '["ubuntu-24.04","windows-2022","macos-15"]' || inputs.platforms == 'macos' && '["macos-15"]' || inputs.platforms == 'windows' && '["windows-2022"]' || '["ubuntu-24.04"]') }}
         racket: ['9.1', stable]
     defaults:
       run:
@@ -104,7 +104,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(inputs.platforms == 'all' && '[{"os":"ubuntu-24.04","architecture":"x64","racket":"9.1","code":"minimum"},{"os":"ubuntu-24.04","architecture":"x64","racket":"9.1","code":"stable"},{"os":"ubuntu-24.04","architecture":"x64","racket":"stable","code":"stable"},{"os":"windows-2022","architecture":"x64","racket":"9.1","code":"stable"},{"os":"macos-15","architecture":"arm64","racket":"9.1","code":"stable"}]' || inputs.platforms == 'linux-windows' && '[{"os":"ubuntu-24.04","architecture":"x64","racket":"9.1","code":"minimum"},{"os":"ubuntu-24.04","architecture":"x64","racket":"9.1","code":"stable"},{"os":"ubuntu-24.04","architecture":"x64","racket":"stable","code":"stable"},{"os":"windows-2022","architecture":"x64","racket":"9.1","code":"stable"}]' || '[{"os":"ubuntu-24.04","architecture":"x64","racket":"9.1","code":"minimum"},{"os":"ubuntu-24.04","architecture":"x64","racket":"9.1","code":"stable"},{"os":"ubuntu-24.04","architecture":"x64","racket":"stable","code":"stable"}]') }}
+        include: ${{ fromJSON(inputs.platforms == 'all' && '[{"os":"ubuntu-24.04","architecture":"x64","racket":"9.1","code":"minimum"},{"os":"ubuntu-24.04","architecture":"x64","racket":"9.1","code":"stable"},{"os":"ubuntu-24.04","architecture":"x64","racket":"stable","code":"stable"},{"os":"windows-2022","architecture":"x64","racket":"9.1","code":"stable"},{"os":"macos-15","architecture":"arm64","racket":"9.1","code":"stable"}]' || inputs.platforms == 'macos' && '[{"os":"macos-15","architecture":"arm64","racket":"9.1","code":"stable"}]' || inputs.platforms == 'windows' && '[{"os":"windows-2022","architecture":"x64","racket":"9.1","code":"stable"}]' || '[{"os":"ubuntu-24.04","architecture":"x64","racket":"9.1","code":"minimum"},{"os":"ubuntu-24.04","architecture":"x64","racket":"9.1","code":"stable"},{"os":"ubuntu-24.04","architecture":"x64","racket":"stable","code":"stable"}]') }}
     defaults:
       run:
         shell: bash
