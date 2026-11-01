@@ -37,9 +37,17 @@ exports.run = async function (workspace, interact) {
     await event(session, 'racketdap/ready'); return session;
   }
   async function evaluate(session, expression) { const result = await session.customRequest('evaluate', { context: 'repl', expression }); await event(session, 'racketdap/ready'); return result; }
+  // VS Code 1.144 creates an Output model empty, so its line ends follow files.eol
+  // (CRLF by default on Windows). Expect CRLF on every platform, and read the
+  // log in the model's own line ends.
+  const files = vscode.workspace.getConfiguration('files');
+  const eol = files.inspect('eol').globalValue;
+  await files.update('eol', '\r\n', vscode.ConfigurationTarget.Global);
+  const content = document => document.eol === vscode.EndOfLine.CRLF ? document.getText().replaceAll('\r\n', '\n') : document.getText();
   async function show(session, text) {
     await vscode.commands.executeCommand('racketdap.showApplicationLog', session.id);
-    return until(() => vscode.workspace.textDocuments.find(document => document.uri.scheme === 'output' && document.getText().startsWith(session.name + ' —') && document.getText().includes(text)), 'native Output shows ' + text);
+    const document = await until(() => vscode.workspace.textDocuments.find(document => document.uri.scheme === 'output' && content(document).startsWith(session.name + ' —') && content(document).includes(text)), 'native Output shows ' + JSON.stringify(text));
+    return { getText: () => content(document) };
   }
   const breakpoints = [];
   try {
@@ -89,5 +97,6 @@ exports.run = async function (workspace, interact) {
     vscode.debug.removeBreakpoints(breakpoints);
     for (const session of sessions) if (!ended.has(session.id)) await vscode.debug.stopDebugging(session);
     tracker.dispose(); await fs.rm(directory, { recursive: true, force: true });
+    await files.update('eol', eol, vscode.ConfigurationTarget.Global);
   }
 };
