@@ -14,6 +14,7 @@ function buildTask(selected, definition, label) {
 }
 
 function registerApplicationBuilds(context) {
+  const owner = context.asAbsolutePath('runtime/racketdap/tools/owned-command.rkt');
   let lastExecutable;
   context.subscriptions.push(vscode.tasks.registerTaskProvider('racket-build', {
     provideTasks: () => [],
@@ -21,7 +22,7 @@ function registerApplicationBuilds(context) {
       if (!vscode.workspace.isTrusted) return undefined;
       if (!task.scope?.uri) throw new Error('A Racket build task needs a workspace folder.');
       const folder = task.scope;
-      const selected = { folder, cwd: folder.uri.fsPath,
+      const selected = { folder, cwd: folder.uri.fsPath, owner,
         racketExecutable: vscode.workspace.getConfiguration('racketdap', folder.uri).get('racketExecutable', 'racket') };
       const result = buildTask(selected, task.definition, task.name).task;
       result.group = task.group || vscode.TaskGroup.Build;
@@ -77,7 +78,7 @@ function registerApplicationBuilds(context) {
       const definition = { type: 'racket-build', action, source: selected.program, output: destination.fsPath,
         gui: gui ?? false, libraries: request.libraries, languages: request.languages };
       const label = `${action === 'distribution' ? 'Distribute' : 'Build ' + action} ${path.basename(selected.program)}`;
-      const { task, plan } = buildTask(selected, definition, label);
+      const { task, plan } = buildTask({ ...selected, owner }, definition, label);
       const result = await runTask(task);
       if (result.exitCode !== 0) throw new Error(`${label} did not complete successfully; see its task terminal.`);
       if (action === 'executable') lastExecutable = vscode.Uri.file(plan.output);

@@ -3,7 +3,10 @@
 Use **Racket: Create Launcher…** or **Racket: Build Executable…** with a source
 module open. The command saves that document, asks for Console or GUI mode, and
 asks for an output path. Build errors appear in a native task terminal. Use
-**Tasks: Terminate Task** to cancel a build.
+**Tasks: Terminate Task** to cancel a build. A build runs in a process tree
+Racketeer owns, a process group on Linux and macOS and a job object on
+Windows, so cancelling it also ends processes it started, such as a child
+started by compile-time code.
 
 A launcher runs the original source using the selected Racket installation and
 its user packages. An executable embeds the module and its ordinary imports,

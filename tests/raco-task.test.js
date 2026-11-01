@@ -67,3 +67,49 @@ test('tasks that cannot start settle and failed launches release listeners', asy
   await assert.rejects(h.runTask(task), /launch failed/);
   assert.ok(Object.values(h.listeners).every(value => value.size === 0));
 });
+
+for (const signal of ['SIGHUP', 'SIGKILL']) {
+  test(`an owned task ends its compile-time descendants when it receives ${signal}`, { skip: process.platform === 'win32' && 'POSIX signals; Windows uses a job object', timeout: 120000 }, async t => {
+    const { spawn } = require('node:child_process');
+    const os = require('node:os');
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'racket owned build '));
+    const pids = path.join(directory, 'pids');
+    let descendants = [];
+    const alive = pid => { try { process.kill(pid, 0); return true; } catch (_) { return false; } };
+    t.after(() => {
+      for (const pid of descendants) if (alive(pid)) process.kill(pid, 'SIGKILL');
+      fs.rmSync(directory, { recursive: true, force: true });
+    });
+    // A compile-time child that ignores breaks starts a grandchild, then both wait.
+    fs.writeFileSync(path.join(directory, 'slow.rkt'), `#lang racket/base
+(require (for-syntax racket/base))
+(begin-for-syntax
+  (define racket (path->string (find-executable-path (find-system-path 'exec-file))))
+  (subprocess (current-output-port) #f (current-error-port) racket "-e"
+    (format "~s" \`(begin (require racket/os) (break-enabled #f)
+      (define-values (grandchild o i e)
+        (subprocess (current-output-port) #f (current-error-port) ,racket "-e" "(sync never-evt)"))
+      (with-output-to-file ,${JSON.stringify(pids)} #:exists 'truncate
+        (lambda () (write (list (getpid) (subprocess-pid grandchild)))))
+      (sync never-evt))))
+  (sync never-evt))
+`);
+    const task = harness().racoTask({ executable: 'racket', cwd: directory,
+      owner: path.join(__dirname, '../racketdap/tools/owned-command.rkt') },
+    'Build', ['exe', '-o', path.join(directory, 'slow'), '--', path.join(directory, 'slow.rkt')]);
+    const child = spawn(task.execution.process, task.execution.args, { cwd: task.execution.options.cwd, stdio: 'ignore' });
+    const exited = new Promise(resolve => child.once('exit', resolve));
+    const deadline = Date.now() + 60000;
+    while (!fs.existsSync(pids) || !fs.readFileSync(pids, 'utf8').trim()) {
+      assert.ok(Date.now() < deadline, 'The compile-time child started');
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    descendants = fs.readFileSync(pids, 'utf8').replace(/[()]/g, '').trim().split(/\s+/).map(Number);
+    // VS Code's terminal sends SIGHUP when a task is terminated.
+    child.kill(signal);
+    await exited;
+    const settled = Date.now() + 10000;
+    while (descendants.some(alive) && Date.now() < settled) await new Promise(resolve => setTimeout(resolve, 50));
+    assert.deepEqual(descendants.filter(alive), [], 'No descendant outlives the task');
+  });
+}

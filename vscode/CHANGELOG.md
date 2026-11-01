@@ -8,6 +8,7 @@
 - Use vscode-languageclient 11.0.0 and vscode-jsonrpc 10.0.0, which contain the startup and request-write corrections formerly patched locally. VS Code 1.91 or newer is required. Language server output is a log channel with timestamps and levels, as the new client requires.
 - Workspace references keep their analysis while unchanged documents open and close. A pass in progress, or a partial index, continues under the new document set, and a complete index is still verified against the disk, so Find All References no longer waits for a pause in editor activity.
 - Image results keep one editor group, release their snapshot when the last tab closes and save from the active tab in VS Code 1.144 and later, whose built-in image editor tabs expose no input to extensions.
+- A build runs in a process tree Racketeer owns, as the debugger's workers do, so terminating its task also ends processes it started on macOS and Windows.
 - Attach to cooperative Racket hosts through a token authenticated loopback listener.
 - Reuse source selection, breakpoints and inspection without owning or killing the host.
 - Resolve attach configurations without a program; input and interrupt stay with the host.
