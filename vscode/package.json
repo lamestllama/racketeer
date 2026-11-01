@@ -1,7 +1,7 @@
 {
   "name": "racketeer",
   "displayName": "Racketeer: Organised Racket",
-  "description": "Racket source debugging and execution, with Racket and Rhombus editing for VS Code.",
+  "description": "Source-level debugging for Racket: the only Racket extension for VS Code with breakpoints, stepping and live variables. Also runs programs, REPLs and tests, and edits Racket and Rhombus.",
   "version": "0.8.48",
   "publisher": "lamestllama",
   "author": {

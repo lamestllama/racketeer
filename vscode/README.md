@@ -4,6 +4,8 @@
 
 By [Eric Parsonage](https://github.com/lamestllama).
 
+Racketeer is the only Racket extension for VS Code that debugs Racket source: set breakpoints, step through expressions and inspect live values in the editor, as with any other VS Code language.
+
 Racketeer's DAP server provides expression breakpoints, stepping across files
 and packages, live lexical inspection and evaluation. Run a source file to see
 text and images beside the editor, or debug it with breakpoints and stepping.
