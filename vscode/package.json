@@ -5,12 +5,19 @@
   "version": "0.8.48",
   "publisher": "lamestllama",
   "author": {
-    "name": "Eric Parsonage",
-    "email": "eric@eparsonage.com",
-    "url": "https://github.com/lamestllama"
+    "name": "Eric Parsonage"
   },
-  "icon": "images/racket.png",
+  "icon": "images/racketeer.png",
   "license": "(Apache-2.0 OR MIT)",
+  "keywords": [
+    "racket",
+    "rhombus",
+    "scheme",
+    "lisp",
+    "debugger",
+    "repl",
+    "language server"
+  ],
   "private": true,
   "engines": {
     "vscode": "^1.91.0"
