@@ -3,8 +3,9 @@
 name: CI
 
 # A push or pull request runs Linux only. Windows and macOS runners cost more,
-# macOS ten times Linux, so they run on demand: once Linux is green, dispatch
-# the workflow with platforms macos, then windows, then all.
+# macOS ten times Linux, so they run on demand: dispatch the workflow with
+# platforms macos, windows or all. Each platform has its own concurrency group,
+# so dispatches of different platforms run side by side with a push run.
 on:
   push:
   pull_request:
@@ -20,7 +21,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.platforms || github.event_name }}
   cancel-in-progress: true
 
 jobs:
