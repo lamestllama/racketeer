@@ -126,3 +126,29 @@ test('reopening a document cancels its old request even when completed analysis 
   assert.equal(await p.count(), 1);
   assert.equal(p.expansions(), before, 'Ownership changes must not require repeating unchanged analysis');
 });
+
+test('unchanged documents opening and closing during a pass neither restart it nor delay a waiting request', { timeout: 120000 }, async t => {
+  const p = await project(t), consumer = uri(p.filename('uses.rkt'));
+  await p.references(p.origin);
+  const marker = path.join(addon, path.basename(p.directory) + '-slow');
+  p.write('slow.rkt', `#lang racket/base
+(require (for-syntax racket/base))
+(begin-for-syntax
+  (call-with-output-file ${JSON.stringify(marker)} #:exists 'append
+    (lambda (out) (display "expanded\\n" out)))
+  (sleep 3))
+`);
+  await p.update();
+  let settled = false;
+  const request = p.references(p.origin).finally(() => { settled = true; });
+  // Each lifetime event arrives sooner than the pass can finish.
+  const deadline = Date.now() + 30000;
+  while (!settled && Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, 500));
+    if (p.documents.has(consumer)) p.documents.delete(consumer); else p.open('uses.rkt', uses);
+    await p.update(true);
+  }
+  assert.ok(settled, 'A waiting request must not starve while unchanged documents open and close');
+  assert.equal((await request).filter(location => location.uri === consumer).length, 1);
+  assert.equal(fs.readFileSync(marker, 'utf8').trim().split('\n').length, 1, 'Unchanged documents must not restart the pass');
+});

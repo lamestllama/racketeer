@@ -34,6 +34,12 @@ test('edits and reopening a URI retire pending requests even at the same version
   const edited = p.references(p.origin);
   p.documents.get(p.origin).version++; await p.update();
   await assert.rejects(edited, error => error.code === -32801);
+  // Reopening alone leaves the sources unchanged, so the blocked pass
+  // continues; the request still retires without waiting for it.
+  const reopened = p.references(p.origin), started = Date.now();
+  p.open('definition.rkt', definition, 2); await p.update(true);
+  await assert.rejects(reopened, error => error.code === -32801);
+  assert.ok(Date.now() - started < 10000, 'Retirement must not wait for the blocked pass');
   fs.unlinkSync(p.filename('blocked.rkt')); await p.update();
   assert.equal(from(await p.references(p.origin), uri(p.filename('uses.rkt'))).length, 1);
 });
