@@ -13,7 +13,10 @@ const rpc = require(require.resolve('vscode-jsonrpc/node', { paths: [require('no
 const root = path.resolve(__dirname, '..');
 const definition = '#lang racket/base\n(provide square)\n(define (square x) (* x x))\n';
 const uses = '#lang racket/base\n(require "definition.rkt")\n(square 3)\n';
-const uri = file => pathToFileURL(file).href;
+// Node escapes a tilde and Racket does not, though the two name one file. The server's
+// locations are compared with this as text, and on Windows a temporary folder can have a
+// short name that holds one, such as RUNNER~1.
+const uri = file => pathToFileURL(file).href.replaceAll('%7E', '~');
 const addon = fs.mkdtempSync(path.join(os.tmpdir(), 'racketeer-index-addon-'));
 test.after(() => fs.rmSync(addon, { recursive: true, force: true }));
 
