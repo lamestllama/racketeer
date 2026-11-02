@@ -319,6 +319,13 @@ test('a library upgraded after the build runs the debugger from source, behind a
   assert.equal(p.launch(), 'LATTER\n');
 });
 
+test('a library dated in the future does not stop the build', { timeout: 300000 }, async t => {
+  const p = libraryProject(t);
+  const later = new Date(Date.now() + 3600000);
+  fs.utimesSync(p.macro, later, later);
+  assert.ok(fs.existsSync(path.join(build(p.files, p.env), 'manifest.rktd')), 'Otherwise every launch builds and nothing is published');
+});
+
 test('a library replaced during the build is not certified by what it became', { timeout: 300000 }, async t => {
   const p = libraryProject(t);
   fs.writeFileSync(path.join(p.files.racketdap, 'library-replacer.rkt'), `#lang racket/base

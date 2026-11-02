@@ -70,18 +70,20 @@
 ;; The libraries the debugger's expansions came from, and what each reads as: its
 ;; source and its ordinary compiled files, present or not. A file dated since the
 ;; build began may hold something other than what was read, so that build is refused,
-;; and the next one reads it afresh.
+;; and the next one reads it afresh. A date in the future says nothing about this, and
+;; refusing for one would refuse every build.
 (define (library-entries building sources root started)
   (define libraries
     (parameterize ([current-compiled-file-roots (list building 'same)])
       (for/list ([file (in-list (remove-duplicates (append-map module-recorded-dependencies sources)))]
                  #:unless (under? file root))
         file)))
+  (define finished (current-seconds))
   (for*/list ([library (in-list libraries)]
               [file (let ([zo (compiled-bytecode library)])
                       (list library zo (path-replace-extension zo #".dep")))])
     (define stamp (file-stamp file))
-    (when (and stamp (>= (cdr stamp) started))
+    (when (and stamp (<= started (cdr stamp) finished))
       (error 'compile-debugger "library changed during the build: ~a" file))
     (cons (path->bytes file) stamp)))
 
