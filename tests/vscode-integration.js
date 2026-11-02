@@ -177,9 +177,10 @@ exports.run = async function () {
     assert.match(after.stackFrames[0].name, /^Returned 1 value at /);
     assert.equal(after.stackFrames[0].column, '  (define tax (* subtotal rate'.length + 1);
     assert.equal(after.stackFrames[0].endColumn, after.stackFrames[0].column + 1);
+    // By its document: while the window has no focus, the active editor can be another group's.
     await waitUntil(() => {
-      const editor = vscode.window.activeTextEditor;
-      return editor?.document.uri.toString() === capturedUri && editor.selection.start.line === 3 &&
+      const editor = vscode.window.visibleTextEditors.find(visible => visible.document.uri.toString() === capturedUri);
+      return editor && editor.selection.start.line === 3 &&
         editor.selection.start.character === after.stackFrames[0].column - 1;
     }, 'editor selects the closing parenthesis after evaluation');
     const { scopes } = await session.customRequest('scopes', { frameId: after.stackFrames[0].id });
@@ -328,7 +329,7 @@ exports.run = async function () {
     await selectedFrame(paritySession, stopped);
     assert.equal((await vscode.commands.executeCommand('racketdap.printBinding', 'hidden')).result, '3');
     assert.equal((await vscode.commands.executeCommand('racketdap.setBinding', 'hidden', '9')).result, '9');
-    const cursorEditor = vscode.window.activeTextEditor || await vscode.window.showTextDocument(parityDocument);
+    const cursorEditor = await vscode.window.showTextDocument(parityDocument);
     cursorEditor.selection = new vscode.Selection(3, 0, 3, 0);
     await vscode.commands.executeCommand('racketdap.continueToCursor');
     stopped = await event('stopped');
