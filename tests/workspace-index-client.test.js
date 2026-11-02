@@ -434,6 +434,24 @@ test('moving in or deleting a folder with a dot in its name marks the index out 
   assert.equal(await count(), 0, 'A folder deleted is gone');
 });
 
+test('an event for an excluded folder with a dot in its name does not displace one held beside it', { timeout: 120000 }, async t => {
+  const c = client(t);
+  c.workspace.getConfiguration = () => ({ get: () => ({ enabled: true, timeoutSeconds: 20, excludedDirectories: ['ignored.project'] }) });
+  fs.writeFileSync(path.join(c.directory, 'definition.rkt'), definition);
+  const folder = path.join(c.directory, 'my.project'), inside = path.join(folder, 'uses.rkt');
+  fs.mkdirSync(folder);
+  fs.writeFileSync(inside, uses.replace('"definition.rkt"', '"../definition.rkt"'));
+  const doc = c.open('definition.rkt', definition);
+  const count = async () => (await c.refs(doc)).filter(location => location.uri.fsPath === inside).length;
+  assert.equal(await count(), 1);
+  fs.rmSync(folder, { recursive: true });
+  c.disk.emit(c.parse(uri(folder)));
+  const excluded = path.join(c.directory, 'ignored.project');
+  fs.mkdirSync(excluded);
+  c.disk.emit(c.parse(uri(excluded)));
+  assert.equal(await count(), 0, 'The deletion still reaches the server');
+});
+
 test('a client leaves captured references to the language server unless the server offers them', async t => {
   const c = indexPeer(t), file = c.open('definition.rkt', definition);
   await c.index.start();

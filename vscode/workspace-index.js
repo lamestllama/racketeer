@@ -80,7 +80,15 @@ function createWorkspaceIndex(context, { executable, timeout, output, onStatus }
       const change = { uri: uri.toString(), type };
       if (sourceSuffixes.includes(path.extname(uri.fsPath).toLowerCase())) {
         synchronize(() => notify('workspace/didChangeWatchedFiles', { changes: [change] }));
-      } else synchronize(() => held.set(path.dirname(uri.fsPath), change));
+      } else synchronize(() => {
+        // The server discards a report of an excluded folder, so it must not displace one
+        // the server needs. It reads the setting as a list of strings or not at all.
+        const excluded = settings().excludedDirectories;
+        if (!(Array.isArray(excluded) && excluded.every(name => typeof name === 'string') &&
+              excluded.includes(path.basename(uri.fsPath)))) {
+          held.set(path.dirname(uri.fsPath), change);
+        }
+      });
     };
     const items = registerOptions.watchers.flatMap(({ globPattern }) => {
       const watcher = vscode.workspace.createFileSystemWatcher(

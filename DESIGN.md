@@ -427,7 +427,9 @@ so a workspace where nobody asks has no index process. It sends file events at o
 source suffixes and for names with no suffix, which can be deleted folders. It holds any
 other event, the latest in each folder, and sends those before the next request, so a
 program writing logs cannot replace a pass that a request is waiting for. A folder whose name
-holds a dot, such as `my.project`, is reported by that name alone, and arrives this way.
+holds a dot, such as `my.project`, is reported by that name alone, and arrives this way. An
+event for an excluded folder is not held, since the server would discard it in place of the
+one it displaced.
 
 ## 4. Instrumentation and module loading
 
