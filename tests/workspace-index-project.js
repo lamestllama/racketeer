@@ -105,7 +105,7 @@ async function project(t, env = {}, shared) {
       experimental: { racketeer: { indexStatus: true, sourceReferences: true } } } });
   await notify('initialized', {});
   await update();
-  return { child, directory, documents, notifications, progress, filename, write, open, origin, update, references, rename, settings, roots,
+  return { child, directory, documents, notifications, progress, filename, write, open, origin, update, references, rename, settings, roots, notify,
     request: (method, params) => connection.sendRequest(method, params),
     diskChange: name => notify('workspace/didChangeWatchedFiles', { changes: [{ uri: uri(filename(name)), type: 2 }] }),
     diagnostics: () => diagnostics };

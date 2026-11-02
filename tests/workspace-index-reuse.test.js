@@ -166,3 +166,36 @@ test('a reported change in an excluded directory starts no pass, and one elsewhe
   assert.equal(await p.count(), 1);
   assert.ok(p.expansions() > before);
 });
+
+test('a folder added and removed takes its contributions with it', { timeout: 120000 }, async t => {
+  const p = await project(t);
+  await p.references(p.origin);
+  const other = fs.mkdtempSync(path.join(addon, 'folder-')), file = path.join(other, 'other.rkt');
+  fs.writeFileSync(file, `#lang racket/base\n(require (file ${JSON.stringify(p.filename('definition.rkt'))}))\n(square 4)\n`);
+  const folder = { uri: uri(other), name: 'other' };
+  const change = event => p.notify('workspace/didChangeWorkspaceFolders', { event });
+  const found = async () => (await p.references(p.origin)).filter(location => location.uri === uri(file)).length;
+  await change({ added: [folder], removed: [] });
+  assert.equal(await found(), 1);
+  assert.equal((await p.rename(p.origin, 'squared')).changes[uri(file)].length, 1);
+  await change({ added: [], removed: [folder] });
+  assert.equal(await found(), 0);
+  assert.equal((await p.rename(p.origin, 'squared')).changes[uri(file)], undefined);
+});
+
+test('closing a buffer for a file outside the sources leaves no trace of its text', { timeout: 180000 }, async t => {
+  const p = await project(t);
+  const keeps = '#lang racket/base\n(provide call)\n(define-syntax-rule (call f) (f 1))\n';
+  const drops = '#lang racket/base\n(provide call)\n(define-syntax-rule (call f) 1)\n';
+  // A file below an excluded folder still loads as a dependency, and is no source itself.
+  fs.mkdirSync(p.filename('build'));
+  p.write('build/macro.rkt', keeps);
+  p.write('uses.rkt', '#lang racket/base\n(require "build/macro.rkt" "definition.rkt")\n(call square)\n');
+  const key = p.open('build/macro.rkt', drops);
+  await p.update();
+  const count = async () => (await p.references(p.origin)).filter(location => location.uri === uri(p.filename('uses.rkt'))).length;
+  assert.equal(await count(), 0, p.diagnostics());
+  p.documents.delete(key);
+  await p.update(true);
+  assert.equal(await count(), 1, 'Without the buffer the file on disk is read');
+});
