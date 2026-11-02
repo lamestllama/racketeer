@@ -2,15 +2,16 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 
-// The editor a command acts on: the one in the active group showing the active
-// tab. While the window has no focus, activeTextEditor can stay on another
-// group's editor, or on the same document in another group with another cursor.
+// The editor a command acts on. activeTextEditor prefers any editor reporting
+// text focus, and a window without system focus delivers no blur events, so an
+// editor focused there can go on reporting it after focus moves to another group.
+// The active group is then right. An editor outside the groups, such as the
+// Output panel's, has no view column and stays the active one.
 function selectedEditor(window) {
+  const editor = window.activeTextEditor;
   const group = window.tabGroups?.activeTabGroup;
-  const uri = group?.activeTab?.input?.uri;
-  return (uri && window.visibleTextEditors?.find(editor =>
-    editor.viewColumn === group.viewColumn && editor.document.uri.toString() === uri.toString()))
-    || window.activeTextEditor;
+  if (!editor?.viewColumn || !group || editor.viewColumn === group.viewColumn) return editor;
+  return window.visibleTextEditors?.find(visible => visible.viewColumn === group.viewColumn);
 }
 
 module.exports = { selectedEditor };

@@ -627,10 +627,14 @@ test('implicit Print Binding and Set Binding use the intended selection', async 
   await callbacks.get('racketdap.setBinding')(undefined, '10');
   assert.deepEqual(requests.map(request => request.args.name), ['right', 'right']);
 });
-test('selected editor falls back to the active editor without a matching text tab', () => {
+test('selected editor follows the active group and leaves editors outside the groups', () => {
   const { selectedEditor } = require('../vscode/selected-editor');
-  const active = { viewColumn: 1 };
-  assert.equal(selectedEditor({ activeTextEditor: active }), active);
-  assert.equal(selectedEditor({ activeTextEditor: active, visibleTextEditors: [],
-    tabGroups: { activeTabGroup: { viewColumn: 2, activeTab: { input: { viewType: 'webview' } } } } }), active);
+  const stale = { viewColumn: 1 }, shown = { viewColumn: 2 }, panel = {};
+  const inGroup = viewColumn => ({ activeTabGroup: { viewColumn } });
+  assert.equal(selectedEditor({ activeTextEditor: stale }), stale);
+  assert.equal(selectedEditor({ activeTextEditor: panel, visibleTextEditors: [shown], tabGroups: inGroup(2) }), panel);
+  assert.equal(selectedEditor({ activeTextEditor: stale, visibleTextEditors: [stale, shown], tabGroups: inGroup(1) }), stale);
+  assert.equal(selectedEditor({ activeTextEditor: stale, visibleTextEditors: [stale, shown], tabGroups: inGroup(2) }), shown);
+  // An active group that shows no text editor has no current editor.
+  assert.equal(selectedEditor({ activeTextEditor: stale, visibleTextEditors: [stale, shown], tabGroups: inGroup(3) }), undefined);
 });
