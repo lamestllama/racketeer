@@ -197,13 +197,17 @@ test('index synchronizes edits and document replacement during initialization', 
   });
   doc = c.open('definition.rkt', definition);
   await c.index.start(); await c.refs(reopened);
-  assert.equal(c.snapshots.length, 2, 'Send the latest snapshot once initialization completes');
-  const before = c.snapshots[0].documents[0], after = c.snapshots[1].documents[0];
-  assert.equal(before.text, definition);
-  assert.equal(after.text, reopened.getText());
+  assert.equal(c.snapshots.length, 1, 'The server hears of documents only after initialization, so it hears the latest state once');
+  const before = c.snapshots[0].documents[0];
+  assert.equal(before.text, reopened.getText());
+  assert.equal(before.version, reopened.version);
+  reopened.isClosed = true; c.closed.emit(reopened);
+  c.workspace.textDocuments.splice(c.workspace.textDocuments.indexOf(reopened), 1);
+  const again = c.open('definition.rkt', reopened.getText());
+  await c.refs(again);
+  const after = c.snapshots.at(-1).documents[0];
   assert.notEqual(before.identity, after.identity, 'Reopening the URI creates a new document lifetime');
-  assert.equal(after.version, reopened.version);
-  assert.ok(c.snapshots[1].revision > c.snapshots[0].revision);
+  assert.ok(c.snapshots.at(-1).revision > c.snapshots[0].revision);
 });
 
 test('index includes edits made before its initialization snapshot without rescanning', async t => {
