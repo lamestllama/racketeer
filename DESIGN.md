@@ -334,7 +334,7 @@ belongs to the extension. The capability record is its contract.
 | `textDocumentSync` | `{ openClose: true, change: 1 }`: whole text on each change |
 | `referencesProvider` | `true` |
 | `renameProvider` | `{ prepareProvider: true }` for a client with `prepareSupport`, otherwise `true` |
-| `executeCommandProvider` | `racketeer.refreshWorkspaceIndex` starts a pass over the current sources |
+| `executeCommandProvider` | `racketeer.refreshWorkspaceIndex` forgets what earlier analyses found and marks the index out of date, so the next request analyses every file |
 | `workspace.workspaceFolders` | Supported, with change notifications |
 | `experimental.racketeer` | The private extensions below |
 
@@ -346,8 +346,9 @@ of the input also ends the process, which is the path when a client dies.
 The source view comes from standard messages. `textDocument/didOpen` starts a document
 lifetime, and a request belongs to the lifetime current when the request is read, since
 everything sent before it has been read too. A later edit or close retires the request.
-Opening or closing a document alone permits reuse after the disk is verified. Other changes
-start a new pass. With `workspace.didChangeWatchedFiles.dynamicRegistration`, the server registers `**/*`
+Every change only marks the index out of date, and the next request starts a pass. Opening
+or closing a document over the same sources keeps the index's answers, and the next request
+has the disk verified by a pass. With `workspace.didChangeWatchedFiles.dynamicRegistration`, the server registers `**/*`
 under each folder and ignores reports from excluded directories; what else to report is the client's
 choice. With `workspace.configuration` it pulls the section
 `racket-langserver.workspaceAnalysis` after `initialized` and on
@@ -370,8 +371,11 @@ document it names has moved on. Without the capability, the edit is a plain `cha
 record.
 
 Passes report work-done progress to a client that offers `window.workDoneProgress`:
-`window/workDoneProgress/create`, then `begin`, `report` after each file, and `end`.
-Partial results are not used, since a result is valid only once its pass settles.
+`window/workDoneProgress/create`, then `begin`, `report` after each file, and `end`
+when the pass is `ready`, `partial` or `outdated`. `begin` carries `percentage` 0, since a
+client may otherwise ignore later percentages. Once the pass has found its files, each
+value carries the share analysed as `percentage` and the count as `message`, such as
+`12/53`. Partial results are not used, since a result is valid only once its pass settles.
 
 Two things have no standard form, so they stay private. They are named under
 `racketeer/`, and negotiated under `experimental`, where a client asks with
@@ -380,11 +384,15 @@ those members and `version: 1`. A generic client asks for neither and sees a sta
 
 | Message | Direction | Purpose |
 | --- | --- | --- |
-| `racketeer/indexStatus` | Server to client, when asked | The final state of a pass, `{ state, indexed, failures }`: `ready`, `partial` or `disabled`. |
+| `racketeer/indexStatus` | Server to client, when asked | The final state of a pass, `{ state, indexed, total, failures }`: `ready`, `partial`, `disabled`, or `outdated` when it was stopped before it finished. |
 | `racketeer/sourceReferences` | Client to server, when offered | `ReferenceParams` plus `text`: references for a captured debugger source, answered only while that text is the file's current source. |
 
-The VS Code client adds one policy of its own: it reports file events only for source
-suffixes and for names with no suffix, which can be deleted folders.
+The VS Code client adds two policies of its own. It starts the server at the first request,
+so a workspace where nobody asks has no index process. It sends file events at once only for
+source suffixes and for names with no suffix, which can be deleted folders. It holds any
+other event, the latest in each folder, and sends those before the next request, so a
+program writing logs cannot replace a pass that a request is waiting for. A folder whose name
+holds a dot, such as `my.project`, is reported by that name alone, and arrives this way.
 
 ## 4. Instrumentation and module loading
 

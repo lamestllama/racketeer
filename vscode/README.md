@@ -670,11 +670,11 @@ Nothing is analysed until a request asks: the first Find All References or Renam
 after a change waits for an analysis pass, which can be cancelled and which keeps
 what it finished. A pass analyses again only the files whose text or dependencies
 changed.
-Unsaved editor buffers remain authoritative for their own source files; closing
-a buffer returns that file to disk analysis. Dependencies are loaded from disk,
-so save changes to imported modules before relying on dependent analysis.
+Unsaved editor buffers remain authoritative for their source files, including where
+another file imports them; closing a buffer returns that file to disk analysis.
+A file read by `include` and its like is read from disk, whatever a buffer holds.
 
-The status bar shows indexing progress and warns when references are partial.
+The status bar counts the files of a pass and warns when references are partial.
 Use **Racket: Refresh Workspace References** after external package changes or
 to retry failed analysis. **Rename Symbol** uses the same workspace scope and
 previews binding-checked edits across unopened files. It preserves explicit
@@ -695,9 +695,12 @@ to a pass, because a worker's memory ends with it. A pass accepts at most 16 MiB
 of source input and 200,000 reference/definition locations. Excluded directories and symbolic links are not scanned. Reaching
 a limit or failing to analyse a file produces a partial index.
 
-Changes within watched workspace directories mark the analysis out of date. A
-pass then checks every file each analysis loaded or registered with the compiler,
-wherever it is. A macro reading a file it does not register sees that file only
+Changes within watched workspace directories mark the analysis out of date, and
+changes to files that are not source files are noted when the next request arrives.
+A pass then checks every file each analysis loaded or registered with the compiler,
+wherever it is, so a change outside those directories is seen at the next pass. A
+change while a pass runs replaces it, and the new pass starts 2 seconds after that
+change. A macro reading a file it does not register sees that file only
 at the next change to a file loaded with it, after a refresh or a restart.
 Excluded files, environment changes and nondeterministic macros also require a
 manual refresh. Initial indexing can take time, especially
