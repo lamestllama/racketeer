@@ -121,7 +121,7 @@ running tests, so a fresh checkout does not need an earlier package build. It
 discovers top-level `tests/*.rkt`, the lexical-evaluation
 experiment, and every `tests/*.test.js` except the explicit GUI suites
 `gui-parity.test.js`, `macro-stepper-gui.test.js`, `plots-gui.test.js`, and the display-dependent
-cases in `pause.test.js`, `wxme-edit.test.js`, `wxme-structure.test.js` and `wxme-xml-edit.test.js`. The WXME cases cover
+cases in `debug-third-party-program.test.js`, `pause.test.js`, `wxme-edit.test.js`, `wxme-structure.test.js` and `wxme-xml-edit.test.js`. The first debugs a pinned external program downloaded into `.test-output/`; offline it skips, and in CI a failed download fails. The WXME cases cover
 object insertion and removal, structural undo, versioned recovery, source spans,
 styled Unicode and tabs, object-preserving saves, reader refusal and evaluation
 of original fixtures. It is also
