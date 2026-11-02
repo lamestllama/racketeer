@@ -18,6 +18,7 @@
       #:on-status (lambda (status)
                     (reply (hasheq 'jsonrpc "2.0" 'method "status" 'params status)))))
   (define pending (make-hash))
+  (thread watch-analysis-timer)
   (define (response id operation result)
     (match result
       [(AnalysisResult revision value)

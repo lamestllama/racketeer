@@ -97,9 +97,54 @@
                    (lambda () (semaphore-post (WorkspaceAnalysis-slot engine))))]
     [else #f]))
 
+;; Diagnostics for a stalled index. Each line is written before the next wait
+;; begins, so the last line for a worker names the wait it stuck in. They appear
+;; when RACKETEER_INDEX_TRACE is set, as it is in the editor CI job. Otherwise
+;; only a start or stop that itself took seconds, or a pause of the timer, does.
+(define tracing? (and (getenv "RACKETEER_INDEX_TRACE") #t))
+(define slow-milliseconds 5000)
+(define (monotonic) (inexact->exact (round (current-inexact-monotonic-milliseconds))))
+
+;; Logging adds no wait and no failure to stopping a worker: a full pipe drops
+;; the line, and a client that has gone is not an error here.
+(define (log-diagnostic source now message)
+  (with-handlers ([exn:fail? void])
+    (write-bytes-avail* (string->bytes/utf-8 (format "Workspace analysis ~a at ~a ms: ~a\n" source now message))
+                        (current-error-port))))
+
+(define (log-worker label event [since #f])
+  (define now (monotonic))
+  (define waited (and since (- now since)))
+  (when (or tracing? (and waited (>= waited slow-milliseconds)))
+    (log-diagnostic "worker" now (if waited (format "~a: ~a after ~a ms" label event waited)
+                                     (format "~a: ~a" label event)))))
+
+(define (request-label request)
+  (match request
+    [(list 'analyse path _ ...) (format "analyse ~a" path)]
+    [(list 'rename _ _ _ _ _ path _ ...) (format "rename ~a" path)]
+    [(cons kind _) (symbol->string kind)]))
+
+;; Runs for the life of the server. Every green thread stops when the whole
+;; runtime does, and this one reports that when it wakes. While tracing, its
+;; regular line shows up to when the runtime was running: the lines stop with a
+;; stalled runtime, and continue past a wait that stopped only one thread.
+(define (watch-analysis-timer)
+  (let loop ([last (monotonic)] [ticks 0])
+    (sleep 1)
+    (define now (monotonic))
+    (when (>= (- now last) slow-milliseconds)
+      (log-diagnostic "timer" now (format "woke ~a ms after it last ran" (- now last))))
+    (when (and tracing? (zero? (modulo ticks 10)))
+      (log-diagnostic "timer" now "running"))
+    (loop now (add1 ticks))))
+
 (define (compute/slot run seconds request cancel)
   ;; Cancellation must discard the runtime doing the work, including its module
   ;; loading state. The controlling thread only exchanges immutable snapshots.
+  (define label (request-label request))
+  (define starting (monotonic))
+  (log-worker label "starting")
   (define worker
     (place channel
       (custodian-limit-memory (current-custodian) (* 256 1024 1024))
@@ -132,6 +177,7 @@
       (place-channel-put channel result)
       ;; Keep a successful reply distinguishable from an abnormal early exit.
       (place-channel-get channel)))
+  (log-worker label "started" starting)
   (define dead (place-dead-evt worker))
   (dynamic-wind
     void
@@ -144,7 +190,13 @@
             [(pair? finished) finished]
             [(eq? finished dead) (cons 'failed "analysis worker exited")]
             [else #f]))
-    (lambda () (place-kill worker) (place-wait worker))))
+    (lambda ()
+      (define stopping (monotonic))
+      (log-worker label "kill requested")
+      (place-kill worker)
+      (log-worker label "killed" stopping)
+      (place-wait worker)
+      (log-worker label "reaped" stopping))))
 
 (define (discover roots excluded limit)
   (define module-suffix-regexp (get-module-suffix-regexp))
@@ -549,5 +601,6 @@
          workspace-analysis-update!
          workspace-analysis-query
          workspace-analysis-close!
+         watch-analysis-timer
          (struct-out AnalysisResult)
          (struct-out AnalysisFailure))

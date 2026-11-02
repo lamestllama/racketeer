@@ -18,12 +18,12 @@ const addon = fs.mkdtempSync(path.join(os.tmpdir(), 'racketeer-index-addon-'));
 test.after(() => fs.rmSync(addon, { recursive: true, force: true }));
 
 
-async function project(t) {
+async function project(t, env = {}) {
   const directory = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'racketeer-index-')));
   const documents = new Map(), notifications = [];
   let revision = 0, identity = 0, diagnostics = '';
   const child = spawn('racket', [path.join(root, 'vscode/workspace-index-server.rkt')], {
-    cwd: directory, stdio: 'pipe', env: { ...process.env, PLTADDONDIR: addon }
+    cwd: directory, stdio: 'pipe', env: { ...process.env, PLTADDONDIR: addon, ...env }
   });
   const closed = once(child, 'close');
   child.stderr.setEncoding('utf8'); child.stderr.on('data', text => { diagnostics += text; });
@@ -63,7 +63,7 @@ async function project(t) {
   write('definition.rkt', definition); write('uses.rkt', uses);
   const origin = open('definition.rkt', definition);
   await connection.sendRequest('initialize', snapshot());
-  return { directory, documents, notifications, filename, write, open, origin, update, references, rename, settings, roots,
+  return { child, directory, documents, notifications, filename, write, open, origin, update, references, rename, settings, roots,
     diagnostics: () => diagnostics };
 }
 

@@ -103,6 +103,10 @@ jobs:
     # runners took 1.4 to 2 times as long, and Windows a further 1.6 times
     # Linux, so the slowest entry needs about 2 hours for its three runs.
     timeout-minutes: 150
+    # Logs each analysis worker's start and stop to the retained language server
+    # output, so that a stalled workspace index names the wait it stuck in.
+    env:
+      RACKETEER_INDEX_TRACE: '1'
     strategy:
       fail-fast: false
       matrix:

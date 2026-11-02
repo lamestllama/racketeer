@@ -52,7 +52,11 @@ uploaded even after a failing step. Editor jobs retain the VSIX, content/input
 manifest, environment, resolved editor version, and all editor reports for
 14 days, including the Rhombus package identities and installation logs.
 Language-server output and extension-host logs are retained to diagnose editor
-failures alongside the protocol traces in the test output.
+failures alongside the protocol traces in the test output. Editor jobs set
+`RACKETEER_INDEX_TRACE`, so that output shows when each workspace analysis worker
+starts and stops, and regular lines from the index's own timer: the last worker
+line names the wait a stalled index stuck in, and the timer lines show whether
+the whole runtime stopped with it.
 Profiles, package caches and downloaded editors are not uploaded.
 GitHub also retains the full job console logs. Download an editor job's artifact
 to inspect or reproduce a particular build; archive timestamps may differ
