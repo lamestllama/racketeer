@@ -17,7 +17,7 @@
 (module launcher '#%kernel
   (#%require '#%paramz '#%boot racket/private/executable-path)
   (#%provide debugger-command compiled-debugger-roots compiled-debugger-check
-             start-debugger-build! manifest-name manifest-entry)
+             start-debugger-build! manifest-name manifest-entry file-stamp)
 
   (define-values (manifest-name) "manifest.rktd")
   ;; A builder that stopped without finishing cannot still be running after this.
@@ -56,6 +56,13 @@
   (define-values (manifest-entry)
     (lambda (path relative) (cons (path->string relative) (file-sha1 path))))
 
+  ;; How a library file is compared: its size and date, or #f when it is absent.
+  (define-values (file-stamp)
+    (lambda (path)
+      (if (file-exists? path)
+          (cons (file-size path) (file-or-directory-modify-seconds path))
+          #f)))
+
   (define-values (hex)
     (lambda (bytes)
       (apply string-append
@@ -84,7 +91,9 @@
 
   ;; Chez reads machine code without checking it, so every compiled file is compared
   ;; with its recorded hash before any of them can load. The sources are compared too:
-  ;; reinstalling a build can change them under the same path and version.
+  ;; reinstalling a build can change them under the same path and version. So are the
+  ;; libraries they expanded against, by stamp: there are thousands of those files,
+  ;; and hashing them would double the time every process takes to start.
   (define-values (intact?)
     (lambda (folder)
       (attempt
@@ -97,7 +106,11 @@
                                        (equal? (cdr entry) (file-sha1 (build-path base (car entry)))))
                                      entries))])
                (if (all-match? debugger-root (car manifest))
-                   (all-match? folder (cadr manifest))
+                   (if (all-match? folder (cadr manifest))
+                       (andmap (lambda (entry)
+                                 (equal? (cdr entry) (file-stamp (bytes->path (car entry)))))
+                               (caddr manifest))
+                       #f)
                    #f)))))
        (lambda () #f))))
 

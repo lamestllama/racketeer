@@ -170,8 +170,16 @@ once into that folder. The folder is named by the Racket version, VM, library pa
 what its links say and the debugger's location. A manifest records the hash of every
 debugger source and every compiled file, and each process compares them before loading
 anything: Chez reads machine code without checking it, and a build unpacked over
-another can change sources under the same path and version. A folder that does not
-match is treated as absent.
+another can change sources under the same path and version. It also records the size
+and date of each library the debugger depends on, through the compiler's own records:
+the source, the compiled file and its metadata, or that one is absent. The debugger
+holds expansions of those libraries' macros, so upgrading one at the same path must
+count as a change. These are compared by stamp and not by hash because there are about
+2,800 such files: a process that takes about 105 ms to start without this takes about
+125 ms comparing stamps and about 215 ms comparing hashes. A library whose stamps are all
+kept while its contents change is missed, which is also what Racket's own date check
+would do with it. A build refuses to publish if one of these files is dated since it
+began. A folder that does not match is treated as absent.
 
 Launching never waits for a compile, and a launch that finds nothing to load runs
 from source. `racketdap/tools/compile-debugger.rkt` runs as a process of its own,

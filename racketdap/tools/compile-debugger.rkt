@@ -7,7 +7,8 @@
 ;; visible, so a reader sees all of a build or none of it. Nothing depends on this
 ;; finishing: until it does, debugger files load from source.
 
-(require compiler/cm racket/file racket/list racket/path racket/runtime-path syntax/modcode
+(require compiler/cm compiler/compilation-path compiler/depend racket/file racket/list racket/path
+         racket/runtime-path syntax/modcode
          "../launcher.rkt" "../worker/debug-cache.rkt")
 
 (define-runtime-path debugger-root "..")
@@ -59,7 +60,29 @@
       (with-handlers ([exn:fail? void])
         (compile-file source)))))
 
-(define (write-manifest! building sources root snapshots)
+(define (compiled-bytecode file)
+  (parameterize ([current-compiled-file-roots '(same)])
+    (get-compilation-bytecode-file file)))
+
+;; The libraries the debugger's expansions came from, and what each reads as: its
+;; source and its ordinary compiled files, present or not. A file dated since the
+;; build began may hold something other than what was read, so that build is refused,
+;; and the next one reads it afresh.
+(define (library-entries building sources root started)
+  (define libraries
+    (parameterize ([current-compiled-file-roots (list building 'same)])
+      (for/list ([file (in-list (remove-duplicates (append-map module-recorded-dependencies sources)))]
+                 #:unless (under? file root))
+        file)))
+  (for*/list ([library (in-list libraries)]
+              [file (let ([zo (compiled-bytecode library)])
+                      (list library zo (path-replace-extension zo #".dep")))])
+    (define stamp (file-stamp file))
+    (when (and stamp (>= (cdr stamp) started))
+      (error 'compile-debugger "library changed during the build: ~a" file))
+    (cons (path->bytes file) stamp)))
+
+(define (write-manifest! building sources root snapshots started)
   (define compiled
     (for/list ([file (in-directory building)] #:when (equal? (path-get-extension file) #".zo"))
       (manifest-entry file (find-relative-path building file))))
@@ -67,7 +90,8 @@
    (list (for/list ([source (in-list sources)])
            (cons (path->string (find-relative-path root source))
                  (sha1-bytes (open-input-bytes (hash-ref snapshots source)))))
-         compiled)
+         compiled
+         (library-entries building sources root started))
    (build-path building manifest-name)))
 
 (define (set-aside! folder)
@@ -110,6 +134,7 @@
     ;; compiler writes a distinct child, so a resumed compiler cannot certify or
     ;; publish another compiler's files at the replacement marker's path.
     (set! work (make-temporary-file "work~a" 'directory building))
+    (define started (current-seconds))
     (define root (simplify-path debugger-root))
     (define sources (debugger-sources root))
     (define snapshots (source-snapshot sources))
@@ -118,7 +143,7 @@
     ;; the snapshot if a later replacement crosses this check.
     (unless (equal? snapshots (source-snapshot (debugger-sources root)))
       (error 'compile-debugger "debugger sources changed during compilation"))
-    (write-manifest! work sources root snapshots)
+    (write-manifest! work sources root snapshots started)
     (unless (equal? marker-identity (file-or-directory-identity building))
       (error 'compile-debugger "another builder has taken over"))
     (when (directory-exists? folder) (set-aside! folder))

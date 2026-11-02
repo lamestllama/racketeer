@@ -278,6 +278,75 @@ test('a builder resuming after its folder was taken over leaves its successor al
   assert.ok(!fs.existsSync(destination), 'Nothing is published from a folder that was taken over');
 });
 
+// A library on the collection path, behind a re-export, and a debugger file whose
+// expansion holds what the library's macro says. Its dates are in the past, as for
+// anything installed before a build began.
+function libraryProject(t) {
+  const files = folder(t);
+  const library = path.join(files.directory, 'collects', 'launch-library');
+  fs.mkdirSync(library, { recursive: true });
+  const macro = path.join(library, 'macro.rkt');
+  const write = answer => fs.writeFileSync(macro, `#lang racket/base\n(provide answer)\n(define-syntax-rule (answer) (quote ${answer}))\n`);
+  write('FORMER');
+  fs.writeFileSync(path.join(library, 'main.rkt'), '#lang racket/base\n(require "macro.rkt")\n(provide answer)\n');
+  const target = path.join(files.racketdap, 'library-probe.rkt');
+  fs.writeFileSync(target, '#lang racket/base\n(require launch-library)\n(displayln (answer))\n');
+  const env = { ...process.env, PLTCOLLECTS: `${path.dirname(library)}${path.delimiter}${process.env.PLTCOLLECTS || ''}` };
+  const age = () => {
+    const past = new Date(Date.now() - 3600000);
+    for (const file of fs.readdirSync(library, { recursive: true })) fs.utimesSync(path.join(library, String(file)), past, past);
+  };
+  const launch = () => {
+    const launched = spawnSync('racket', [path.join(files.racketdap, 'launcher.rkt'), files.storage, target], { env, encoding: 'utf8', timeout: 30000 });
+    assert.equal(launched.status, 0, launched.stderr);
+    return launched.stdout;
+  };
+  age();
+  return { files, library, macro, write, target, env, age, launch };
+}
+
+test('a library upgraded after the build runs the debugger from source, behind a re-export too', { timeout: 300000 }, async t => {
+  const p = libraryProject(t);
+  const published = build(p.files, p.env);
+  assert.ok(fs.existsSync(path.join(published, 'manifest.rktd')), 'The baseline needs a published build');
+  assert.equal(p.launch(), 'FORMER\n');
+  // The same length, so only the date tells.
+  p.write('LATTER');
+  assert.equal(p.launch(), 'LATTER\n');
+});
+
+test('a library replaced during the build is not certified by what it became', { timeout: 300000 }, async t => {
+  const p = libraryProject(t);
+  fs.writeFileSync(path.join(p.files.racketdap, 'library-replacer.rkt'), `#lang racket/base
+(require launch-library (for-syntax racket/base))
+(begin-for-syntax
+  (call-with-output-file ${JSON.stringify(p.macro)} #:exists 'truncate
+    (lambda (out) (display ${JSON.stringify('#lang racket/base\n(provide answer)\n(define-syntax-rule (answer) (quote LATTER))\n')} out))))
+`);
+  const published = build(p.files, p.env);
+  assert.ok(!fs.existsSync(published), 'A build that saw its library change is not published');
+  assert.equal(p.launch(), 'LATTER\n');
+});
+
+test('a library with only compiled code keeps the build, until that code is replaced', { timeout: 300000 }, async t => {
+  const p = libraryProject(t);
+  const compileOnly = () => {
+    const made = spawnSync('raco', ['make', p.macro], { env: p.env, encoding: 'utf8' });
+    assert.equal(made.status, 0, made.stderr);
+    fs.unlinkSync(p.macro);
+  };
+  compileOnly();
+  p.age();
+  const published = build(p.files, p.env);
+  assert.ok(fs.existsSync(path.join(published, 'manifest.rktd')), 'A library without its source does not stop the build');
+  assert.equal(p.launch(), 'FORMER\n');
+  const manifest = fs.readFileSync(path.join(published, 'manifest.rktd'));
+  p.write('LATTER');
+  compileOnly();
+  assert.equal(p.launch(), 'LATTER\n');
+  assert.deepEqual(fs.readFileSync(path.join(published, 'manifest.rktd')), manifest);
+});
+
 test('another Racket setup gets a folder of its own and leaves the first', { timeout: 300000 }, async t => {
   const files = folder(t);
   const { directory, storage, program } = files;
