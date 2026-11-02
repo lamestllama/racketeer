@@ -31,6 +31,6 @@
          [(not (step-target command)) #f]
          [(and (eq? (stop-kind stop) 'after)
                (eq? (step-target command) (stop-token stop))) "Expression returned"]
-         [(not (memq (step-target command) (stop-contexts stop)))
+         [(not (stop-within? stop (step-target command)))
           "Control transferred outside the step target"]
          [else #f])))

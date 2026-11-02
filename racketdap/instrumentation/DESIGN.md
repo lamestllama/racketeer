@@ -68,7 +68,8 @@ An expression evaluation's identity is its frame and site, and its enclosing
 evaluations follow from each site's parent. Tokens naming them are made when a stepper
 asks, kept on the frame so they stay eq?, and include the host boundary marks attach
 sets. A stop reads its frames and contexts from its marks when asked, so a callback that
-lets the program go on does not pay for the depth of the stack.
+lets the program go on does not pay for the depth of the stack. A step asks only whether
+its target is still in progress, which needs no list of contexts.
 
 Re-entering a continuation captured in a frame that has since moved on leaves the frame
 showing a later site until the next site runs. An exception raised again after its

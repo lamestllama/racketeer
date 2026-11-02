@@ -7,7 +7,7 @@
          stop-locals stop-evaluate stop-results
          stop-binding-value stop-set-binding!
          stop-skip! stop-replace-results! stop-approximate?
-         stop-token stop-contexts stop-return-token call-with-exception-stop call-with-pause-stop
+         stop-token stop-contexts stop-within? stop-return-token call-with-exception-stop call-with-pause-stop
          call-with-thread-stop debugger-active-key
          make-live-binding frame-key context-key first-scope-slot note-thread
          announce-before announce-after leave-with-values announce-visit register-module-context!
@@ -85,12 +85,13 @@
   (if variables (variables) '()))
 ;; An expression evaluation's identity is its frame and site, named by a token made
 ;; the first time something asks. Slot 2 keeps them, so the identity stays eq?.
+(struct evaluation (frame slot))
 (define (frame-token f slot)
   (define known (vector-ref f 2))
   (cond
     [(and known (assv slot known)) => cdr]
     [else
-     (define token (gensym 'expression))
+     (define token (evaluation f slot))
      (vector-set! f 2 (cons (cons slot token) (or known '())))
      token]))
 (struct debug-stop (site kind results marks origin slot owner live action [frames #:mutable] [contexts #:mutable]))
@@ -295,6 +296,22 @@
       (let ([contexts (append-map cdr (context-entries s))])
         (set-debug-stop-contexts! s contexts)
         contexts)))
+;; Whether an evaluation is in progress at this stop, without listing them all, since a
+;; step asks at every site it passes.
+(define (stop-within? s token)
+  (check-stop s 'stop-within?)
+  (cond
+    [(evaluation? token)
+     (define f (evaluation-frame token))
+     (and (memq f (stop-frames s))
+          (let loop ([slot (if (eq? f (debug-stop-origin s))
+                               (site-parent (debug-stop-site s))
+                               (frame-slot f))])
+            (cond
+              [(zero? slot) #f]
+              [(eqv? slot (evaluation-slot token)) #t]
+              [else (loop (site-parent (vector-ref (form-descriptors (frame-form f)) slot)))])))]
+    [else (and (memq token (continuation-mark-set->list (debug-stop-marks s) context-key)) #t)]))
 ;; What the innermost activation returns to: the first evaluation outside it.
 (define (stop-return-token s)
   (check-stop s 'stop-return-token)
