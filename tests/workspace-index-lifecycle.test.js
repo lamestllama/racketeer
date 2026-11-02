@@ -272,15 +272,10 @@ test('a request waits for settings already asked for', { timeout: 120000 }, asyn
 test('the refresh command starts a pass and an unknown command is refused', { timeout: 120000 }, async t => {
   const directory = workspace(t), server = rawServer(t);
   await initialize(server, asking, directory);
+  assert.equal((await server.next()).params.state, 'ready', 'The first pass');
   server.send({ id: 'unknown', method: 'workspace/executeCommand', params: { command: 'no.such.command' } });
+  assert.equal((await server.next()).error.code, -32602);
   server.send({ id: 'refresh', method: 'workspace/executeCommand', params: { command: 'racketeer.refreshWorkspaceIndex' } });
-  const seen = new Map();
-  let indexing = 0;
-  while (!seen.has('refresh') || indexing < 2) {
-    const message = await server.next();
-    if (message.id) seen.set(message.id, message);
-    if (message.params?.state === 'indexing' && message.params.indexed === 0) indexing++;
-  }
-  assert.equal(seen.get('unknown').error.code, -32602);
-  assert.equal(seen.get('refresh').result, null);
+  assert.equal((await server.next()).result, null);
+  assert.equal((await server.next()).params.state, 'ready', 'Another pass');
 });
