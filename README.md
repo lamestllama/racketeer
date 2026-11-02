@@ -188,7 +188,9 @@ to select `before` or `after` events. Import the component API directly from
 `racketdap/instrumentation/instrument.rkt`.
 Run `racket experiments/headless-demo.rkt` for an editor-free demonstration.
 Instrumentation uses a fresh namespace and custodian, bypasses selected
-bytecode caches, and does not overwrite `.zo` files. The expression instrumenter
+bytecode caches, and does not overwrite `.zo` files. Instrumented code it compiles
+is kept in the extension's own storage between sessions and reused while the hashes
+of each source and its dependencies match; `racketdap.debug.compiledCache` turns that off. The expression instrumenter
 and frame/binding runtime are under `racketdap/instrumentation/`; their
 [component design](racketdap/instrumentation/DESIGN.md) describes the shared API.
 The bundled language server uses Racket’s installed language-analysis libraries,

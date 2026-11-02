@@ -5,11 +5,22 @@ events, live lexical bindings, and expression results to the debugger.
 
 ## Expansion and execution
 
-instrument-module accepts a fully expanded runtime expression, source path,
-fresh site-ID allocator, and one event callback (or #f), plus optional live
-module context, snapshot module bindings, and initial tail-position flag.
+instrument-module accepts a fully expanded runtime expression, source path and
+fresh site-ID allocator, plus the form's (unit . index) name, optional live module
+context, snapshot module bindings, and initial tail-position flag. It returns the
+rewritten expression, the visible site descriptors, and every descriptor in slot
+order with whether it is visible.
 It does not expand source, read files, or select modules. The loader owns those
 operations and must preserve one ordinary set of expansion effects.
+
+Generated code holds no debugger state, so it can be compiled to a file. A form
+quotes its unit symbol and index, and reads a vector from form-sites when it is
+instantiated: slot 0 is the event callback and the descriptors follow. The loader
+fills that entry with register-form-sites!, during expansion or, for code read from
+the cache, from the saved record. An instance with no entry gets a vector of #f and
+delivers nothing, which is also how a helper instance above phase zero stays quiet.
+A unit's symbol must stay reachable while its forms can start: the table is
+weak in it, and code read from a file does not intern the symbol until it runs.
 
 Runtime forms are recognized by binding identity. Arbitrary rename-in/prefix-in
 aliases are supported, and familiar printed names do not override their actual
@@ -64,8 +75,9 @@ program cells. Inner scopes shadow outer names; generated macro bindings do not
 hide source-authored identifiers merely because their printed names coincide.
 Each scope that binds source names builds its live bindings once, in front of
 its parent's list, and every site in the scope refers to that list. Each
-instrumented form likewise builds its module binding identifiers once. Generated
-code therefore grows with the source, not with the number of sites times the
+instrumented form likewise holds its module binding identifiers once, in a thunk
+that a stop calls, so syntax literals are not read until something inspects them.
+Generated code therefore grows with the source, not with the number of sites times the
 visible bindings, which made long bodies slow to expand and compile.
 The ordinary-expansion hook's introduction scope is removed only for the
 syntax-original? source-classification check.
@@ -123,8 +135,12 @@ For complete module binding visibility:
   record-module-bindings! before their initializers.
 - Pass the context via instrument-module's #:module-context keyword.
 
-The live catalog includes later declarations and later module+ fragments.
-Runtime initializers automatically register the owning module namespace,
+A context has a symbol key, which is all generated code quotes. A module records
+its declarations in its first expansion pass and instruments in its second, and
+children expand after their parents, so the catalog is complete when the module's
+first form is instrumented. That form registers the identifiers as syntax literals,
+for the module and its inherited parents, and includes later module+ fragments.
+It also registers the owning module namespace,
 separately per namespace registry and only at phase zero. Inherited parents
 with only transformer definitions are located through the actual runtime
 module ancestry. Actual expander binding symbols resolve renamed names without
@@ -133,7 +149,7 @@ their ordinary assignment protections. Snapshot #:module-bindings support
 remains available but does not supply complete live-fragment visibility.
 
 The context-to-registry and registry-to-namespace maps use ephemeron associations.
-Namespaces retain their registry and instrumented module context constants, so
+Namespaces retain their registry and the context keys their code quotes, so
 ordinary weak-key maps would keep completed targets alive through their values.
 An externally live target retains its binding registrations; the maps alone do
 not retain a target after its execution and consumer references are gone.
@@ -207,6 +223,15 @@ The Node suites exercise the shipped DAP consumer, including source locations,
 module fragments, binding identity, result edits, and asynchronous pause.
 
 The production artifact list remains only instrument.rkt and runtime.rkt.
+
+## Compiled code on disk
+
+Compiled instrumented code is an ordinary module apart from three things. It imports
+runtime.rkt and worker/expand.rkt by absolute path, so the cache key includes
+their location. Its identifiers must not carry the loader's scope, whose imports do
+not exist in the program's namespace: the loader's rewrites take their context from
+the source form. Its descriptors have #f for the expression: only tests read that
+field, it grows with size times depth, and it can hold values that cannot be saved.
 
 ## Embedding host contract
 

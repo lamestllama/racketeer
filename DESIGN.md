@@ -276,9 +276,9 @@ read-syntax -> expansion in the intended namespace and phase
 Use Racket's loader/compiler hooks; preserve resolved module identities,
 relative loading paths, submodule identities, readers, and phase instances.
 Selected modules must bypass ordinary cached bytecode when source instrumentation
-is required. Leave unselected modules on the ordinary loading path. Initial
-debug builds are memory-only and never overwrite the project's normal `.zo`
-cache. The hook behavior is specified by Racket's
+is required. Leave unselected modules on the ordinary loading path. Debug builds
+never overwrite the project's normal `.zo` cache; see
+[Compiled instrumented code](#compiled-instrumented-code). The hook behavior is specified by Racket's
 [evaluation and compilation reference](https://docs.racket-lang.org/reference/eval.html).
 
 An implementation must not expand a module once to discover breakpoints and then
@@ -295,6 +295,63 @@ exclude the debugger implementation and its control machinery.
 
 If an expanded form cannot be safely instrumented, report the unsupported
 module/form. Do not claim verified breakpoints in code that was skipped.
+
+### Compiled instrumented code
+
+A launched debug session keeps instrumented compiled code in the extension's global
+storage, or `racketeer/debug-cache` in Racket's addon directory when no client names
+a folder. `racketdap.debug.compiledCache` and the `debugCache` launch attribute turn
+it off. Nothing goes beside sources. `racketdap/worker/debug-cache.rkt` owns the
+location, key and limits; `racketdap/worker/load.rkt` owns its use.
+
+Generated code holds no session state (see the
+[instrumentation design](racketdap/instrumentation/DESIGN.md)). An uncached
+run and a cached run execute the same code, and compiled code is read back with the
+session's site IDs and callbacks supplied by a table.
+
+The compilation manager decides what is current, as `raco make` does for errortrace
+through `current-compile`. It runs in the target namespace from the load handler, so
+a file expands once, with its effects where they would be without the cache. It writes
+under a root of its own, one directory per Racket version, VM, target machine,
+library paths and links, and instrumenter files and location. Its modes separate
+debugging from coverage code. A file the debugger does not select but which has no
+ordinary compiled file gets a plain entry, so its own dependencies are tracked.
+A file with an ordinary compiled file is reported to the manager by that file's hashes,
+so selecting or deselecting a library rebuilds what was compiled against it.
+
+The manager believes a file whose date is no newer than its compiled file, and a
+rebuild of a dependency within the same second goes unseen. Each selected file's entry is
+given the oldest date before the check, which sends it to the comparison of source and
+dependency hashes, registered non-module files included.
+
+The record an expansion leaves is compiled into the `.zo` as a submodule, so code and
+sites change in one atomic rename, and is taken out again before the program is declared.
+It holds the hash of the bytes compiled and, in expansion order, each form's module path
+and sites, each language wrapper, and each selected file loaded. Replaying it gives
+the session the same announcements in the same order as expanding, declares files only
+a submodule or macro needed, and registers the callbacks. A rebuild of some files
+checks dependencies first, so their announcement order and source reference numbers
+can differ on that run; nothing else does. A file a module loads only through an
+already declared one is declared when it is needed, not at replay.
+
+The saved source hash is compared with the file read for this run before the code is
+declared. The manager can also record a hash of a file saved while it compiled older
+bytes; such an entry is dropped when the build ends. A `.zo` that fails its embedded
+hashes is deleted and read from source. Anything raised while building turns the cache
+off for the session and loads from source, dropping output of the failed attempt so a
+syntax error reads as it does without the cache; expansion effects other than output
+happen twice in that case. Module code that a `.zo` cannot hold, such as a
+macro embedding a closure, stays uncached the same way on each run.
+
+Concurrent sessions rely on the manager's atomic renames. Both may build; a mismatch
+of dependency hashes then causes one more rebuild, never a wrong read. At session start,
+the least recently used entries go when the folder exceeds 512 MB. Deleting the folder
+is always safe, so there is no clear command. Test runs, coverage runs, plain-file
+languages and attached hosts run from source.
+
+A hit expands nothing, like any compiled module: a macro's effects and any input it read
+without registering it (`register-external-file`, `include` does) are not repeated. That
+is the same contract as `raco make`.
 
 ### Semantic obligations
 
@@ -666,8 +723,8 @@ The loader partially expands module forms, then instruments runtime expressions
 within the normal module expansion. Expanding an entire module and subsequently
 compiling its rewritten syntax repeated compile-time effects in the comparison
 fixture; the expression-level mechanism avoids that failure in the tested cases.
-Source loading and instrumentation are memory-only, with an existing-bytecode
-regression check.
+Without the compiled cache, source loading and instrumentation are memory-only, with
+an existing-bytecode regression check.
 
 `tests/stepping.rkt` additionally compares execution with entry/completion events
 enabled, checks exact expression results and function return targets, and checks
