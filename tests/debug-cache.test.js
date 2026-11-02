@@ -219,6 +219,25 @@ for (const [name, damage] of [
     assert.ok(fs.existsSync(entry(p, 'macros.rkt')));
   });
 }
+test('an entry reads as damaged wherever a byte of its code changes', { timeout: 300000 }, async t => {
+  const p = project(t);
+  await run(p, true);
+  const stored = entry(p, 'macros.rkt');
+  const macros = path.join(p.source, 'macros.rkt');
+  const root = path.join(p.cache, fs.readdirSync(p.cache)[0]);
+  const intact = () => racket(`(require (file ${JSON.stringify(debugCacheModule)}))
+    (display (with-handlers ([exn:fail? (lambda (_) #f)])
+      (and (read-entry-bytes ${JSON.stringify(root)} (string->path "compiled/debug") (string->path ${JSON.stringify(macros)})) #t)))`);
+  assert.strictEqual(intact(), '#t');
+  const original = fs.readFileSync(stored);
+  // Past the directory of submodule names at its start, whose entries carry no hash.
+  for (const position of [0.1, 0.3, 0.5, 0.7, 0.9, 0.999]) {
+    const changed = Buffer.from(original);
+    changed[Math.floor(changed.length * position)] ^= 1;
+    fs.writeFileSync(stored, changed);
+    assert.strictEqual(intact(), '#f', `at ${position}`);
+  }
+});
 test('a damaged dependency record rebuilds', { timeout: 300000 }, async t => {
   const p = project(t);
   const uncached = await run(p, false);

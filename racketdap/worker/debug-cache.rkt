@@ -8,7 +8,7 @@
 
 (require compiler/cm compiler/compilation-path file/sha1 racket/file racket/list racket/promise racket/runtime-path)
 (provide cache-root default-cache-directory evict-cache! entry-path remove-entry! mark-entry-used!
-         read-entry-bytes entry-records-hash? ordinary-compiled-stamp age-entry! cache-size-limit
+         read-entry-bytes entry-records-hash? ordinary-compiled-stamp instrumenter-stamp cache-size-limit
          add-replay-log take-replay-log replay-source-hash replay-unit replay-events)
 
 (define-runtime-path instrumenter-root "..")
@@ -45,13 +45,6 @@
     (with-handlers ([exn:fail:filesystem? void])
       (delete-file (entry-path root mode source extension)))))
 
-;; The manager takes a source no newer than its compiled file to be current and
-;; looks no further. The oldest date sends every check to its comparison of
-;; source and dependency hashes, external files included. Run with
-;; use-compiled-file-check 'exists, the manager does not touch the date back.
-(define (age-entry! root mode source)
-  (with-handlers ([exn:fail:filesystem? void])
-    (file-or-directory-modify-seconds (entry-path root mode source #".zo") 1)))
 ;; The source hash in the manager's record, which it can take from a file saved
 ;; after the bytes it compiled were read.
 (define (entry-records-hash? root mode source hash)
@@ -88,6 +81,12 @@
                     (module-hashes-intact? s (+ start (read-num pos-pos)) (read-num (+ pos-pos 4))))))]
     [else #f]))
 
+;; The manager takes a file to be current when nothing it depends on looks newer,
+;; and looks no further. Run with use-compiled-file-check 'exists, it reads every
+;; file's date as zero. A dependency that is always newer sends each check on to
+;; its comparison of source and dependency hashes, external files included.
+(define always-newer +inf.0)
+(define (instrumenter-stamp) (cons always-newer "instrumenter"))
 ;; What a file's dependents should record when the debugger loads it from its
 ;; ordinary compiled file, or #f if it has none the ordinary loader would use.
 (define (ordinary-compiled-stamp source modes roots check)
@@ -97,7 +96,7 @@
   (define source-date (file-or-directory-modify-seconds source #f (lambda () #f)))
   (and zo-date
        (or (not source-date) (eq? check 'exists) (>= zo-date source-date))
-       (cons zo-date (delay (or (get-compiled-file-sha1 zo) "")))))
+       (cons always-newer (delay (or (get-compiled-file-sha1 zo) "")))))
 
 ;; Least recently used files go first. Deleting an entry another session is about
 ;; to read only makes that session compile: every read tolerates a missing file.

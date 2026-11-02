@@ -319,10 +319,11 @@ ordinary compiled file gets a plain entry, so its own dependencies are tracked.
 A file with an ordinary compiled file is reported to the manager by that file's hashes,
 so selecting or deselecting a library rebuilds what was compiled against it.
 
-The manager believes a file whose date is no newer than its compiled file, and a
-rebuild of a dependency within the same second goes unseen. Each selected file's entry is
-given the oldest date before the check, which sends it to the comparison of source and
-dependency hashes, registered non-module files included.
+The manager believes a file when nothing it depends on looks newer, and with dates a
+rebuild of a dependency within the same second goes unseen. Run with
+`use-compiled-file-check` `'exists`, it reads every date as zero; each entry depends on
+the instrumenter, reported as always newer, which sends every check to the comparison
+of source and dependency hashes, registered non-module files included.
 
 The record an expansion leaves is compiled into the `.zo` as a submodule, so code and
 sites change in one atomic rename, and is taken out again before the program is declared.

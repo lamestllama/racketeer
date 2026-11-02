@@ -352,10 +352,9 @@
   (define (cached-unit path) (string->symbol (path->string path)))
   (define (skip-for-manager path)
     (cond
-      [(selected-source? path) (age-entry! cache-root-path cache-mode path) #f]
-      [(debugger-source? path) (cons 0 "instrumenter")]
-      [(ordinary-compiled-stamp path compiled-paths compiled-roots compiled-check)]
-      [else (age-entry! cache-root-path plain-mode path) #f]))
+      [(selected-source? path) #f]
+      [(debugger-source? path) (instrumenter-stamp)]
+      [else (ordinary-compiled-stamp path compiled-paths compiled-roots compiled-check)]))
   ;; The manager's source reader goes through here: the bytes compiled are the
   ;; bytes captured, and their hash goes with the code.
   (define (open-for-manager path)
@@ -374,6 +373,8 @@
       [(not hash) (ordinary-compile form immediate?)]
       [else
        (hash-remove! pending-compiles resolved)
+       ;; Every entry depends on the instrumenter; see instrumenter-stamp.
+       (register-external-module instrumentation-runtime-path #:indirect? #t)
        (begin0
         (parameterize ([current-load/use-compiled load-selected])
          (cond
