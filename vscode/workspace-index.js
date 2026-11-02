@@ -15,7 +15,7 @@ const excludedDefaults = ['.git', 'compiled', 'node_modules', '.test-output', 'd
 // document opens to the language server or consumes the server's live traces.
 function createWorkspaceIndex(context, { executable, timeout, output, onStatus }) {
   let connection, starting, disposed = false, requested = false, synchronized = false;
-  let revision = 0, identity = 0, heard = Date.now();
+  let revision = 0, identity = 0, heard = Date.now(), extensions = {};
   const identities = new WeakMap();
   const versions = new WeakMap();
   const documentIdentity = document => {
@@ -54,7 +54,7 @@ function createWorkspaceIndex(context, { executable, timeout, output, onStatus }
       child.stderr.setEncoding('utf8');
       child.stderr.on('data', text => output.append(text));
       connection = createMessageConnection(new StreamMessageReader(child.stdout), new StreamMessageWriter(child.stdin));
-      connection.onNotification('status', status => { heard = Date.now(); onStatus(status); });
+      connection.onNotification('racketeer/indexStatus', status => { heard = Date.now(); onStatus(status); });
       connection.onError(([error]) => failure(error));
       connection.onClose(() => {
         synchronized = false;
@@ -63,8 +63,16 @@ function createWorkspaceIndex(context, { executable, timeout, output, onStatus }
       });
       connection.listen();
       const initial = snapshot();
-      await connection.sendRequest('initialize', initial);
+      const { capabilities } = await connection.sendRequest('initialize', {
+        processId: null, clientInfo: { name: 'Racketeer' },
+        rootUri: null, workspaceFolders: (vscode.workspace.workspaceFolders || []).map(folder => ({ uri: folder.uri.toString(), name: folder.name })),
+        capabilities: { general: { positionEncodings: ['utf-16'] },
+          experimental: { racketeer: { indexStatus: true, sourceReferences: true } } }
+      });
       if (disposed) return;
+      extensions = capabilities?.experimental?.racketeer || {};
+      await connection.sendNotification('initialized', {});
+      await connection.sendNotification('racketeer/update', initial);
       process.ready();
       synchronized = true;
       if (revision !== initial.revision) refresh();
@@ -74,7 +82,7 @@ function createWorkspaceIndex(context, { executable, timeout, output, onStatus }
   function refresh(documentsOnly = false) {
     if (disposed) return;
     revision++;
-    if (synchronized) void connection.sendNotification('update', snapshot(documentsOnly === true)).catch(failure);
+    if (synchronized) void connection.sendNotification('racketeer/update', snapshot(documentsOnly === true)).catch(failure);
     else if (requested && enabled()) void start().catch(failure);
   }
   function relevant(uri) {
@@ -156,17 +164,25 @@ function createWorkspaceIndex(context, { executable, timeout, output, onStatus }
     }
     return response.result;
   }
+  // The process is ended either way, so a server slow to close its engine
+  // holds up restarting language tools only briefly.
+  async function stopServer() {
+    let timer;
+    const stopped = connection.sendRequest('shutdown').then(() => connection.sendNotification('exit'));
+    await Promise.race([stopped, new Promise(resolve => { timer = setTimeout(resolve, 2000); })]).catch(() => {});
+    clearTimeout(timer);
+  }
   return {
     start, refresh,
     cancelStart: () => process.cancelStart(),
     async prepareRename(document, position, token, next) {
       if (!isSource(document)) return next(document, position, token);
-      const result = await renameRequest('prepareRename', document, position, token);
+      const result = await renameRequest('racketeer/prepareRename', document, position, token);
       return result && range(result);
     },
     async provideRenameEdits(document, position, newName, token, next) {
       if (!isSource(document)) return next(document, position, newName, token);
-      const result = await renameRequest('rename', document, position, token, newName);
+      const result = await renameRequest('racketeer/rename', document, position, token, newName);
       if (!result) return;
       const edit = new vscode.WorkspaceEdit();
       for (const [uri, changes] of Object.entries(result.changes)) {
@@ -184,7 +200,8 @@ function createWorkspaceIndex(context, { executable, timeout, output, onStatus }
       try {
         await start();
         if (disposed || token.isCancellationRequested) return [];
-        const locations = await ask('references', {
+        if (sourceUri && !extensions.sourceReferences) return next(document, position, options, token);
+        const locations = await ask(sourceUri ? 'racketeer/sourceReferences' : 'racketeer/references', {
           uri: (sourceUri || document.uri).toString(),
           ...(sourceUri ? { text } : { identity: owned, version }),
           position: { line: position.line, character: position.character },
@@ -206,6 +223,7 @@ function createWorkspaceIndex(context, { executable, timeout, output, onStatus }
       if (disposed) return;
       disposed = true;
       subscriptions.forEach(item => item.dispose());
+      if (synchronized) await stopServer();
       connection?.dispose();
       await process.dispose();
       await starting?.catch(() => {});

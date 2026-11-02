@@ -59,7 +59,9 @@ test('the language and workspace index servers end with an extension host that i
       const index = await server('workspace-index-server.rkt').start();
       const connection = rpc.createMessageConnection(new rpc.StreamMessageReader(index.stdout), new rpc.StreamMessageWriter(index.stdin));
       connection.listen();
-      await connection.sendRequest('initialize', { revision: 1, roots: [${JSON.stringify(pathToFileURL(directory).href)}],
+      await connection.sendRequest('initialize', { processId: null, rootUri: null, workspaceFolders: null, capabilities: {} });
+      await connection.sendNotification('initialized', {});
+      await connection.sendNotification('racketeer/update', { revision: 1, roots: [${JSON.stringify(pathToFileURL(directory).href)}],
         documents: [], settings: { enabled: true, timeoutSeconds: 90 } });
       console.log(JSON.stringify([language.pid, index.pid]));
     })();`], { stdio: ['ignore', 'pipe', 'inherit'] });

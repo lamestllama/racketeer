@@ -42,7 +42,7 @@ function client(t, processFactory, timeout = 60000) {
   };
   const module = { exports: {} };
   const filename = path.join(root, 'vscode/workspace-index.js');
-  vm.runInNewContext(fs.readFileSync(filename, 'utf8'), { module, require: name => name === './selected-editor' ? require('../vscode/selected-editor') : dependencies[name], setInterval, clearInterval }, { filename });
+  vm.runInNewContext(fs.readFileSync(filename, 'utf8'), { module, require: name => name === './selected-editor' ? require('../vscode/selected-editor') : dependencies[name], setInterval, clearInterval, setTimeout, clearTimeout }, { filename });
   const index = module.exports.createWorkspaceIndex({ asAbsolutePath: file => path.join(root, 'vscode', file) }, {
     executable: 'racket', timeout, output: { append() {}, appendLine() {} }, onStatus: value => statuses.push(value)
   });
@@ -62,19 +62,22 @@ function indexPeer(t, initialize = () => ({}), starting = Promise.resolve(), tim
   const child = { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough() };
   const connection = rpc.createMessageConnection(new rpc.StreamMessageReader(child.stdin), new rpc.StreamMessageWriter(child.stdout));
   const snapshots = [];
-  connection.onRequest('initialize', params => { snapshots.push(params); return initialize(); });
-  connection.onNotification('update', params => snapshots.push(params));
-  connection.onRequest('references', () => []);
+  connection.onRequest('initialize', () => initialize());
+  connection.onNotification('racketeer/update', params => snapshots.push(params));
+  connection.onRequest('racketeer/references', () => []);
   connection.listen();
   const c = client(t, () => ({
     async start() { await starting; return child; }, ready() {}, cancelStart() {},
     async dispose() {
+      // A process reads what was written to it before its pipes close.
+      await new Promise(resolve => setTimeout(resolve, 50));
       connection.dispose();
       for (const stream of Object.values(child)) stream.destroy();
     }
   }), timeout);
   return { ...c, snapshots, connection, disconnect: () => child.stdout.destroy() };
 }
+const wire = method => method === 'initialize' ? method : `racketeer/${method}`;
 
 for (const method of ['initialize', 'references', 'prepareRename', 'rename']) {
   test(`index rejects pending ${method} when its transport closes`, { timeout: 5000 }, async t => {
@@ -82,7 +85,7 @@ for (const method of ['initialize', 'references', 'prepareRename', 'rename']) {
     if (method !== 'initialize') await c.index.start();
     let entered, timer;
     const received = new Promise(resolve => { entered = resolve; });
-    c.connection.onRequest(method, () => { entered(); return new Promise(() => {}); });
+    c.connection.onRequest(wire(method), () => { entered(); return new Promise(() => {}); });
     const position = { line: 2, character: 10 }, token = rpc.CancellationToken.None;
     const request = method === 'initialize' ? c.index.start()
       : method === 'references' ? c.refs(doc)
@@ -103,7 +106,7 @@ for (const method of ['initialize', 'references', 'prepareRename', 'rename']) {
 test('an index that stops answering leaves references to the language server and refuses rename', { timeout: 20000 }, async t => {
   const c = indexPeer(t, undefined, undefined, 1500), doc = c.open('definition.rkt', definition);
   await c.index.start();
-  for (const method of ['references', 'rename']) c.connection.onRequest(method, () => new Promise(() => {}));
+  for (const method of ['references', 'rename']) c.connection.onRequest(wire(method), () => new Promise(() => {}));
   const position = { line: 2, character: 10 }, token = rpc.CancellationToken.None;
   assert.equal(await c.index.provideReferences(doc, position, { includeDeclaration: false }, token, () => 'language server'),
     'language server');
@@ -347,4 +350,29 @@ test('a file event starts a pass only for a source file or a name with no suffix
   await updated(2);
   event('removed-folder');
   await updated(3);
+
+test('a client leaves captured references to the language server unless the server offers them', async t => {
+  const c = indexPeer(t), file = c.open('definition.rkt', definition);
+  await c.index.start();
+  const captured = { ...file, uri: { scheme: 'debug', toString: () => 'debug:captured-definition' } };
+  assert.equal(await c.index.provideReferences(captured, { line: 2, character: 10 }, { includeDeclaration: false },
+    rpc.CancellationToken.None, () => 'language server', file.uri), 'language server');
+});
+
+test('disposing a running index shuts its server down before exit', async t => {
+  const c = indexPeer(t), order = [];
+  c.connection.onRequest('shutdown', () => { order.push('shutdown'); return null; });
+  c.connection.onNotification('exit', () => { order.push('exit'); });
+  await c.index.start();
+  await c.index.dispose();
+  assert.deepEqual(order, ['shutdown', 'exit']);
+});
+
+test('a server that does not answer shutdown holds up dispose only briefly', { timeout: 10000 }, async t => {
+  const c = indexPeer(t);
+  c.connection.onRequest('shutdown', () => new Promise(() => {}));
+  await c.index.start();
+  const started = Date.now();
+  await c.index.dispose();
+  assert.ok(Date.now() - started < 5000);
 });

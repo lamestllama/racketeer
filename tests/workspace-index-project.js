@@ -29,7 +29,7 @@ async function project(t, env = {}) {
   child.stderr.setEncoding('utf8'); child.stderr.on('data', text => { diagnostics += text; });
   const connection = rpc.createMessageConnection(new rpc.StreamMessageReader(child.stdout), new rpc.StreamMessageWriter(child.stdin));
   connection.onClose(() => connection.dispose());
-  connection.onNotification('status', status => notifications.push(status));
+  connection.onNotification('racketeer/indexStatus', status => notifications.push(status));
   connection.listen();
   t.after(async () => {
     connection.dispose(); child.kill('SIGKILL');
@@ -47,22 +47,25 @@ async function project(t, env = {}) {
   const settings = { enabled: true, timeoutSeconds: 20 };
   const roots = [uri(directory)];
   const snapshot = () => ({ revision: ++revision, roots, documents: [...documents.values()], settings });
-  const update = (documentsOnly = false) => connection.sendNotification('update', { ...snapshot(), documentsOnly });
+  const update = (documentsOnly = false) => connection.sendNotification('racketeer/update', { ...snapshot(), documentsOnly });
   const references = (key, position = { line: 2, character: 10 }, includeDeclaration = false, token = rpc.CancellationToken.None) => {
     const document = documents.get(key);
-    return connection.sendRequest('references', { uri: key, identity: document.identity,
+    return connection.sendRequest('racketeer/references', { uri: key, identity: document.identity,
       version: document.version, position, includeDeclaration }, token);
   };
   const rename = (key, newName, position = { line: 2, character: 10 }, token = rpc.CancellationToken.None) => {
     const document = documents.get(key);
-    return connection.sendRequest(newName === undefined ? 'prepareRename' : 'rename', {
+    return connection.sendRequest(newName === undefined ? 'racketeer/prepareRename' : 'racketeer/rename', {
       uri: key, identity: document.identity, version: document.version, position,
       ...(newName === undefined ? {} : { newName })
     }, token).then(response => response.result);
   };
   write('definition.rkt', definition); write('uses.rkt', uses);
   const origin = open('definition.rkt', definition);
-  await connection.sendRequest('initialize', snapshot());
+  await connection.sendRequest('initialize', { processId: null, rootUri: null, workspaceFolders: roots.map(root => ({ uri: root, name: root })),
+    capabilities: { experimental: { racketeer: { indexStatus: true, sourceReferences: true } } } });
+  await connection.sendNotification('initialized', {});
+  await update();
   return { child, directory, documents, notifications, filename, write, open, origin, update, references, rename, settings, roots,
     request: (method, params) => connection.sendRequest(method, params),
     diagnostics: () => diagnostics };
