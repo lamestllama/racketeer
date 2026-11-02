@@ -375,7 +375,8 @@ under each folder and ignores reports from excluded directories; what else to re
 choice. With `workspace.configuration` it pulls the section
 `racket-langserver.workspaceAnalysis` after `initialized` and on
 `workspace/didChangeConfiguration`, and a request waits for settings already asked for.
-A client without that capability gets the defaults.
+Answers can arrive in any order, so only the latest pull's answer counts, and a request
+waits for that one. A client without that capability gets the defaults.
 
 | Outcome | Answer |
 | --- | --- |

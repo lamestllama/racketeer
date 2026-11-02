@@ -343,3 +343,42 @@ test('a rename waiting for the writer refuses after a change read meanwhile', { 
   assert.equal(answer.error?.code, requestFailed);
   assert.equal(answer.error?.message, 'Workspace changed during rename. Try Rename again.');
 });
+
+// A pull of the settings, answered when the test says.
+const settingsPull = async server => {
+  const pull = await server.next();
+  assert.equal(pull.method, 'workspace/configuration');
+  return settings => server.send({ id: pull.id, result: [settings] });
+};
+const renameRequest = (directory, id) => ({ id, method: 'textDocument/rename', params: {
+  textDocument: { uri: uri(path.join(directory, 'definition.rkt')) }, position: { line: 2, character: 10 }, newName: 'squared' } });
+
+test('an older settings answer arriving last does not restore what it superseded', { timeout: 120000 }, async t => {
+  const directory = workspace(t), server = rawServer(t);
+  await initialize(server, { workspace: { configuration: true } }, directory);
+  const older = await settingsPull(server);
+  open(server, directory);
+  server.send({ method: 'workspace/didChangeConfiguration', params: { settings: null } });
+  const latest = await settingsPull(server);
+  latest({ enabled: false });
+  older({ enabled: true });
+  server.send(renameRequest(directory, 'rename'));
+  assert.match((await server.next()).error?.message ?? 'The rename succeeded', /Enable workspace analysis/);
+});
+
+test('a request waits for the latest settings even when an older answer comes first', { timeout: 120000 }, async t => {
+  const directory = workspace(t), server = rawServer(t);
+  await initialize(server, { workspace: { configuration: true } }, directory);
+  const older = await settingsPull(server);
+  open(server, directory);
+  server.send(references(directory, 'refs'));
+  server.send({ method: 'workspace/didChangeConfiguration', params: { settings: null } });
+  const latest = await settingsPull(server);
+  // On its own this answer would disable analysis, and references would answer at once.
+  older({ enabled: false });
+  const answered = server.next();
+  assert.equal(await Promise.race([answered, delay(1000, 'still waiting')]), 'still waiting',
+    'Settings asked for since are not applied yet');
+  latest({ enabled: true });
+  assert.equal((await answered).id, 'refs');
+});

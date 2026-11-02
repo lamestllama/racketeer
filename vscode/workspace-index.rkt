@@ -148,9 +148,13 @@
   ;; The revision of the last snapshot and the document versions it held. The
   ;; pair is replaced whole, since results are compared with it on other threads.
   (define submitted (cons 0 (hash)))
-  ;; Settings are pulled from the client, so they arrive after later messages.
-  ;; `settled` is ready when the settings asked for so far have been applied.
+  ;; Settings are pulled from the client, so they arrive after later messages, and
+  ;; answers need not come in order. Only the latest pull's answer counts. `settled` is
+  ;; ready when the settings asked for so far have been applied, which `unapplied`
+  ;; posts, and which later pulls wait for too.
   (define settled always-evt)
+  (define unapplied #f)
+  (define latest-pull 0)
   (define awaited (make-hash))
   (define requests 0)
   (define requests-lock (make-semaphore 1))
@@ -175,16 +179,21 @@
   (define (pull-settings!)
     (cond
       [(capability client-capabilities 'workspace 'configuration)
-       (define applied (make-semaphore))
-       (set! settled (semaphore-peek-evt applied))
+       (set! latest-pull (add1 latest-pull))
+       (define pull latest-pull)
+       (unless unapplied
+         (set! unapplied (make-semaphore))
+         (set! settled (semaphore-peek-evt unapplied)))
        (request! "workspace/configuration"
                  (hasheq 'items (list (hasheq 'section settings-section)))
                  (lambda (result)
-                   (set! settings (match result
-                                    [(list (? hash? pulled) _ ...) pulled]
-                                    [_ (or settings (hasheq))]))
-                   (submit!)
-                   (semaphore-post applied)))]
+                   (when (= pull latest-pull)
+                     (set! settings (match result
+                                      [(list (? hash? pulled) _ ...) pulled]
+                                      [_ (or settings (hasheq))]))
+                     (submit!)
+                     (semaphore-post unapplied)
+                     (set! unapplied #f))))]
       [else
        (set! settings (hasheq))
        (submit!)]))
