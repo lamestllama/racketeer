@@ -458,6 +458,12 @@ it brings before it reads what the other stored, so one of them always makes the
 Frames report the loader's spelling with a `sourceReference`, so VS Code shows a stop in
 a captured source tab, as it does when the spellings agree.
 
+A source root selects a file by the same identity: the file is selected if the root is
+one of the file's own folders, whichever spelling names it. The walk goes through the
+path the loader used, so a link inside a root that leads out of it still selects what it
+was reached through, and a link elsewhere that leads into a root does too. Debugger files
+are recognised by the same rule.
+
 Translate source coordinates from the captured text. Racket's counted port
 positions treat CRLF as one position and expand tabs in its column count; DAP
 columns count UTF-16 code units. Honour the client's zero/one-based preferences.

@@ -16,6 +16,7 @@
          "../wxme-source.rkt"
          "../instrumentation/instrument.rkt"
          "../launcher.rkt"
+         (only-in "../source.rkt" make-within?)
          "debug-cache.rkt")
 (provide run-module make-debug-loader make-debug-exception-handler)
 
@@ -70,17 +71,9 @@
   (define selected-sources
     (cons source (map (lambda (path) (simplify-path (path->complete-path path)))
                       additional-sources)))
-  (define roots (map (lambda (p) (explode-path (simplify-path (path->complete-path p)))) source-roots))
-  (define (under-root? path)
-    (define parts (explode-path path))
-    (for/or ([root (in-list roots)])
-      (and (<= (length root) (length parts))
-           (for/and ([a (in-list root)] [b (in-list parts)]) (equal? a b)))))
-  (define (debugger-source? path)
-    (define root (explode-path (simplify-path debugger-root)))
-    (define parts (explode-path path))
-    (and (<= (length root) (length parts))
-         (for/and ([a (in-list root)] [b (in-list parts)]) (equal? a b))))
+  (define under-root?
+    (make-within? (map (lambda (p) (simplify-path (path->complete-path p))) source-roots)))
+  (define debugger-source? (make-within? (list (simplify-path debugger-root))))
   (define (selected-source? resolved)
     (and (not (equal? (path-get-extension resolved) #".zo"))
          (not (debugger-source? resolved))

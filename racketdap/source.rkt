@@ -2,16 +2,30 @@
 ;; Copyright (c) 2026 Eric Parsonage
 ;; SPDX-License-Identifier: Apache-2.0 OR MIT
 (require racket/file racket/path racket/string racket/list "instrumentation/instrument.rkt")
-(provide (struct-out source-file) capture-source source-location choose-sites same-file?)
+(provide (struct-out source-file) capture-source source-location choose-sites same-file? make-within?)
 (struct source-file (path text id starts) #:transparent)
 ;; A path can name a file through a symbolic link or in another case, so two spellings
 ;; name one file when the file system says so. Identity is read each time, because saving
 ;; can replace a file with a new one. A path that cannot be read matches only itself.
 (define (file-identity path)
-  (with-handlers ([exn:fail:filesystem? (lambda (_) path)])
+  (with-handlers ([exn:fail? (lambda (_) path)])
     (file-or-directory-identity path)))
 (define (same-file? a b)
   (or (equal? a b) (equal? (file-identity a) (file-identity b))))
+;; A predicate for whether a complete path is one of these files or folders or lies under
+;; one, however either is spelled. It walks up the path's own folders, so a link inside a
+;; folder that leads out of it still counts by the name it was reached through. Answers
+;; are kept, since every module loaded asks, often more than once.
+(define (make-within? roots)
+  (define identities (map file-identity roots))
+  (define answers (make-hash))
+  (define (within? path)
+    (hash-ref! answers path
+               (lambda ()
+                 (or (and (member (file-identity path) identities) #t)
+                     (let-values ([(parent _name _directory?) (split-path path)])
+                       (and (path? parent) (within? parent)))))))
+  within?)
 (define (capture-source path id #:text [loaded-text #f])
   ;; Racket counted positions treat CRLF as one character.
   (define text (regexp-replace* #rx"\r\n" (or loaded-text (file->string path)) "\n"))

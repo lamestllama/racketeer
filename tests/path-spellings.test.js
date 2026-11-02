@@ -67,3 +67,39 @@ for (const [kind, make] of [['hard', fs.linkSync], ['symbolic', fs.symlinkSync]]
     });
   }
 }
+
+// Step In enters a dependency only if it was loaded as a source.
+async function stepIn(launch) {
+  let reached;
+  await session(launch, { [launch.program]: [3] }, async context => {
+    const { client, ok } = context;
+    let stopped = await client.event('stopped');
+    await ok(client.request('stepIn', { threadId: stopped.body.threadId }));
+    stopped = await client.event('stopped');
+    reached = path.basename((await top(context, stopped.body.threadId)).source.path);
+    await ok(client.request('continue', { threadId: stopped.body.threadId }));
+  });
+  return reached;
+}
+
+for (const [name, layout] of [
+  ['the program is real and the working directory a link', ({ real, link }) => ({ program: path.join(real, 'main.rkt'), cwd: link })],
+  ['the program is a link and the working directory real', ({ real, link }) => ({ program: path.join(link, 'main.rkt'), cwd: real })],
+  ['the program is real and a source root a link', ({ real, link }) => ({ program: path.join(real, 'main.rkt'), cwd: real, sourceRoots: [link] })]
+]) {
+  test(`Step In enters a dependency when ${name}`, { timeout: 300000, skip }, async t => {
+    const p = project(t, called);
+    const cache = path.join(path.dirname(p.real), 'cache');
+    for (const options of [{}, { debugCacheDirectory: cache }, { debugCacheDirectory: cache }]) {
+      assert.equal(await stepIn({ ...layout(p), ...options }), 'dep.rkt');
+    }
+  });
+}
+
+test('Step In stays out of a dependency outside a source root reached through a link', { skip }, async t => {
+  const { real, link } = project(t, { ...called, 'main.rkt': called['main.rkt'].replace('dep.rkt', '../outside/dep.rkt') });
+  const outside = path.join(path.dirname(real), 'outside');
+  fs.mkdirSync(outside);
+  fs.renameSync(path.join(real, 'dep.rkt'), path.join(outside, 'dep.rkt'));
+  assert.equal(await stepIn({ program: path.join(real, 'main.rkt'), cwd: real, sourceRoots: [link] }), 'main.rkt');
+});

@@ -20,6 +20,7 @@
 - Bundle the language server pull requests for UTF-16 positions and unsaved imports at their reviewed heads: columns are counted in UTF-16 after tabs and in CRLF documents, and the server no longer hangs after an analysis is cancelled, times out or is superseded. A column past the end of a line still means the end of that line, in a local patch, so an edit cannot delete the start of the next line.
 - The workspace index writes one message at a time. A large references or rename result written while the editor was slow to read could be mixed with a status report, which the editor cannot read.
 - A breakpoint stops when its path names the file differently from the program, through a symbolic link or, where the file system ignores case, in another case. It was silently missed. A request replaces the breakpoints of its own spelling only, and a file required under two names keeps a breakpoint on the name it was set on.
+- Step In enters a dependency when the program, the working directory and the source roots reach the project through different spellings of a path, and the dependency loads as a source. It used to step past the call without saying why. A file belongs to a source root if the root is one of its folders, whichever path names that folder.
 
 ## 0.8.48
 
