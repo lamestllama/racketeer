@@ -300,6 +300,9 @@
       ["shutdown"
        (set! state 'stopped)
        (close-engine!)
+       ;; A client closing down need not answer. A request waiting for settings wakes
+       ;; to the closed engine, and is answered as any other that shutdown interrupts.
+       (when unapplied (semaphore-post unapplied))
        (reply (success-response id (json-null)))]
       ["$/cancelRequest"
        (define cancel (hash-ref pending (hash-ref params 'id) #f))

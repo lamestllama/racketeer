@@ -129,6 +129,23 @@ test('shutdown answers a request it interrupts with InvalidRequest, not a cancel
   assert.equal(answers.find(answer => answer.id === 2).result, null);
 });
 
+test('shutdown answers a request still waiting for settings, which a client closing down may never send', { timeout: 120000 }, async t => {
+  const directory = workspace(t), server = rawServer(t);
+  await initialize(server, { workspace: { configuration: true } }, directory);
+  const pull = await server.next();
+  assert.equal(pull.method, 'workspace/configuration');
+  open(server, directory);
+  server.send(references(directory, 'refs'));
+  server.send({ id: 'stop', method: 'shutdown' });
+  const answers = [await server.next()];
+  const second = server.next();
+  answers.push(await Promise.race([second, delay(3000, 'still waiting')]));
+  if (answers[1] === 'still waiting') server.send({ id: pull.id, result: [{}] });
+  assert.notEqual(answers[1], 'still waiting');
+  assert.equal(answers.find(answer => answer.id === 'refs').error.code, invalidRequest);
+  assert.equal(answers.find(answer => answer.id === 'stop').result, null);
+});
+
 test('a captured source answers references privately while its text is the file\'s', { timeout: 120000 }, async t => {
   const directory = workspace(t), server = rawServer(t);
   await initialize(server, {}, directory);
