@@ -172,10 +172,14 @@
       (log-diagnostic "timer" now "running"))
     (loop now (add1 ticks))))
 
-;; One worker holds one analysis, and its memory ends with it. The limit counts what
-;; the analysis adds to the worker's own libraries. Collections are when it is
-;; checked, so a worker's resident size can pass it for a moment.
-(define default-worker-megabytes 256)
+;; One worker holds one analysis, and its memory ends with it. The limit protects
+;; the machine from compile-time code that keeps what it allocates: such code passes
+;; a gigabyte in seconds, and a time limit alone would let it reach tens of gigabytes.
+;; It counts what the analysis adds to the worker's own libraries, and it is set to
+;; stop only a runaway: analysing a file of 1 MiB, the largest indexed by default,
+;; was measured at about 1 GB. Collections are when it is checked, so a worker's
+;; resident size can pass it for a moment, to about 3 GB.
+(define default-worker-megabytes 2048)
 (define (worker-megabytes)
   (define configured (string->number (or (getenv "RACKETEER_INDEX_WORKER_MEGABYTES") "")))
   (if (exact-positive-integer? configured) configured default-worker-megabytes))

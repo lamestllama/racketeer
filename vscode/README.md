@@ -688,8 +688,11 @@ Settings under `racket-langserver.workspaceAnalysis` control whether analysis
 is enabled, excluded directory names, file count, maximum source size and the
 time limit per file. Defaults are 1,000 files, 1 MiB per file and 20 seconds per
 file. One background worker runs at a time, each in a process of its own, with a
-256 MiB limit on the memory its analysis adds to its own libraries. A pass accepts
-at most 16 MiB of source input and 200,000 reference/definition locations. Excluded directories and symbolic links are not scanned. Reaching
+2 GiB limit on the memory its analysis adds to its own libraries. Analysing a
+file of 1 MiB can need about 1 GiB; the limit is there to stop compile-time code
+that never releases what it allocates, and it applies to each worker rather than
+to a pass, because a worker's memory ends with it. A pass accepts at most 16 MiB
+of source input and 200,000 reference/definition locations. Excluded directories and symbolic links are not scanned. Reaching
 a limit or failing to analyse a file produces a partial index.
 
 Changes within watched workspace directories mark the analysis out of date. A

@@ -16,6 +16,7 @@ const windows = process.platform === 'win32';
 // Above what these tests' own small files need, and quick for a macro to pass.
 const lowLimit = '64';
 const low = { RACKETEER_INDEX_WORKER_MEGABYTES: lowLimit };
+const unset = { RACKETEER_INDEX_WORKER_MEGABYTES: undefined };
 const from = (locations, source) => locations.filter(location => location.uri === source);
 const quoted = text => JSON.stringify(text);
 
@@ -45,6 +46,17 @@ const pidIn = file => eventually(() => {
   const text = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
   return /^\d+$/.test(text) && Number(text);
 }, 60, () => `No process id appeared in ${file}`);
+
+test('a file that needs more memory than the former 256 MB limit is analysed', { timeout: 120000 }, async t => {
+  const p = await project(t, unset);
+  // A collection is when the limit is checked, so it runs while all of this is held.
+  p.write('large.rkt', compileTime(`(let ([kept (for/list ([i 320]) (make-vector 125000 i))])
+  (collect-garbage)
+  (void (length kept)))`));
+  await p.update();
+  assert.equal(from(await p.references(p.origin), uri(p.filename('uses.rkt'))).length, 1);
+  assert.equal(p.notifications.at(-1).state, 'ready', p.diagnostics());
+});
 
 test('a worker over the memory limit says so in words, names its file, and the index carries on', { timeout: 120000 }, async t => {
   const p = await project(t, low);
