@@ -437,7 +437,7 @@ test('the key changes with the instrumenter, its location and the library paths'
   assert.strictEqual(key(debugCacheModule), here);
   const elsewhere = key(copied);
   assert.notStrictEqual(elsewhere, here);
-  const paths = key(debugCacheModule, `(current-library-collection-paths (cons "/elsewhere" (current-library-collection-paths)))`);
+  const paths = key(debugCacheModule, `(current-library-collection-paths (cons (build-path (find-system-path (quote temp-dir)) "elsewhere") (current-library-collection-paths)))`);
   assert.notStrictEqual(paths, here);
   fs.appendFileSync(path.join(copyRoot, 'racketdap/instrumentation/runtime.rkt'), ';; changed\n');
   assert.notStrictEqual(key(copied), elsewhere);
