@@ -51,17 +51,17 @@ test('a pause of the whole server is reported when its timer wakes', { timeout: 
   await until(p, /timer at \d+ ms: woke \d+ ms after it last ran\n/, 10);
 });
 
-test('an untraced index logs a worker that takes seconds to stop, naming its file', { timeout: 120000,
+test('an untraced index stops a worker in a blocking C call at once, and has nothing to log', { timeout: 120000,
   skip: process.platform === 'win32' }, async t => {
   const p = await project(t, untraced);
-  // A place cannot be killed out of a blocking C call, so the stop waits for it.
+  // The system ends a worker's process wherever its code is.
   p.write('stuck.rkt', `#lang racket/base
 (require (for-syntax racket/base ffi/unsafe))
-(begin-for-syntax ((get-ffi-obj "sleep" #f (_fun _uint -> _uint)) 15))\n`);
+(begin-for-syntax ((get-ffi-obj "sleep" #f (_fun _uint -> _uint)) 60))\n`);
   p.settings.timeoutSeconds = 5;
   await p.update();
   const asking = p.references(p.origin).catch(() => {});
-  await until(p, /worker at \d+ ms: analyse \S*stuck\.rkt: killed after \d+ ms\n[^]*stuck\.rkt: reaped after \d+ ms\n/, 90);
-  assert.doesNotMatch(p.diagnostics(), /: (starting|kill requested)\n/);
+  await until(p, /stuck\.rkt \(analysis exceeded its 5 second time limit\)/, 40);
+  assert.doesNotMatch(p.diagnostics(), /stuck\.rkt: (starting|kill requested|killed|reaped)/);
   await asking;
 });

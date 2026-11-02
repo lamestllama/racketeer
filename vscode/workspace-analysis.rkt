@@ -6,12 +6,13 @@
 ;; Each instance owns its runs and disposable workers. No editor connection or
 ;; request transport is required to use the engine.
 (require compiler/module-suffix
+         racket/fasl
          racket/file
          racket/list
          racket/match
          racket/path
-         racket/place
          racket/port
+         racket/runtime-path
          racket/set
          racket-langserver/common/path-util
          racket-langserver/common/source
@@ -68,7 +69,7 @@
         (for ([entry (in-list active)]) (semaphore-post (Run-cancel (cdr entry))))
         (map car active))))
   (for ([done (in-list runs)]) (sync (semaphore-peek-evt done)))
-  ;; Queries belong to their callers, but their worker places belong here.
+  ;; Queries belong to their callers, but their worker processes belong here.
   ;; Waiting for the slot guarantees that cancellation has reaped those workers.
   (call-with-semaphore (WorkspaceAnalysis-slot engine) void))
 
@@ -90,8 +91,24 @@
 (define (analysis-failure result)
   (match result
     [(cons 'failed message) message]
+    [(cons 'stopped reason) reason]
     [(cons 'timeout seconds) (format "analysis exceeded its ~a second time limit" seconds)]
     [_ "analysis worker stopped without a result"]))
+
+;; A rename refused by its checks explains itself. One whose worker did not
+;; finish says that it did not, and why.
+(define (rename-failure result)
+  (match result
+    [(cons (or 'stopped 'timeout) _) (format "Rename could not finish: ~a." (analysis-failure result))]
+    [_ (analysis-failure result)]))
+
+;; Why a worker of this run did not finish, for a rename the partial index then
+;; refuses: a limit is not an error in the file that its author could resolve.
+(define worker-stops (make-weak-hasheq))
+(define (incomplete-index run)
+  (match (hash-ref worker-stops run #f)
+    [#f "Workspace analysis is incomplete. Resolve its errors before renaming."]
+    [reason (format "Workspace analysis is incomplete, so Rename cannot run: ~a." reason)]))
 
 (define (status run)
   (hasheq 'state (Run-state run) 'indexed (Run-indexed run) 'total (Run-total run) 'failures (Run-failures run)))
@@ -155,62 +172,175 @@
       (log-diagnostic "timer" now "running"))
     (loop now (add1 ticks))))
 
+;; One worker holds one analysis, and its memory ends with it. The limit counts what
+;; the analysis adds to the worker's own libraries. Collections are when it is
+;; checked, so a worker's resident size can pass it for a moment.
+(define default-worker-megabytes 256)
+(define (worker-megabytes)
+  (define configured (string->number (or (getenv "RACKETEER_INDEX_WORKER_MEGABYTES") "")))
+  (if (exact-positive-integer? configured) configured default-worker-megabytes))
+
+;; What a worker does: everything that reads, expands or runs a user's code.
+(define (answer request observe)
+  (with-handlers ([(lambda (_) #t)
+                   (lambda (e) (cons 'failed (if (exn? e) (exn-message e) (format "~s" e))))])
+    (parameterize ([current-output-port (open-output-nowhere)]
+                   [current-error-port (open-output-nowhere)]
+                   [current-input-port (open-input-string "")]
+                   [exit-handler (lambda (_) (error 'workspace-analysis "worker exited"))]
+                   [current-analysis-observer observe])
+      (match request
+        [(list 'discover roots excluded limit files forms)
+         (append (list 'ok) (discover roots excluded limit)
+                 (list (for/hash ([file (in-list files)]) (values file (disk-fingerprint file)))
+                       (for/hash ([form (in-list forms)]) (values form (resolved-form form)))))]
+        [(list 'analyse path max-bytes buffer query buffers roots)
+         (observe path)
+         (match-define (list contribution text count references record) (analyse path max-bytes buffer query buffers roots))
+         (if contribution (list 'ok (contribution->datum contribution) text count references record) '(changed))]
+        [(list 'rename sources roots excluded limit buffers path position name)
+         (define (check-snapshot!)
+           (unless (snapshot-current? sources roots excluded limit buffers)
+             (error 'rename "Workspace files changed. Try Rename again.")))
+         (check-snapshot!)
+         (define result (workspace-rename sources path position name))
+         (check-snapshot!)
+         (list 'ok result)]))))
+
+;; The worker process: workspace-worker.rkt has set its library paths. The request
+;; arrives on standard input and the reply leaves on standard output, and analysed
+;; code has neither. The analysis runs under two custodians of its own. Its code can
+;; shut down the inner one but not the outer, so only the memory limit ends the outer,
+;; and this thread survives either to say which happened.
+(module+ worker
+  (define from-server (current-input-port))
+  (define to-server (current-output-port))
+  (define request (fasl->s-exp from-server #:datum-intern? #f))
+  ;; The server closes this pipe when it no longer wants the worker, or when it ends.
+  (void (thread (lambda ()
+                  (let wait () (unless (eof-object? (read-byte from-server)) (wait)))
+                  (exit 0))))
+  (define megabytes (worker-megabytes))
+  (define limited (make-custodian))
+  (custodian-limit-memory limited (* megabytes 1024 1024) limited)
+  (define at #f)
+  (define result #f)
+  (define analysis
+    (parameterize ([current-custodian (make-custodian limited)])
+      (thread (lambda () (set! result (answer request (lambda (path) (set! at path))))))))
+  (void (sync (thread-dead-evt analysis)))
+  (define reply
+    (cond
+      [result result]
+      [(custodian-shut-down? limited)
+       (cons 'stopped (format "analysis~a went over the ~a MB memory limit for one worker"
+                              (if at (format " of ~a" at) "") megabytes))]
+      [else (cons 'stopped (format "compile-time code~a ended the analysis" (if at (format " in ~a" at) "")))]))
+  (void (with-handlers ([exn:fail? (lambda (e)
+                                     (s-exp->fasl (cons 'stopped (format "analysis worker could not send its result: ~a" (exn-message e)))
+                                                  to-server))])
+          (s-exp->fasl reply to-server)))
+  (flush-output to-server)
+  ;; Keep a successful reply distinguishable from an abnormal early exit.
+  (void (sync never-evt)))
+
+(define-runtime-path worker-program "workspace-worker.rkt")
+(define-runtime-path this-module "workspace-analysis.rkt")
+
+;; A worker that ended with no reply: what its exit status and own error output say.
+;; Racket reports a Unix process ended by a signal as 128 plus its number.
+(define (worker-exit status errors)
+  (define signal (and (exact-integer? status) (not (eq? (system-type 'os) 'windows)) (> status 128) (- status 128)))
+  (define stated
+    (cond
+      [(eqv? signal 9) "analysis worker was killed by signal 9, which is how the system ends a process when memory runs out"]
+      [signal (format "analysis worker was ended by signal ~a" signal)]
+      [else (format "analysis worker exited with status ~a" status)]))
+  (define said (regexp-match #rx"[^\r\n]+" (bytes->string/utf-8 errors #\?)))
+  (if said (format "~a: ~a" stated (car said)) stated))
+
 (define (compute/slot run seconds request cancel)
   ;; Cancellation must discard the runtime doing the work, including its module
-  ;; loading state. The controlling thread only exchanges immutable snapshots.
+  ;; loading state, and a worker stopped this way cannot hold up anything else: the
+  ;; system ends the process wherever its code is. It is one process in the tree
+  ;; that owns the server, so it ends with that tree on every platform.
   (define label (request-label request))
   (define starting (monotonic))
   (log-worker label "starting")
-  (define worker
-    (place channel
-      (custodian-limit-memory (current-custodian) (* 256 1024 1024))
-      (define result
-        (with-handlers ([(lambda (_) #t)
-                         (lambda (e) (cons 'failed (if (exn? e) (exn-message e) (format "~s" e))))])
-          (parameterize ([current-output-port (open-output-nowhere)]
-                         [current-error-port (open-output-nowhere)]
-                         [current-input-port (open-input-string "")]
-                         [exit-handler (lambda (_) (error 'workspace-analysis "worker exited"))])
-            (define request (place-channel-get channel))
-            (match request
-              [(list 'discover roots excluded limit files forms)
-               (append (list 'ok) (discover roots excluded limit)
-                       (list (for/hash ([file (in-list files)]) (values file (disk-fingerprint file)))
-                             (for/hash ([form (in-list forms)]) (values form (resolved-form form)))))]
-              [(list 'analyse path max-bytes buffer query buffers roots)
-               (match-define (list contribution text count references record) (analyse path max-bytes buffer query buffers roots))
-               (if contribution (list 'ok (contribution->datum contribution) text count references record) '(changed))]
-              [(list 'rename sources roots excluded limit buffers path position name)
-               (define (check-snapshot!)
-                 (unless (snapshot-current? sources roots excluded limit buffers)
-                   (error 'rename "Workspace files changed. Try Rename again.")))
-               (check-snapshot!)
-               (define result (workspace-rename sources path position name))
-               (check-snapshot!)
-               (list 'ok result)]))))
-      (place-channel-put channel result)
-      ;; Keep a successful reply distinguishable from an abnormal early exit.
-      (place-channel-get channel)))
-  (log-worker label "started" starting)
-  (define dead (place-dead-evt worker))
-  (dynamic-wind
-    void
-    (lambda ()
-      (place-channel-put worker request)
-      (define finished
-        (sync/timeout seconds worker dead
-                      (semaphore-peek-evt (Run-cancel run)) cancel))
-      (cond [(not finished) (cons 'timeout seconds)]
-            [(pair? finished) finished]
-            [(eq? finished dead) (cons 'failed "analysis worker exited")]
-            [else #f]))
-    (lambda ()
-      (define stopping (monotonic))
-      (log-worker label "kill requested")
-      (place-kill worker)
-      (log-worker label "killed" stopping)
-      (place-wait worker)
-      (log-worker label "reaped" stopping))))
+  (define owner (make-custodian))
+  (define (stop! process)
+    (define stopping (monotonic))
+    (log-worker label "kill requested")
+    (subprocess-kill process #t)
+    (log-worker label "killed" stopping)
+    (unless (sync/timeout 10 process)
+      (log-diagnostic "worker" (monotonic) (format "~a: still running 10 s after it was killed" label)))
+    (log-worker label "reaped" stopping))
+  (define (exchange process from-worker to-worker errors)
+    (define said (open-output-bytes))
+    (define (bounded-copy)
+      (let loop ()
+        (define bytes (read-bytes 4096 errors))
+        (unless (eof-object? bytes)
+          (when (< (file-position said) 4096) (write-bytes bytes said))
+          (loop))))
+    (void (thread bounded-copy))
+    ;; Each of these can wait on the worker, so neither holds up the wait below.
+    (void (thread (lambda ()
+                    (with-handlers ([exn:fail? void])
+                      (write (list (map path->bytes (current-library-collection-paths))
+                                   (for/list ([root (in-list (current-compiled-file-roots))])
+                                     (if (path? root) (path->bytes root) root))
+                                   (path->bytes this-module))
+                             to-worker)
+                      (s-exp->fasl request to-worker)
+                      (flush-output to-worker)))))
+    (define reply #f)
+    (define reader
+      (thread (lambda ()
+                (with-handlers ([exn:fail? void])
+                  (set! reply (fasl->s-exp from-worker #:datum-intern? #f))))))
+    (define finished
+      (sync/timeout seconds (thread-dead-evt reader) process
+                    (semaphore-peek-evt (Run-cancel run)) cancel))
+    (define (no-reply)
+      (cons 'stopped
+            (if (sync/timeout 1 process)
+                (worker-exit (subprocess-status process) (get-output-bytes said))
+                "analysis worker sent a reply that could not be read")))
+    (cond
+      [(not finished) (cons 'timeout seconds)]
+      [(eq? finished process)
+       ;; A reply written just before the process ended is still in the pipe.
+       (sync/timeout 1 (thread-dead-evt reader))
+       (or reply (no-reply))]
+      [(thread-dead? reader) (or reply (no-reply))]
+      [else #f]))
+  (define result
+    (with-handlers ([exn:fail? (lambda (e)
+                                 (cons 'stopped (format "analysis worker could not run: ~a" (exn-message e))))])
+      (parameterize ([current-custodian owner]
+                     [current-subprocess-custodian-mode 'kill])
+        (define-values (process from-worker to-worker errors)
+          (subprocess #f #f #f
+                      (or (find-executable-path (find-system-path 'exec-file))
+                          (find-system-path 'exec-file))
+                      (path->string worker-program)))
+        (log-worker label "started" starting)
+        (dynamic-wind
+          void
+          (lambda () (exchange process from-worker to-worker errors))
+          (lambda ()
+            (stop! process)
+            (custodian-shutdown-all owner))))))
+  (match result
+    [(cons 'stopped reason)
+     (log-diagnostic "worker" (monotonic) (format "~a: ~a" label reason))
+     (hash-ref! worker-stops run reason)]
+    [(cons 'timeout _)
+     (hash-ref! worker-stops run (format "~a: ~a" label (analysis-failure result)))]
+    [_ (void)])
+  result)
 
 (define (discover roots excluded limit)
   (define module-suffix-regexp (get-module-suffix-regexp))
@@ -705,7 +835,7 @@
          [(not (eq? operation 'references))
           (define result
             (if (not (equal? (Run-state run) "ready"))
-                (cons 'failed "Workspace analysis is incomplete. Resolve its errors before renaming.")
+                (cons 'failed (incomplete-index run))
                 ;; Rename validates both complete source views. Bound the whole
                 ;; transaction separately from the per-file indexing budget.
                 (compute engine run (if (eq? operation 'rename) 90 (Settings-timeout (Run-settings run)))
@@ -719,7 +849,7 @@
                            (lambda ()
                              (match result
                                [(list 'ok edit) (accepted run edit)]
-                               [failure (AnalysisFailure 'unavailable (analysis-failure failure))]))))
+                               [failure (AnalysisFailure 'unavailable (rename-failure failure))]))))
               (retry))]
          [else
           (define include? (hash-ref params 'includeDeclaration))

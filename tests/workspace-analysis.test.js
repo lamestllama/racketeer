@@ -11,5 +11,5 @@ test('workspace analysis works directly and owns independent, cancellable engine
     cwd: root, env: { ...process.env, PLTADDONDIR: addon }, encoding: 'utf8', timeout: 110000
   });
   assert.equal(result.status, 0, `${result.error || ''}\n${result.stdout}\n${result.stderr}`);
-  assert.match(result.stdout, /2 tests passed/);
+  assert.match(result.stdout, /3 tests passed/);
 });

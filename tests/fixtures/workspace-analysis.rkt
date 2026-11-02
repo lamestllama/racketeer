@@ -4,11 +4,11 @@
 (define-runtime-path environment "../../vscode/racket-environment.rkt")
 (define-runtime-path analysis "../../vscode/workspace-analysis.rkt")
 (dynamic-require environment #f)
-(define-values (make-engine update! query close! result? result-value result-revision failure? failure-reason)
+(define-values (make-engine update! query close! result? result-value result-revision failure? failure-reason failure-message)
   (apply values
          (for/list ([name '(make-workspace-analysis workspace-analysis-update! workspace-analysis-query
                            workspace-analysis-close! AnalysisResult? AnalysisResult-value AnalysisResult-revision
-                           AnalysisFailure? AnalysisFailure-reason)])
+                           AnalysisFailure? AnalysisFailure-reason AnalysisFailure-message)])
            (dynamic-require analysis name))))
 
 (define definition "#lang racket/base\n(provide square)\n(define (square x) (* x x))\n")
@@ -27,6 +27,22 @@
   (or (sync/timeout seconds event) (error 'workspace-analysis-test "timed out: ~a" description)))
 
 (module+ test
+  (test-case "a worker that cannot load its libraries reports what it said"
+    (define directory (make-temporary-file "workspace-engine-load~a" 'directory))
+    (define engine (make-engine))
+    (dynamic-wind
+      void
+      (lambda ()
+        (update! engine (fixture directory))
+        (check-true (result? (query engine 'references (request directory))))
+        (define failed
+          (parameterize ([current-library-collection-paths '()])
+            (query engine 'references (request directory))))
+        (check-true (failure? failed))
+        (check-regexp-match #rx"analysis worker exited with status 1: ."
+                            (failure-message failed)))
+      (lambda () (close! engine) (delete-directory/files directory))))
+
   (test-case "the engine supplies references and rename without an editor or transport"
     (define directory (make-temporary-file "workspace-engine~a" 'directory))
     (define engine (make-engine))

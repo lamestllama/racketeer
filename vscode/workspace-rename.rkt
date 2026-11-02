@@ -26,7 +26,11 @@
          racket-langserver/doclib/internal-types
          racket-langserver/doclib/lexer)
 
-(provide workspace-rename)
+(provide workspace-rename current-analysis-observer)
+
+;; Told each file before its analysis begins, for a worker that must be able to
+;; say which file it was analysing when it was stopped.
+(define current-analysis-observer (make-parameter void))
 
 (struct Source (doc forms arrows bindings) #:transparent)
 (struct Arrow (from to imported?) #:transparent)
@@ -50,6 +54,7 @@
     (call-with-source-snapshot sources proc)))
 
 (define (analyse path sources)
+  ((current-analysis-observer) path)
   (in-snapshot path sources
     (lambda ()
       (define text (hash-ref sources path))

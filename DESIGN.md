@@ -258,7 +258,7 @@ Workspace analysis runs in a separate service with three ownership boundaries:
 | --- | --- |
 | `vscode/workspace-index.js` | Report VS Code document lifetimes, settings and file events over standard LSP synchronisation; convert results to editor locations and edit previews. |
 | `vscode/workspace-index.rkt` | Frame requests, keep the document registry and build each source view, map request IDs and cancellation messages, translate domain outcomes, and close the engine at shutdown or when the connection ends. |
-| `vscode/workspace-analysis.rkt` and `vscode/workspace-rename.rkt` | Discover files, analyse immutable source views, combine binding references, validate rename, and own bounded worker places. |
+| `vscode/workspace-analysis.rkt` and `vscode/workspace-rename.rkt` | Discover files, analyse immutable source views, combine binding references, validate rename, and own bounded worker processes. |
 
 The engine has no editor connection, request IDs or wire-protocol errors.
 `make-workspace-analysis` creates an independent instance. Its optional
@@ -313,7 +313,7 @@ is seen only at the next change to the macro's file or to a file loaded with it,
 after a refresh, or after a restart. This is the limit the debugger's compiled cache has too.
 
 `workspace-analysis-close!` is idempotent. It cancels active runs, waits for
-their completion and reaps worker places. Further updates have no effect;
+their completion and reaps worker processes. Further updates have no effect;
 queries return a closed-engine outcome. Closing one instance leaves other
 instances usable.
 

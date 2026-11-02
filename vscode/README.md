@@ -682,14 +682,14 @@ import aliases, nested prefixes and prefixes around selective imports.
 Selectors over composed imports, phase-shifted uses and selectors shared by multiple export
 phases may be refused.
 Files that fail analysis make the index partial; rename refuses incomplete or
-stale snapshots. Background diagnostics are not part of this feature.
+stale snapshots, and says which file and limit stopped a worker. Background diagnostics are not part of this feature.
 
 Settings under `racket-langserver.workspaceAnalysis` control whether analysis
 is enabled, excluded directory names, file count, maximum source size and the
 time limit per file. Defaults are 1,000 files, 1 MiB per file and 20 seconds per
-file. One background worker runs at a time, with a 256 MiB analysis memory limit;
-a pass accepts at most 16 MiB of source input and 200,000 reference/definition
-locations. Excluded directories and symbolic links are not scanned. Reaching
+file. One background worker runs at a time, each in a process of its own, with a
+256 MiB limit on the memory its analysis adds to its own libraries. A pass accepts
+at most 16 MiB of source input and 200,000 reference/definition locations. Excluded directories and symbolic links are not scanned. Reaching
 a limit or failing to analyse a file produces a partial index.
 
 Changes within watched workspace directories mark the analysis out of date. A
