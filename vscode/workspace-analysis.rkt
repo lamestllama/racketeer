@@ -134,7 +134,7 @@
 ;; Diagnostics for a stalled index. Each line is written before the next wait
 ;; begins, so the last line for a worker names the wait it stuck in. They appear
 ;; when RACKETEER_INDEX_TRACE is set, as it is in the editor CI job. Otherwise
-;; only a start or stop that itself took seconds, or a pause of the timer, does.
+;; only a pause of the timer is logged.
 (define tracing? (and (getenv "RACKETEER_INDEX_TRACE") #t))
 (define slow-milliseconds 5000)
 (define (monotonic) (inexact->exact (round (current-inexact-monotonic-milliseconds))))
@@ -149,7 +149,7 @@
 (define (log-worker label event [since #f])
   (define now (monotonic))
   (define waited (and since (- now since)))
-  (when (or tracing? (and waited (>= waited slow-milliseconds)))
+  (when tracing?
     (log-diagnostic "worker" now (if waited (format "~a: ~a after ~a ms" label event waited)
                                      (format "~a: ~a" label event)))))
 
