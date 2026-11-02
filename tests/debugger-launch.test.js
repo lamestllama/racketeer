@@ -16,7 +16,8 @@ const repository = path.resolve(__dirname, '..');
 function folder(t) {
   // A space, because extension and storage folders can hold one.
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'debugger launch-'));
-  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  // A builder that has made its folder visible still tidies before it exits.
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }));
   const racketdap = path.join(directory, 'racketdap');
   fs.cpSync(path.join(repository, 'racketdap'), racketdap, { recursive: true, filter: file => path.basename(file) !== 'compiled' });
   const program = path.join(directory, 'program.rkt');
@@ -27,7 +28,7 @@ const launcherArgs = ({ racketdap, storage }, file = 'main.rkt') =>
   [path.join(racketdap, 'launcher.rkt'), storage, path.join(racketdap, file)];
 // One session, with these arguments to Racket; returns what it wrote.
 async function session(args, program, { env, launch = {} } = {}) {
-  const client = new DapClient(undefined, { timeout: 120000,
+  const client = new DapClient(undefined, { timeout: 120000, leavesProcess: true,
     spawn: (command, _args, options) => spawn(command, args, { ...options, env: { ...process.env, ...env } }) });
   try {
     const ok = async request => { const response = await request; assert.equal(response.success, true, response.message); };

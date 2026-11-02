@@ -63,6 +63,12 @@ class DapClient {
       if (!this.closing || code !== 0 || signal) {
         this.fail(new Error(`Adapter exited unexpectedly (${signal || code}): ${this.stderr}`));
       }
+      // On Windows a child inherits the adapter's pipes, so a process it leaves
+      // running on purpose holds them open after the adapter has gone. What the
+      // adapter wrote arrives within this delay, and then the client lets go.
+      if (options.leavesProcess) {
+        setTimeout(() => { this.child.stdout.destroy(); this.child.stderr.destroy(); }, 500);
+      }
     });
     this.child.on('close', () => {
       if (this.buffer.length) this.fail(new Error('Truncated DAP message at adapter shutdown'));
