@@ -197,7 +197,7 @@ test('index synchronizes edits and document replacement during initialization', 
   });
   doc = c.open('definition.rkt', definition);
   await c.index.start(); await c.refs(reopened);
-  assert.equal(c.snapshots.length, 1, 'The server hears of documents only after initialization, so it hears the latest state once');
+  assert.equal(c.snapshots.length, 1, 'The server hears of documents only after initialisation, so it hears the latest state once');
   const before = c.snapshots[0].documents[0];
   assert.equal(before.text, reopened.getText());
   assert.equal(before.version, reopened.version);
