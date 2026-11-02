@@ -520,3 +520,110 @@ test('the extension starts debugger files through the launcher when it has stora
   assert.deepEqual(debuggerArgs({ ...context, globalStorageUri: { fsPath: '/storage' } }, 'tools/macro-stepper.rkt'),
     ['/extension/runtime/racketdap/launcher.rkt', path.join('/storage', 'debugger'), '/extension/runtime/racketdap/tools/macro-stepper.rkt']);
 });
+
+test('separate compiled roots track a compiled-only library replacement', { timeout: 300000 }, async t => {
+  const p = libraryProject(t);
+  const separate = path.join(p.files.directory, 'separate-compiled');
+  p.env.PLTCOMPILEDROOTS = `${separate}${path.delimiter}`;
+  let generation = 0;
+  const compileOnly = () => {
+    const made = spawnSync('raco', ['make', p.macro], { env: p.env, encoding: 'utf8', timeout: 60000 });
+    assert.equal(made.status, 0, made.stderr);
+    fs.unlinkSync(p.macro);
+    const past = new Date(Date.now() - (2 - generation++) * 3600000);
+    for (const f of fs.readdirSync(separate, { recursive: true })) fs.utimesSync(path.join(separate, String(f)), past, past);
+  };
+  compileOnly();
+  p.age();
+  const published = build(p.files, p.env);
+  assert.ok(fs.existsSync(path.join(published, 'manifest.rktd')), 'A published build is required');
+  assert.equal(p.launch(), 'FORMER\n');
+  p.write('LATTER'); compileOnly();
+  const direct = spawnSync('racket', [p.target], { env: p.env, encoding: 'utf8', timeout: 30000 });
+  assert.equal(direct.status, 0, direct.stderr);
+  assert.equal(direct.stdout, 'LATTER\n');
+  assert.equal(p.launch(), 'LATTER\n');
+});
+
+test('switching compiled roots does not keep expansions from the former root', { timeout: 300000 }, async t => {
+  const p = libraryProject(t);
+  const rootA = path.join(p.files.directory, 'compiled-a');
+  const rootB = path.join(p.files.directory, 'compiled-b');
+  const make = (compiledRoot, answer) => {
+    p.write(answer);
+    p.env.PLTCOMPILEDROOTS = `${compiledRoot}${path.delimiter}`;
+    const made = spawnSync('raco', ['make', p.macro], { env: p.env, encoding: 'utf8', timeout: 60000 });
+    assert.equal(made.status, 0, made.stderr);
+    fs.unlinkSync(p.macro);
+    const past = new Date(Date.now() - 3600000);
+    for (const f of fs.readdirSync(compiledRoot, { recursive: true })) fs.utimesSync(path.join(compiledRoot, String(f)), past, past);
+  };
+  make(rootA, 'FORMER'); p.age();
+  const published = build(p.files, p.env);
+  assert.ok(fs.existsSync(path.join(published, 'manifest.rktd')));
+  assert.equal(p.launch(), 'FORMER\n');
+  make(rootB, 'LATTER');
+  const direct = spawnSync('racket', [p.target], { env: p.env, encoding: 'utf8', timeout: 30000 });
+  assert.equal(direct.status, 0, direct.stderr);
+  assert.equal(direct.stdout, 'LATTER\n');
+  assert.equal(p.launch(), 'LATTER\n');
+});
+
+test('a library newly present in an earlier compiled root displaces the former expansion', { timeout: 300000 }, async t => {
+  const p = libraryProject(t);
+  const rootA = path.join(p.files.directory, 'compiled-a');
+  const rootB = path.join(p.files.directory, 'compiled-b');
+  const make = (compiledRoot, answer) => {
+    p.write(answer);
+    const env = { ...p.env, PLTCOMPILEDROOTS: `${compiledRoot}${path.delimiter}` };
+    const made = spawnSync('raco', ['make', p.macro], { env, encoding: 'utf8', timeout: 60000 });
+    assert.equal(made.status, 0, made.stderr);
+    fs.unlinkSync(p.macro);
+    const past = new Date(Date.now() - 3600000);
+    for (const f of fs.readdirSync(compiledRoot, { recursive: true })) fs.utimesSync(path.join(compiledRoot, String(f)), past, past);
+  };
+  make(rootB, 'FORMER'); p.age();
+  p.env.PLTCOMPILEDROOTS = [rootA, rootB, ''].join(path.delimiter);
+  const published = build(p.files, p.env);
+  assert.ok(fs.existsSync(path.join(published, 'manifest.rktd')));
+  assert.equal(p.launch(), 'FORMER\n');
+  make(rootA, 'LATTER');
+  const direct = spawnSync('racket', [p.target], { env: p.env, encoding: 'utf8', timeout: 30000 });
+  assert.equal(direct.status, 0, direct.stderr);
+  assert.equal(direct.stdout, 'LATTER\n');
+  assert.equal(p.launch(), 'LATTER\n');
+});
+
+test('a development tree build ignores bytecode left beside debugger sources', { timeout: 300000 }, async t => {
+  const p = folder(t);
+  const target = path.join(p.racketdap, 'development-probe.rkt');
+  fs.writeFileSync(target, '#lang racket/base\n(displayln (quote FORMER))\n');
+  const made = spawnSync('raco', ['make', target], { encoding: 'utf8', timeout: 60000 });
+  assert.equal(made.status, 0, made.stderr);
+  const zo = path.join(p.racketdap, 'compiled', 'development-probe_rkt.zo');
+  const former = fs.readFileSync(zo);
+  fs.writeFileSync(target, '#lang racket/base\n(displayln (quote LATTER))\n');
+  const past = new Date(Date.now() - 3600000); fs.utimesSync(target, past, past);
+  const published = build(p);
+  assert.ok(fs.existsSync(path.join(published, 'manifest.rktd')));
+  const launched = spawnSync('racket', launcherArgs(p, 'development-probe.rkt'), { encoding: 'utf8', timeout: 30000 });
+  assert.equal(launched.status, 0, launched.stderr);
+  assert.equal(launched.stdout, 'LATTER\n');
+  assert.deepEqual(fs.readFileSync(zo), former, 'The old bytecode beside the sources is untouched');
+  assert.deepEqual(compiledFiles(published).filter(name => !name.split(path.sep).includes('racketdap')), [],
+    'Ordinary libraries are read from their installation roots');
+});
+
+test('a user-scope linked library is tracked without adding a collection root', { timeout: 300000 }, async t => {
+  const p = libraryProject(t);
+  p.env.PLTADDONDIR = path.join(p.files.directory, 'user-addon');
+  delete p.env.PLTCOLLECTS;
+  const linked = spawnSync('raco', ['link', '--user', '--name', 'launch-library', p.library],
+    { env: p.env, encoding: 'utf8', timeout: 60000 });
+  assert.equal(linked.status, 0, linked.stderr);
+  const published = build(p.files, p.env);
+  assert.ok(fs.existsSync(path.join(published, 'manifest.rktd')));
+  assert.equal(p.launch(), 'FORMER\n');
+  p.write('LATTER');
+  assert.equal(p.launch(), 'LATTER\n');
+});

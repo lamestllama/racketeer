@@ -77,14 +77,18 @@
           link)))
 
   ;; The Racket these files compile against: its version and VM, where it looks
-  ;; for libraries and what its links say. A command-line -S adds libraries for one
-  ;; tool's own use, so it is not read here. The manifest covers the sources.
+  ;; for libraries and their compiled files and what its links say. A command-line -S
+  ;; adds libraries for one tool's own use, so it is not read here. The manifest
+  ;; covers the sources.
   (define-values (folder-name)
     (lambda ()
       (let-values ([(out) (open-output-bytes)])
         (write (list (version) (system-type 'vm) (path->bytes (system-library-subpath #f))
                      (map path->bytes (find-library-collection-paths))
                      (map link-identity (current-library-collection-links))
+                     (map (lambda (root) (if (path? root) (path->bytes root) root))
+                          (current-compiled-file-roots))
+                     (use-compiled-file-paths) (use-compiled-file-check)
                      (path->bytes debugger-root))
                out)
         (hex (sha1-bytes (get-output-bytes out))))))

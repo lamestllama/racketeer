@@ -63,9 +63,16 @@
       (with-handlers ([exn:fail? void])
         (compile-file source)))))
 
-(define (compiled-bytecode file)
-  (parameterize ([current-compiled-file-roots '(same)])
-    (get-compilation-bytecode-file file)))
+;; Record every place a library's bytecode could be selected, including absence:
+;; an earlier root gaining a file changes what the loader reads as surely as a
+;; replacement of the file it selected before.
+(define (library-files file)
+  (cons file
+        (append*
+         (for*/list ([root (in-list (current-compiled-file-roots))]
+                     [mode (in-list (use-compiled-file-paths))])
+           (define zo (get-compilation-bytecode-file file #:roots (list root) #:modes (list mode)))
+           (list zo (path-replace-extension zo #".dep"))))))
 
 ;; The libraries the debugger's expansions came from, and what each reads as: its
 ;; source and its ordinary compiled files, present or not. A file dated since the
@@ -74,14 +81,12 @@
 ;; refusing for one would refuse every build.
 (define (library-entries building sources root started)
   (define libraries
-    (parameterize ([current-compiled-file-roots (list building 'same)])
+    (parameterize ([current-compiled-file-roots (cons building (current-compiled-file-roots))])
       (for/list ([file (in-list (remove-duplicates (append-map module-recorded-dependencies sources)))]
                  #:unless (under? file root))
         file)))
   (define finished (current-seconds))
-  (for*/list ([library (in-list libraries)]
-              [file (let ([zo (compiled-bytecode library)])
-                      (list library zo (path-replace-extension zo #".dep")))])
+  (for/list ([file (in-list (remove-duplicates (append-map library-files libraries)))])
     (define stamp (file-stamp file))
     (when (and stamp (<= started (cdr stamp) finished))
       (error 'compile-debugger "library changed during the build: ~a" file))
