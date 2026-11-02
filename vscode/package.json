@@ -501,7 +501,7 @@
             "properties": {
               "program": {
                 "type": "string",
-                "description": "Racket source file to launch.",
+                "description": "Racket source file to launch. A relative path is relative to `cwd`, or without one to the workspace folder.",
                 "default": "${file}"
               },
               "cwd": {

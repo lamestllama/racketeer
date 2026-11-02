@@ -58,6 +58,8 @@ function activate(context) {
         vscode.window.showErrorMessage('Racket DAP supports launch and attach sessions.');
         return undefined;
       }
+      const programBase = config.cwd || folder?.uri.fsPath;
+      if (config.request === 'launch' && config.program && programBase) config.program = path.resolve(programBase, config.program);
       if (config.request === 'launch' && (!config.program || !fs.existsSync(config.program) || !fs.statSync(config.program).isFile())) {
         vscode.window.showErrorMessage('Choose an existing Racket source file to debug.');
         return undefined;

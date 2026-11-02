@@ -550,6 +550,19 @@ test('launch still requires an existing program and resolves its directory', asy
   assert.equal(errors.length, 1);
 });
 
+test('a relative program in a launch is relative to its working directory, or else to the workspace folder', async () => {
+  const { provider, errors } = configurationProvider();
+  const examples = path.resolve(__dirname, '../examples');
+  const program = path.join(examples, 'demo.rkt');
+  const resolve = (folder, extra) => provider.resolveDebugConfigurationWithSubstitutedVariables(folder, { request: 'launch', program: 'demo.rkt', ...extra });
+  assert.equal((await resolve(undefined, { cwd: examples })).program, program);
+  const fromFolder = await resolve({ uri: { fsPath: examples } }, {});
+  assert.equal(fromFolder.program, program);
+  assert.equal(fromFolder.cwd, examples);
+  assert.equal(await resolve({ uri: { fsPath: examples } }, { cwd: __dirname }), undefined);
+  assert.equal(errors.length, 1);
+});
+
 test('launch keeps compiled code in the extension storage, as the setting and attribute say', async () => {
   const storage = path.join(path.sep, 'storage');
   const { provider, vscode } = configurationProvider(undefined, { globalStorageUri: { fsPath: storage } });

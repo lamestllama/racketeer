@@ -141,7 +141,10 @@
   (unless (member (hash-ref args 'console "internalConsole") '("internalConsole" "integratedTerminal"))
     (error 'launch "console must be internalConsole or integratedTerminal."))
   (set! terminal? (equal? (hash-ref args 'console "internalConsole") "integratedTerminal"))
-  (define program (simplify-path (path->complete-path (hash-ref args 'program))))
+  ;; A relative program is relative to cwd, which is relative to this process.
+  (define program (simplify-path (path->complete-path
+                                  (hash-ref args 'program)
+                                  (path->complete-path (hash-ref args 'cwd (current-directory))))))
   (unless (file-exists? program) (error 'launch "Program does not exist: ~a" program))
   (define cwd (simplify-path (path->complete-path (hash-ref args 'cwd (path-only program)))))
   (unless (directory-exists? cwd) (error 'launch "Working directory does not exist: ~a" cwd))

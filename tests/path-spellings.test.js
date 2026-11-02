@@ -103,3 +103,20 @@ test('Step In stays out of a dependency outside a source root reached through a 
   fs.renameSync(path.join(real, 'dep.rkt'), path.join(outside, 'dep.rkt'));
   assert.equal(await stepIn({ program: path.join(real, 'main.rkt'), cwd: real, sourceRoots: [link] }), 'main.rkt');
 });
+
+test('a relative program is relative to the working directory', async t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'path-spellings-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(directory, 'sub'));
+  const dep = path.join(directory, 'sub', 'dep.rkt');
+  fs.writeFileSync(path.join(directory, 'sub', 'main.rkt'), called['main.rkt']);
+  fs.writeFileSync(dep, called['dep.rkt']);
+  let source;
+  await session({ program: path.join('sub', 'main.rkt'), cwd: directory }, { [dep]: [4] }, async context => {
+    const stopped = await context.client.event('stopped');
+    source = (await top(context, stopped.body.threadId)).source.path;
+    await context.ok(context.client.request('setBreakpoints', { source: { path: dep }, breakpoints: [] }));
+    await context.ok(context.client.request('continue', { threadId: stopped.body.threadId }));
+  });
+  assert.equal(fs.realpathSync(source), fs.realpathSync(dep));
+});

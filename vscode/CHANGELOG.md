@@ -21,6 +21,7 @@
 - The workspace index writes one message at a time. A large references or rename result written while the editor was slow to read could be mixed with a status report, which the editor cannot read.
 - A breakpoint stops when its path names the file differently from the program, through a symbolic link or, where the file system ignores case, in another case. It was silently missed. A request replaces the breakpoints of its own spelling only, and a file required under two names keeps a breakpoint on the name it was set on.
 - Step In enters a dependency when the program, the working directory and the source roots reach the project through different spellings of a path, and the dependency loads as a source. It used to step past the call without saying why. A file belongs to a source root if the root is one of its folders, whichever path names that folder.
+- A relative `program` in a launch configuration is relative to its `cwd`, or without one to the workspace folder. The debugger looked for it in the folder the adapter started in, and the extension refused it unless it happened to exist there.
 
 ## 0.8.48
 

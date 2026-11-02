@@ -682,6 +682,9 @@ Proposed configuration for a thin editor integration:
 }
 ```
 
+A relative `program` is relative to `cwd`. Through the extension, a launch without `cwd`
+uses the workspace folder for both.
+
 The executable defaults to `racket` on PATH, with a `racketExecutable` override.
 Use the corresponding installation for the worker and reject an incompatible
 worker protocol/version explicitly. Other optional settings should be limited
