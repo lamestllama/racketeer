@@ -82,6 +82,11 @@
                (+ start offset)
                (loop (add1 offset) next))])))
 
+    ;; What a protocol column means: past the end of a line is the end of that line.
+    ;; Going on into the next line, as above, would make a client's edit delete it.
+    (define/public (lsp-position->pos line char)
+      (min (send this line/char->pos line char) (send this line-end-pos line)))
+
     (define/public (pos->line/char pos)
       (define line (rope-offset->line rope pos))
       (define end (min pos (send this line-end-pos line)))

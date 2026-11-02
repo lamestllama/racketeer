@@ -240,6 +240,8 @@
       (check-equal? (send editor pos->line/char pos) (list 1 column)))
     ;; A column inside a surrogate pair names the start of its character.
     (check-equal? (send editor line/char->pos 0 2) 1)
+    ;; A protocol column past the end of a line names the line's end.
+    (check-equal? (send editor lsp-position->pos 0 10) 3)
     ;; Past the end of the text, one position is one code unit.
     (check-equal? (send editor pos->line/char 10) '(2 2))
 

@@ -54,7 +54,8 @@ for package in packages:
 # Upstream pull requests first, as submitted, then the local patches.
 server_patches = ('pr-246-utf16-positions.patch', 'pr-247-open-buffer-imports.patch',
                   'pr-248-relative-import-without-directory.patch',
-                  'tail-position-hover.patch', 'predicted-bindings.patch')
+                  'tail-position-hover.patch', 'predicted-bindings.patch',
+                  'clamp-protocol-columns.patch')
 for patch_name in server_patches if any(p['name'] == 'racket-langserver' for p in packages) else ():
     patch = root / 'vendor/patches' / patch_name
     subprocess.run(['git', 'apply', '--directory=vendor/collects/racket-langserver', str(patch)],

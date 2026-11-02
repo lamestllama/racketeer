@@ -294,7 +294,7 @@
 
 (define/contract (doc-pos->abs-pos doc pos)
   (-> Doc? Pos? exact-nonnegative-integer?)
-  (send (Doc-text doc) line/char->pos (Pos-line pos) (Pos-char pos)))
+  (send (Doc-text doc) lsp-position->pos (Pos-line pos) (Pos-char pos)))
 
 (define/contract (doc-abs-pos->pos doc pos)
   (-> Doc? exact-nonnegative-integer? Pos?)

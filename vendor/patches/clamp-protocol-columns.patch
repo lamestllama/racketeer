@@ -1,0 +1,42 @@
+diff --git a/doclib/doc.rkt b/doclib/doc.rkt
+index 120858b..5d40731 100644
+--- a/doclib/doc.rkt
++++ b/doclib/doc.rkt
+@@ -294,7 +294,7 @@
+ 
+ (define/contract (doc-pos->abs-pos doc pos)
+   (-> Doc? Pos? exact-nonnegative-integer?)
+-  (send (Doc-text doc) line/char->pos (Pos-line pos) (Pos-char pos)))
++  (send (Doc-text doc) lsp-position->pos (Pos-line pos) (Pos-char pos)))
+ 
+ (define/contract (doc-abs-pos->pos doc pos)
+   (-> Doc? exact-nonnegative-integer? Pos?)
+diff --git a/doclib/textbuffer/editor-rope.rkt b/doclib/textbuffer/editor-rope.rkt
+index 380b058..18e8f41 100644
+--- a/doclib/textbuffer/editor-rope.rkt
++++ b/doclib/textbuffer/editor-rope.rkt
+@@ -82,6 +82,11 @@
+                (+ start offset)
+                (loop (add1 offset) next))])))
+ 
++    ;; What a protocol column means: past the end of a line is the end of that line.
++    ;; Going on into the next line, as above, would make a client's edit delete it.
++    (define/public (lsp-position->pos line char)
++      (min (send this line/char->pos line char) (send this line-end-pos line)))
++
+     (define/public (pos->line/char pos)
+       (define line (rope-offset->line rope pos))
+       (define end (min pos (send this line-end-pos line)))
+diff --git a/tests/lib/editor-test.rkt b/tests/lib/editor-test.rkt
+index 24122f7..f107708 100644
+--- a/tests/lib/editor-test.rkt
++++ b/tests/lib/editor-test.rkt
+@@ -240,6 +240,8 @@
+       (check-equal? (send editor pos->line/char pos) (list 1 column)))
+     ;; A column inside a surrogate pair names the start of its character.
+     (check-equal? (send editor line/char->pos 0 2) 1)
++    ;; A protocol column past the end of a line names the line's end.
++    (check-equal? (send editor lsp-position->pos 0 10) 3)
+     ;; Past the end of the text, one position is one code unit.
+     (check-equal? (send editor pos->line/char 10) '(2 2))
+ 

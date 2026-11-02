@@ -52,6 +52,14 @@ Racketeer's own patches follow:
   hover using the public analysis callback. Keep binding identities and phases
   distinct, and discard predictions after source edits.
 
+- `clamp-protocol-columns.patch`: a column past the end of a line names the end of
+  that line, wherever a document converts a protocol position, as the LSP
+  specification requires. The conversion PR #246 gives upstream carries the excess
+  into the following lines: a client's range ending at column 6 of `a😀b` would delete
+  the start of the next line. Upstream has never clamped here, so this is not
+  expected to go away with PR #246. The editor keeps its extending conversion for its
+  internal callers, which an upstream multi-line edit test needs.
+
 Workspace indexing belongs to Racketeer, in `vscode/workspace-analysis.rkt`,
 its request adapter `vscode/workspace-index.rkt` and the VS Code client. The
 separate process reuses the pinned analyser, the source-snapshot loader and the

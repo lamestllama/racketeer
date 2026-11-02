@@ -27,7 +27,7 @@ exports.run = async function () {
     ['tests/parity-languages.rkt', 13],
     ['tests/predicted-bindings.rkt', 7],
     ['tests/protocol-inspection.rkt', 25],
-    ['tests/source-positions.rkt', 4],
+    ['tests/source-positions.rkt', 5],
     ['tests/stepping.rkt', 12],
     ['tests/source-loading.rkt', 10],
     ['tests/thread-pause.rkt', 6],
