@@ -547,6 +547,15 @@ test('progress keeps a request from being withdrawn and drives the status', { ti
   assert.deepEqual({ ...c.statuses.at(-1) }, { state: 'indexing', message: '7 files analysed' });
 });
 
+test('references the server refuses in words pass those words on, and the index is not reported stopped', async t => {
+  const c = indexPeer(t), doc = c.open('definition.rkt', definition);
+  const words = 'Workspace sources kept changing for 20 seconds. Try again when they settle.';
+  c.connection.onRequest('textDocument/references', () => { throw new rpc.ResponseError(-32803, words); });
+  await c.index.start();
+  await assert.rejects(c.refs(doc), new RegExp(words));
+  assert.deepEqual({ ...c.statuses.at(-1) }, { state: 'refused', message: words });
+});
+
 test('final index status reaches the status item', async t => {
   const c = indexPeer(t), doc = c.open('definition.rkt', definition);
   await c.index.start(); await c.refs(doc);

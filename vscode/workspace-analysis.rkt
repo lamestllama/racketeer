@@ -831,6 +831,19 @@
         (and (eq? run (WorkspaceAnalysis-current-run engine))
              (not (sync/timeout 0 cancel)) (current-document run path)
              (respond)))))
+  ;; A request waits for the sources to settle, and a large first pass takes as long as
+  ;; it takes. But a source that keeps changing replaces every pass, so a request found
+  ;; replaced again past the time limit since the first replacement stops waiting. It
+  ;; refuses, and answers from no older view of the sources, which could be wrong.
+  (define last-run #f)
+  (define first-replaced #f)
+  (define (still-changing? run)
+    (when (and last-run (not (eq? last-run run)) (not first-replaced))
+      (set! first-replaced (current-inexact-monotonic-milliseconds)))
+    (set! last-run run)
+    (and first-replaced
+         (>= (- (current-inexact-monotonic-milliseconds) first-replaced)
+             (* 1000 (Settings-timeout (Run-settings run))))))
   (let retry ()
     (define run
       (call-with-semaphore (WorkspaceAnalysis-lock engine)
@@ -845,6 +858,10 @@
       [(sync/timeout 0 cancel) (AnalysisFailure 'cancelled "Request cancelled")]
       [(WorkspaceAnalysis-closed? engine) (AnalysisFailure 'closed "Workspace analysis closed")]
       [(not doc) (AnalysisFailure 'changed "Document changed during analysis")]
+      [(still-changing? run)
+       (AnalysisFailure 'unsettled
+                        (format "Workspace sources kept changing for ~a seconds. Try again when they settle."
+                                (Settings-timeout (Run-settings run))))]
       [(not (Settings-enabled? (Run-settings run)))
        (if (eq? operation 'references) (accepted run '())
            (AnalysisFailure 'unavailable "Enable workspace analysis to rename safely across files."))]

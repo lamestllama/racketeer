@@ -383,8 +383,16 @@ A client without that capability gets the defaults.
 | References for a retired lifetime | ContentModified |
 | Rename or prepareRename for a retired lifetime or an overtaken result | RequestFailed, `Workspace changed during rename. Try Rename again.` |
 | Rename refused, analysis failed or index incomplete | RequestFailed |
+| A request whose run was replaced again past `timeoutSeconds` since the first replacement | RequestFailed, `Workspace sources kept changing for N seconds. Try again when they settle.` |
 | A request interrupted by `shutdown` | InvalidRequest |
 | Malformed JSON | ParseError with a null id |
+
+A source that keeps changing replaces every pass, so a waiting request is bounded: it
+stops waiting at the limit above and refuses. It never answers from an older view of the
+sources, which could give a wrong rename, and a burst of changes that ends within the
+limit is waited out however many it held. A large first pass that nothing replaces takes
+as long as it takes. The VS Code client shows a refusal of references as a warning, since an
+editor shows no provider's error.
 
 ContentModified is not used for rename because LSP clients do not show it, and the user must
 try again. With `workspace.workspaceEdit.documentChanges`, a rename names the version

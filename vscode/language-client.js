@@ -157,6 +157,11 @@ function registerLanguageTools(context, debugSources) {
       executable, timeout: startupTimeoutSeconds * 1000, output,
       onStatus: result => {
         if (client !== next) return;
+        if (result.state === 'refused') {
+          output.appendLine(`Workspace index: ${result.message}`);
+          void vscode.window.showWarningMessage(result.message);
+          return;
+        }
         if (!['indexing', 'outdated'].includes(result.state)) output.appendLine(
           `Workspace index: ${result.state}, ${result.indexed} files analysed, ${result.failures} failures.`);
         if (result.state === 'indexing') {

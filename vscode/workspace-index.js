@@ -278,7 +278,10 @@ function createWorkspaceIndex(context, { executable, timeout, output, onStatus }
             location.range.end.line, location.range.end.character)));
       } catch (error) {
         if (disposed || token.isCancellationRequested || [-32800, -32801].includes(error.code)) return [];
-        failure(error);
+        // The server is there and has said why. An editor shows no provider's error, so
+        // this is how its words reach the person who asked.
+        if (error.code === -32803) onStatus({ state: 'refused', message: error.message });
+        else failure(error);
         throw error;
       }
     },

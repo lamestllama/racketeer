@@ -155,3 +155,53 @@ test('prepareRename and rename each start a pass when none has run', { timeout: 
   assert.equal(Object.keys(edit.changes).length, 2);
   assert.equal(passes(second), 1);
 });
+
+// Rewrites a source and reports it, as a generator or a build does.
+function rewriting(p, name, milliseconds) {
+  let generation = 0;
+  const timer = setInterval(() => {
+    p.write(name, `#lang racket/base\n; ${++generation}\n`);
+    void p.diskChange(name);
+  }, milliseconds);
+  return { stop: () => clearInterval(timer), count: () => generation };
+}
+
+test('a request refuses in words once sources have kept changing past the time limit', { timeout: 120000 }, async t => {
+  const p = await project(t);
+  p.settings.timeoutSeconds = 4;
+  p.write('generated.rkt', '#lang racket/base\n');
+  await p.update();
+  await p.references(p.origin);
+  const settled = request => request.then(value => ({ value }), error => ({ error }));
+  const writer = rewriting(p, 'generated.rkt', 100);
+  t.after(writer.stop);
+  const started = Date.now();
+  const answers = Promise.all([settled(p.references(p.origin)), settled(p.rename(p.origin, 'squared'))]);
+  const outcome = await Promise.race([answers, delay(30000, 'still waiting')]);
+  writer.stop();
+  assert.notEqual(outcome, 'still waiting', `Pending after ${writer.count()} rewrites`);
+  assert.ok(Date.now() - started >= 4000, 'It waits out the time limit first');
+  for (const { error } of outcome) {
+    assert.equal(error?.code, -32803, 'Neither answers from sources that have moved on');
+    assert.match(error.message, /Workspace sources kept changing for 4 seconds/);
+  }
+  // Nothing is left behind once the sources settle.
+  assert.ok(from(await p.references(p.origin), uri(p.filename('uses.rkt'))).length === 1);
+  assert.ok((await p.rename(p.origin, 'squared')).changes[uri(p.filename('uses.rkt'))]);
+});
+
+test('a burst of changes that ends is waited out, however many it held', { timeout: 120000 }, async t => {
+  const p = await project(t);
+  p.write('generated.rkt', '#lang racket/base\n');
+  await p.update();
+  await p.references(p.origin);
+  const writer = rewriting(p, 'generated.rkt', 25);
+  t.after(writer.stop);
+  const request = p.references(p.origin).then(value => ({ value }), error => ({ error }));
+  await delay(2000);
+  writer.stop();
+  assert.ok(writer.count() > 16, `Only ${writer.count()} rewrites`);
+  const { value, error } = await request;
+  assert.equal(error, undefined);
+  assert.equal(from(value, uri(p.filename('uses.rkt'))).length, 1);
+});
