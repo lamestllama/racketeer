@@ -568,8 +568,10 @@ a file. A spelling's own source comes first, then the first loaded source of the
 file required under two names, through a link of either kind, keeps a breakpoint on the
 name it was set on, and a third spelling reaches only the first of them. A hard link
 counts as the same file until its own name loads. A request and a load can cross, since
-the program's thread records a source while requests arrive on another. Each stores what
-it brings before it reads what the other stored, so one of them always makes the link.
+the program's thread records a source while requests arrive on another. Recording a
+source, updating breakpoints and resolving sites share a lock, so a request that chose
+another spelling's source cannot link its own spelling to it after that spelling has
+loaded.
 Frames report the loader's spelling with a `sourceReference`, so VS Code shows a stop in
 a captured source tab, as it does when the spellings agree.
 

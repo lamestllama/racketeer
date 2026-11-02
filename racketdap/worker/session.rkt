@@ -166,9 +166,13 @@
   ;; captured source's reference number. A request replaces just what that name set, as an
   ;; editor keeps one list for each. `loaded-as` links a name to its source. A spelling's
   ;; own source comes first, then the first source of the same file. A request and a load
-  ;; can cross: each stores what it brings before it reads what the other stored, so at
-  ;; least one of them makes the link.
+  ;; can cross. This lock serialises recording a source, updating breakpoints and resolving
+  ;; sites, so a request cannot link a spelling to another source after it has loaded itself.
   (define loaded-as (make-hash))
+  (define source-lock (make-semaphore 1))
+  (define (with-source-lock proc)
+    (with-continuation-mark debugger-active-key #t
+      (call-with-semaphore source-lock proc)))
   (define (breakpoints-in path)
     (for*/list ([(name bps) (in-hash breakpoints)]
                 #:when (equal? (hash-ref loaded-as name name) path)
@@ -241,15 +245,17 @@
                 [else "Pending source loading; an already loaded dependency requires restart."])))
     (rearm!))
   (define (on-source-snapshot path text)
-    (unless (hash-has-key? sources path)
-      (define source (capture-source path (fresh-id) #:text text))
-      (hash-set! sources path source)
-      (hash-remove! loaded-as path)
-      (for ([name (in-list (hash-keys breakpoints))]
-            #:unless (or (not (path? name)) (hash-has-key? sources name) (hash-has-key? loaded-as name))
-            #:when (same-file? name path))
-        (hash-set! loaded-as name path))
-      (event "loadedSource" (hasheq 'reason "new" 'source (source-json source)))))
+    (with-source-lock
+     (lambda ()
+       (unless (hash-has-key? sources path)
+         (define source (capture-source path (fresh-id) #:text text))
+         (hash-set! sources path source)
+         (hash-remove! loaded-as path)
+         (for ([name (in-list (hash-keys breakpoints))]
+               #:unless (or (not (path? name)) (hash-has-key? sources name) (hash-has-key? loaded-as name))
+               #:when (same-file? name path))
+           (hash-set! loaded-as name path))
+         (event "loadedSource" (hasheq 'reason "new" 'source (source-json source)))))))
   (define (on-test-event result)
     (when (and (arg config 'coverage #f) (equal? (hash-ref result 'kind) "summary")
                (not (equal? (hash-ref result 'status) "errored")))
@@ -268,12 +274,14 @@
                 (hash-remove result 'location))))
     (event "racketdap/test" result))
   (define (on-sites more)
-    (for ([site (in-list more)])
-      (hash-update! sites (site-source site) (lambda (old) (cons site old)) '()))
-    (for ([path (in-list (remove-duplicates (map site-source more)))])
-      (resolve! path)
-      (for ([bp (in-list (breakpoints-in path))])
-        (event "breakpoint" (hasheq 'reason "changed" 'breakpoint (breakpoint-json bp path))))))
+    (with-source-lock
+     (lambda ()
+       (for ([site (in-list more)])
+         (hash-update! sites (site-source site) (lambda (old) (cons site old)) '()))
+       (for ([path (in-list (remove-duplicates (map site-source more)))])
+         (resolve! path)
+         (for ([bp (in-list (breakpoints-in path))])
+           (event "breakpoint" (hasheq 'reason "changed" 'breakpoint (breakpoint-json bp path))))))))
   (define (register-thread [target (current-thread)])
     (hash-ref!
      states target
@@ -795,16 +803,18 @@
        ;; all locations now so a malformed request cannot poison source loading
        ;; or replace the previously installed breakpoint set.
        (for-each validate-breakpoint requested)
-       (define old (hash-ref breakpoints name '()))
-       (define updated
-         (for/list ([b (in-list requested)])
-           (define existing (findf (lambda (o) (equal? (breakpoint-request o) b)) old))
-           (or existing (new-breakpoint b))))
-       (hash-set! breakpoints name updated)
-       (define path (source-path (hash-ref a 'source)))
-       (unless (equal? path name) (hash-set! loaded-as name path))
-       (resolve! path)
-       (reply request (hasheq 'breakpoints (map (lambda (b) (breakpoint-json b path)) updated)))]
+       (with-source-lock
+        (lambda ()
+         (define old (hash-ref breakpoints name '()))
+         (define updated
+           (for/list ([b (in-list requested)])
+             (define existing (findf (lambda (o) (equal? (breakpoint-request o) b)) old))
+             (or existing (new-breakpoint b))))
+         (hash-set! breakpoints name updated)
+         (define path (source-path (hash-ref a 'source)))
+         (unless (equal? path name) (hash-set! loaded-as name path))
+         (resolve! path)
+         (reply request (hasheq 'breakpoints (map (lambda (b) (breakpoint-json b path)) updated)))))]
       [(setExceptionBreakpoints)
        (define filters (arg a 'filters '()))
        (unless (andmap (lambda (f) (equal? f "uncaught")) filters)
