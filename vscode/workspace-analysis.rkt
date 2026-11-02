@@ -926,18 +926,28 @@
              (not (sync/timeout 0 cancel)) (current-document run path)
              (respond)))))
   ;; A request waits for the sources to settle, and a large first pass takes as long as
-  ;; it takes. But a source that keeps changing replaces every pass, so a request found
-  ;; replaced again past the time limit since the first replacement stops waiting. It
-  ;; refuses, and answers from no older view of the sources, which could be wrong.
+  ;; it takes. A replaced pass loses little, as what it finished is kept for the next, so
+  ;; a pass that leaves fewer files to do than the last is on its way to an answer, however
+  ;; long that takes and however slow the machine. But sources that keep changing can
+  ;; replace every pass at the same place. A request found replaced with no pass getting
+  ;; further for the time limit stops waiting. It refuses, and answers from no older view
+  ;; of the sources, which could be wrong. A pass replaced before it found its files got
+  ;; nowhere.
   (define last-run #f)
-  (define first-replaced #f)
+  (define fewest-left +inf.0)
+  (define further-at #f)
   (define (still-changing? run)
-    (when (and last-run (not (eq? last-run run)) (not first-replaced))
-      (set! first-replaced (current-inexact-monotonic-milliseconds)))
+    (define replaced (and last-run (not (eq? last-run run)) last-run))
     (set! last-run run)
-    (and first-replaced
-         (>= (- (current-inexact-monotonic-milliseconds) first-replaced)
-             (* 1000 (Settings-timeout (Run-settings run))))))
+    (and replaced
+         (let ([left (if (zero? (Run-total replaced))
+                         +inf.0
+                         (- (Run-total replaced) (Run-indexed replaced) (Run-failures replaced)))]
+               [now (current-inexact-monotonic-milliseconds)])
+           (when (or (not further-at) (< left fewest-left))
+             (set! fewest-left left)
+             (set! further-at now))
+           (>= (- now further-at) (* 1000 (Settings-timeout (Run-settings run)))))))
   (let retry ()
     (define run
       (call-with-semaphore (WorkspaceAnalysis-lock engine)
