@@ -8,11 +8,19 @@
          racket-langserver/lsp/responses
          "workspace-analysis.rkt")
 
+;; A frame is written in several steps, and a full pipe can suspend any of them.
+;; Results and status reports come from different threads, so each frame waits
+;; for the one before it.
+(define (make-reply out)
+  (define writing (make-semaphore 1))
+  (lambda (message)
+    (call-with-semaphore writing (lambda () (display-message/flush message out)))))
+
 ;; This adapter owns framing, request identifiers, cancellation subscriptions,
 ;; and the connection lifetime. The analysis engine has no wire-protocol state.
 (define (serve)
   (define protocol-out (current-output-port))
-  (define (reply message) (display-message/flush message protocol-out))
+  (define reply (make-reply protocol-out))
   (define engine
     (make-workspace-analysis
       #:on-status (lambda (status)
@@ -65,5 +73,7 @@
     ;; quick, then exit even if one is wedged: the owning supervisor ends
     ;; anything left in the process tree.
     (lambda () (sync/timeout 5 (thread (lambda () (workspace-analysis-close! engine)))))))
+
+(provide make-reply)
 
 (module+ main (serve) (exit 0))
