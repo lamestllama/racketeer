@@ -19,6 +19,7 @@
 - Frames no longer carry a copy of their expression's syntax: the site each frame already holds supplies the source, position and span that stack traces and failure locations show. Debugging long function bodies uses less memory: a 1,400-line program of two long functions peaks at 1.5 GB instead of 1.9 GB.
 - Bundle the language server pull requests for UTF-16 positions and unsaved imports at their reviewed heads: columns are counted in UTF-16 after tabs and in CRLF documents, and the server no longer hangs after an analysis is cancelled, times out or is superseded. A column past the end of a line still means the end of that line, in a local patch, so an edit cannot delete the start of the next line.
 - The workspace index writes one message at a time. A large references or rename result written while the editor was slow to read could be mixed with a status report, which the editor cannot read.
+- A breakpoint stops when its path names the file differently from the program, through a symbolic link or, where the file system ignores case, in another case. It was silently missed. A request replaces the breakpoints of its own spelling only, and a file required under two names keeps a breakpoint on the name it was set on.
 
 ## 0.8.48
 

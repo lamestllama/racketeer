@@ -2,8 +2,16 @@
 ;; Copyright (c) 2026 Eric Parsonage
 ;; SPDX-License-Identifier: Apache-2.0 OR MIT
 (require racket/file racket/path racket/string racket/list "instrumentation/instrument.rkt")
-(provide (struct-out source-file) capture-source source-location choose-sites)
+(provide (struct-out source-file) capture-source source-location choose-sites same-file?)
 (struct source-file (path text id starts) #:transparent)
+;; A path can name a file through a symbolic link or in another case, so two spellings
+;; name one file when the file system says so. Identity is read each time, because saving
+;; can replace a file with a new one. A path that cannot be read matches only itself.
+(define (file-identity path)
+  (with-handlers ([exn:fail:filesystem? (lambda (_) path)])
+    (file-or-directory-identity path)))
+(define (same-file? a b)
+  (or (equal? a b) (equal? (file-identity a) (file-identity b))))
 (define (capture-source path id #:text [loaded-text #f])
   ;; Racket counted positions treat CRLF as one character.
   (define text (regexp-replace* #rx"\r\n" (or loaded-text (file->string path)) "\n"))

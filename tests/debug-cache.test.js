@@ -604,6 +604,52 @@ test('standard output and error compare the same in either order', () => {
     normalized([output('stderr', 'b'), output('stdout', 'a')]));
 });
 
+for (const [name, spell] of [
+  ['the program is named through a link and the breakpoint is not', (link, real) => ({ program: link, breakpoint: real })],
+  ['the breakpoint is named through a link and the program is not', (link, real) => ({ program: real, breakpoint: link })]
+]) {
+  test(`a breakpoint stops when ${name}`, { timeout: 300000, skip: process.platform === 'win32' }, async t => {
+    const p = project(t);
+    const linked = `${p.source}-link`;
+    fs.symlinkSync(p.source, linked);
+    t.after(() => fs.rmSync(linked, { force: true }));
+    const line = lineIn(path.join(p.source, 'macros.rkt'), '(add1 doubled)');
+    const { program, breakpoint } = spell(linked, p.source);
+    for (const options of [{}, { debugCacheDirectory: p.cache }, { debugCacheDirectory: p.cache }]) {
+      let lineStopped;
+      await session({ program: path.join(program, 'main.rkt'), cwd: program, ...options },
+        { [path.join(breakpoint, 'macros.rkt')]: [line] }, async ({ client, ok }) => {
+          const stopped = await client.event('stopped');
+          lineStopped = (await ok(client.request('stackTrace', { threadId: stopped.body.threadId }))).stackFrames[0].line;
+          await ok(client.request('continue', { threadId: stopped.body.threadId }));
+          const failed = await client.event('stopped');
+          await ok(client.request('continue', { threadId: failed.body.threadId }));
+        });
+      assert.equal(lineStopped, line);
+    }
+  });
+}
+
+test('a breakpoint stops when its path differs in case, where the file system ignores case', { timeout: 300000 }, async t => {
+  const p = project(t);
+  if (!fs.existsSync(p.main.replace(/main\.rkt$/, 'MAIN.RKT'))) return t.skip('This file system distinguishes case.');
+  const line = lineIn(path.join(p.source, 'macros.rkt'), '(add1 doubled)');
+  const folder = path.join(path.dirname(p.source), 'PROJECT');
+  for (const breakpoint of [path.join(p.source, 'MACROS.rkt'), path.join(folder, 'macros.rkt')]) {
+    for (const options of [{}, { debugCacheDirectory: p.cache }, { debugCacheDirectory: p.cache }]) {
+      let lineStopped;
+      await session({ program: p.main, cwd: p.source, ...options }, { [breakpoint]: [line] }, async ({ client, ok }) => {
+        const stopped = await client.event('stopped');
+        lineStopped = (await ok(client.request('stackTrace', { threadId: stopped.body.threadId }))).stackFrames[0].line;
+        await ok(client.request('continue', { threadId: stopped.body.threadId }));
+        const failed = await client.event('stopped');
+        await ok(client.request('continue', { threadId: failed.body.threadId }));
+      });
+      assert.equal(lineStopped, line);
+    }
+  }
+});
+
 test('compile-time effects run when building, once, and not when reusing', { timeout: 300000 }, async t => {
   const p = project(t);
   edit(p, 'macros.rkt', '(struct point', '(begin-for-syntax (displayln "at compile time"))\n(struct point');

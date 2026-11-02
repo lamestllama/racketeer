@@ -20,6 +20,7 @@ exports.run = async function () {
     ['experiments/lexical-eval.rkt', 10],
     ['tests/attach.rkt', 28],
     ['tests/breakpoint-rearming.rkt', 2],
+    ['tests/breakpoint-spelling.rkt', 1],
     ['tests/continuation-reentry.rkt', 5],
     ['tests/debug-cache-links.rkt', 3],
     ['tests/definition-allocation.rkt', 14],

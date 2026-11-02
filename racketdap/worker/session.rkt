@@ -161,11 +161,34 @@
     (or (and (exact-positive-integer? reference)
              (findf (lambda (source) (= (source-file-id source) reference)) (hash-values sources)))
         (error 'source "Unknown source reference.")))
-  (define (source-path source)
+  ;; A client need not name a file as the loader does. Sources and sites keep the loader's
+  ;; spelling, and breakpoints the client's, since its next request for that spelling
+  ;; replaces just those. A spelling's own source comes first, then the first source of
+  ;; the same file. A request and a load can cross: each stores what it brings before it
+  ;; reads what the other stored, so at least one of them makes the link.
+  (define loaded-as (make-hash))
+  (define (breakpoints-in path)
+    (for*/list ([(spelling bps) (in-hash breakpoints)]
+                #:when (equal? (hash-ref loaded-as spelling spelling) path)
+                [bp (in-list bps)])
+      bp))
+  (define (breakpoint-in-file? path)
+    (for/or ([(spelling bps) (in-hash breakpoints)])
+      (and (pair? bps) (same-file? spelling path))))
+  (define (requested-path source)
     (define reference (arg source 'sourceReference 0))
     (if (equal? reference 0)
         (canonical (hash-ref source 'path))
         (source-file-path (referenced-source reference))))
+  (define (source-path source)
+    (define path (requested-path source))
+    (define same-file
+      (if (hash-has-key? sources path)
+          '()
+          (for/list ([known (in-hash-values sources)]
+                     #:when (same-file? (source-file-path known) path))
+            known)))
+    (if (null? same-file) path (source-file-path (argmin source-file-id same-file))))
   (define (source-json source)
     (hasheq 'name (path->string (file-name-from-path (source-file-path source)))
             'path (path->string (source-file-path source)) 'sourceReference (source-file-id source)))
@@ -201,7 +224,7 @@
       [else (values (select 'before) 'before)]))
   (define (resolve! path)
     (define source (hash-ref sources path #f))
-    (for ([bp (in-list (hash-ref breakpoints path '()))])
+    (for ([bp (in-list (breakpoints-in path))])
       (define request (breakpoint-request bp))
       (define-values (selected phase)
         (if (and source (breakpoint-rule bp)) (select-targets path request) (values '() 'before)))
@@ -217,6 +240,11 @@
     (unless (hash-has-key? sources path)
       (define source (capture-source path (fresh-id) #:text text))
       (hash-set! sources path source)
+      (hash-remove! loaded-as path)
+      (for ([spelling (in-list (hash-keys breakpoints))]
+            #:unless (or (hash-has-key? sources spelling) (hash-has-key? loaded-as spelling))
+            #:when (same-file? spelling path))
+        (hash-set! loaded-as spelling path))
       (event "loadedSource" (hasheq 'reason "new" 'source (source-json source)))))
   (define (on-test-event result)
     (when (and (arg config 'coverage #f) (equal? (hash-ref result 'kind) "summary")
@@ -240,7 +268,7 @@
       (hash-update! sites (site-source site) (lambda (old) (cons site old)) '()))
     (for ([path (in-list (remove-duplicates (map site-source more)))])
       (resolve! path)
-      (for ([bp (in-list (hash-ref breakpoints path '()))])
+      (for ([bp (in-list (breakpoints-in path))])
         (event "breakpoint" (hasheq 'reason "changed" 'breakpoint (breakpoint-json bp path))))))
   (define (register-thread [target (current-thread)])
     (hash-ref!
@@ -538,7 +566,7 @@
         (set-state-step! st (make-step 'stepIn stop))))
     (define failure #f)
     (define hit-ids
-          (for/list ([bp (in-list (hash-ref breakpoints (site-source where) '()))]
+          (for/list ([bp (in-list (breakpoints-in (site-source where)))]
                      #:when (eq? (breakpoint-phase bp) (stop-kind stop))
                      #:when (for/or ([target (in-list (breakpoint-targets bp))]) (= (site-id target) (site-id where)))
                      #:when
@@ -716,7 +744,7 @@
                         #:source-roots (append (arg config 'sourceRoots (list (arg config 'cwd)))
                                                (if (arg config 'noDebug #f) '()
                                                    (package-source-roots (arg config 'debugPackages '()))))
-                        #:source-selected? (lambda (path) (pair? (hash-ref breakpoints path '())))
+                        #:source-selected? breakpoint-in-file?
                         #:submodule (map string->symbol (arg config 'submodule '()))
                         #:main? (and (not (arg config 'testMode #f)) (not (hash-has-key? config 'submodule)))
                         #:test? (arg config 'testMode #f)
@@ -756,19 +784,21 @@
        (application-log-filter! application-log (arg a 'filter))
        (reply request)]
       [(setBreakpoints)
-       (define path (source-path (hash-ref a 'source)))
+       (define spelling (requested-path (hash-ref a 'source)))
        (define requested (arg a 'breakpoints '()))
        (unless (list? requested) (error 'setBreakpoints "breakpoints must be an array"))
        ;; A pending breakpoint is resolved later on the target thread. Validate
        ;; all locations now so a malformed request cannot poison source loading
        ;; or replace the previously installed breakpoint set.
        (for-each validate-breakpoint requested)
-       (define old (hash-ref breakpoints path '()))
+       (define old (hash-ref breakpoints spelling '()))
        (define updated
          (for/list ([b (in-list requested)])
            (define existing (findf (lambda (o) (equal? (breakpoint-request o) b)) old))
            (or existing (new-breakpoint b))))
-       (hash-set! breakpoints path updated)
+       (hash-set! breakpoints spelling updated)
+       (define path (source-path (hash-ref a 'source)))
+       (unless (equal? path spelling) (hash-set! loaded-as spelling path))
        (resolve! path)
        (reply request (hasheq 'breakpoints (map (lambda (b) (breakpoint-json b path)) updated)))]
       [(setExceptionBreakpoints)
@@ -913,7 +943,7 @@
   (when attach
     ((attach-hooks-install! attach)
      (attached-controller on-event on-thread on-exception on-sites on-source-snapshot
-                          (lambda (path) (pair? (hash-ref breakpoints path '())))
+                          breakpoint-in-file?
                           run-attached-code
                           (lambda (t)
                             (if (host-pauses? t)

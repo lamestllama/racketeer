@@ -444,6 +444,20 @@ that version for display through DAP `sourceReference` and explain that restarti
 is needed to debug the edit. Do not relocate a live breakpoint against new text
 and present it as the running version.
 
+A client need not name a file as the loader does: a symbolic link gives another
+spelling, and so does another case on a file system that ignores case. Sources and
+sites keep the loader's spelling. Breakpoints keep the client's, because a request for
+one spelling replaces only what that spelling set, and they reach a source through
+`file-or-directory-identity`, read each time because saving can replace a file. A
+spelling's own source comes first, then the first loaded source of the same file. So a
+file required under two names, through a link of either kind, keeps a breakpoint on the
+name it was set on, and a third spelling reaches only the first of them. A hard link
+counts as the same file until its own name loads. A request and a load can cross, since
+the program's thread records a source while requests arrive on another. Each stores what
+it brings before it reads what the other stored, so one of them always makes the link.
+Frames report the loader's spelling with a `sourceReference`, so VS Code shows a stop in
+a captured source tab, as it does when the spellings agree.
+
 Translate source coordinates from the captured text. Racket's counted port
 positions treat CRLF as one position and expand tabs in its column count; DAP
 columns count UTF-16 code units. Honour the client's zero/one-based preferences.
