@@ -97,9 +97,9 @@
 
 (struct boundary (range authored? [visible? #:mutable]))
 ;; A call or module-level form being generated: the variable that will hold its frame,
-;; how many slots the frame needs, and whether any site uses it.
-(struct activation (frame [slots #:mutable] [used? #:mutable]))
-(struct scope (variable slot parent bindings [reached? #:mutable] [sited? #:mutable]))
+;; and whether any site uses it.
+(struct activation (frame [used? #:mutable]))
+(struct scope (variable parent bindings [reached? #:mutable] [sited? #:mutable]))
 
 ;; Returns the rewritten expression, the visible site descriptors, and every
 ;; descriptor in slot order paired with whether it is visible. form names the
@@ -151,9 +151,9 @@
   (define gate-id (car (generate-temporaries '(gate))))
   (define armed-id (car (generate-temporaries '(armed))))
   ;; A scope is the variable holding a procedure that returns the live bindings
-  ;; visible in it, innermost first, and the frame slot it stores that procedure in.
-  ;; Nothing is built for a scope no site or closure of a site can reach.
-  (define (new-scope ids parent slot)
+  ;; visible in it, innermost first. Nothing is built for a scope no site or closure
+  ;; of a site can reach.
+  (define (new-scope ids parent)
     (define live-bindings
       (if coverage?
           '()
@@ -166,7 +166,7 @@
                            (case-lambda [() #,id] [(replacement) (set! #,id replacement)])))))
     (if (null? live-bindings)
         parent
-        (scope (car (generate-temporaries '(variables))) slot parent live-bindings #f #f)))
+        (scope (car (generate-temporaries '(variables))) parent live-bindings #f #f)))
   (define (scope-procedure this)
     (when (scope-parent this) (set-scope-reached?! (scope-parent this) #t))
     #`(#%plain-lambda ()
@@ -174,19 +174,21 @@
                      #,(if (scope-parent this)
                            #`(#%plain-app #,(scope-variable (scope-parent this)))
                            #''()))))
-  (define (store-scope this act)
-    #`(#%plain-app unsafe-vector*-set! #,(activation-frame act) '#,(scope-slot this) #,(scope-variable this)))
-  (define (fresh-scope-slot! act)
-    (begin0 (activation-slots act)
-      (set-activation-slots! act (add1 (activation-slots act)))))
+  ;; The mark naming the running call and the variables of the scope it is in. It belongs
+  ;; to the continuation, so a re-entered continuation has its own variables back.
+  (define (scope-mark variables act expressions)
+    (list #`(with-continuation-mark frame-key
+                (#%plain-app cons #,(activation-frame act) #,variables)
+              (begin #,@expressions))))
   ;; Whether this binding form introduced the scope, rather than inheriting it.
   (define (own-scope? this parent) (and this (not (eq? this parent))))
   ;; Bind a scope's procedure around its body, which keeps its tail positions.
   (define (in-scope this parent act expressions)
     (if (and (own-scope? this parent) (scope-reached? this))
         (list #`(let-values ([(#,(scope-variable this)) #,(scope-procedure this)])
-                  #,@(if (scope-sited? this) (list (store-scope this act)) '())
-                  #,@expressions))
+                  #,@(if (scope-sited? this)
+                         (scope-mark (scope-variable this) act expressions)
+                         expressions)))
         expressions))
   (define (stoppable? expression)
     (and (not (identifier? expression))
@@ -238,29 +240,25 @@
       (define last? (= i (sub1 (length expressions))))
       (walk e environment act (and tail? last?) (and last? inferred-name))))
   ;; A frame is made only for a call that has a site to note in it. It holds the form,
-  ;; the running site, the tokens made so far, and one slot per scope; the first scope
-  ;; slot holds what the call started with.
+  ;; the running site and the tokens made so far.
   (define (frame-around act entry-scope expressions)
     (if (activation-used? act)
         (list #`(let-values ([(#,(activation-frame act))
-                              (#%plain-app vector #,form-id '0 '#f
-                                           #,(if (and entry-scope (scope-sited? entry-scope))
-                                                 (scope-variable entry-scope)
-                                                 #''#f)
-                                           #,@(for/list ([_ (in-range (- (activation-slots act) first-scope-slot 1))])
-                                                #''#f))])
+                              (#%plain-app vector #,form-id '0 '#f)])
                   (#%plain-app note-thread #,form-id)
-                  (with-continuation-mark frame-key #,(activation-frame act)
-                    (begin #,@expressions))))
+                  #,@(scope-mark (if (and entry-scope (scope-sited? entry-scope))
+                                     (scope-variable entry-scope)
+                                     #''#f)
+                                 act expressions)))
         expressions))
   (define (lambda-clause formals expressions environment)
-    (define act (activation (car (generate-temporaries '(frame))) (add1 first-scope-slot) #f))
-    (define own (new-scope (formal-identifiers formals) environment first-scope-slot))
+    (define act (activation (car (generate-temporaries '(frame))) #f))
+    (define own (new-scope (formal-identifiers formals) environment))
     ;; A call with no variables of its own starts with those it closes over.
     (define entry
       (if (eq? own environment)
           (and environment
-               (scope (scope-variable environment) first-scope-slot environment #f #f #f))
+               (scope (scope-variable environment) environment #f #f #f))
           own))
     (define rewritten
       (parameterize ([enclosing-boundary #f] [enclosing-site 0])
@@ -268,7 +266,7 @@
     (when (and entry (eq? own environment) (scope-reached? entry))
       (set-scope-reached?! environment #t))
     #`[#,formals #,@(in-scope-binding-only own environment (frame-around act entry rewritten))])
-  ;; A call's own scope is stored by the frame that starts with it.
+  ;; A call's own scope is marked by the frame that starts with it.
   (define (in-scope-binding-only this parent expressions)
     (if (and (own-scope? this parent) (scope-reached? this))
         (list #`(let-values ([(#,(scope-variable this)) #,(scope-procedure this)])
@@ -438,8 +436,7 @@
                    #,@(body (syntax->list #'(rest ...)) environment act #f))]
         [(let-values ([(id ...) rhs] ...) expression ...)
          (let* ([groups (syntax->list #'((id ...) ...))]
-                [this (new-scope (apply append (map syntax->list groups)) environment
-                                 (if coverage? first-scope-slot (fresh-scope-slot! act)))]
+                [this (new-scope (apply append (map syntax->list groups)) environment)]
                 [rhss (for/list ([ids (in-list groups)] [rhs (in-list (syntax->list #'(rhs ...)))])
                         #`[#,ids #,(walk rhs environment act #f
                                          (and (= (length (syntax->list ids)) 1)
@@ -448,22 +445,28 @@
            #`(let-values #,rhss #,@(in-scope this environment act bodies)))]
         [(letrec-values ([(id ...) rhs] ...) expression ...)
          (let* ([groups (syntax->list #'((id ...) ...))]
-                [this (new-scope (apply append (map syntax->list groups)) environment
-                                 (if coverage? first-scope-slot (fresh-scope-slot! act)))]
-                [rhss (for/list ([ids (in-list groups)] [rhs (in-list (syntax->list #'(rhs ...)))])
-                        #`[#,ids #,(walk rhs this act #f
-                                         (and (= (length (syntax->list ids)) 1)
-                                              (syntax-e (car (syntax->list ids)))))])]
+                [initializers (syntax->list #'(rhs ...))]
+                [this (new-scope (apply append (map syntax->list groups)) environment)]
+                [rewritten-initializers
+                 (for/list ([ids (in-list groups)] [rhs (in-list initializers)])
+                   (walk rhs this act #f
+                         (and (= (length (syntax->list ids)) 1)
+                              (syntax-e (car (syntax->list ids))))))]
                 [bodies (body (syntax->list #'(expression ...)) this act tail? inferred-name)]
-                [scope-clauses
-                 (if (and (own-scope? this environment) (scope-reached? this))
-                     (cons #`[(#,(scope-variable this)) #,(scope-procedure this)]
-                           (if (scope-sited? this)
-                               (list #`[(#,(car (generate-temporaries '(stored)))) #,(store-scope this act)])
-                               '()))
-                     '())])
+                [own? (own-scope? this environment)]
+                [marked? (and own? (scope-sited? this))]
+                [mark (lambda (expressions)
+                        (if marked? (scope-mark (scope-variable this) act expressions) expressions))]
+                [rhss (for/list ([ids (in-list groups)] [rhs (in-list initializers)]
+                                 [rewritten (in-list rewritten-initializers)])
+                        ;; Only an initializer that can stop needs the mark.
+                        #`[#,ids #,@(if (stoppable? rhs) (mark (list rewritten)) (list rewritten))])])
            ;; The scope's procedure comes first: its getters may run in any initializer.
-           #`(letrec-values (#,@scope-clauses #,@rhss) #,@bodies))]
+           #`(letrec-values (#,@(if (and own? (scope-reached? this))
+                                    (list #`[(#,(scope-variable this)) #,(scope-procedure this)])
+                                    '())
+                             #,@rhss)
+               #,@(mark bodies)))]
         [(set! id rhs)
          (let ([accessor (accessor-of #'id)]
                [value (walk #'rhs environment act #f (syntax-e #'id))])
@@ -506,8 +509,7 @@
                (syntax-line located) (syntax-column located)
                (syntax-position located) (syntax-span located)
                ;; A body's binding form holds all of the body after it.
-               tail? (and (not (binding-container? expression)) (syntax->datum expression)) enclosing
-               (if environment (scope-slot environment) first-scope-slot)))
+               tail? (and (not (binding-container? expression)) (syntax->datum expression)) enclosing))
        (when visible? (set! descriptors (cons descriptor descriptors)))
        (set! table (cons (cons slot (cons descriptor visible?)) table))
        (unless coverage?
@@ -570,7 +572,7 @@
                  [(#,single) (begin #,leave #,single)]
                  [#,results (begin #,leave (#%plain-app kernel-apply values #,results))])))])]))
   (define local-name (and (syntax-transforming?) (syntax-local-name)))
-  (define form-activation (activation (car (generate-temporaries '(frame))) (add1 first-scope-slot) #f))
+  (define form-activation (activation (car (generate-temporaries '(frame))) #f))
   (define result (walk expanded #f form-activation initial-tail?
                        (if (identifier? local-name) (syntax-e local-name) local-name)))
   (define (identifiers-thunk identifiers)

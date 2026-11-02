@@ -58,11 +58,11 @@ argument, makes no frame.
 A call makes one frame, as a mark set when the call begins. Tail calls replace it, so
 tail recursion stays bounded. A frame is a vector: slot 1 is the running site, which a
 site stores on entry and its parent's slot restores on completion, as a Python frame
-holds its last instruction. A scope that binds source names stores a procedure that
-returns its live bindings, and those bindings are built only when a stop asks. Every
-scope needs one closure when it is entered; every variable a site can show is assigned
-through that closure, so the compiler boxes it. That is the remaining cost, and it is
-per call and per variable, not per site.
+holds its last instruction. A scope that binds source names makes one closure when it is
+entered, a procedure that returns its live bindings, and those bindings are built only
+when a stop asks. Every variable a site can show is assigned through that closure, so the
+compiler boxes it. The scope also sets a mark, as below. That is the remaining cost, and
+it is per call and per variable, not per site.
 
 An expression evaluation's identity is its frame and site, and its enclosing
 evaluations follow from each site's parent. Tokens naming them are made when a stepper
@@ -71,10 +71,25 @@ sets. A stop reads its frames and contexts from its marks when asked, so a callb
 lets the program go on does not pay for the depth of the stack. A step asks only whether
 its target is still in progress, which needs no list of contexts.
 
-Re-entering a continuation captured in a frame that has since moved on leaves the frame
-showing a later site until the next site runs. An exception raised again after its
-frames have moved on shows them where they now are. Nothing else observes the difference
-from a mark per site: completion events name their own site. A suspended thread's
+A frame holds what is true of the call as a whole, and the mark holds what belongs to the
+continuation. The frame-key mark set by a call and by each scope that binds source names
+pairs the frame with that scope's variables, in tail position, so nested scopes on one
+continuation replace each other's marks and a scope that is finished has left the
+continuation with its mark. A stop takes the innermost mark for each frame, and adjacent
+marks for one frame are one call. Re-entering a continuation therefore restores the
+variables of the continuation that was captured: Locals, Evaluate and Set Variable address
+the cells that continuation's code will read.
+
+The frame's running site is mutable and is not restored. Two differences follow, and they
+are accepted, because a site says only where a frame is:
+- Re-entering a continuation captured in a frame that has since moved on leaves the frame
+  showing a later site until the next site runs. A call whose continuation is composed
+  directly on itself, with no other call's mark between, lists as one frame.
+- An exception object kept and read again after its frames have moved on shows the current
+  site of a frame that has been reused, not the site that was running when it was raised.
+  Its variables are the ones its marks captured. A fresh exception shows its site exactly.
+Neither is a historical trace of past execution. Completion events name their own site, and
+nothing else observes the difference from a mark per site. A suspended thread's
 parameters are read from its marks up to its nearest prompt, and beyond that are those it
 had when it first ran instrumented code.
 
@@ -104,7 +119,7 @@ Source-visible lexical bindings have live accessors over the real program cells.
 scopes shadow outer names; generated macro bindings do not hide source-authored
 identifiers merely because their printed names coincide. Each scope that binds source
 names has one procedure returning its live bindings, in front of its parent's, and
-every site in the scope finds it through a frame slot. Each instrumented form likewise
+every site in the scope finds it through the scope's mark. Each instrumented form likewise
 holds its module binding identifiers once, in a thunk that a stop calls, so syntax
 literals are not read until something inspects them. Generated code therefore grows
 with the source, not with the number of sites times the visible bindings.
@@ -145,7 +160,7 @@ tail-position flag. site-boundary-position validates the requested phase and
 returns the positive one-based source position for before, or the last included
 character position for after. Missing position/span data and zero-width
 completion spans return #f as applicable. A tail site's after phase is rejected.
-The site record's constructor and field order are unchanged. Breakpoints and
+Breakpoints and
 location requests can use these helpers without duplicating boundary arithmetic.
 
 ## Module contexts and loader contract

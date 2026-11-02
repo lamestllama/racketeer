@@ -9,7 +9,7 @@
          stop-skip! stop-replace-results! stop-approximate?
          stop-token stop-contexts stop-within? stop-return-token call-with-exception-stop call-with-pause-stop
          call-with-thread-stop debugger-active-key
-         make-live-binding frame-key context-key first-scope-slot note-thread
+         make-live-binding frame-key context-key note-thread
          announce-before announce-after leave-with-values announce-visit register-module-context!
          form-sites form-gate form-armed register-form-sites! forget-noted-thread!
          plain-procedure-name
@@ -47,10 +47,9 @@
       operator))
 (define (instrumented-port? value) (hash-ref ports value #f))
 
-;; parent and scope are the slot of the enclosing site in the same activation (0
-;; for none), and the frame slot holding this site's variables. armed is where a
-;; registered site's flag lives, as (vector . index).
-(struct site (id source line column position span tail? expression parent scope [armed #:auto #:mutable])
+;; parent is the slot of the enclosing site in the same activation (0 for none). armed
+;; is where a registered site's flag lives, as (vector . index).
+(struct site (id source line column position span tail? expression parent [armed #:auto #:mutable])
   #:auto-value #f #:transparent)
 (define (arm-site! descriptor on?)
   (define armed (site-armed descriptor))
@@ -73,15 +72,17 @@
 ;; A frame is one function call, or the run of one module-level form. It is a vector
 ;; that generated code makes with `vector` and writes with unsafe-vector*-set!, so
 ;; these are the only costs a site has: slot 1 is the site running now, as a frame
-;; in Python holds its last instruction, and each scope that binds source names
-;; stores its variables, a procedure returning its live bindings, in its own slot
-;; from first-scope-slot on. Everything else about a frame is read at a stop.
-(define first-scope-slot 3)
+;; in Python holds its last instruction. Everything else about a frame is read at a stop.
+;;
+;; What a frame can see belongs to the continuation instead, since a re-entered
+;; continuation shares the frame but not its variables. A mark under frame-key, set when
+;; a call or a scope that binds source names begins, pairs the frame with its variables:
+;; a procedure returning the live bindings, or #f.
 (define (frame-form f) (vector-ref f 0))
 (define (frame-slot f) (vector-ref f 1))
 (define (frame-site f) (vector-ref (form-descriptors (frame-form f)) (frame-slot f)))
-(define (frame-bindings f)
-  (define variables (vector-ref f (site-scope (frame-site f))))
+(define (scoped-bindings scoped)
+  (define variables (cdr scoped))
   (if variables (variables) '()))
 ;; An expression evaluation's identity is its frame and site, named by a token made
 ;; the first time something asks. Slot 2 keeps them, so the identity stays eq?.
@@ -218,11 +219,14 @@
 
 (define make-live-binding live-binding)
 
-;; A frame between its sites has nothing to show, as if its call had not begun.
+;; One frame's scoped mark for each call, the innermost: the scopes nested in a call leave
+;; adjacent marks. A frame between its sites has nothing to show, as if its call had not begun.
 (define (inspectable-frames marks)
-  (for/list ([f (in-list (continuation-mark-set->list marks frame-key))]
-             #:unless (zero? (frame-slot f)))
-    f))
+  (define previous #f)
+  (for/list ([scoped (in-list (continuation-mark-set->list marks frame-key))]
+             #:unless (begin0 (or (eq? (car scoped) previous) (zero? (frame-slot (car scoped))))
+                              (set! previous (car scoped))))
+    scoped))
 (define (stop-frames s)
   (or (debug-stop-frames s)
       (let ([frames (inspectable-frames (debug-stop-marks s))])
@@ -242,7 +246,7 @@
 (define (stop-kind s) (check-stop s 'stop-kind) (debug-stop-kind s))
 (define (stop-approximate? s) (check-stop s 'stop-approximate?) (eq? (debug-stop-kind s) 'pause))
 (define (stop-frame-count s) (check-stop s 'stop-frame-count) (length (stop-frames s)))
-(define (stop-frame-site s [i 0]) (frame-site (selected-frame s i 'stop-frame-site)))
+(define (stop-frame-site s [i 0]) (frame-site (car (selected-frame s i 'stop-frame-site))))
 (define (stop-results s)
   (check-stop s 'stop-results)
   (if (eq? (debug-stop-kind s) 'after)
@@ -279,9 +283,14 @@
 ;; Each entry is one activation's evaluations, then a boundary token if any.
 (define (context-entries s)
   (define origin (debug-stop-origin s))
+  (define previous #f)
   (for/list ([entry (in-list (continuation-mark-set->list* (debug-stop-marks s)
                                                            (list frame-key context-key)))])
-    (define f (vector-ref entry 0))
+    ;; A mark for another scope of the call just listed is not another call, but a
+    ;; boundary on its continuation still counts.
+    (define scoped (vector-ref entry 0))
+    (define f (and scoped (not (eq? (car scoped) previous)) (car scoped)))
+    (when scoped (set! previous (car scoped)))
     (define boundary (vector-ref entry 1))
     (cons f
           (append (cond
@@ -303,7 +312,7 @@
   (cond
     [(evaluation? token)
      (define f (evaluation-frame token))
-     (and (memq f (stop-frames s))
+     (and (assq f (stop-frames s))
           (let loop ([slot (if (eq? f (debug-stop-origin s))
                                (site-parent (debug-stop-site s))
                                (frame-slot f))])
@@ -320,14 +329,14 @@
        (let loop ([entries (context-entries s)])
          (cond
            [(null? entries) #f]
-           [(eq? (caar entries) (car frames))
+           [(eq? (caar entries) (caar frames))
             (define outside (append-map cdr (cdr entries)))
             (and (pair? outside) (car outside))]
            [else (loop (cdr entries))]))))
 
-(define (visible-bindings f)
+(define (visible-bindings scoped)
   (define seen (make-hasheq))
-  (for/list ([b (in-list (frame-bindings f))]
+  (for/list ([b (in-list (scoped-bindings scoped))]
              #:unless (hash-ref seen (live-binding-name b) #f))
     (hash-set! seen (live-binding-name b) #t)
     b))
@@ -349,13 +358,13 @@
         [else (raise-argument-error who "(or/c symbol? string?)" name)]))
 (define (namespace-identifier name namespace)
   (parameterize ([current-namespace namespace]) (namespace-symbol->identifier name)))
-(define (find-source-binding f name who [scope 'visible])
+(define (find-source-binding scoped name who [scope 'visible])
   (or
-   (findf (lambda (b) (eq? name (live-binding-name b))) (visible-bindings f))
+   (findf (lambda (b) (eq? name (live-binding-name b))) (visible-bindings scoped))
    (and (eq? scope 'lexical) (error who "no lexical binding named ~a" name))
-   (let* ([namespace ((form-namespace (frame-form f)))]
+   (let* ([namespace ((form-namespace (frame-form (car scoped))))]
           [entry (findf (lambda (entry) (eq? name (syntax-e (cdr entry))))
-                        (frame-module-entries f))])
+                        (frame-module-entries (car scoped)))])
      (cond
        [(and entry (car entry))
         (define owner-namespace (context-binding-namespace (car entry) namespace))
@@ -383,25 +392,25 @@
                        (lambda (_) (error who "binding ~a is syntax, not a variable" name))])
         (namespace-variable-value (cdr binding) #t #f (car binding)))))
 (define (stop-binding-value s name [i 0])
-  (define f (selected-frame s i 'stop-binding-value))
+  (define scoped (selected-frame s i 'stop-binding-value))
   (define symbol (binding-name name 'stop-binding-value))
-  (source-binding-value (find-source-binding f symbol 'stop-binding-value)
+  (source-binding-value (find-source-binding scoped symbol 'stop-binding-value)
                         symbol 'stop-binding-value))
 (define (stop-set-binding! s name datum [i 0] #:scope [scope 'visible])
-  (define f (selected-frame s i 'stop-set-binding!))
+  (define scoped (selected-frame s i 'stop-set-binding!))
   (define symbol (binding-name name 'stop-set-binding!))
   (unless (memq scope '(lexical visible))
     (raise-argument-error 'stop-set-binding! "(or/c 'lexical 'visible)" scope))
-  (define binding (find-source-binding f symbol 'stop-set-binding! scope))
+  (define binding (find-source-binding scoped symbol 'stop-set-binding! scope))
   ;; Resolve and reject syntax before expanding the user's explicit replacement.
   (source-binding-value binding symbol 'stop-set-binding!)
   (cond
     [(live-binding? binding)
-     ((live-binding-access binding) (evaluate-in-frame f datum))]
+     ((live-binding-access binding) (evaluate-in-frame scoped datum))]
     [else
      ;; Retain the core assignment form even when a source binding is named set!.
      ;; The frame evaluator supplies the selected source alias and native checks.
-     (evaluate-in-frame f #`(set! #,(datum->syntax #f symbol) #,(datum->syntax #f datum)))])
+     (evaluate-in-frame scoped #`(set! #,(datum->syntax #f symbol) #,(datum->syntax #f datum)))])
   (source-binding-value binding symbol 'stop-set-binding!))
 
 ;; Debugger transformers embed live access procedures as constants. They do not
@@ -414,8 +423,9 @@
        [id (identifier? #'id) #`(#,access)]
        [(set! id rhs) #`(#,access rhs)]
        [(id . arguments) #`((#,access) . arguments)]))))
-(define (evaluate-in-frame f datum)
-  (define names (visible-bindings f))
+(define (evaluate-in-frame scoped datum)
+  (define names (visible-bindings scoped))
+  (define f (car scoped))
   (define namespace ((form-namespace (frame-form f))))
   (define seen (make-hasheq))
   (for ([b (in-list names)]) (hash-set! seen (live-binding-name b) #t))
@@ -492,7 +502,7 @@
       (and exception-marks (pair? (inspectable-frames exception-marks)) exception-marks))
     (define frames (inspectable-frames (or marks (current-continuation-marks))))
     (when (pair? frames)
-      (deliver callback (frame-site (car frames)) 'exception (list raised)
+      (deliver callback (frame-site (caar frames)) 'exception (list raised)
                (or marks (current-continuation-marks)) #f #f)))
   raised)
 
@@ -511,7 +521,7 @@
       (parameterize-break
        #f
        (and (debugging-enabled?)
-            (deliver callback (frame-site (car frames)) 'pause #f marks #f #f)))))
+            (deliver callback (frame-site (caar frames)) 'pause #f marks #f #f)))))
   interruption)
 
 ;; The parameters a suspended thread sees. Marks stop at its nearest prompt, so those
@@ -544,7 +554,7 @@
           (target-parameterization target marks)
           (lambda ()
             (when (debugging-enabled?)
-              (deliver callback (and (pair? frames) (frame-site (car frames)))
+              (deliver callback (and (pair? frames) (frame-site (caar frames)))
                        'pause #f marks #f #f))))
          #t]))
     (lambda () (when resume? (thread-resume target)))))
