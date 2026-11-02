@@ -7,6 +7,7 @@
 ;; runs both ways and must give the same answer.
 (require rackunit racket/file racket/list racket/string
          "../racketdap/worker/load.rkt"
+         "../racketdap/worker/stepping.rkt"
          "../racketdap/instrumentation/instrument.rkt")
 
 (define (with-program text proc)
@@ -114,6 +115,45 @@
       "  (replace!)\n"
       "  (keyworded #:k v39))\n")
      '(replacement 40)))
+  (test-case "a variable an earlier part made is not called a constant in a later part"
+    ;; Assignable from a stop, so it is not one with the debugger, in a short body or a long.
+    (for ([count '(0 40)])
+      (with-program
+       (string-append
+        "(define (run)\n"
+        "  (define early 1)\n"
+        (filler 0 count) "\n"
+        "  (list early (variable-reference-constant? (#%variable-reference early))))\n")
+       (lambda (program)
+         (check-equal? (outcome program #t) '(1 #f))))))
+  (test-case "Step Over walks a long body's definitions in order, across its parts"
+    (with-program
+     (string-append
+      "(define (run)\n"
+      "  (define first-variable 1)\n"
+      (string-join
+       (for/list ([i (in-range 40)])
+         (format "  (define v~a (add1 ~a))" i (if (zero? i) "first-variable" (format "v~a" (sub1 i)))))
+       "\n")
+      "\n"
+      "  (add1 v39))\n")
+     (lambda (program)
+       (define command #f)
+       (define lines '())
+       (check-equal?
+        (run-module program #:entry 'run
+                    #:on-event
+                    (lambda (stop)
+                      (define line (site-line (stop-site stop)))
+                      (cond
+                        [(and command (step-reason command stop))
+                         (set! lines (cons line lines))
+                         (set! command (make-step 'next stop))]
+                        [(and (not command) (null? lines) (= line 5) (eq? (stop-kind stop) 'before))
+                         (set! lines (list line))
+                         (set! command (make-step 'next stop))])))
+        42)
+       (check-equal? (remove-duplicates (reverse lines)) (range 5 46)))))
   (test-case "a variable read before its definition fails the same way in any part"
     (define text
       (string-append
