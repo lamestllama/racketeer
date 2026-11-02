@@ -287,11 +287,74 @@ their completion and reaps worker places. Further updates have no effect;
 queries return a closed-engine outcome. Closing one instance leaves other
 instances usable.
 
-An LSP host can use the same engine by constructing snapshots from its document
-registry and mapping standard reference and rename requests to the query API.
-VS Code document events, commands, status presentation and edit application
-remain editor responsibilities. That integration changes the adapters while
-retaining the analysis and rename implementation.
+VS Code document events, commands, status presentation and edit application remain
+editor responsibilities.
+
+### The index as a standalone LSP server
+
+`vscode/workspace-index-server.rkt` is a standalone server speaking LSP 3.17 over
+standard input and output. It is the adapter above with the engine beneath it, and
+any client that runs several servers per buffer can use it beside a language server.
+It stays with the extension rather than the adapter split, since language analysis
+belongs to the extension. The capability record is its contract.
+
+| Capability | Value |
+| --- | --- |
+| `positionEncoding` | `utf-16` |
+| `textDocumentSync` | `{ openClose: true, change: 1 }`: whole text on each change |
+| `referencesProvider` | `true` |
+| `renameProvider` | `{ prepareProvider: true }` for a client with `prepareSupport`, otherwise `true` |
+| `executeCommandProvider` | `racketeer.refreshWorkspaceIndex` starts a pass over the current sources |
+| `workspace.workspaceFolders` | Supported, with change notifications |
+| `experimental.racketeer` | The private extensions below |
+
+The lifecycle is standard. Before `initialize` a request answers
+ServerNotInitialized and a notification is dropped. After `shutdown` a request answers
+InvalidRequest, and `exit` ends the process with code 0, or 1 without `shutdown`. The end
+of the input also ends the process, which is the path when a client dies.
+
+The source view comes from standard messages. `textDocument/didOpen` starts a document
+lifetime, and a request belongs to the lifetime current when the request is read, since
+everything sent before it has been read too. A later edit or close retires the request.
+Opening or closing a document alone permits reuse after the disk is verified. Other changes
+start a new pass. With `workspace.didChangeWatchedFiles.dynamicRegistration`, the server registers `**/*`
+under each folder and ignores reports from excluded directories; what else to report is the client's
+choice. With `workspace.configuration` it pulls the section
+`racket-langserver.workspaceAnalysis` after `initialized` and on
+`workspace/didChangeConfiguration`, and a request waits for settings already asked for.
+A client without that capability gets the defaults.
+
+| Outcome | Answer |
+| --- | --- |
+| Request cancelled by the client | RequestCancelled |
+| References for a retired lifetime | ContentModified |
+| Rename or prepareRename for a retired lifetime or an overtaken result | RequestFailed, `Workspace changed during rename. Try Rename again.` |
+| Rename refused, analysis failed or index incomplete | RequestFailed |
+| A request interrupted by `shutdown` | InvalidRequest |
+| Malformed JSON | ParseError with a null id |
+
+ContentModified is not used for rename because LSP clients do not show it, and the user must
+try again. With `workspace.workspaceEdit.documentChanges`, a rename names the version
+of each buffer it analysed, or null for text on disk. A client refuses an edit if a
+document it names has moved on. Without the capability, the edit is a plain `changes`
+record.
+
+Passes report work-done progress to a client that offers `window.workDoneProgress`:
+`window/workDoneProgress/create`, then `begin`, `report` after each file, and `end`.
+Partial results are not used, since a result is valid only once its pass settles.
+
+Two things have no standard form, so they stay private. They are named under
+`racketeer/`, and negotiated under `experimental`, where a client asks with
+`{ racketeer: { indexStatus: true, sourceReferences: true } }` and the server answers with
+those members and `version: 1`. A generic client asks for neither and sees a standard server.
+
+| Message | Direction | Purpose |
+| --- | --- | --- |
+| `racketeer/indexStatus` | Server to client, when asked | The final state of a pass, `{ state, indexed, failures }`: `ready`, `partial` or `disabled`. |
+| `racketeer/sourceReferences` | Client to server, when offered | `ReferenceParams` plus `text`: references for a captured debugger source, answered only while that text is the file's current source. |
+
+The VS Code client adds one policy of its own: it reports file events only for source
+suffixes and for names with no suffix, which can be deleted folders.
 
 ## 4. Instrumentation and module loading
 

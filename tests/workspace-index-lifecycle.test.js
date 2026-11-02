@@ -6,7 +6,7 @@ const test = require('./support/node-test');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { definition, uri, rawServer } = require('./workspace-index-project');
+const { root, definition, uri, rawServer } = require('./workspace-index-project');
 
 const invalidRequest = -32600, serverNotInitialized = -32002;
 const exitCode = async server => (await server.closed)[0];
@@ -41,6 +41,15 @@ test('initialize answers the standard capabilities and the private extensions', 
   assert.equal(capabilities.renameProvider, true, 'This client did not offer prepareSupport');
   assert.deepEqual(capabilities.workspace.workspaceFolders, { supported: true, changeNotifications: true });
   assert.deepEqual(capabilities.experimental.racketeer, { version: 1, indexStatus: true, sourceReferences: true });
+});
+
+test('the design document states each capability and private message the server has', { timeout: 120000 }, async t => {
+  const design = fs.readFileSync(path.join(root, 'DESIGN.md'), 'utf8');
+  const server = rawServer(t);
+  const { capabilities } = await initialize(server, asking);
+  for (const name of Object.keys(capabilities)) assert.ok(design.includes(`\`${name}`), name);
+  for (const name of ['racketeer/indexStatus', 'racketeer/sourceReferences', 'racketeer.refreshWorkspaceIndex',
+    'racket-langserver.workspaceAnalysis', capabilities.positionEncoding]) assert.ok(design.includes(`\`${name}\``), name);
 });
 
 test('prepareProvider is offered only to a client with prepareSupport', { timeout: 120000 }, async t => {

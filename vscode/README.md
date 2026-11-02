@@ -689,9 +689,10 @@ a pass accepts at most 16 MiB of source input and 200,000 reference/definition
 locations. Excluded directories and symbolic links are not scanned. Reaching
 a limit or failing to analyse a file produces a partial index.
 
-Changes within watched workspace directories conservatively restart analysis,
-including non-Racket files that readers or macros may use. Dependencies outside
-those directories, excluded files, environment changes and nondeterministic
+Changes to source files within watched workspace directories restart analysis about
+two seconds after the last change, and so does deleting a folder. Changes to other
+kinds of file do not, even if a reader or macro uses them. For those, dependencies
+outside those directories, excluded files, environment changes and nondeterministic
 macros require a manual refresh. Initial indexing can take time, especially
 when dependencies are not compiled. These limits bound work and retained facts;
 they are not a total process memory limit. Both language tools use Racket's
