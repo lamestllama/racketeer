@@ -286,11 +286,15 @@
                          (scope-mark (scope-variable this) act expressions)
                          expressions)))
         expressions))
+  ;; Outside an expression context `lambda` expands to (#%expression (#%plain-lambda ...)),
+  ;; which is as atomic as what it holds.
   (define (stoppable? expression)
     (and (not (identifier? expression))
          (let ([parts (syntax->list expression)])
            (and (pair? parts)
-                (not (bound-form? (car parts) atomic-forms))))))
+                (not (bound-form? (car parts) atomic-forms))
+                (or (not (free-identifier=? (car parts) #'#%expression))
+                    (stoppable? (cadr parts)))))))
   (define (binding-container? expression)
     ;; Internal definitions inherit their body's range without an operator
     ;; source or expansion origin. Keep their frames for exceptions and Pause,
