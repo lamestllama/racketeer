@@ -1,7 +1,9 @@
 #lang racket/base
 ;; Copyright (c) 2026 Eric Parsonage
 ;; SPDX-License-Identifier: Apache-2.0 OR MIT
-(require racket/list '#%paramz ffi/unsafe/vm (for-syntax racket/base))
+(require racket/list '#%paramz ffi/unsafe/vm
+         (only-in '#%unsafe unsafe-root-continuation-prompt-tag)
+         (for-syntax racket/base))
 (provide (struct-out site) site-phases site-boundary-position arm-site! (struct-out unavailable)
          debug-stop? stop-site stop-kind stop-frame-count stop-frame-site
          stop-locals stop-evaluate stop-results
@@ -139,17 +141,14 @@
             module-bindings context namespace)))
 ;; Who has been told about the running thread. Starting a call compares threads,
 ;; and a thread running instrumented code for the first time is reported, which
-;; sites are too quiet to do. Its parameters are kept for inspecting it from
-;; outside: see call-with-thread-stop.
+;; sites are too quiet to do.
 (define noted-thread (make-weak-box #f))
-(define thread-parameterizations (make-ephemeron-hasheq))
 (define (note-thread f)
   (unless (eq? (current-thread) (weak-box-value noted-thread))
     (note-new-thread f)))
 (define (note-new-thread f)
   (define thread (current-thread))
   (set! noted-thread (make-weak-box thread))
-  (hash-ref! thread-parameterizations thread current-parameterization)
   (define on-thread (form-on-thread f))
   ;; Reporting takes the protocol's lock, which a thread stop must not suspend it holding.
   (when (and on-thread (debugging-enabled?))
@@ -524,13 +523,12 @@
             (deliver callback (frame-site (caar frames)) 'pause #f marks #f #f)))))
   interruption)
 
-;; The parameters a suspended thread sees. Marks stop at its nearest prompt, so those
-;; set beyond that come from when the thread first ran instrumented code.
-(define (target-parameterization target marks)
-  (define inner (continuation-mark-set->list marks parameterization-key))
-  (cond
-    [(pair? inner) (car inner)]
-    [else (hash-ref thread-parameterizations target current-parameterization)]))
+;; The parameters a suspended thread sees, wherever they were set: the thread's own
+;; marks reach past its prompts when read up to its root, as current-parameterization
+;; reads them.
+(define (target-parameterization target)
+  (define root (unsafe-root-continuation-prompt-tag))
+  (continuation-mark-set-first (continuation-marks target root) parameterization-key #f root))
 
 ;; Pause must not raise an exception in application code. A library can handle
 ;; a break before the debugger sees it, causing arbitrary application effects.
@@ -551,7 +549,7 @@
         [else
          (define frames (inspectable-frames marks))
          (call-with-parameterization
-          (target-parameterization target marks)
+          (target-parameterization target)
           (lambda ()
             (when (debugging-enabled?)
               (deliver callback (and (pair? frames) (frame-site (caar frames)))

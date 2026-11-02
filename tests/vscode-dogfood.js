@@ -30,7 +30,7 @@ exports.run = async function () {
     ['tests/source-positions.rkt', 4],
     ['tests/stepping.rkt', 12],
     ['tests/source-loading.rkt', 10],
-    ['tests/thread-pause.rkt', 3],
+    ['tests/thread-pause.rkt', 6],
     ['tests/wxme-source.rkt', 9]
   ]);
   const sessions = [], messages = [], checks = [];

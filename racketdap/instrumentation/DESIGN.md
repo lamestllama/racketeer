@@ -89,9 +89,9 @@ are accepted, because a site says only where a frame is:
   site of a frame that has been reused, not the site that was running when it was raised.
   Its variables are the ones its marks captured. A fresh exception shows its site exactly.
 Neither is a historical trace of past execution. Completion events name their own site, and
-nothing else observes the difference from a mark per site. A suspended thread's
-parameters are read from its marks up to its nearest prompt, and beyond that are those it
-had when it first ran instrumented code.
+nothing else observes the difference from a mark per site. A suspended thread's parameters
+are read from its marks up to its root, past its prompts, as current-parameterization
+reads them in the thread itself.
 
 Non-tail expressions preserve all returned values through a completion continuation.
 Tail wrappers retain the original expression or supplied skip values in tail position
@@ -240,9 +240,9 @@ Over and Step Out use the next source boundary when a callback has no observable
 caller or expression-completion target, rather than waiting for a nonexistent
 return stop.
 
-Each source frame retains its parameterization. Approximate-pause evaluation
-uses the innermost captured parameterization and live bindings on the service
-thread, which has its own thread identity and thread cells. Breakpoint, step and
+Approximate-pause evaluation uses the suspended thread's parameterization, read
+from its marks up to its root, and live bindings on the service thread, which has
+its own thread identity and thread cells. Breakpoint, step and
 exception evaluation still runs on the target thread. Operations that require
 the target's thread identity should be evaluated at an expression stop.
 
