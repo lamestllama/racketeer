@@ -119,7 +119,7 @@ test('a program and its children see what they see without the launcher', { time
   const direct = await session([path.join(racketdap, 'main.rkt')], program, { launch });
   assert.equal(launched.output, direct.output);
   assert.ok(!launched.output.includes('storage'), launched.output);
-  assert.ok(launched.output.includes(path.join('worker', 'main.rkt')), `The run file is unchanged: ${launched.output}`);
+  assert.match(launched.output, /worker[\\/]main\.rkt/, 'The run file is unchanged');
 });
 
 for (const [name, damage] of [
