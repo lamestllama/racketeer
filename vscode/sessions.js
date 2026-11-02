@@ -4,6 +4,7 @@
 const vscode = require('vscode');
 const { randomUUID } = require('node:crypto');
 const { launchConfiguration } = require('./execution');
+const { racketTooOld } = require('./racket-version');
 
 // Own only launches created by a workflow. Never infer ownership from the
 // active debug session: the user can switch sessions while a launch is pending.
@@ -84,7 +85,11 @@ function registerSessions(context) {
         launchConfiguration(target, { ...configuration, racketdapWorkflowId: record.id }),
         { noDebug, suppressDebugToolbar: noDebug || !!(configuration.interactive && configuration.racketdapRichInteractions),
           suppressDebugStatusbar: noDebug, suppressDebugView: noDebug || !!(configuration.interactive && configuration.racketdapRichInteractions) });
-      if (!started) throw new Error('Racket launch was cancelled or failed. See the debug output for details.');
+      if (!started) {
+        // The launch said why in a notification, which a Test Explorer result does not show.
+        throw new Error(await racketTooOld(target.racketExecutable) ||
+          'Racket launch was cancelled or failed. See the debug output for details.');
+      }
       if (record.cancelled) await record.stop();
       return record;
     } catch (error) {

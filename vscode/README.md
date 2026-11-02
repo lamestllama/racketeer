@@ -11,7 +11,9 @@ and packages, live lexical inspection and evaluation. Run a source file to see
 text and images beside the editor, or debug it with breakpoints and stepping.
 Bundled language tools, testing and package commands complete the development workflow.
 
-Requires the **full Racket 9.1 or newer distribution**. Minimal Racket alone
+Requires the **full Racket 9.1 or newer distribution**. An older Racket is refused on
+Run, Debug, Test Explorer, the language server and the workspace index, with a message
+naming its version, its path and the setting `racketdap.racketExecutable`. Minimal Racket alone
 does not include all the standard libraries and documentation used by the
 language server. No separate `raco pkg install racket-langserver`, Magic Racket,
 Node.js or npm is needed. The extension does not automatically install packages into the

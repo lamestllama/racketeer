@@ -37,6 +37,7 @@ function client(t, processFactory, timeout = 60000) {
       TextEdit: class { constructor(range, newText) { this.range = range; this.newText = newText; } },
       WorkspaceEdit: class extends Map { set(uri, edits) { return super.set(uri.toString(), edits); } } },
     'node:path': path, 'vscode-languageclient/node': rpc,
+    './racket-version': require('../vscode/racket-version'),
     './language-process': { ownedArgs, createLanguageProcess: processFactory || ((command, args, options, lifecycle) =>
       createLanguageProcess(command, args, { ...options, env: { ...process.env, PLTADDONDIR: addon } }, lifecycle)) }
   };

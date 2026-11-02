@@ -6,6 +6,7 @@ package-lock.json
 extension.js
 language-client.js
 language-process.js
+racket-version.js
 commands.js
 terminal.js
 debug-actions.js

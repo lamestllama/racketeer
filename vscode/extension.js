@@ -10,6 +10,7 @@ const execute = promisify(execFile);
 const { createProgramTerminal } = require('./terminal');
 const { registerLanguageTools } = require('./language-client');
 const { debuggerArgs } = require('./language-process');
+const { versionProblem } = require('./racket-version');
 const { registerFileCommands } = require('./commands');
 const { registerDebugActions } = require('./debug-actions');
 const { registerDebugImages } = require('./debug-images');
@@ -74,19 +75,18 @@ function activate(context) {
       if (invalidFilter) { void vscode.window.showErrorMessage(invalidFilter); return undefined; }
       config.args ||= [];
       config.racketExecutable ||= vscode.workspace.getConfiguration('racketdap', folder?.uri).get('racketExecutable', 'racket');
-      try {
-        const { stdout } = await execute(config.racketExecutable, ['--version'], { timeout: 5000, windowsHide: true });
-        const version = /v(\d+)\.(\d+)/.exec(stdout);
-        if (!version || Number(version[1]) < 9 || (Number(version[1]) === 9 && Number(version[2]) < 1)) {
-          throw new Error('Racket 9.1 or newer is required.');
-        }
-      } catch (error) {
-        void vscode.window.showErrorMessage(
-          `Cannot start Racket DAP: ${error.message} Set racketdap.racketExecutable to your Racket executable.`,
-          'Open Settings').then(action => {
+      const refuse = message => {
+        void vscode.window.showErrorMessage(message, 'Open Settings').then(action => {
           if (action === 'Open Settings') return vscode.commands.executeCommand('workbench.action.openSettings', '@id:racketdap.racketExecutable');
         });
         return undefined;
+      };
+      try {
+        const { stdout } = await execute(config.racketExecutable, ['--version'], { timeout: 5000, windowsHide: true });
+        const problem = versionProblem(stdout, config.racketExecutable);
+        if (problem) return refuse(problem);
+      } catch (error) {
+        return refuse(`Cannot start Racket DAP: ${error.message} Set racketdap.racketExecutable to your Racket executable.`);
       }
       return config;
     }

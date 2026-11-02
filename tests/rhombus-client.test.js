@@ -60,6 +60,7 @@ function fixture(initialDocuments = [], source = 'bundled') {
         cancelStart() {}, async dispose() { this.disposed = true; }, provideReferences(...args) { return args.pop()(...args); } };
       indexes.push(index); return index;
     } },
+    './racket-version': { racketTooOld: async () => undefined },
     './language-process': { ownedArgs: require('../vscode/language-process').ownedArgs, createLanguageProcess(executable, args) {
       const process = { executable, args, start: async () => ({}), ready() {}, cancelStart() {}, disposed: false,
         async dispose() { this.disposed = true; } };

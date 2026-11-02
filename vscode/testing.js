@@ -10,6 +10,7 @@ const { targetFor, saveDocument } = require('./execution');
 const { selectTests } = require('./test-selection');
 const { TestCoverage, loadDetailedCoverage } = require('./test-coverage');
 const { runPackageTask } = require('./packages');
+const { racketTooOld } = require('./racket-version');
 
 function registerTesting(context, sessions) {
   const controller = vscode.tests.createTestController('racketdap.tests', 'Racket');
@@ -73,6 +74,7 @@ function registerTesting(context, sessions) {
             item.children.replace([]);
             item.error = `Cannot discover Racket tests: ${failure.message}`;
             discoveries.delete(item.id);
+            void racketTooOld(target.racketExecutable).then(tooOld => { if (tooOld) item.error = tooOld; });
           }
           resolve();
         });

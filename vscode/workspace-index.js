@@ -5,6 +5,7 @@ const path = require('node:path');
 const vscode = require('vscode');
 const { createMessageConnection, StreamMessageReader, StreamMessageWriter, CancellationTokenSource } = require('vscode-languageclient/node');
 const { createLanguageProcess, ownedArgs } = require('./language-process');
+const { racketTooOld } = require('./racket-version');
 
 // The index covers saved files. Untitled documents keep the language server's
 // own document-local references and rename.
@@ -106,6 +107,8 @@ function createWorkspaceIndex(context, { executable, timeout, output, onStatus }
     if (disposed || !enabled()) return;
     if (starting) return starting;
     starting = (async () => {
+      const tooOld = await racketTooOld(executable);
+      if (tooOld) throw Object.assign(new Error(tooOld), { refused: true });
       const child = await process.start();
       if (disposed) return;
       child.stderr.setEncoding('utf8');
@@ -288,7 +291,7 @@ function createWorkspaceIndex(context, { executable, timeout, output, onStatus }
         if (disposed || token.isCancellationRequested || [-32800, -32801].includes(error.code)) return [];
         // The server is there and has said why. An editor shows no provider's error, so
         // this is how its words reach the person who asked.
-        if (error.code === -32803) onStatus({ state: 'refused', message: error.message });
+        if (error.code === -32803 || error.refused) onStatus({ state: 'refused', message: error.message });
         else failure(error);
         throw error;
       }

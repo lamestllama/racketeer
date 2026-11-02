@@ -6,6 +6,7 @@ const { selectedEditor } = require('./selected-editor');
 const { LanguageClient, State, CloseAction } = require('vscode-languageclient/node');
 const { createLanguageProcess, ownedArgs } = require('./language-process');
 const { createWorkspaceIndex } = require('./workspace-index');
+const { racketTooOld } = require('./racket-version');
 
 const languageIds = ['racket', 'rhombus'];
 const isLanguageDocument = document => languageIds.includes(document?.languageId);
@@ -73,10 +74,11 @@ function registerLanguageTools(context, debugSources) {
       ? configuredTimeout : 180;
     function reportFailure(error, advice = 'Check racketdap.racketExecutable.', setting = 'racketdap.racketExecutable') {
       output.appendLine(String(error.stack || error));
-      output.appendLine(advice);
-      showStatus('$(warning) Racket', 'Language server failed. Click for details. Debugging and file commands remain available.');
+      if (advice) output.appendLine(advice);
+      showStatus('$(warning) Racket', error.racketTooOld ? error.message
+        : 'Language server failed. Click for details. Debugging and file commands remain available.');
       void vscode.window.showErrorMessage(
-        `Racket language server could not start: ${error.message} ${advice}`,
+        `Racket language server could not start: ${error.message}${advice ? ` ${advice}` : ''}`,
         'Open Settings', 'Show Output').then(action => {
         if (action === 'Open Settings') return vscode.commands.executeCommand('workbench.action.openSettings', `@id:${setting}`);
         if (action === 'Show Output') output.show();
@@ -101,7 +103,7 @@ function registerLanguageTools(context, debugSources) {
           this.handlesStartupErrors = false;
         }
         catch (error) {
-          if (!process.cancelled && !disposed) reportFailure(error);
+          if (!process.cancelled && !disposed) reportFailure(error, error.racketTooOld ? '' : undefined);
           throw error;
         }
       }
@@ -124,7 +126,12 @@ function registerLanguageTools(context, debugSources) {
       }
     }
     let defaultErrorHandler;
-    const next = new OwnedLanguageClient('racketDevelopment', 'Racket Language Server', () => process.start(), {
+    const startServer = async () => {
+      const tooOld = await racketTooOld(executable);
+      if (tooOld) throw Object.assign(new Error(tooOld), { racketTooOld: true });
+      return process.start();
+    };
+    const next = new OwnedLanguageClient('racketDevelopment', 'Racket Language Server', startServer, {
       documentSelector: languageIds.flatMap(language =>
         (installed ? ['file'] : ['file', 'untitled']).map(scheme => ({ language, scheme }))),
       middleware: {
