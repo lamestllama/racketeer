@@ -4,10 +4,10 @@
 ;; disk files. Project dependencies are read from source so compiled
 ;; intermediates cannot retain an older macro expansion. Libraries outside the
 ;; project keep their ordinary compiled loading policy.
-(require racket/list
-         racket/path
+(require racket/path
          setup/dirs
-         syntax/modcode)
+         syntax/modcode
+         "path-util.rkt")
 
 (provide call-with-source-snapshot)
 
@@ -17,13 +17,20 @@
 ;; on-load: receives each module file the expansion loads.
 ;; Installed collections keep compiled loading even below a project folder,
 ;; for example when a workspace folder contains the Racket installation.
+;; The setup roots are found when this module is instantiated, outside analysis
+;; workers in the server. Some finders can force shared `delay/sync` promises;
+;; killing an unfinished initial computation can leave later forces blocked.
+;; Collection paths are read at each call, since callers may parameterize them.
+(define installed-roots
+  (map normalize-source-path
+       (filter values (list (find-collects-dir) (find-pkgs-dir)
+                            (find-user-collects-dir) (find-user-pkgs-dir)))))
+
 (define (installed-library? file)
-  (define parts (explode-path file))
-  (for/or ([dir (in-list (filter values (list* (find-collects-dir) (find-pkgs-dir)
-                                               (find-user-collects-dir) (find-user-pkgs-dir)
-                                               (current-library-collection-paths))))])
-    (define root (explode-path (simplify-path (path->complete-path dir) #f)))
-    (and (<= (length root) (length parts)) (equal? root (take parts (length root))))))
+  (for/or ([root (in-list (append installed-roots
+                                  (map normalize-source-path
+                                       (current-library-collection-paths))))])
+    (directory-contains? root file)))
 
 (define (call-with-source-snapshot sources proc
                                    #:source? [source? (lambda (_) #f)]

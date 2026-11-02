@@ -1,7 +1,7 @@
 From 913dabb35270e8ed62c12cc170dc4441ca8d3119 Mon Sep 17 00:00:00 2001
 From: Eric Parsonage <eric@eparsonage.com>
 Date: Sun, 1 Nov 2026 09:31:40 +1030
-Subject: [PATCH] Count LSP columns in UTF-16 code units
+Subject: [PATCH 1/5] Count LSP columns in UTF-16 code units
 
 LSP positions count UTF-16 code units within a line, while the editor
 buffer and Racket syntax positions count characters. After a character
@@ -304,6 +304,768 @@ index f5dda6d..c8db202 100644
    (test-case "editor copy keeps an immutable snapshot"
      (define editor (make-editor "abc\n"))
  
+-- 
+2.43.0
+
+
+From b23ac287a48430dc263b07099ab153a6c8131d1e Mon Sep 17 00:00:00 2001
+From: Eric Parsonage <eric@eparsonage.com>
+Date: Sun, 1 Nov 2026 16:10:18 +1030
+Subject: [PATCH 2/5] Take the hover source column from the line start
+
+The hover needs a character column, which is the offset from the start
+of its line. Subtract the line start instead of converting the position
+to a line and column.
+---
+ doclib/doc.rkt | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/doclib/doc.rkt b/doclib/doc.rkt
+index a70da9b..c87ff54 100644
+--- a/doclib/doc.rkt
++++ b/doclib/doc.rkt
+@@ -622,7 +622,8 @@
+ ;; continuation lines inside multiline literals.
+ (define (hover-source-lines doc start text)
+   ;; Characters, not LSP columns: the column becomes leading spaces.
+-  (define column (cadr (send (Doc-text doc) pos->line/char start)))
++  (define doc-text (Doc-text doc))
++  (define column (- start (send doc-text line-start-pos (send doc-text at-line start))))
+   (string-split (string-append (make-string column #\space) text)
+                 "\n" #:trim? #f))
+ 
+-- 
+2.43.0
+
+
+From 0f55cad72c7770059f656a713ce03d107daa1eae Mon Sep 17 00:00:00 2001
+From: Eric Parsonage <eric@eparsonage.com>
+Date: Sun, 1 Nov 2026 19:58:49 +1030
+Subject: [PATCH 3/5] Give pos->line/char and line/char->pos UTF-16 columns
+
+The editor's line/char->pos and pos->line/char now count columns in
+UTF-16 code units, as LSP positions do, in place of the separate
+lsp-position->pos and pos->lsp-position. Every caller uses the one
+pair. The hover already takes its character column from the line start.
+
+line/char->pos no longer clamps a column past the end of its line, so
+it treats such a column as it did before the UTF-16 change.
+---
+ common/interfaces.rkt             |  2 +-
+ doclib/doc-trace.rkt              |  2 +-
+ doclib/doc.rkt                    |  4 ++--
+ doclib/textbuffer/editor-rope.rkt | 18 ++++--------------
+ tests/lib/editor-test.rkt         | 25 ++++++++++---------------
+ 5 files changed, 18 insertions(+), 33 deletions(-)
+
+diff --git a/common/interfaces.rkt b/common/interfaces.rkt
+index 00aaac2..33241bb 100644
+--- a/common/interfaces.rkt
++++ b/common/interfaces.rkt
+@@ -364,7 +364,7 @@
+   (list SemanticTokenModifier-definition))
+ 
+ (define (abs-pos->Pos editor pos)
+-  (match-define (list line char) (send editor pos->lsp-position pos))
++  (match-define (list line char) (send editor pos->line/char pos))
+   (Pos #:line line #:char char))
+ 
+ ;; Resyntax-Result: result of a resyntax refactoring suggestion
+diff --git a/doclib/doc-trace.rkt b/doclib/doc-trace.rkt
+index a4ee4de..03ec53f 100644
+--- a/doclib/doc-trace.rkt
++++ b/doclib/doc-trace.rkt
+@@ -121,7 +121,7 @@
+            (let ()
+              (define (abs->pos pos)
+                (match-define (list line char)
+-                 (send doc-text pos->lsp-position pos))
++                 (send doc-text pos->line/char pos))
+                (Pos line char))
+ 
+              (define (range->location range)
+diff --git a/doclib/doc.rkt b/doclib/doc.rkt
+index c87ff54..4fc71ad 100644
+--- a/doclib/doc.rkt
++++ b/doclib/doc.rkt
+@@ -294,11 +294,11 @@
+ 
+ (define/contract (doc-pos->abs-pos doc pos)
+   (-> Doc? Pos? exact-nonnegative-integer?)
+-  (send (Doc-text doc) lsp-position->pos (Pos-line pos) (Pos-char pos)))
++  (send (Doc-text doc) line/char->pos (Pos-line pos) (Pos-char pos)))
+ 
+ (define/contract (doc-abs-pos->pos doc pos)
+   (-> Doc? exact-nonnegative-integer? Pos?)
+-  (match-define (list line char) (send (Doc-text doc) pos->lsp-position pos))
++  (match-define (list line char) (send (Doc-text doc) pos->line/char pos))
+   (Pos line char))
+ 
+ (define/contract (doc-line-start-abs-pos doc line)
+diff --git a/doclib/textbuffer/editor-rope.rkt b/doclib/textbuffer/editor-rope.rkt
+index 5751f8b..355fea4 100644
+--- a/doclib/textbuffer/editor-rope.rkt
++++ b/doclib/textbuffer/editor-rope.rkt
+@@ -64,14 +64,6 @@
+     (define/public (end-pos)
+       (rope-chars rope))
+ 
+-    (define/public (line/char->pos line char)
+-      (+ char (line-start-pos/raw line)))
+-
+-    (define/public (pos->line/char pos)
+-      (define line (rope-offset->line rope pos))
+-      (list line
+-            (- pos (send this line-start-pos line))))
+-
+     ;; LSP positions count UTF-16 code units within a line, while the rope and
+     ;; Racket syntax positions count characters. A character outside the Basic
+     ;; Multilingual Plane is one character and two UTF-16 code units.
+@@ -97,15 +89,13 @@
+                   (loop (add1 middle) high)
+                   (loop low middle))))))
+ 
+-    ;; A column past the end of the line means the end of the line, and a
+-    ;; column inside a surrogate pair means the start of its character.
+-    (define/public (lsp-position->pos line char)
++    ;; A column inside a surrogate pair means the start of its character.
++    (define/public (line/char->pos line char)
+       (define start (line-start-pos/raw line))
+       (define offsets (astral-offsets line))
+-      (min (send this line-end-pos line)
+-           (+ start (- char (astral-count-before offsets char #t)))))
++      (+ start (- char (astral-count-before offsets char #t))))
+ 
+-    (define/public (pos->lsp-position pos)
++    (define/public (pos->line/char pos)
+       (define line (rope-offset->line rope pos))
+       (define column (- pos (send this line-start-pos line)))
+       (list line (+ column (astral-count-before (astral-offsets line) column #f))))
+diff --git a/tests/lib/editor-test.rkt b/tests/lib/editor-test.rkt
+index c8db202..90bf4b3 100644
+--- a/tests/lib/editor-test.rkt
++++ b/tests/lib/editor-test.rkt
+@@ -226,30 +226,25 @@
+     (check-equal? (send editor line-end-pos 2) eof)
+     (check-equal? (send editor at-line eof) 1))
+ 
+-  (test-case "editor converts LSP columns, which count UTF-16 code units"
++  (test-case "editor columns count UTF-16 code units"
+     ;; U+1F600 is one character and two UTF-16 code units.
+     (define editor (make-editor "a\U0001F600b\n\U0001F600\U0001F600c\n"))
+ 
+-    (for ([lsp-column (in-list '(0 1 3 4))]
++    (for ([column (in-list '(0 1 3 4))]
+           [pos (in-list '(0 1 2 3))])
+-      (check-equal? (send editor lsp-position->pos 0 lsp-column) pos)
+-      (check-equal? (send editor pos->lsp-position pos) (list 0 lsp-column)))
+-    (for ([lsp-column (in-list '(0 2 4 5))]
++      (check-equal? (send editor line/char->pos 0 column) pos)
++      (check-equal? (send editor pos->line/char pos) (list 0 column)))
++    (for ([column (in-list '(0 2 4 5))]
+           [pos (in-list '(4 5 6 7))])
+-      (check-equal? (send editor lsp-position->pos 1 lsp-column) pos)
+-      (check-equal? (send editor pos->lsp-position pos) (list 1 lsp-column)))
++      (check-equal? (send editor line/char->pos 1 column) pos)
++      (check-equal? (send editor pos->line/char pos) (list 1 column)))
+     ;; A column inside a surrogate pair names the start of its character.
+-    (check-equal? (send editor lsp-position->pos 0 2) 1)
+-    ;; A column past the end of a line means the end of that line.
+-    (check-equal? (send editor lsp-position->pos 0 10) 3)
+-    ;; Character columns are unchanged.
+-    (check-equal? (send editor line/char->pos 1 2) 6)
+-    (check-equal? (send editor pos->line/char 6) '(1 2))
++    (check-equal? (send editor line/char->pos 0 2) 1)
+ 
+     (send editor replace "x" 1 2)
+     (check-equal? (send editor get-line 0) "axb")
+-    (check-equal? (send editor lsp-position->pos 0 2) 2)
+-    (check-equal? (send editor pos->lsp-position 3) '(0 3)))
++    (check-equal? (send editor line/char->pos 0 2) 2)
++    (check-equal? (send editor pos->line/char 3) '(0 3)))
+ 
+   (test-case "editor copy keeps an immutable snapshot"
+     (define editor (make-editor "abc\n"))
+-- 
+2.43.0
+
+
+From 5a8f67cae1043b15efb3c3bae1b02e76d89ea0c6 Mon Sep 17 00:00:00 2001
+From: Eric Parsonage <eric@eparsonage.com>
+Date: Sun, 1 Nov 2026 23:05:49 +1030
+Subject: [PATCH 4/5] Take diagnostic columns from positions and scan lines for
+ UTF-16
+
+Racket source-location diagnostics now start at the one-based character
+position. The reader's column counts a tab up to the next multiple of 8,
+so it is not an LSP column on tab-indented lines.
+
+The fixw and DrRacket formatters measure the end of each line edit in
+UTF-16 code units, not characters.
+
+pos->line/char and line/char->pos scan their line on each call instead
+of caching the offsets of astral characters, so reading a position no
+longer changes the editor while SafeDoc holds only its read lock.
+---
+ common/interfaces.rkt                    | 12 +++++
+ doclib/formatter/drracket.rkt            | 13 ++---
+ doclib/formatter/fixw.rkt                |  2 +-
+ doclib/service/diagnostic.rkt            | 10 ++--
+ doclib/textbuffer/editor-rope.rkt        | 65 ++++++++++--------------
+ tests/fixtures/formatter-hook-reader.rkt |  4 +-
+ tests/lib/doc-test.rkt                   | 15 ++++++
+ tests/lib/drracket-formatter-test.rkt    | 15 ++++++
+ tests/lib/editor-test.rkt                |  2 +
+ tests/lib/formatting-backends-test.rkt   | 12 +++++
+ 10 files changed, 98 insertions(+), 52 deletions(-)
+
+diff --git a/common/interfaces.rkt b/common/interfaces.rkt
+index 33241bb..d1900ff 100644
+--- a/common/interfaces.rkt
++++ b/common/interfaces.rkt
+@@ -67,12 +67,24 @@
+          *semantic-token-types*
+          *semantic-token-modifiers*
+          abs-pos->Pos
++         char-utf16-length
++         string-utf16-length
+          (json-type-out Resyntax-Result))
+ 
+ (define-json-struct Pos
+   [line exact-nonnegative-integer?]
+   [char exact-nonnegative-integer? #:json character])
+ 
++;; `char` counts UTF-16 code units within its line, as LSP positions do unless
++;; another encoding is negotiated. A character outside the Basic Multilingual
++;; Plane is one character and two code units.
++(define (char-utf16-length c)
++  (if (> (char->integer c) #xFFFF) 2 1))
++
++(define (string-utf16-length str)
++  (for/sum ([c (in-string str)])
++    (char-utf16-length c)))
++
+ (define-json-struct Range
+   [start Pos]
+   [end Pos])
+diff --git a/doclib/formatter/drracket.rkt b/doclib/formatter/drracket.rkt
+index 93eb8b1..05d83d8 100644
+--- a/doclib/formatter/drracket.rkt
++++ b/doclib/formatter/drracket.rkt
+@@ -17,14 +17,15 @@
+ 
+ (provide drracket-format-edits)
+ 
+-(struct Line-edit (line delete-amount insert-text) #:transparent)
++;; `deleted-text` is the line prefix the edit replaces.
++(struct Line-edit (line deleted-text insert-text) #:transparent)
+ 
+ (define (line-edit->text-edit edit)
+   (match-define (struct* Line-edit ([line line]
+-                                    [delete-amount delete-amount]
++                                    [deleted-text deleted-text]
+                                     [insert-text insert-text]))
+     edit)
+-  (TextEdit (Range (Pos line 0) (Pos line delete-amount)) insert-text))
++  (TextEdit (Range (Pos line 0) (Pos line (string-utf16-length deleted-text))) insert-text))
+ 
+ (define hook-failed (gensym 'hook-failed))
+ 
+@@ -80,7 +81,7 @@
+   (define bounded-delete (min delete-amount (- end start)))
+   (define old-text (send textoid get-text start (+ start bounded-delete)))
+   (and (not (string=? old-text insert-text))
+-       (Line-edit line bounded-delete insert-text)))
++       (Line-edit line old-text insert-text)))
+ 
+ (define (edits-for-substitutions textoid first-line last-line substitutions)
+   (reverse
+@@ -148,9 +149,9 @@
+          [(not edit)
+           (loop current-textoid (add1 line) edits)]
+          [else
+-          (match-define (struct* Line-edit ([delete-amount deleted] [insert-text inserted])) edit)
++          (match-define (struct* Line-edit ([deleted-text deleted] [insert-text inserted])) edit)
+           (define next-textoid
+-            (textoid-replace-line-prefix! current-textoid line deleted inserted))
++            (textoid-replace-line-prefix! current-textoid line (string-length deleted) inserted))
+           (if next-textoid
+               (loop next-textoid (add1 line) (cons edit edits))
+               '())])])))
+diff --git a/doclib/formatter/fixw.rkt b/doclib/formatter/fixw.rkt
+index 1a97dfd..54ab266 100644
+--- a/doclib/formatter/fixw.rkt
++++ b/doclib/formatter/fixw.rkt
+@@ -30,5 +30,5 @@
+              #:when (and (<= start-ln ln end-ln)
+                          (not (string=? original-line formatted-line))))
+     (TextEdit #:range (Range (Pos ln 0)
+-                             (Pos ln (string-length original-line)))
++                             (Pos ln (string-utf16-length original-line)))
+               #:newText formatted-line)))
+diff --git a/doclib/service/diagnostic.rkt b/doclib/service/diagnostic.rkt
+index ac6da8e..612de20 100644
+--- a/doclib/service/diagnostic.rkt
++++ b/doclib/service/diagnostic.rkt
+@@ -198,12 +198,10 @@
+            msg))
+      (define srclocs ((exn:srclocs-accessor exn) exn))
+      (for/list ([sl (in-list srclocs)])
+-       (match-define (srcloc src line col pos span) sl)
+-       ;; Source location columns count characters. Convert through the
+-       ;; character offset so the range uses LSP columns.
+-       (define start
+-         (and (exact-positive-integer? line) (exact-nonnegative-integer? col)
+-              (+ (send doc-text line-start-pos (sub1 line)) col)))
++       (match-define (srcloc _src _line _col pos span) sl)
++       ;; Convert from the one-based character position. The reader's column
++       ;; counts a tab up to the next multiple of 8, so it is not an LSP column.
++       (define start (and (exact-positive-integer? pos) (sub1 pos)))
+        (if (and start (exact-nonnegative-integer? span)
+                 (<= (+ start span) (send doc-text end-pos)))
+            (Diagnostic #:range (nonempty-diagnostic-range
+diff --git a/doclib/textbuffer/editor-rope.rkt b/doclib/textbuffer/editor-rope.rkt
+index 355fea4..380b058 100644
+--- a/doclib/textbuffer/editor-rope.rkt
++++ b/doclib/textbuffer/editor-rope.rkt
+@@ -4,6 +4,9 @@
+ 
+ (require racket/class
+          racket/file
++         (only-in "../../common/interfaces.rkt"
++                  char-utf16-length
++                  string-utf16-length)
+          "textbuffer-rope.rkt")
+ 
+ (define lsp-editor%
+@@ -11,13 +14,9 @@
+     (init [initial-buffer (rope-from-string "")])
+ 
+     (define rope initial-buffer)
+-    ;; line -> character offsets of characters outside the Basic Multilingual
+-    ;; Plane on that line. Cleared on every change to the text.
+-    (define astral-lines (make-hash))
+ 
+     (define/private (replace-range str start-pos end-pos)
+-      (set! rope (rope-replace rope start-pos end-pos str))
+-      (hash-clear! astral-lines))
++      (set! rope (rope-replace rope start-pos end-pos str)))
+ 
+     (define/private (line-count)
+       (add1 (rope-offset->line rope (rope-chars rope))))
+@@ -48,12 +47,10 @@
+ 
+     ;; remove all content
+     (define/public (erase)
+-      (set! rope (rope-from-string ""))
+-      (hash-clear! astral-lines))
++      (set! rope (rope-from-string "")))
+ 
+     (define/public (load-file path)
+-      (set! rope (rope-from-string (file->string path)))
+-      (hash-clear! astral-lines))
++      (set! rope (rope-from-string (file->string path))))
+ 
+     ;; return current content in editor as string
+     (define/public (get-text [start 0] [end 'eof])
+@@ -65,40 +62,32 @@
+       (rope-chars rope))
+ 
+     ;; LSP positions count UTF-16 code units within a line, while the rope and
+-    ;; Racket syntax positions count characters. A character outside the Basic
+-    ;; Multilingual Plane is one character and two UTF-16 code units.
+-    (define/private (astral-offsets line)
+-      (hash-ref! astral-lines line
+-                 (lambda ()
+-                   (list->vector
+-                     (for/list ([character (in-string (send this get-line line))]
+-                                [offset (in-naturals)]
+-                                #:when (> (char->integer character) #xffff))
+-                       offset)))))
+-
+-    ;; Number of astral characters that start before `column`, counted in
+-    ;; UTF-16 code units when `utf16?` and in characters otherwise.
+-    (define/private (astral-count-before offsets column utf16?)
+-      (let loop ([low 0]
+-                 [high (vector-length offsets)])
+-        (if (= low high)
+-            low
+-            (let* ([middle (quotient (+ low high) 2)]
+-                   [start (+ (vector-ref offsets middle) (if utf16? middle 0))])
+-              (if (< start column)
+-                  (loop (add1 middle) high)
+-                  (loop low middle))))))
+-
+-    ;; A column inside a surrogate pair means the start of its character.
++    ;; Racket syntax positions count characters. Each conversion scans its line,
++    ;; so reading a position leaves the editor unchanged. A column inside a
++    ;; surrogate pair means the start of its character. Past the end of a line,
++    ;; one position is one code unit in both directions.
+     (define/public (line/char->pos line char)
+       (define start (line-start-pos/raw line))
+-      (define offsets (astral-offsets line))
+-      (+ start (- char (astral-count-before offsets char #t))))
++      ;; Each character is at least one code unit, so `char` characters suffice.
++      (define text
++        (send this get-text start (min (+ start char) (send this line-end-pos line))))
++      (let loop ([offset 0]
++                 [units 0])
++        (cond
++          [(= offset (string-length text))
++           (+ start offset (- char units))]
++          [else
++           (define next (+ units (char-utf16-length (string-ref text offset))))
++           (if (> next char)
++               (+ start offset)
++               (loop (add1 offset) next))])))
+ 
+     (define/public (pos->line/char pos)
+       (define line (rope-offset->line rope pos))
+-      (define column (- pos (send this line-start-pos line)))
+-      (list line (+ column (astral-count-before (astral-offsets line) column #f))))
++      (define end (min pos (send this line-end-pos line)))
++      (list line
++            (+ (string-utf16-length (send this get-text (send this line-start-pos line) end))
++               (- pos end))))
+ 
+     (define/public (line-start-pos line)
+       (rope-line-start-offset rope line))
+diff --git a/tests/fixtures/formatter-hook-reader.rkt b/tests/fixtures/formatter-hook-reader.rkt
+index 82f72fe..f834b87 100644
+--- a/tests/fixtures/formatter-hook-reader.rkt
++++ b/tests/fixtures/formatter-hook-reader.rkt
+@@ -10,7 +10,9 @@ racket/base
+     (send textoid get-text 0 (send textoid last-position)))
+   (when (regexp-match? #rx"fail-hook" text)
+     (error 'range-indent "fixture hook failure"))
+-  '((0 ">>>")))
++  (if (regexp-match? #rx"replace-two" text)
++      '((2 ">>>"))
++      '((0 ">>>"))))
+ 
+ (define (formatter-info key default default-filter)
+   (case key
+diff --git a/tests/lib/doc-test.rkt b/tests/lib/doc-test.rkt
+index b48467c..914736c 100644
+--- a/tests/lib/doc-test.rkt
++++ b/tests/lib/doc-test.rkt
+@@ -604,6 +604,21 @@
+     (check-not-false diag)
+     (check-equal? (Diagnostic-range diag) (Range (Pos 1 5) (Pos 1 17))))
+ 
++  (test-case
++    "Document diagnostics count a tab as one UTF-16 code unit"
++    ;; The reader puts the `(` after a tab at column 8, but it is character 1
++    ;; on its line. After U+1F600, the unclosed `(` is at LSP column 6.
++    (define (read-error-range text)
++      (define diags
++        (check-syntax-diagnostics (uri->source "file:///tmp/tab-diagnostic-test.rkt")
++                                  text))
++      (check-equal? (length diags) 1)
++      (Diagnostic-range (car diags)))
++    (check-equal? (read-error-range "#lang racket/base\n\t(\n")
++                  (Range (Pos 1 1) (Pos 1 2)))
++    (check-equal? (read-error-range "#lang racket/base\n\t\"\U0001F600\" (\n")
++                  (Range (Pos 1 6) (Pos 1 7))))
++
+   (test-case
+     "Document diagnostics accept wrapped #lang headers"
+     (define at-exp-diags
+diff --git a/tests/lib/drracket-formatter-test.rkt b/tests/lib/drracket-formatter-test.rkt
+index c5d39d1..6c11025 100644
+--- a/tests/lib/drracket-formatter-test.rkt
++++ b/tests/lib/drracket-formatter-test.rkt
+@@ -407,6 +407,21 @@
+                         #:formatting-options default-options)
+       expected))
+ 
++  (test-case
++    "range indentation edits end at the deleted prefix's UTF-16 length"
++    ;; The hook deletes two characters, U+1F600 and `x`, which are three
++    ;; UTF-16 code units.
++    (define text
++      (newlines "#lang reader \"formatter-hook-reader.rkt\""
++                "\U0001F600xreplace-two"))
++    (check-equal?
++      (drracket-format-edits text
++                             1
++                             1
++                             #:formatting-options default-options
++                             #:src-dir fixtures-directory)
++      (list (TextEdit (Range (Pos 1 0) (Pos 1 3)) ">>>"))))
++
+   (test-case
+     "language indentation replaces all leading whitespace"
+     (define text
+diff --git a/tests/lib/editor-test.rkt b/tests/lib/editor-test.rkt
+index 90bf4b3..24122f7 100644
+--- a/tests/lib/editor-test.rkt
++++ b/tests/lib/editor-test.rkt
+@@ -240,6 +240,8 @@
+       (check-equal? (send editor pos->line/char pos) (list 1 column)))
+     ;; A column inside a surrogate pair names the start of its character.
+     (check-equal? (send editor line/char->pos 0 2) 1)
++    ;; Past the end of the text, one position is one code unit.
++    (check-equal? (send editor pos->line/char 10) '(2 2))
+ 
+     (send editor replace "x" 1 2)
+     (check-equal? (send editor get-line 0) "axb")
+diff --git a/tests/lib/formatting-backends-test.rkt b/tests/lib/formatting-backends-test.rkt
+index 82b8765..815b54f 100644
+--- a/tests/lib/formatting-backends-test.rkt
++++ b/tests/lib/formatting-backends-test.rkt
+@@ -48,6 +48,18 @@
+                   #:formatting-options unrelated-options)
+       expected))
+ 
++  (test-case
++    "fixw edits end at the line's UTF-16 length"
++    ;; U+1F600 is one character and two UTF-16 code units, so the last line
++    ;; is 4 characters and 5 code units long.
++    (check-equal?
++      (formatting (editor-with "#lang racket/base\n(define x\n\"\U0001F600\")")
++                  0
++                  2
++                  #:backend 'fixw
++                  #:formatting-options (formatting-options 2 #t (hasheq)))
++      (list (TextEdit (Range (Pos 2 0) (Pos 2 5)) "  \"\U0001F600\")"))))
++
+   (test-case
+     "fmt forwards fmtSettings and ignores Format Document extras"
+     (define calls '())
+-- 
+2.43.0
+
+
+From b1916edd16a3dc560e0de33f4bbdb52265b74043 Mon Sep 17 00:00:00 2001
+From: Eric Parsonage <eric@eparsonage.com>
+Date: Sun, 1 Nov 2026 23:20:36 +1030
+Subject: [PATCH 5/5] Count each CRLF as two characters in Racket positions
+
+With line counting on, Racket reads "\r\n" as one position, while the
+editor counts two characters, so every syntax, srcloc and lexer position
+in a CRLF document was one character early for each CRLF before it.
+Expansion, the lexer and the formatter's lexer now read the document
+through a port that keeps Racket's lines and columns but reports
+positions in characters.
+---
+ doclib/check-syntax.rkt               |  3 +-
+ doclib/formatter/textoid.rkt          |  6 +--
+ doclib/lexer/scan.rkt                 |  4 +-
+ doclib/textbuffer/text-port.rkt       | 38 +++++++++++++++++++
+ tests/lib/doc-test.rkt                | 53 +++++++++++++++++++++++++++
+ tests/lib/drracket-formatter-test.rkt | 15 ++++++++
+ 6 files changed, 113 insertions(+), 6 deletions(-)
+ create mode 100644 doclib/textbuffer/text-port.rkt
+
+diff --git a/doclib/check-syntax.rkt b/doclib/check-syntax.rkt
+index edabd35..b8533e5 100644
+--- a/doclib/check-syntax.rkt
++++ b/doclib/check-syntax.rkt
+@@ -7,6 +7,7 @@
+          racket/path
+          racket/port
+          "editor.rkt"
++         "textbuffer/text-port.rkt"
+          "doc-trace.rkt"
+          (only-in "lexer.rkt"
+                   LexerState?
+@@ -102,7 +103,7 @@
+       [doc-text doc-text]
+       [lexer-state lexer-state]))
+ 
+-  (define in (open-input-string text))
++  (define in (open-input-text text))
+   (define er (expand-source source in new-trace #:expand? expand?))
+ 
+   (send new-trace walk-stx er)
+diff --git a/doclib/formatter/textoid.rkt b/doclib/formatter/textoid.rkt
+index abc45e9..dc7d925 100644
+--- a/doclib/formatter/textoid.rkt
++++ b/doclib/formatter/textoid.rkt
+@@ -19,7 +19,8 @@
+          racket/match
+          (only-in srfi/2 and-let*)
+          syntax-color/module-lexer
+-         "../lexer/snapshot.rkt")
++         "../lexer/snapshot.rkt"
++         "../textbuffer/text-port.rkt")
+ 
+ (provide make-textoid
+          make-textoid-from-lexer-snapshot
+@@ -76,8 +77,7 @@
+ 
+ (define (lex-content content source-directory)
+   (with-handlers ([exn:fail? (lambda (_exn) #f)])
+-    (define input (open-input-string content))
+-    (port-count-lines! input)
++    (define input (open-input-text content))
+     (define lexer (or module-lexer*/maybe module-lexer))
+     (parameterize ([current-directory
+                     (or (source-directory->path source-directory)
+diff --git a/doclib/lexer/scan.rkt b/doclib/lexer/scan.rkt
+index 91c2c90..501fe34 100644
+--- a/doclib/lexer/scan.rkt
++++ b/doclib/lexer/scan.rkt
+@@ -1,6 +1,7 @@
+ #lang racket/base
+ 
+ (require "snapshot.rkt"
++         "../textbuffer/text-port.rkt"
+          racket/contract
+          racket/match
+          racket/string
+@@ -91,8 +92,7 @@
+ 
+ (define/contract (text->lexer-token-spans text)
+   (-> string? (vectorof LexerTokenSpan?))
+-  (define in (open-input-string text))
+-  (port-count-lines! in)
++  (define in (open-input-text text))
+   (define-values (initial-txt initial-type _initial-paren? initial-start initial-end lexer)
+     (get-initial-lexer-state in))
+   ;; The initial token comes from `module-lexer`; subsequent tokens come from
+diff --git a/doclib/textbuffer/text-port.rkt b/doclib/textbuffer/text-port.rkt
+new file mode 100644
+index 0000000..765c21a
+--- /dev/null
++++ b/doclib/textbuffer/text-port.rkt
+@@ -0,0 +1,38 @@
++#lang racket/base
++
++;; With line counting on, Racket reads "\r\n" as one position, while the editor
++;; counts it as two characters, so each position after a CRLF would be one
++;; character early for every CRLF before it. A port from `open-input-text`
++;; keeps Racket's lines and columns and reports each position as the character
++;; offset plus one, so syntax, srcloc and lexer positions are editor positions.
++
++(require racket/port
++         racket/string)
++
++(provide open-input-text)
++
++(define (open-input-text text)
++  (define in (open-input-string text))
++  (port-count-lines! in)
++  ;; Without a CRLF, Racket's positions already count characters.
++  (if (string-contains? text "\r\n")
++      (count-positions-in-characters in text)
++      in))
++
++(define (count-positions-in-characters in text)
++  ;; `file-position` counts the UTF-8 bytes read so far, and `chars-read` is
++  ;; the number of characters they encode. Reading only moves forward.
++  (define chars-read 0)
++  (define bytes-read 0)
++  (define (get-location)
++    (define-values (line column _position) (port-next-location in))
++    (define end (file-position in))
++    (let loop ()
++      (when (< bytes-read end)
++        (set! bytes-read (+ bytes-read (char-utf-8-length (string-ref text chars-read))))
++        (set! chars-read (add1 chars-read))
++        (loop)))
++    (values line column (add1 chars-read)))
++  (define port (transplant-input-port in get-location 1))
++  (port-count-lines! port)
++  port)
+diff --git a/tests/lib/doc-test.rkt b/tests/lib/doc-test.rkt
+index 914736c..7f011d3 100644
+--- a/tests/lib/doc-test.rkt
++++ b/tests/lib/doc-test.rkt
+@@ -619,6 +619,20 @@
+     (check-equal? (read-error-range "#lang racket/base\n\t\"\U0001F600\" (\n")
+                   (Range (Pos 1 6) (Pos 1 7))))
+ 
++  (test-case
++    "Document diagnostics count each CRLF as two characters"
++    ;; Racket reads "\r\n" as one position, so without counting both
++    ;; characters each range on line 2 would start two characters early.
++    ;; U+1F600 is one character and four UTF-8 bytes.
++    (define (diagnostic-ranges text)
++      (map Diagnostic-range
++           (check-syntax-diagnostics (uri->source "file:///tmp/crlf-diagnostic-test.rkt")
++                                     text)))
++    (check-equal? (diagnostic-ranges "#lang racket/base\r\n(void)\r\nunbound-name\r\n")
++                  (list (Range (Pos 2 0) (Pos 2 12))))
++    (check-equal? (diagnostic-ranges "#lang racket/base\r\n\"\U0001F600\"\r\n(\r\n")
++                  (list (Range (Pos 2 0) (Pos 2 1)))))
++
+   (test-case
+     "Document diagnostics accept wrapped #lang headers"
+     (define at-exp-diags
+@@ -1273,6 +1287,45 @@ END
+     (doc-apply-edit! d (Range (Pos 1 18) (Pos 1 19)) "y")
+     (check-equal? (doc-get-text d) "#lang racket\n\"\U0001F600\" (define x 1) y\n"))
+ 
++  ;; Racket reads "\r\n" as one position and the editor as two characters, so
++  ;; without counting both each position on line 2 would be two characters early.
++  (define crlf-text "#lang racket\r\n(define x 1)\r\n#; x (+ x x)\r\n")
++
++  (define (make-expanded-crlf-doc uri)
++    (define d (make-doc uri crlf-text))
++    (doc-expand! d)
++    d)
++
++  (test-case
++    "Definitions count each CRLF as two characters"
++    (define uri "file:///tmp/doc-crlf-definition-test.rkt")
++    (define d (make-expanded-crlf-doc uri))
++    (check-equal? (Location-range (doc-definition d uri (Pos 2 8)))
++                  (Range (Pos 1 8) (Pos 1 9))))
++
++  (test-case
++    "References count each CRLF as two characters"
++    (define uri "file:///tmp/doc-crlf-references-test.rkt")
++    (define d (make-expanded-crlf-doc uri))
++    (check-equal? (map Location-range
++                       (Reference-Source-locations
++                         (Document-Reference-Result-source (doc-references d uri (Pos 2 8) #t))))
++                  (list (Range (Pos 1 8) (Pos 1 9))
++                        (Range (Pos 2 8) (Pos 2 9))
++                        (Range (Pos 2 10) (Pos 2 11)))))
++
++  (test-case
++    "Semantic tokens count each CRLF as two characters"
++    ;; The S-expression comment comes from the lexer, the uses of `x` from
++    ;; expansion.
++    (define d (make-expanded-crlf-doc "file:///tmp/doc-crlf-tokens-test.rkt"))
++    (define tokens (doc-range-tokens d (Range (Pos 2 0) (Pos 3 0))))
++    (check-equal? (encode-semantic-tokens (lambda (pos) (doc-abs-pos->pos d pos)) tokens)
++                  '(2 0 4 5 0
++                    0 6 1 1 0
++                    0 2 1 0 0
++                    0 2 1 0 0)))
++
+   (test-case
+     "doc-definition for imported define"
+     (define-values (d uri) (make-expanded-doc))
+diff --git a/tests/lib/drracket-formatter-test.rkt b/tests/lib/drracket-formatter-test.rkt
+index 6c11025..65e9262 100644
+--- a/tests/lib/drracket-formatter-test.rkt
++++ b/tests/lib/drracket-formatter-test.rkt
+@@ -422,6 +422,21 @@
+                              #:src-dir fixtures-directory)
+       (list (TextEdit (Range (Pos 1 0) (Pos 1 3)) ">>>"))))
+ 
++  (test-case
++    "standard Racket indentation counts each CRLF as two characters"
++    ;; Racket reads "\r\n" as one position, so without counting both
++    ;; characters the tokens of each later line would be misplaced.
++    (when standard-racket-indentation?
++      (define text "#lang racket/base\r\n(define (f x)\r\n(let ([y x])\r\ny))\r\n")
++      (check-equal?
++        (drracket-format-edits text
++                               1
++                               3
++                               #:formatting-options default-options
++                               #:racket-fallback? #t)
++        (list (TextEdit (Range (Pos 2 0) (Pos 2 0)) "  ")
++              (TextEdit (Range (Pos 3 0) (Pos 3 0)) "    ")))))
++
+   (test-case
+     "language indentation replaces all leading whitespace"
+     (define text
 -- 
 2.43.0
 

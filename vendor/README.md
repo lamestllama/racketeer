@@ -18,16 +18,21 @@ upstream merges it:
 
 - `pr-246-utf16-positions.patch`:
   [PR #246](https://github.com/jeapostrophe/racket-langserver/pull/246),
-  "Count LSP columns in UTF-16 code units" (913dabb). Convert between UTF-16
-  protocol columns and Racket character offsets at the editor boundary,
-  including semantic-token lengths and diagnostic ranges.
+  "Count LSP columns in UTF-16 code units" (913dabb, b23ac28, 0f55cad,
+  5a8f67c and b1916ed). Convert between UTF-16 protocol columns and Racket
+  character offsets at the editor boundary, including semantic-token lengths
+  and diagnostic ranges. Diagnostic columns no longer shift after tabs, each
+  CRLF counts as two characters, and reading a position no longer changes the
+  editor while only its read lock is held.
 
 - `pr-247-open-buffer-imports.patch`:
   [PR #247](https://github.com/jeapostrophe/racket-langserver/pull/247),
-  "Read imports from open editor buffers" (50d6f8d and ea54295). Analyse
-  imports using one immutable snapshot of the open buffers, record the module
-  files each analysis loads, and refresh affected consumers when a dependency
-  opens, changes or closes. Project modules load from source.
+  "Read imports from open editor buffers" (50d6f8d, ea54295, a8d0d5b and
+  f0606dc). Analyse imports using one immutable snapshot of the open buffers,
+  record the module files each analysis loads, and refresh affected consumers
+  when a dependency opens, changes or closes. Project modules load from source.
+  An analysis worker ended on timeout, cancellation or supersession leaves the
+  state it shares with the server complete, so the server no longer hangs.
 
 - `pr-248-relative-import-without-directory.patch`:
   [PR #248](https://github.com/jeapostrophe/racket-langserver/pull/248),

@@ -1,7 +1,7 @@
 From 50d6f8d7e1f65de798ec9e3a95362a6de969f1e9 Mon Sep 17 00:00:00 2001
 From: Eric Parsonage <eric@eparsonage.com>
 Date: Sun, 1 Nov 2026 09:41:13 +1030
-Subject: [PATCH 1/2] Read imports from open editor buffers
+Subject: [PATCH 1/4] Read imports from open editor buffers
 
 Analysis read every imported module from disk, so an unsaved change to an
 open dependency had no effect on the documents that require it. A compiled
@@ -685,7 +685,7 @@ index 8dab376..913dbd2 100644
 From ea54295f388690264e2e464084f5500846e9ced2 Mon Sep 17 00:00:00 2001
 From: Eric Parsonage <eric@eparsonage.com>
 Date: Sun, 1 Nov 2026 10:35:30 +1030
-Subject: [PATCH 2/2] Load project modules from source on Racket 8.0
+Subject: [PATCH 2/4] Load project modules from source on Racket 8.0
 
 get-module-code requires #:sub-path to be a relative path on Racket 8.0
 and earlier, so every analysis that loaded a project module from source
@@ -708,6 +708,321 @@ index c8e2d7b..b75abd6 100644
                                    #:choose (lambda _ 'src)))))]
        [else (ordinary-load file expected)]))
    (parameterize ([current-load/use-compiled load-snapshot]
+-- 
+2.43.0
+
+
+From a8d0d5b18e0a42b5e07e33cdfa67fc33c21b7a65 Mon Sep 17 00:00:00 2001
+From: Eric Parsonage <eric@eparsonage.com>
+Date: Mon, 2 Nov 2026 11:03:34 +1030
+Subject: [PATCH 3/4] Reuse directory-contains? for installed libraries
+
+installed-library? compared exploded paths itself. directory-contains?
+in common/path-util.rkt makes the same lexical prefix test once each root
+is normalized with normalize-source-path, which applies the same
+simplification the removed code did.
+---
+ common/source-snapshot.rkt | 10 ++++------
+ 1 file changed, 4 insertions(+), 6 deletions(-)
+
+diff --git a/common/source-snapshot.rkt b/common/source-snapshot.rkt
+index b75abd6..a204fbe 100644
+--- a/common/source-snapshot.rkt
++++ b/common/source-snapshot.rkt
+@@ -4,10 +4,10 @@
+ ;; disk files. Project dependencies are read from source so compiled
+ ;; intermediates cannot retain an older macro expansion. Libraries outside the
+ ;; project keep their ordinary compiled loading policy.
+-(require racket/list
+-         racket/path
++(require racket/path
+          setup/dirs
+-         syntax/modcode)
++         syntax/modcode
++         "path-util.rkt")
+ 
+ (provide call-with-source-snapshot)
+ 
+@@ -18,12 +18,10 @@
+ ;; Installed collections keep compiled loading even below a project folder,
+ ;; for example when a workspace folder contains the Racket installation.
+ (define (installed-library? file)
+-  (define parts (explode-path file))
+   (for/or ([dir (in-list (filter values (list* (find-collects-dir) (find-pkgs-dir)
+                                                (find-user-collects-dir) (find-user-pkgs-dir)
+                                                (current-library-collection-paths))))])
+-    (define root (explode-path (simplify-path (path->complete-path dir) #f)))
+-    (and (<= (length root) (length parts)) (equal? root (take parts (length root))))))
++    (directory-contains? (normalize-source-path dir) file)))
+ 
+ (define (call-with-source-snapshot sources proc
+                                    #:source? [source? (lambda (_) #f)]
+-- 
+2.43.0
+
+
+From f0606dc68aa2e9e91c6feaf63c6ff762d807f885 Mon Sep 17 00:00:00 2001
+From: Eric Parsonage <eric@eparsonage.com>
+Date: Mon, 2 Nov 2026 11:03:43 +1030
+Subject: [PATCH 4/4] Keep state shared with analysis workers safe when a
+ worker is killed
+
+An analysis worker runs under a custodian that is shut down on timeout,
+cancellation or supersession. The worker recorded each module it loaded
+in a mutable equal?-based hash table, and the controller read the same
+table to find attempts that loaded a changed buffer. A thread terminated
+inside hash-set! on such a table can leave every later operation on it
+blocked, so the controller's next lookup could hang the server.
+
+The record is now a plain mutable box holding an immutable table, which
+the Analysis-Context contract checks. The worker replaces the table with
+box-cas! and the controller reads it with unbox, so a worker killed at
+any point leaves the box holding a complete table and no lock held.
+
+installed-library? called the setup/dirs finders in the worker. Some of
+these calls can force delay/sync promises; killing a worker during an
+unfinished initial computation can leave later forces by other threads
+blocked indefinitely. The four setup roots are now found once, when the
+module is instantiated; current-library-collection-paths is still read
+at each call.
+
+A test shuts a worker down inside the production update of the record,
+then opens another buffer, which makes the controller read that record,
+and requires the open to return. Another test checks that a collection
+path added after startup keeps ordinary loading.
+---
+ common/source-snapshot.rkt             | 17 ++++--
+ lsp/analysis.rkt                       | 34 +++++++++---
+ lsp/source-controller/source-owner.rkt |  6 +--
+ tests/lsp/open-buffer-imports-test.rkt | 74 +++++++++++++++++++++++++-
+ 4 files changed, 116 insertions(+), 15 deletions(-)
+
+diff --git a/common/source-snapshot.rkt b/common/source-snapshot.rkt
+index a204fbe..3a9c1a3 100644
+--- a/common/source-snapshot.rkt
++++ b/common/source-snapshot.rkt
+@@ -17,11 +17,20 @@
+ ;; on-load: receives each module file the expansion loads.
+ ;; Installed collections keep compiled loading even below a project folder,
+ ;; for example when a workspace folder contains the Racket installation.
++;; The setup roots are found when this module is instantiated, outside analysis
++;; workers in the server. Some finders can force shared `delay/sync` promises;
++;; killing an unfinished initial computation can leave later forces blocked.
++;; Collection paths are read at each call, since callers may parameterize them.
++(define installed-roots
++  (map normalize-source-path
++       (filter values (list (find-collects-dir) (find-pkgs-dir)
++                            (find-user-collects-dir) (find-user-pkgs-dir)))))
++
+ (define (installed-library? file)
+-  (for/or ([dir (in-list (filter values (list* (find-collects-dir) (find-pkgs-dir)
+-                                               (find-user-collects-dir) (find-user-pkgs-dir)
+-                                               (current-library-collection-paths))))])
+-    (directory-contains? (normalize-source-path dir) file)))
++  (for/or ([root (in-list (append installed-roots
++                                  (map normalize-source-path
++                                       (current-library-collection-paths))))])
++    (directory-contains? root file)))
+ 
+ (define (call-with-source-snapshot sources proc
+                                    #:source? [source? (lambda (_) #f)]
+diff --git a/lsp/analysis.rkt b/lsp/analysis.rkt
+index 6f3d67f..bf28bc8 100644
+--- a/lsp/analysis.rkt
++++ b/lsp/analysis.rkt
+@@ -55,18 +55,28 @@
+    [dependencies (or/c #f (hash/c path? (or/c #f string?) #:immutable #t))])
+   #:transparent)
+ 
++;; A plain mutable box for CAS publication of plain immutable load tables.
++(define (load-record? value)
++  (and (box? value)
++       (not (immutable? value))
++       (not (impersonator? value))
++       (let ([table (unbox value)])
++         (and (hash? table) (immutable? table) (not (impersonator? table))))))
++
+ ;; Immutable view of the session's editor state for one analysis attempt.
+ ;;
+ ;; buffers: Complete normalized path -> open buffer text, or `#f` when two
+ ;;   buffers claim one path. Imports read these instead of disk files.
+ ;; roots: Directories whose modules load from source rather than from
+ ;;   compiled intermediates.
+-;; loaded: Mutable table this attempt's worker fills while it expands, from
+-;;   module file to the buffer text it read or `#f`. One table per attempt.
++;; loaded: Box of an immutable table from module file to the buffer text it
++;;   read or `#f`. This attempt's worker replaces the table with `box-cas!`
++;;   while it expands. One box per attempt. The controller reads it while the
++;;   worker may be killed; a mutable table could be left locked by the kill.
+ (struct/contract Analysis-Context
+   ([buffers (hash/c path? (or/c #f string?) #:immutable #t)]
+    [roots (listof path?)]
+-   [loaded hash?])
++   [loaded load-record?])
+   #:transparent)
+ 
+ ;; Set by the scheduler for each attempt. `#f` analyses with ordinary loading.
+@@ -129,6 +139,17 @@
+     [(list? value) (map freeze-json value)]
+     [else value]))
+ 
++;; Add `path` to an `Analysis-Context-loaded` record. A kill at any point
++;; leaves the record holding either the previous table or the new one.
++(define (record-load! loaded path text)
++  (let retry ()
++    (define table (unbox loaded))
++    (unless (box-cas! loaded table (hash-set table path text))
++      (retry))))
++
++(module+ test-support
++  (provide record-load!))
++
+ ;; Run Check Syntax for `snapshot` on a private document. On success, install
+ ;; the trace on that document before copying definition and hover facts.
+ ;; Those extractors read the document after that installation.
+@@ -142,8 +163,8 @@
+             (Analysis-Context-buffers context)
+             #:source? (lambda (path) (for/or ([root (in-list roots)]) (directory-contains? root path)))
+             #:on-load (lambda (path)
+-                        (hash-set! (Analysis-Context-loaded context) path
+-                                   (hash-ref (Analysis-Context-buffers context) path #f)))
++                        (record-load! (Analysis-Context-loaded context) path
++                                      (hash-ref (Analysis-Context-buffers context) path #f)))
+             (lambda () (doc-check-syntax doc))))
+         (doc-check-syntax doc)))
+   (define trace (CSResult-trace check-syntax-result))
+@@ -156,5 +177,4 @@
+                                                       (doc-hover-summaries doc)))
+                     (freeze-json (->jsexpr (set->list (send trace get-warn-diags))))
+                     trace contribution
+-                    (and context
+-                         (make-immutable-hash (hash->list (Analysis-Context-loaded context))))))
++                    (and context (unbox (Analysis-Context-loaded context)))))
+diff --git a/lsp/source-controller/source-owner.rkt b/lsp/source-controller/source-owner.rkt
+index 238defb..2906872 100644
+--- a/lsp/source-controller/source-owner.rkt
++++ b/lsp/source-controller/source-owner.rkt
+@@ -224,7 +224,7 @@
+                          (string->immutable-string (with-read-doc (cdr entry) doc-get-text))))
+           buffers)))
+   (define folders (workspace-folders (Source-Controller-workspace controller)))
+-  (Analysis-Context buffers (append folders (map path-only (hash-keys buffers))) (make-hash)))
++  (Analysis-Context buffers (append folders (map path-only (hash-keys buffers))) (box (hash))))
+ 
+ ;; Whether the accepted analysis of `source`, or the attempt now running for
+ ;; it, has loaded `path`. An attempt that has not reached `path` reads it from
+@@ -233,7 +233,7 @@
+   (define accepted (hash-ref (Source-Controller-dependencies controller) (source-id source) #f))
+   (define context (scheduled-analysis-context (Source-Controller-scheduler controller) source))
+   (or (and accepted (hash-has-key? accepted path))
+-      (and context (hash-has-key? (Analysis-Context-loaded context) path))))
++      (and context (hash-has-key? (unbox (Analysis-Context-loaded context)) path))))
+ 
+ ;; Restart analysis of every other open buffer that loaded `changed`. Exact
+ ;; availability is cleared first, so queries wait for facts computed from the
+@@ -262,7 +262,7 @@
+             (set-SafeDoc-analysis-completion!
+               sd (restart-analysis! scheduler snapshot
+                                     #:context (struct-copy Analysis-Context context
+-                                                [loaded (make-hash)])))))))))
++                                                [loaded (box (hash))])))))))))
+ 
+ ;; An analysis read its imports from the buffers open when it started. Any
+ ;; that have since changed, opened or closed make the result stale.
+diff --git a/tests/lsp/open-buffer-imports-test.rkt b/tests/lsp/open-buffer-imports-test.rkt
+index a37b1b6..f540e75 100644
+--- a/tests/lsp/open-buffer-imports-test.rkt
++++ b/tests/lsp/open-buffer-imports-test.rkt
+@@ -4,11 +4,18 @@
+ ;; edits, and analyses again the open documents that loaded it when that
+ ;; buffer opens, changes or closes.
+ (require rackunit
++         racket/async-channel
+          racket/file
+          compiler/cm
+          "../../common/path-util.rkt"
++         "../../common/source.rkt"
++         "../../common/source-snapshot.rkt"
+          "../../common/time.rkt"
++         "../../lsp/analysis.rkt"
++         (submod "../../lsp/analysis.rkt" test-support)
++         "../../lsp/safedoc.rkt"
+          "../../lsp/source-controller.rkt"
++         (submod "../../lsp/source-controller.rkt" owner)
+          "controller-support.rkt")
+ 
+ (define (write-text path text)
+@@ -97,4 +104,69 @@
+         (await-errors session consumer #t)
+         (open! session leaf-path (leaf "new"))
+         (await-errors session consumer #f)
+-        (check-equal? (file->string leaf-path) (leaf "old"))))))
++        (check-equal? (file->string leaf-path) (leaf "old")))))
++
++  (test-case "a collection path added after startup keeps ordinary loading"
++    ;; Every module counts as project source here, so only the collection path
++    ;; can send this module to the ordinary load handler.
++    (define root (make-temporary-file "late-collection~a" 'directory))
++    (define module-file (build-path root "late.rkt"))
++    (write-text module-file "#lang racket/base\n")
++    (define ordinary-loads '())
++    (define ordinary-load (current-load/use-compiled))
++    (dynamic-wind
++      void
++      (lambda ()
++        (parameterize ([current-library-collection-paths
++                        (cons root (current-library-collection-paths))]
++                       [current-load/use-compiled
++                        (lambda (file expected)
++                          (set! ordinary-loads (cons (normalize-source-path file) ordinary-loads))
++                          (ordinary-load file expected))]
++                       [current-namespace (make-base-namespace)])
++          (call-with-source-snapshot (hash) #:source? (lambda (_) #t)
++                                     (lambda () (dynamic-require module-file #f))))
++        (check-not-false (member (normalize-source-path module-file) ordinary-loads)))
++      (lambda () (delete-directory/files root))))
++
++  (test-case "a worker killed inside its load record leaves the controller responsive"
++    ;; The worker is shut down while it adds a module to its load record,
++    ;; inside the hashing of the key. Nothing handles that attempt's
++    ;; completion, so it stays current, and opening another buffer asks
++    ;; whether it loaded that buffer's file.
++    (define entered (make-semaphore 0))
++    (struct stuck ()
++      #:property prop:equal+hash
++      (list (lambda (a b recur) (eq? a b))
++            (lambda (a recur) (semaphore-post entered) (sync never-evt))
++            (lambda (a recur) 0)))
++    (define workers (make-async-channel))
++    (define root (make-temporary-file "open-buffer-kill~a" 'directory))
++    (define custodian (make-custodian))
++    (dynamic-wind
++      void
++      (lambda ()
++        (parameterize ([current-custodian custodian])
++          (define controller
++            (make-source-controller
++              #:resyntax #f
++              #:analyze (lambda (snapshot)
++                          (async-channel-put workers (current-custodian))
++                          (define loaded (Analysis-Context-loaded (current-analysis-context)))
++                          (record-load! loaded (stuck) #f))))
++          (define (open-buffer name)
++            (define path (build-path root name))
++            (source-controller-open! controller (path->source path)
++                                     (new-safedoc (path->uri path) "#lang racket/base\n" 0)))
++          (open-buffer "consumer.rkt")
++          (define worker (await workers 30))
++          (await entered 30)
++          (custodian-shutdown-all worker)
++          (define opened (make-async-channel))
++          (thread (lambda ()
++                    (open-buffer "dependency.rkt")
++                    (async-channel-put opened 'returned)))
++          (check-eq? (await opened 30) 'returned)))
++      (lambda ()
++        (custodian-shutdown-all custodian)
++        (delete-directory/files root)))))
 -- 
 2.43.0
 

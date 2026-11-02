@@ -6,6 +6,7 @@
 - When the debug worker ends before the program finishes, while loading or running, the Debug Console names its exit code or signal and the session ends. A worker killed by signal 9 is reported as the way the system ends a process that runs out of memory.
 - A breakpoint on a line whose code comes from a macro in another file that drops the line's source location, such as `(define dir (make-temporary-directory))` or `(log-warning "writing ~a" dir)`, is verified on that line and stops there, at module level, in function bodies and in submodules. The site takes the location of the macro's name; lines whose code keeps its location are unchanged.
 - Frames no longer carry a copy of their expression's syntax: the site each frame already holds supplies the source, position and span that stack traces and failure locations show. Debugging long function bodies uses less memory: a 1,400-line program of two long functions peaks at 1.5 GB instead of 1.9 GB.
+- Bundle the language server pull requests for UTF-16 positions and unsaved imports at their reviewed heads: columns are counted in UTF-16 after tabs and in CRLF documents, and the server no longer hangs after an analysis is cancelled, times out or is superseded.
 
 ## 0.8.48
 

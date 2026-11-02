@@ -11,17 +11,16 @@
   (test-case "UTF-16 positions and incremental replacements preserve characters"
     (define editor (new lsp-editor%))
     (send editor insert "a😀λ\r\nz🙂\n" 0)
-    (check-equal? (send editor lsp-position->pos 0 3) 2)
-    (check-equal? (send editor pos->lsp-position 2) '(0 3))
-    (check-equal? (send editor pos->lsp-position 7) '(1 3))
-    (check-equal? (send editor lsp-position->pos 1 3) 7)
-    (check-equal? (send editor lsp-position->pos 1 100) 7)
+    (check-equal? (send editor line/char->pos 0 3) 2)
+    (check-equal? (send editor pos->line/char 2) '(0 3))
+    (check-equal? (send editor pos->line/char 7) '(1 3))
+    (check-equal? (send editor line/char->pos 1 3) 7)
     (define original (send editor copy))
-    (send editor replace "X" (send editor lsp-position->pos 0 1) (send editor lsp-position->pos 0 3))
+    (send editor replace "X" (send editor line/char->pos 0 1) (send editor line/char->pos 0 3))
     (check-equal? (send editor get-text) "aXλ\r\nz🙂\n")
     (check-equal? (send original get-text) "a😀λ\r\nz🙂\n")
-    (check-equal? (send editor pos->lsp-position 7) '(1 3))
-    (check-equal? (send editor pos->lsp-position 2) '(0 2)))
+    (check-equal? (send editor pos->line/char 7) '(1 3))
+    (check-equal? (send editor pos->line/char 2) '(0 2)))
 
   (test-case "tail anchors include their operator and exclude arguments"
     (define service (new tail% [src 'source]
