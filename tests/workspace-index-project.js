@@ -38,15 +38,31 @@ async function project(t, env = {}, shared) {
   connection.onRequest('window/workDoneProgress/create', () => null);
   connection.onUnhandledProgress(({ value }) => progress.push(value));
   connection.listen();
-  const stop = async () => {
-    connection.dispose(); child.kill('SIGKILL');
-    child.stdin.destroy(); child.stdout.destroy(); child.stderr.destroy();
-    await closed;
-  };
+  let stopping;
+  const stop = () => stopping ||= (async () => {
+    let deadline;
+    try {
+      if (child.exitCode === null && child.signalCode === null) {
+        // Shutdown reaps analyses, including a worker in a native call. Killing
+        // only the server leaves such a worker unable to read its pipe's EOF.
+        const shutdown = connection.sendRequest('shutdown').catch(error => {
+          if (error.code !== -32600) throw error; // Already shut down by the test.
+        }).then(() => connection.sendNotification('exit')).then(() => closed);
+        await Promise.race([shutdown, new Promise((_, reject) => {
+          deadline = setTimeout(() => reject(new Error('Index server did not shut down during cleanup')), 10000);
+        })]);
+      }
+    } finally {
+      clearTimeout(deadline);
+      connection.dispose(); child.kill('SIGKILL');
+      child.stdin.destroy(); child.stdout.destroy(); child.stderr.destroy();
+      await closed;
+    }
+  })();
   // Windows refuses to remove a running process's working directory, and a hook
   // that fails skips the hooks after it, which would leave the other servers
-  // running. So the folder's first server stops them all before removing it, and
-  // retries while the workers it had see their input end and exit.
+  // running. So the folder's first server shuts them all down before removing
+  // it. Retries cover transient filesystem handles after their processes exit.
   const servers = shared ? shared.servers : [];
   servers.push(stop);
   if (!shared) t.after(async () => {
