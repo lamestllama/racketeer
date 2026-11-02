@@ -89,6 +89,16 @@
       (Source doc (delay (standard-imports doc original contexts path)) arrows
               (expansion-bindings doc (ExpandResult-post-syntax result) path)))))
 
+;; A resolved module in the spelling bindings use: "../a.rkt" and the file it names
+;; must compare as one module.
+(define (normalized-module module)
+  (match module
+    [(? path?) (normalize-source-path module)]
+    [`(submod ,(? path? path) ,submods ...) `(submod ,(normalize-source-path path) ,@submods)]
+    [_ module]))
+(define (resolved-index index file)
+  (normalized-module (resolve-module-path-index index file)))
+
 ;; The core form a fully expanded form is: what its head is bound to at this phase.
 ;; Its spelling alone would misread quoted data, a variable in a list of formals, and
 ;; a core form imported under another name.
@@ -131,7 +141,7 @@
                     (equal? (substring text (car range) (cdr range)) (format "~s" (syntax-e value))))
            (define binding (identifier-binding value phase))
            (when (and (list? binding) (= (length binding) 7))
-             (define module (resolve-module-path-index (car binding) file))
+             (define module (resolved-index (car binding) file))
              (define path (if (pair? module) (cadr module) module))
              (when (path? path)
                (define export-phase (list-ref binding 6))
@@ -220,7 +230,7 @@
 
 (define (resolved-import spec file base)
   (define datum (syntax->datum spec))
-  (define (resolved path) (resolve-module-path (collapse-module-path path base) file))
+  (define (resolved path) (normalized-module (resolve-module-path (collapse-module-path path base) file)))
   ;; A quoted name in a file's module is a primitive module, or else its own submodule.
   (define (quoted name submods)
     (cond
@@ -276,7 +286,7 @@
   (define transformers
     (for/list ([id (in-list (list #'only-in #'except-in #'rename-in #'prefix-in #'combine-in))])
       (define binding (identifier-binding id))
-      (cons (resolve-module-path-index (car binding) file) (cadr binding))))
+      (cons (resolved-index (car binding) file) (cadr binding))))
   (define (walk stx [scoped? #f] [module file])
     (when (syntax? stx)
       (define parts (syntax->list stx))
@@ -289,7 +299,7 @@
         (define identity
           (if scoped?
               (let ([binding (and (identifier? head) (identifier-binding head 0))])
-                (and (list? binding) (cons (resolve-module-path-index (car binding) file) (cadr binding))))
+                (and (list? binding) (cons (resolved-index (car binding) file) (cadr binding))))
               (and binding (cons (Module-Binding-filepath binding) (Module-Binding-id binding)))))
         (cond
           [(and identity (>= (length parts) 2) (member identity transformers) (or scoped? context))

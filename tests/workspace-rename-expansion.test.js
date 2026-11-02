@@ -114,3 +114,19 @@ test('a selector over a quoted submodule name stays independent of another bindi
   const edited = await renamed(t, consumer);
   assert.equal(edited, consumer.replace('(square 1)', '(squared 1)'));
 });
+
+test('an import through a parent directory is the same module', { timeout: 120000 }, async t => {
+  const p = await project(t);
+  const consumer = `#lang racket/base
+(require "../definition.rkt"
+         (only-in "../definition.rkt" square)
+         (prefix-in p: "../definition.rkt"))
+(square 3)
+(p:square 4)
+`;
+  require('node:fs').mkdirSync(p.filename('nested'));
+  p.write('nested/consumer.rkt', consumer);
+  await p.update();
+  const { changes } = await p.rename(p.origin, 'squared');
+  assert.equal(edited(consumer, changes[uri(p.filename('nested/consumer.rkt'))] || []), wholeWord(consumer));
+});
