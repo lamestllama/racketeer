@@ -98,19 +98,30 @@
                          (or (attached-call-armed? call) (not (attached-call-ran? call)))))
                    #t)))
   (define armed-sites '())
+  (define arming-lock (make-semaphore 1))
+  ;; A site still wanted stays armed throughout: the program runs while this does, and a
+  ;; site it passes unarmed is a stop that never comes. So what is new goes on first, and
+  ;; only what is no longer wanted comes off.
   (define (rearm!)
-    (for ([target (in-list armed-sites)]) (arm-site! target #f))
-    (set! armed-sites
-          (if ended?
-              '()
-              (append
-               (for*/list ([bps (in-hash-values breakpoints)] [bp (in-list bps)]
-                           [target (in-list (breakpoint-targets bp))])
-                 target)
-               (for*/list ([st (in-hash-values states)] #:when (state-run-to st)
-                           [target (in-list (cdr (state-run-to st)))])
-                 target))))
-    (for ([target (in-list armed-sites)]) (arm-site! target #t)))
+    (with-continuation-mark debugger-active-key #t
+      (call-with-semaphore
+       arming-lock
+       (lambda ()
+         (define wanted
+           (if ended?
+               '()
+               (append
+                (for*/list ([bps (in-hash-values breakpoints)] [bp (in-list bps)]
+                            [target (in-list (breakpoint-targets bp))])
+                  target)
+                (for*/list ([st (in-hash-values states)] #:when (state-run-to st)
+                            [target (in-list (cdr (state-run-to st)))])
+                  target))))
+         (define still-wanted (for/hasheq ([target (in-list wanted)]) (values target #t)))
+         (for ([target (in-list wanted)]) (arm-site! target #t))
+         (for ([target (in-list armed-sites)] #:unless (hash-ref still-wanted target #f))
+           (arm-site! target #f))
+         (set! armed-sites wanted)))))
   (define (new-breakpoint request)
     (define bp (breakpoint (fresh-id) request '() "Pending source loading" #f 0 'before))
     (with-handlers ([exn:fail? (lambda (e) (set-breakpoint-description! bp (exn-message e)))])

@@ -51,7 +51,9 @@ nothing to do is two reads, a branch and a store: no call and no allocation, wha
 the depth of the stack. It enters the debugger only when the gate is open or its own
 armed flag is set. The gate is a box owned by the loader's creator, open while a step,
 Pause or entry stop is pending. An armed flag is set while a breakpoint or run-to
-target is at that site. A loader created without a gate gets one that stays open, and
+target is at that site. The program runs while breakpoints change, so the session changes
+flags one holder at a time, sets new ones first, and clears only those no longer wanted:
+a breakpoint that is staying is never unarmed for the program to pass. A loader created without a gate gets one that stays open, and
 delivers every site. Code that calls no site at all, such as a procedure returning its
 argument, makes no frame.
 
