@@ -19,6 +19,12 @@ exports.run = async function () {
   const expected = new Map([
     ['experiments/lexical-eval.rkt', 10],
     ['tests/attach.rkt', 28],
+    ['tests/breakpoint-rearming.rkt', 2],
+    ['tests/continuation-reentry.rkt', 5],
+    ['tests/debug-cache-links.rkt', 3],
+    ['tests/definition-allocation.rkt', 14],
+    ['tests/generated-code.rkt', 6],
+    ['tests/site-gate.rkt', 7],
     ['tests/headless.rkt', 22],
     ['tests/instrumentation-lifetime.rkt', 10],
     ['tests/loader-isolation.rkt', 14],
@@ -30,7 +36,7 @@ exports.run = async function () {
     ['tests/source-positions.rkt', 5],
     ['tests/stepping.rkt', 12],
     ['tests/source-loading.rkt', 10],
-    ['tests/thread-pause.rkt', 6],
+    ['tests/thread-pause.rkt', 10],
     ['tests/wxme-source.rkt', 9]
   ]);
   const sessions = [], messages = [], checks = [];
