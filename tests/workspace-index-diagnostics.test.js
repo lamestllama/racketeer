@@ -43,6 +43,8 @@ test('a traced index shows its timer running at regular intervals', { timeout: 1
 test('a pause of the whole server is reported when its timer wakes', { timeout: 120000,
   skip: process.platform === 'win32' }, async t => {
   const p = await project(t, untraced);
+  // The timer runs once the server is serving: stopping it earlier leaves no tick to compare.
+  await p.update();
   p.child.kill('SIGSTOP');
   await delay(7000);
   p.child.kill('SIGCONT');
