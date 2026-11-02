@@ -55,6 +55,7 @@ test('a command name is reported as the file the search path finds first', stand
   assert.equal(racketPath('racket', search), file);
   assert.equal(racketPath(later, search), later);
   assert.equal(racketPath('racket', { PATH: '' }), 'racket');
+  assert.equal(versionProblem('Welcome to Racket v9.0 [cs].', 'racket', search), expected(file));
 });
 
 test('asking a Racket reports only that it is too old', stands, async t => {
@@ -150,7 +151,9 @@ test('Test Explorer says the Racket found is too old, for discovery and for a ru
   assert.equal(totals.errored, 1);
   assert.deepEqual(results.map(result => result.message), [expected(old)]);
   const listed = [...controller.items].map(([, value]) => value)[0];
-  while (listed.error !== expected(old)) await new Promise(setImmediate);
+  const deadline = Date.now() + 20000;
+  while (listed.error !== expected(old) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 50));
+  assert.equal(listed.error, expected(old));
   context.subscriptions.forEach(entry => entry.dispose());
 });
 
