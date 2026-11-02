@@ -67,18 +67,19 @@
          [else
           (set! command (make-step (car remaining) stop))
           (set! remaining (cdr remaining))]))
-     (run-module
-      program
-      #:on-event
-      (lambda (stop)
-        (cond
-          [(not started?)
-           (when (equal? (row stop) at)
-             (set! started? #t)
-             (press! stop))]
-          [(and command (step-reason command stop))
-           (set! rows (cons (row stop) rows))
-           (press! stop)])))
+     (parameterize ([current-output-port (open-output-nowhere)])
+       (run-module
+        program
+        #:on-event
+        (lambda (stop)
+          (cond
+            [(not started?)
+             (when (equal? (row stop) at)
+               (set! started? #t)
+               (press! stop))]
+            [(and command (step-reason command stop))
+             (set! rows (cons (row stop) rows))
+             (press! stop)]))))
      (check-true started? (format "never reached ~s" at))
      (reverse rows))))
 
@@ -252,6 +253,68 @@
     (check-equal? (printed text #:instrument? #t) (printed text #:instrument? #f))
     (check-equal? (printed text #:instrument? #t)
                   "(2 4)\n3\n4\n6\n3\n2\n(7 3)\n(1 2)\n"))
+  (define g "(define (g x) (+ x 1))\n")
+  (test-case "Out in an argument at module level finishes the application, without entering it"
+    (check-equal?
+     (presses (string-append f g "(define (three a b c) (list a b c))\n(three 1 2 (g 3))\n(void)\n")
+              '(before "(g 3)") '(stepOut stepOut))
+     '((after "(three 1 2 (g 3))" "(1 2 4)") (before "(void)"))))
+  (test-case "Out from an argument's return finishes the application around it"
+    (check-equal?
+     (presses (string-append f g "(list (f (g 3)) 9)\n")
+              '(after "(g 3)" "4") '(stepOut stepOut))
+     '((after "(f (g 3))" "8") (after "(list (f (g 3)) 9)" "(8 9)"))))
+  (test-case "Out in nested applications leaves one level for each press"
+    (check-equal?
+     (presses (string-append f g "(list (f (g (f 1))))\n")
+              '(before "(f 1)") '(stepOut stepOut stepOut))
+     '((after "(g (f 1))" "3") (after "(f (g (f 1)))" "6") (after "(list (f (g (f 1))))" "(6)"))))
+  (test-case "Out at a whole module-level application finishes it, without entering it"
+    (check-equal?
+     (presses (string-append f g "(g 3)\n(f 4)\n")
+              '(before "(g 3)") '(stepOut stepOut stepOut))
+     '((after "(g 3)" "4") (before "(f 4)") (after "(f 4)" "8"))))
+  (test-case "Out in a macro use at module level finishes the use"
+    (check-equal?
+     (presses (string-append f "(define-syntax-rule (twice e) (list e e))\n(twice (f 1))\n")
+              '(before "(f 1)") '(stepOut))
+     '((after "(twice (f 1))" "(2 2)"))))
+  (test-case "Out in a macro's template at module level finishes the use"
+    (check-equal?
+     (presses (string-append f "(define-syntax-rule (tmpl e) (+ e (f e)))\n(tmpl 1)\n")
+              '(before "(f e)") '(stepOut))
+     '((after "(tmpl 1)" "3"))))
+  (test-case "Out in a begin inside an application finishes the begin, then the application"
+    (check-equal?
+     (presses (string-append f "(list (begin (f 1) (f 2)) 3)\n")
+              '(before "(f 1)") '(stepOut stepOut))
+     '((after "(begin (f 1) (f 2))" "4") (after "(list (begin (f 1) (f 2)) 3)" "(4 3)"))))
+  (test-case "Out in a begin at module level finishes that form, which is a form of the module"
+    (check-equal?
+     (presses (string-append f "(begin (f 1) (f 2))\n")
+              '(before "(f 1)") '(stepOut stepOut stepOut))
+     '((after "(f 1)" "2") (before "(f 2)") (after "(f 2)" "4"))))
+  (test-case "Out in a for loop's body at module level finishes the loop, past its hidden code"
+    (check-equal?
+     (presses (string-append f "(for ([i (list 1 2)]) (f i))\n")
+              '(before "(f i)") '(stepOut))
+     '((after "(for ([i (list 1 2)]) (f i))"))))
+  (test-case "Out in a thread's own function finishes the evaluation around it"
+    (check-equal?
+     (presses (string-append f "(thread-wait (thread (lambda () (list (list (f 1) 2) 3))))\n")
+              '(before "(f 1)") '(stepOut))
+     '((after "(list (f 1) 2)" "(2 2)"))))
+  (test-case "Out in a function leaves the function, whatever is nested at the stop"
+    (define text (string-append f g "(define (h x) (+ (f (g x)) 1))\n(list (h 1) 2)\n"))
+    (for ([at '((before "(+ (f (g x)) 1)") (before "(f (g x))") (before "(g x)") (after "(g x)" "2"))])
+      (check-equal? (presses text at '(stepOut)) '((after "(h 1)" "5")) (format "from ~s" at)))
+    (check-equal? (presses text '(after "(h 1)" "5") '(stepOut))
+                  '((after "(list (h 1) 2)" "(5 2)"))))
+  (test-case "Over at module level is as it was"
+    (define text (string-append f g "(list (g 3) 2)\n(void)\n"))
+    (check-equal? (presses text '(before "(g 3)") '(next next next next))
+                  '((after "(g 3)" "4") (after "(list (g 3) 2)" "(4 2)") (before "(void)")
+                    (after "(void)" "#<void>"))))
   (test-case "a press from a stop inside generated code lands on a stop outside it"
     (check-equal?
      (presses (program "(for ([i (list 1)]) (f i))" "(void)")

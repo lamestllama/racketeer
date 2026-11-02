@@ -43,8 +43,12 @@ at line 6; further steps enter `app/orders.rkt` and its required files.
 **F10 / Step Over** evaluates the selected expression, including its calls,
 and stops at the call site when it returns, before advancing to the next
 expression. This completion stop lets you inspect or change the return values.
-**Shift+F11 / Step Out** follows the current function's
-return context. **F5 / Continue** runs until a breakpoint, exception, or completion.
+**Shift+F11 / Step Out** leaves the current function and stops at its caller.
+With no caller to return to, as at module level or in the function a thread runs,
+it finishes the evaluation around the stop: from `(g 3)` in `(f 1 v (g 3))` it stops
+when `(f 1 v (g 3))` has returned, without entering `f`. At a whole module-level
+expression it stops when that expression has returned. **F5 / Continue** runs until
+a breakpoint, exception, or completion.
 You can set `stopOnEntry` to `false` to run directly to your first breakpoint.
 
 **Call Stack**, **Variables**, and **Watch**

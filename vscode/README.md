@@ -156,9 +156,10 @@ next expression. The **Return values** scope includes a count, such as **Return
 values (0)**, **Return values (1)** or **Return values (2)**; zero values and one
 `#<void>` value remain distinct. Tail calls have no artificial
 return boundary: stepping over a tail expression follows the enclosing return
-context and can finish the program. Step Out follows the current function's
-return context. Continuation transfers outside a step target are identified in
-the stop description.
+context and can finish the program. Step Out leaves the current function; with
+no caller to return to, as at module level, it finishes the evaluation around the
+stop and does not enter a function. Continuation transfers outside a step target
+are identified in the stop description.
 
 Call Stack distinguishes **Before evaluation** from **Returned N values**.
 At a return stop the marker moves to the expression's closing parenthesis;

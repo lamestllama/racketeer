@@ -9,14 +9,25 @@
     (case mode
       [(next) (or (and (eq? (stop-kind stop) 'before) (stop-token stop))
                   (stop-return-token stop))]
-      [(stepOut) (stop-return-token stop)]
+      [(stepOut) (or (stop-return-token stop) (enclosing-evaluation stop))]
       [else #f]))
-  ;; A callback entered from uninstrumented code has no observable caller.
-  ;; Without a target, the next source boundary is the only available step.
+  ;; A callback entered from uninstrumented code has no observable caller, and no
+  ;; evaluation around a tail expression. Without a target, the next source boundary
+  ;; is the only available step.
   (step (if (or (and (eq? mode 'next) (eq? (stop-kind stop) 'after))
                 (and (memq mode '(next stepOut)) (not target)))
             'stepIn mode)
         target))
+
+;; With no caller to return to, as at module level or in a thread's own function, Out
+;; finishes the evaluation around the stop, or the expression about to run when nothing
+;; is around it. Going on to the next stop could enter a function.
+(define (enclosing-evaluation stop)
+  (define contexts (stop-contexts stop))
+  (cond
+    [(pair? contexts) (car contexts)]
+    [(eq? (stop-kind stop) 'before) (stop-token stop)]
+    [else #f]))
 
 ;; Context identity survives continuation capture/re-entry. Each thread owns
 ;; its own command; a continuation cannot carry a command to another thread.

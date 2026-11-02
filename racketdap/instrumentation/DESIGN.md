@@ -263,7 +263,10 @@ Continue and ordinary stepping cancel pending pauses and resume the other
 stopped threads. DAP singleThread requests leave other threads stopped. Step
 Over and Step Out use the next source boundary when a callback has no observable
 caller or expression-completion target, rather than waiting for a nonexistent
-return stop.
+return stop. Step Out at a stop with no caller, as at module level, first looks for an
+evaluation around the stop, or the expression about to run, so it never enters a function
+that either of those calls. At a tail expression in a thread's function or a callback there is
+neither, and the next source boundary can be inside a function it calls.
 
 Approximate-pause evaluation uses the suspended thread's parameterisation, read
 from its marks up to its root, and live bindings on the service thread, which has
