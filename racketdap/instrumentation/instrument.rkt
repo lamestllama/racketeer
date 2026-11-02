@@ -191,17 +191,30 @@
          (bound-form? (car parts) binding-forms)
          (not (syntax-source (car parts)))
          (not (syntax-property expression 'origin))))
-  (define (site-for expression tail? visible?)
+  (define (in-source? stx)
+    (and (syntax-position stx) (syntax-span stx)
+         (equal? (source-name source) (source-name (syntax-source stx)))))
+  ;; The syntax whose location an expression reports. A macro use written here
+  ;; can expand to code located in the macro's own file or nowhere. The top of
+  ;; that expansion reports the use instead, through the macro name that the
+  ;; expander records in its origin.
+  (define (location-of expression)
+    (if (in-source? expression)
+        expression
+        (let walk ([origin (syntax-property expression 'origin)])
+          (cond [(identifier? origin) (and (original-binding? origin source) (in-source? origin) origin)]
+                [(pair? origin) (or (walk (car origin)) (walk (cdr origin)))]
+                [else #f]))))
+  (define (site-for expression located tail? visible?)
     (and (or coverage? (stoppable? expression)
              ;; A complete module expression is executable even when it is
              ;; only a constant or reference. Keep atomic operands inside
              ;; other expressions out of the ordinary stepping sequence.
              (and expression-boundary? (eq? expression expanded)))
-         (syntax-position expression)
-         (equal? (source-name source) (source-name (syntax-source expression)))
-         (let ([s (site (fresh-id) (syntax-source expression)
-                        (syntax-line expression) (syntax-column expression)
-                        (syntax-position expression) (syntax-span expression)
+         located
+         (let ([s (site (fresh-id) (syntax-source located)
+                        (syntax-line located) (syntax-column located)
+                        (syntax-position located) (syntax-span located)
                         tail? (syntax->datum expression))])
            (when visible? (set! descriptors (cons s descriptors)))
            s)))
@@ -246,10 +259,8 @@
                (call-with-values (lambda () #,call) #,(literal remember-ports))
                #,call))]))
   (define (walk expression environment act tail? [context-name #f])
-    (define range
-      (and (syntax-position expression) (syntax-span expression)
-           (equal? (source-name source) (source-name (syntax-source expression)))
-           (cons (syntax-position expression) (syntax-span expression))))
+    (define located (location-of expression))
+    (define range (and located (cons (syntax-position located) (syntax-span located))))
     (define parent (enclosing-boundary))
     (define current (boundary range (authored? expression range)
                               (not (binding-container? expression))))
@@ -343,7 +354,7 @@
                           current parent)])
         (rewrite)))
     (define visible? (boundary-visible? current))
-    (define descriptor (site-for expression tail? visible?))
+    (define descriptor (site-for expression located tail? visible?))
     (define callback (and visible? on-event))
     (cond
       [(not descriptor) rewritten]

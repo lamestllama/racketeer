@@ -177,3 +177,48 @@ test('a late breakpoint selects an unloaded external module for instrumentation'
   assert.equal((await evaluation).result, '42');
   assert.ok((await ok(client.request('loadedSources'))).sources.some(source => source.path === program));
 });
+
+test('a line whose expansion lost its source location is verified on that line and stops there', async t => {
+  const { client, program } = await prepare(t, [
+    '#lang racket/base',
+    '(require racket/file)',
+    '(define dir (make-temporary-directory))',
+    '(define (write-note)',
+    '  (log-warning "writing ~a" dir)',
+    "  (call-with-output-file (build-path dir \"note\") #:exists 'replace",
+    "    (lambda (out) (write 'note out))))",
+    '(define total (+ 1 2))',
+    '(write-note)',
+    '(delete-directory/files dir)',
+    '(module+ main',
+    '  (define inner (make-temporary-file))',
+    '  (delete-file inner))',
+    ''
+  ].join('\n'));
+  // Macros from other files whose expansions carry no location on these lines:
+  // a definition, a logging form in a function body and a definition in a
+  // submodule. The keyword application and the ordinary line already stopped.
+  const lines = [3, 5, 6, 8, 12];
+  const set = await ok(client.request('setBreakpoints', {
+    source: { path: program }, breakpoints: lines.map(line => ({ line }))
+  }));
+  const ids = new Map(set.breakpoints.map((breakpoint, i) => [breakpoint.id, lines[i]]));
+  await ok(client.request('configurationDone'));
+  const stops = [];
+  for (let i = 0; i < lines.length; i++) {
+    const next = await client.event('stopped');
+    const frame = (await ok(client.request('stackTrace', { threadId: next.body.threadId }))).stackFrames[0];
+    stops.push([ids.get(next.body.hitBreakpointIds[0]), frame.line, frame.column]);
+    await ok(client.request('continue', { threadId: next.body.threadId }));
+  }
+  await client.event('terminated');
+  assert.deepEqual(stops, [[3, 3, 14], [8, 8, 15], [5, 5, 4], [6, 6, 3], [12, 12, 18]]);
+  const latest = new Map();
+  for (const message of client.events) {
+    if (message.event === 'breakpoint') latest.set(message.body.breakpoint.id, message.body.breakpoint);
+  }
+  for (const [id, line] of ids) {
+    assert.equal(latest.get(id).verified, true, `line ${line}: ${latest.get(id).message}`);
+    assert.equal(latest.get(id).line, line);
+  }
+});

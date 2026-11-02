@@ -20,6 +20,11 @@ loaded top-level expressions. Atomic definition initializers and operands inside
 larger expressions remain without their own sites. Descriptors retain original
 source coordinates and expanded expression data; duplicated macro occurrences
 receive independent site IDs.
+A macro use written in the source can expand to code located in the macro's own
+file or nowhere. The top of that expansion takes the location of the use's macro
+name, which the expander records in its origin, so the line that holds the use
+has a site. Code located anywhere in the source keeps that location, including
+a macro's chosen range within its use.
 Binding containers introduced for internal definitions have neither an operator
 source nor an expansion origin. Their inherited enclosing-body range is not a
 separate stop; their initializers and body are still traversed and instrumented.
