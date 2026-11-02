@@ -75,20 +75,21 @@
            (list zo (path-replace-extension zo #".dep"))))))
 
 ;; The libraries the debugger's expansions came from, and what each reads as: its
-;; source and its ordinary compiled files, present or not. A file dated since the
-;; build began may hold something other than what was read, so that build is refused,
-;; and the next one reads it afresh. A date in the future says nothing about this, and
-;; refusing for one would refuse every build.
+;; source and its ordinary compiled files, present or not. A file dated or changed
+;; since the build began may hold something other than what was read, so that build is
+;; refused, and the next one reads it afresh. A date in the future says nothing about
+;; this, and refusing for one would refuse every build.
 (define (library-entries building sources root started)
   (define libraries
     (parameterize ([current-compiled-file-roots (cons building (current-compiled-file-roots))])
       (for/list ([file (in-list (remove-duplicates (append-map module-recorded-dependencies sources)))]
                  #:unless (under? file root))
         file)))
-  (define finished (current-seconds))
+  (define finished (current-inexact-milliseconds))
   (for/list ([file (in-list (remove-duplicates (append-map library-files libraries)))])
     (define stamp (file-stamp file))
-    (when (and stamp (<= started (cdr stamp) finished))
+    (when (and stamp (or (<= (floor (/ started 1000)) (cadr stamp) (/ finished 1000))
+                         (<= started (/ (cddr stamp) 1000000) finished)))
       (error 'compile-debugger "library changed during the build: ~a" file))
     (cons (path->bytes file) stamp)))
 
@@ -144,7 +145,7 @@
     ;; compiler writes a distinct child, so a resumed compiler cannot certify or
     ;; publish another compiler's files at the replacement marker's path.
     (set! work (make-temporary-file "work~a" 'directory building))
-    (define started (current-seconds))
+    (define started (current-inexact-milliseconds))
     (define root (simplify-path debugger-root))
     (define sources (debugger-sources root))
     (define snapshots (source-snapshot sources))

@@ -56,11 +56,15 @@
   (define-values (manifest-entry)
     (lambda (path relative) (cons (path->string relative) (file-sha1 path))))
 
-  ;; How a library file is compared: its size and date, or #f when it is absent.
+  ;; How a library file is compared: its size and date, or #f when it is absent, and
+  ;; when it last changed in any way, which replacing it cannot set back, though it
+  ;; can keep the size and restore the date. Windows gives 0 for that time.
   (define-values (file-stamp)
     (lambda (path)
       (if (file-exists? path)
-          (cons (file-size path) (file-or-directory-modify-seconds path))
+          (let-values ([(stat) (file-or-directory-stat path)])
+            (list* (hash-ref stat 'size) (hash-ref stat 'modify-time-seconds)
+                   (hash-ref stat 'change-time-nanoseconds)))
           #f)))
 
   (define-values (hex)

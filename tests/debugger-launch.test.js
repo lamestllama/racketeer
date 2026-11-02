@@ -627,3 +627,36 @@ test('a user-scope linked library is tracked without adding a collection root', 
   p.write('LATTER');
   assert.equal(p.launch(), 'LATTER\n');
 });
+
+// Windows gives no time that a replacement cannot restore.
+const keepsChangeTime = process.platform !== 'win32';
+test('a library replacement preserving its size and date invalidates a published expansion', { timeout: 300000, skip: !keepsChangeTime }, async t => {
+  const p = libraryProject(t);
+  const published = build(p.files, p.env);
+  assert.ok(fs.existsSync(path.join(published, 'manifest.rktd')));
+  assert.equal(p.launch(), 'FORMER\n');
+  const old = fs.statSync(p.macro);
+  p.write('LATTER');
+  fs.utimesSync(p.macro, old.atime, old.mtime);
+  assert.equal(fs.statSync(p.macro).size, old.size);
+  const direct = spawnSync('racket', [p.target], { env: p.env, encoding: 'utf8', timeout: 30000 });
+  assert.equal(direct.status, 0, direct.stderr);
+  assert.equal(direct.stdout, 'LATTER\n');
+  assert.equal(p.launch(), 'LATTER\n');
+});
+
+test('a library replacement preserving its size and date during compilation is refused', { timeout: 300000, skip: !keepsChangeTime }, async t => {
+  const p = libraryProject(t);
+  const replacement = fs.readFileSync(p.macro, 'utf8').replace('FORMER', 'LATTER');
+  fs.writeFileSync(path.join(p.files.racketdap, 'library-replacer.rkt'), `#lang racket/base
+(require launch-library (for-syntax racket/base racket/file))
+(begin-for-syntax
+  (define file ${JSON.stringify(p.macro)})
+  (define old (file-or-directory-modify-seconds file))
+  (display-to-file ${JSON.stringify(replacement)} file #:exists 'truncate)
+  (file-or-directory-modify-seconds file old))
+`);
+  const published = build(p.files, p.env);
+  assert.ok(!fs.existsSync(published), 'A replacement must not certify the former expansion');
+  assert.equal(p.launch(), 'LATTER\n');
+});
