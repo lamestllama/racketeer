@@ -330,12 +330,12 @@
        (define end (min total (+ start (if (zero? levels) 100 levels))))
        (hasheq 'totalFrames total 'stackFrames
                (for/list ([i (in-range (min start total) end)])
-                 (define raw (stop-frame-source stop i))
-                 (define source (hash-ref sources (syntax-source raw) #f))
+                 (define where (stop-frame-site stop i))
+                 (define source (hash-ref sources (site-source where) #f))
                  (define returned? (and (zero? i) (eq? (stop-kind stop) 'after)))
                  (define return-position (and returned? (site-boundary-position (stop-site stop) 'after)))
-                 (define position (or return-position (syntax-position raw)))
-                 (define loc (if source (location source position (if return-position 1 (syntax-span raw)))
+                 (define position (or return-position (site-position where)))
+                 (define loc (if source (location source position (if return-position 1 (site-span where)))
                                  (hasheq 'line 1 'column 1)))
                  (define label
                    (cond
@@ -547,7 +547,7 @@
     (when (arg config 'racketdapRichInteractions #f)
       (hash-set! failure-sites (current-thread)
                  (cons (car (stop-results stop))
-                       (for/list ([i (in-range (min 8 (stop-frame-count stop)))]) (stop-frame-source stop i)))))
+                       (for/list ([i (in-range (min 8 (stop-frame-count stop)))]) (stop-frame-site stop i)))))
     (when exception-enabled?
       (pause-loop (register-thread) stop "exception" (error-text (car (stop-results stop))) '())))
   (define (request-pause! st batch)

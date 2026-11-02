@@ -51,6 +51,9 @@ stops and decisions. Callback return values do not replace program results.
 
 ## Frames and binding operations
 
+A frame carries its site descriptor, which supplies the source, position and
+span that stack traces and failure locations report.
+
 Source-visible lexical bindings have live getter/setter closures over the real
 program cells. Inner scopes shadow outer names; generated macro bindings do not
 hide source-authored identifiers merely because their printed names coincide.

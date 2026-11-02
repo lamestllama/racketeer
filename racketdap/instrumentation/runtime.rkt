@@ -3,7 +3,7 @@
 ;; SPDX-License-Identifier: Apache-2.0 OR MIT
 (require racket/list (for-syntax racket/base))
 (provide (struct-out site) site-phases site-boundary-position (struct-out unavailable)
-         debug-stop? stop-site stop-kind stop-frame-count stop-frame-source
+         debug-stop? stop-site stop-kind stop-frame-count stop-frame-site
          stop-locals stop-evaluate stop-results
          stop-binding-value stop-set-binding!
          stop-skip! stop-replace-results! stop-approximate?
@@ -29,7 +29,7 @@
 (struct unavailable (reason) #:transparent)
 (struct live-binding (name read write) #:transparent)
 (struct activation (identity return-token) #:transparent)
-(struct frame (activation source bindings module-bindings context-bindings namespace site parameters) #:transparent)
+(struct frame (activation bindings module-bindings context-bindings namespace site parameters) #:transparent)
 (struct debug-stop (site kind frames results token contexts return-token owner live action))
 (define frame-key (make-continuation-mark-key 'racket-debug-frame))
 (define context-key (make-continuation-mark-key 'racket-debug-expression))
@@ -92,8 +92,8 @@
 (define (make-activation)
   (activation (gensym 'activation) (current-expression-token)))
 (define make-live-binding live-binding)
-(define (make-frame activation source bindings module-bindings context-bindings namespace site)
-  (frame activation source bindings module-bindings context-bindings namespace site
+(define (make-frame activation bindings module-bindings context-bindings namespace site)
+  (frame activation bindings module-bindings context-bindings namespace site
          (current-parameterization)))
 
 (define (inspectable-frames [marks #f])
@@ -116,7 +116,7 @@
 (define (stop-kind s) (check-stop s 'stop-kind) (debug-stop-kind s))
 (define (stop-approximate? s) (check-stop s 'stop-approximate?) (eq? (debug-stop-kind s) 'pause))
 (define (stop-frame-count s) (check-stop s 'stop-frame-count) (length (debug-stop-frames s)))
-(define (stop-frame-source s [i 0]) (frame-source (selected-frame s i 'stop-frame-source)))
+(define (stop-frame-site s [i 0]) (frame-site (selected-frame s i 'stop-frame-site)))
 (define (stop-results s)
   (check-stop s 'stop-results)
   (if (eq? (debug-stop-kind s) 'after)

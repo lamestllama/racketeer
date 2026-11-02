@@ -356,7 +356,7 @@
         (let* ([token (car (generate-temporaries '(token)))]
                [decision (car (generate-temporaries '(decision)))]
                [frame-expression
-                #`(make-frame #,act (quote-syntax #,expression)
+                #`(make-frame #,act
                               #,(bindings-expression environment)
                               #,module-bindings-id
                               #,(literal (and module-context

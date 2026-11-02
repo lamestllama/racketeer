@@ -1,13 +1,16 @@
 #lang racket/base
 ;; Copyright (c) 2026 Eric Parsonage
 ;; SPDX-License-Identifier: Apache-2.0 OR MIT
-(require racket/list racket/path "../source.rkt")
+(require racket/list racket/path "../source.rkt" "../instrumentation/runtime.rkt")
 (provide error-locations interaction-source)
 
 (define interaction-source 'racketeer-interaction)
 (define (syntax-location value)
   (srcloc (syntax-source value) (syntax-line value) (syntax-column value)
           (syntax-position value) (syntax-span value)))
+(define (site-location where)
+  (srcloc (site-source where) (site-line where) (site-column where)
+          (site-position where) (site-span where)))
 
 ;; Use only built-in exception metadata. A custom srcloc property can execute
 ;; arbitrary code and must not be invoked while reporting another failure.
@@ -71,7 +74,7 @@
                                                             'endLine end-line 'endColumn end-column
                                                             'approximate approximate? 'submitted submitted?))))])))))
   (for ([raw (in-list explicit)]) (add! raw #f))
-  (for ([raw (in-list frames)]) (add! (syntax-location raw) #f))
+  (for ([where (in-list frames)]) (add! (site-location where) #f))
   ;; An entered expression remains a useful navigation target even when the
   ;; evaluator has no exact location within it. Do not label it as a failing site.
   (when input (add! (srcloc interaction-source 1 0 1 (string-length expression)) #f #t))
