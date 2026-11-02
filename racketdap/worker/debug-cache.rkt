@@ -23,18 +23,28 @@
 
 ;; Generated code names runtime.rkt by absolute path, so the location is part of
 ;; the key along with the files' contents. Dependencies resolve through the
-;; library paths, which a .dep file records only by the file each one found.
+;; library paths and links, which a .dep file records only by the file each one found.
 (define (cache-root directory)
   (define identity
     (list (version) (system-type 'vm) (system-type 'target-machine)
           (map path->bytes* (current-library-collection-paths))
-          (map path->bytes* (filter path? (current-library-collection-links)))
+          (map collection-link-identity (current-library-collection-links))
           (path->bytes* (simplify-path instrumenter-root))
           (for/list ([file (in-list instrumenter-files)])
             (call-with-input-file* (build-path instrumenter-root file) sha1))))
   (define key (let ([o (open-output-bytes)]) (write identity o) (sha1 (open-input-bytes (get-output-bytes o)))))
   (build-path directory key))
 (define (path->bytes* p) (if (path? p) (path->bytes (simplify-path p)) p))
+;; A link can send a collection elsewhere while the file it found before stays as it was,
+;; so what a link says belongs in the key, not only where it is.
+(define (collection-link-identity link)
+  (cond
+    [(path? link)
+     (list (path->bytes* link) (and (file-exists? link) (call-with-input-file* link sha1)))]
+    [(hash? link)
+     (sort (for/list ([(name paths) (in-hash link)]) (cons name (map path->bytes* paths)))
+           string<? #:key (lambda (entry) (format "~s" (car entry))))]
+    [else link]))
 
 (define (entry-path root mode source extension)
   (define-values (dir name)

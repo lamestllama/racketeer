@@ -313,8 +313,11 @@ The compilation manager decides what is current, as `raco make` does for errortr
 through `current-compile`. It runs in the target namespace from the load handler, so
 a file expands once, with its effects where they would be without the cache. It writes
 under a root of its own, one directory per Racket version, VM, target machine,
-library paths and links, and instrumenter files and location. Its modes separate
-debugging from coverage code. A file the debugger does not select but which has no
+library paths, what each collection link says, and instrumenter files and location. A
+link file counts by its contents and a table in memory by its entries: a link can send a
+collection elsewhere while the file it found stays current, which the dependency hashes
+cannot show. Installing or removing a user package therefore starts a new root. Its modes
+separate debugging from coverage code. A file the debugger does not select but which has no
 ordinary compiled file gets a plain entry, so its own dependencies are tracked.
 A file with an ordinary compiled file is reported to the manager by that file's hashes,
 so selecting or deselecting a library rebuilds what was compiled against it.
