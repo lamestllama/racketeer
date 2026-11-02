@@ -77,27 +77,36 @@
   (define report-progress? #f)
   ;; A pass in progress is standard work-done progress, begun once the client has
   ;; accepted its token. Nothing standard keeps a state after a pass ends, so
-  ;; the final state stays private.
+  ;; the final state stays private. The count of files is the message, once the
+  ;; pass has found them. Begin always carries a percentage, since a client may
+  ;; otherwise ignore the later ones.
   (define progress-lock (make-semaphore 1))
   (define progress-token #f)
   (define progress-created? #f)
   (define progress-ended? #f)
-  (define progress-message #f)
+  (define progress-latest #f)
   (define tokens 0)
+  (define (progress-of status)
+    (define indexed (hash-ref status 'indexed))
+    (define total (hash-ref status 'total))
+    (if (zero? total)
+        (hasheq 'percentage 0)
+        (hasheq 'percentage (quotient (* 100 indexed) total)
+                'message (format "~a/~a" indexed total))))
   (define (send-progress! value)
     (reply (hasheq 'jsonrpc "2.0" 'method "$/progress" 'params (hasheq 'token progress-token 'value value))))
   (define (begin-progress!)
-    (send-progress! (hasheq 'kind "begin" 'title "Analysing workspace" 'message progress-message)))
+    (send-progress! (hash-set* progress-latest 'kind "begin" 'title "Analysing workspace")))
   (define (end-progress!)
     (send-progress! (hasheq 'kind "end"))
     (set! progress-token #f)
     (set! progress-created? #f)
     (set! progress-ended? #f))
-  (define (report-progress! message)
-    (set! progress-message message)
+  (define (report-progress! status)
+    (set! progress-latest (progress-of status))
     (set! progress-ended? #f)
     (cond
-      [progress-created? (send-progress! (hasheq 'kind "report" 'message message))]
+      [progress-created? (send-progress! (hash-set progress-latest 'kind "report"))]
       [(not progress-token)
        (set! tokens (add1 tokens))
        (set! progress-token (format "racketeer-index-~a" tokens))
@@ -121,7 +130,7 @@
           (call-with-semaphore progress-lock
             (lambda ()
               (if indexing?
-                  (report-progress! (format "~a files analysed" (hash-ref status 'indexed)))
+                  (report-progress! status)
                   (finish-progress!)))))
         (when (and report-status? (not indexing?))
           (reply (hasheq 'jsonrpc "2.0" 'method "racketeer/indexStatus" 'params status))))))

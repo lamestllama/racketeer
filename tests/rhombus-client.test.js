@@ -55,8 +55,8 @@ function fixture(initialDocuments = [], source = 'bundled') {
   const filename = path.join(__dirname, '../vscode/language-client.js');
   const dependencies = {
     vscode, 'vscode-languageclient/node': { LanguageClient: Client, State: { Running: 'running' }, CloseAction: {} },
-    './workspace-index': { createWorkspaceIndex() {
-      const index = { disposed: false, starts: 0, async start() { this.starts++; }, refresh() {},
+    './workspace-index': { createWorkspaceIndex(_context, options) {
+      const index = { options, disposed: false, starts: 0, async start() { this.starts++; }, refresh() {},
         cancelStart() {}, async dispose() { this.disposed = true; }, provideReferences(...args) { return args.pop()(...args); } };
       indexes.push(index); return index;
     } },
@@ -72,7 +72,7 @@ function fixture(initialDocuments = [], source = 'bundled') {
     setEnabled(value) { enabled = value; changed.emit({ affectsConfiguration: key => key === 'racketdap.languageServer' }); } };
 }
 
-for (const source of ['bundled', 'installed']) test(`Rhombus-only startup registers language analysis, starts its index and shows status (${source})`, async t => {
+for (const source of ['bundled', 'installed']) test(`Rhombus-only startup registers language analysis, leaves its index to the first request and shows status (${source})`, async t => {
   const instance = fixture([{ languageId: 'rhombus' }], source);
   t.after(() => instance.language.dispose());
   await instance.language.whenReady();
@@ -83,7 +83,7 @@ for (const source of ['bundled', 'installed']) test(`Rhombus-only startup regist
       ? [{ language: 'racket', scheme: 'file' }, { language: 'racket', scheme: 'untitled' },
         { language: 'rhombus', scheme: 'file' }, { language: 'rhombus', scheme: 'untitled' }]
       : [{ language: 'racket', scheme: 'file' }, { language: 'rhombus', scheme: 'file' }]);
-  assert.equal(instance.indexes[0].starts, 1);
+  assert.equal(instance.indexes[0].starts, 0, 'The index starts at the first request for it');
   assert.equal(options.synchronize.fileEvents, undefined, 'The index owns file watching');
   assert.equal(instance.status.visible, true);
   assert.match(instance.status.tooltip, /Rhombus/);
@@ -97,6 +97,19 @@ for (const source of ['bundled', 'installed']) test(`Rhombus-only startup regist
   assert.equal(instance.clients.length, 2);
   assert.equal(instance.indexes[0].disposed, true);
   assert.equal(instance.processes[0].disposed, true);
+});
+
+test('the status bar counts a pass and stops when it is stopped', async t => {
+  const instance = fixture([{ languageId: 'rhombus' }], 'bundled');
+  t.after(() => instance.language.dispose());
+  await instance.language.whenReady();
+  const { onStatus } = instance.indexes[0].options;
+  onStatus({ state: 'indexing' });
+  assert.equal(instance.status.text, '$(sync~spin) Racket: indexing');
+  onStatus({ state: 'indexing', message: '3/53' });
+  assert.equal(instance.status.text, '$(sync~spin) Racket: indexing 3/53');
+  onStatus({ state: 'outdated', indexed: 0, total: 0, failures: 0 });
+  assert.equal(instance.status.text, 'Racket: ready');
 });
 
 test('opening the first Rhombus document starts analysis and supports disable/re-enable', async t => {

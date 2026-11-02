@@ -269,8 +269,10 @@ not re-enter the engine. Instances have separate runs, locks and worker slots.
 `revision`, `roots`, `documents` and optional `settings`. Each document has a
 file or untitled URI, an opaque lifetime identity, a version and its text. Revisions increase
 within one instance. The adapter owns incremental changes and assigns a new
-identity when a document closes and reopens. The optional `documentsOnly` hint
-permits reuse only after the engine verifies the new source view against disk.
+identity when a document closes and reopens. A snapshot only marks the index out of
+date. The optional `documentsOnly` hint says that no file on disk changed, so a run
+keeps a snapshot that holds the same sources, and the next request after it has the
+disk verified by a pass. A partial index keeps such a snapshot without a pass.
 Untitled source identities and import bases belong to the analysis snapshot.
 The engine creates no placeholder source files; returned locations retain the
 original document URI.
@@ -281,6 +283,14 @@ requests identify the document lifetime and version; captured-source reference
 requests instead supply the captured text. Results are `AnalysisResult` values
 containing the accepted revision and value, or `AnalysisFailure` values with a
 symbolic reason and message. Adapters choose their protocol's representation.
+
+A pass runs only for a query. A workspace where nobody asks does no index work,
+and the client starts the server process at its first request. The first query
+after a change starts a pass and waits for it, and the status records give its
+`indexed` and `total` files. When the last query waiting for a pass leaves, the
+pass stops and the status becomes `outdated`. A change while a pass runs replaces
+it, and the replacement starts no sooner than 2 seconds after the change, so that
+a run of changes does not start and stop a worker each time.
 
 A pass keeps a file's result unless something it read has changed. Each analysis
 records, as it reads:

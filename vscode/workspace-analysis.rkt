@@ -26,10 +26,14 @@
 
 (struct Settings (enabled? excluded max-files max-bytes timeout) #:transparent)
 (define default-excluded '(".git" "compiled" "node_modules" ".test-output" "dist" "build"))
-;; A run is one analysis of a source view. A later revision that only opens or
-;; closes documents over the same sources is adopted by the run; `revised` is
-;; posted when it is, so waiting requests check their document again.
-(struct Run (generation cancel done revised state indexed failures workspace documents buffers settings roots sources reusable?) #:mutable)
+;; A run is one analysis of a source view, at most one pass, which starts when a
+;; request first waits for the run and stops when the last one leaves. A later
+;; revision that only opens or closes documents over the same sources is adopted
+;; by the run; `revised` is posted when it is, so waiting requests check their
+;; document again. `unverified?` means such a revision came after the pass began,
+;; so the next request needs the disk checked by another pass. A pass starts no
+;; sooner than `not-before`, and `waiting` counts the requests waiting for it.
+(struct Run (generation cancel done revised state indexed total failures workspace documents buffers settings roots sources unverified? not-before waiting) #:mutable)
 ;; `results` holds each file's last successful analysis across runs, as an
 ;; immutable table that a pass can read while a retired one finishes, and `interned`
 ;; the entries that most of those analyses share, so they are held once.
@@ -90,7 +94,7 @@
     [_ "analysis worker stopped without a result"]))
 
 (define (status run)
-  (hasheq 'state (Run-state run) 'indexed (Run-indexed run) 'failures (Run-failures run)))
+  (hasheq 'state (Run-state run) 'indexed (Run-indexed run) 'total (Run-total run) 'failures (Run-failures run)))
 
 (define (report! engine run state indexed failures)
   (call-with-semaphore (WorkspaceAnalysis-lock engine)
@@ -174,12 +178,8 @@
                        (list (for/hash ([file (in-list files)]) (values file (disk-fingerprint file)))
                              (for/hash ([form (in-list forms)]) (values form (resolved-form form)))))]
               [(list 'analyse path max-bytes buffer query buffers roots)
-               (match-define (list contribution text count references disk-current? record) (analyse path max-bytes buffer query buffers roots))
-               (if contribution (list 'ok (contribution->datum contribution) text count references disk-current? record) '(changed))]
-              [(list 'verify sources roots excluded limit buffers)
-               (list 'ok (and (for/and ([(file text) (in-hash buffers)])
-                               (and text (equal? text (hash-ref sources file #f))))
-                             (snapshot-current? sources roots excluded limit (hash))))]
+               (match-define (list contribution text count references record) (analyse path max-bytes buffer query buffers roots))
+               (if contribution (list 'ok (contribution->datum contribution) text count references record) '(changed))]
               [(list 'rename sources roots excluded limit buffers path position name)
                (define (check-snapshot!)
                  (unless (snapshot-current? sources roots excluded limit buffers)
@@ -277,7 +277,7 @@
     (define captured-text (and query (cadddr query)))
     (define bytes
       (with-handlers ([exn:fail:filesystem?
-                       (lambda (e) (if captured-text (changed (list #f #f 0 #f #f #f)) (raise e)))])
+                       (lambda (e) (if captured-text (changed (list #f #f 0 #f #f)) (raise e)))])
         (if buffer (string->bytes/utf-8 buffer)
             (call-with-input-file* path (lambda (in) (read-bytes (add1 max-bytes) in))))))
     (unless (and (bytes? bytes) (<= (bytes-length bytes) max-bytes))
@@ -286,7 +286,7 @@
     (when (and captured-text
                (not (equal? (regexp-replace* #rx"\r\n" captured-text "\n")
                             (regexp-replace* #rx"\r\n" text "\n"))))
-      (changed (list #f text 0 #f #f #f)))
+      (changed (list #f text 0 #f #f)))
     ;; A request's own analysis answers it and stays no longer, so only a pass records.
     (define reads (make-hash))
     (define resolutions (make-hash))
@@ -311,14 +311,11 @@
         (+ (hash-count (Doc-Contribution-definitions contribution))
            (for/sum ([locations (in-hash-values (Doc-Contribution-references contribution))])
              (length locations))))
-      ;; Reuse requires a disk-consistent snapshot, including when buffers close
-      ;; without a file watcher notification.
-      (define disk-current?
-        (with-handlers ([exn:fail:filesystem? (lambda (_) #f)])
-          (equal? bytes (call-with-input-file* path
-                          (lambda (in) (read-bytes (add1 max-bytes) in))))))
-      (unless (or buffer disk-current?)
-        (if captured-text (changed (list #f text 0 #f #f #f))
+      (unless (or buffer
+                  (with-handlers ([exn:fail:filesystem? (lambda (_) #f)])
+                    (equal? bytes (call-with-input-file* path
+                                    (lambda (in) (read-bytes (add1 max-bytes) in))))))
+        (if captured-text (changed (list #f text 0 #f #f))
             (error 'workspace-analysis "file changed during analysis: ~a" path)))
       (list contribution text facts
             (and query
@@ -327,7 +324,6 @@
                         (list (map ->jsexpr (Reference-Source-locations (Document-Reference-Result-source result)))
                               (and (Document-Reference-Result-module-binding result)
                                    (binding->datum (Document-Reference-Result-module-binding result)))))))
-            disk-current?
             (and (not query)
                  (list (sha1-bytes bytes) (hash->list reads) (external-reads externals started)
                        (hash->list resolutions)))))))))
@@ -447,8 +443,7 @@
   (match (compute engine run (Settings-timeout config)
                   (list 'analyse path (Settings-max-bytes config)
                         (hash-ref (Run-buffers run) path #f) #f (Run-buffers run) (Run-roots run)))
-    [(list 'ok contribution text count _ disk-current? (list fingerprint reads externals resolutions))
-     (unless disk-current? (set-Run-reusable?! run #f))
+    [(list 'ok contribution text count _ (list fingerprint reads externals resolutions))
      (define (shared entries)
        (for/list ([entry (in-list entries)])
          (hash-ref! (WorkspaceAnalysis-interned engine) entry entry)))
@@ -467,7 +462,8 @@
   (dynamic-wind
     void
     (lambda ()
-      (unless (sync/timeout 2 (semaphore-peek-evt (Run-cancel run)))
+      (unless (sync/timeout (max 0 (/ (- (Run-not-before run) (current-inexact-monotonic-milliseconds)) 1000))
+                            (semaphore-peek-evt (Run-cancel run)))
         (define-values (files forms) (known-reads (WorkspaceAnalysis-results engine)))
         (match (compute engine run 30 (list 'discover (Run-roots run) (Settings-excluded config)
                                             (Settings-max-files config) files forms))
@@ -480,6 +476,8 @@
              (append (for/list ([(path text) (in-hash (Run-buffers run))] #:when text) path)
                      (filter (lambda (path) (not (hash-has-key? (Run-buffers run) path))) paths)))
            (when (> (length sources) (Settings-max-files config)) (set! failures (add1 failures)))
+           (set-Run-total! run (min (length sources) (Settings-max-files config)))
+           (report! engine run "indexing" indexed failures)
            ;; Reused and new contributions enter the store in the order of a fresh pass.
            (define view
              (for/fold ([view disk]) ([(path text) (in-hash (Run-buffers run))])
@@ -487,11 +485,9 @@
            (for ([path (in-list sources)] [n (in-range (Settings-max-files config))]
                  #:break (or (cancelled? run) (> bytes (* 16 1024 1024)) (> facts 200000)))
              (define held (hash-ref (WorkspaceAnalysis-results engine) path #f))
-             (define reused (and held (result-current? held run path view disk resolved)))
-             ;; Reuse of the whole index requires a disk-consistent snapshot.
-             (when (and reused (not (equal? (Result-fingerprint held) (hash-ref disk path 'unknown))))
-               (set-Run-reusable?! run #f))
-             (match (if reused held (analyse-file engine run path))
+             (match (if (and held (result-current? held run path view disk resolved))
+                        held
+                        (analyse-file engine run path))
                [(? Result? result)
                 (set! bytes (+ bytes (bytes-length (string->bytes/utf-8 (Result-text result)))))
                 (set! facts (+ facts (Result-facts result)))
@@ -540,56 +536,56 @@
             (lambda () (hash-remove! (WorkspaceAnalysis-active-runs engine) done)))
           (semaphore-post done))))))
 
-;; Replaces the current run with a new analysis. The caller holds the lock.
-(define (start-run! engine revision documents buffers config roots)
+;; Replaces the current run with one that has no pass yet. A pass it stops is
+;; reported, since a client shows it as running. The caller holds the lock.
+(define (replace-run! engine revision documents buffers config roots #:not-before [not-before 0])
   (define current (WorkspaceAnalysis-current-run engine))
   (when current (semaphore-post (Run-cancel current)))
   (define workspace (make-workspace))
   (for ([root (in-list roots)]) (workspace-add-folder! workspace root))
   (define run
     (Run revision (make-semaphore) (make-semaphore) (make-semaphore)
-         (if (Settings-enabled? config) "indexing" "disabled") 0 0
-         workspace documents buffers config roots (make-hash) #t))
+         (if (Settings-enabled? config) "outdated" "disabled") 0 0 0
+         workspace documents buffers config roots (make-hash) #f not-before 0))
   (set-WorkspaceAnalysis-current-run! engine run)
-  ((WorkspaceAnalysis-notify engine) (status run))
-  (if (Settings-enabled? config)
-      (start-worker! engine run (lambda () (run-index engine run)))
-      (semaphore-post (Run-done run))))
+  (cond
+    [(not (Settings-enabled? config))
+     ((WorkspaceAnalysis-notify engine) (status run))
+     (semaphore-post (Run-done run))]
+    [(and current (equal? "indexing" (Run-state current)))
+     ((WorkspaceAnalysis-notify engine) (status run))]))
 
-;; Forgets what earlier analyses found, as for a file no analysis registered.
-(define (workspace-analysis-forget! engine)
+;; The same source view, to be analysed when next asked for. The caller holds the lock.
+(define (renew-run! engine run)
+  (replace-run! engine (Run-generation run) (Run-documents run) (Run-buffers run)
+                (Run-settings run) (Run-roots run)))
+
+;; Waits with `wait` for what a run's pass decides. The first to wait starts the
+;; pass, and the last to leave an unfinished one stops it: its completed files
+;; stay in the engine's results for the next pass.
+(define (wait-for-pass engine run wait)
   (call-with-semaphore (WorkspaceAnalysis-lock engine)
-    (lambda () (set-WorkspaceAnalysis-results! engine (hash)))))
-
-;; A complete index stays in use only after the whole disk view is verified in
-;; a cancellable worker, which also finds unreported additions and deletions.
-;; The caller holds the lock.
-(define (verify-run! engine run)
-  (define config (Run-settings run))
-  (set-Run-state! run "indexing")
-  (set-Run-done! run (make-semaphore))
-  ((WorkspaceAnalysis-notify engine) (status run))
-  (start-worker! engine run
     (lambda ()
-      (define verified?
-        (equal? '(ok #t)
-                (compute engine run 10
-                         (list 'verify (make-immutable-hash (hash->list (Run-sources run)))
-                               (Run-roots run) (Settings-excluded config)
-                               (Settings-max-files config) (Run-buffers run)))))
+      (set-Run-waiting! run (add1 (Run-waiting run)))
+      (when (equal? "outdated" (Run-state run))
+        (set-Run-state! run "indexing")
+        ((WorkspaceAnalysis-notify engine) (status run))
+        (start-worker! engine run (lambda () (run-index engine run))))))
+  (dynamic-wind
+    void
+    wait
+    (lambda ()
       (call-with-semaphore (WorkspaceAnalysis-lock engine)
         (lambda ()
-          (when (and (eq? run (WorkspaceAnalysis-current-run engine)) (not (cancelled? run)))
-            (cond
-              [verified?
-               (set-Run-state! run "ready")
-               ((WorkspaceAnalysis-notify engine) (status run))]
-              [else
-               (start-run! engine (Run-generation run) (Run-documents run) (Run-buffers run)
-                           config (Run-roots run))])))))))
+          (set-Run-waiting! run (sub1 (Run-waiting run)))
+          (when (and (zero? (Run-waiting run))
+                     (eq? run (WorkspaceAnalysis-current-run engine))
+                     (equal? "indexing" (Run-state run)))
+            (renew-run! engine run)))))))
 
 ;; An adapter submits complete snapshots: text, document identities, roots and
 ;; settings have one revision. The adapter owns incremental document updates.
+;; A snapshot only marks the index out of date: no work starts until a request.
 (define (workspace-analysis-update! engine params)
   (define revision (hash-ref params 'revision))
   (define config (read-settings (hash-ref params 'settings (hasheq))))
@@ -607,13 +603,11 @@
           (hash-set buffers path (and (not (hash-has-key? buffers path)) (hash-ref doc 'text)))
           buffers)))
   ;; A revision that only opens or closes documents over unchanged sources
-  ;; keeps the current run. A pass in progress reads the disk as it goes, and a
-  ;; partial index is retried by a source change or a refresh. Replacing the
+  ;; keeps the current run, and a request already past its pass keeps its answer.
+  ;; A partial index is retried by a source change or a refresh. Replacing the
   ;; run instead would let a stream of such revisions starve every request.
   (define (adoptable? run)
-    (and (not (cancelled? run))
-         (or (member (Run-state run) '("indexing" "partial"))
-             (and (equal? "ready" (Run-state run)) (Run-reusable? run)))))
+    (and (not (cancelled? run)) (not (equal? "disabled" (Run-state run)))))
   ;; Only this thread replaces runs or their buffers, so files are compared
   ;; outside the lock and the run is checked again under it.
   (define unchanged
@@ -638,8 +632,19 @@
          (set-Run-buffers! current buffers)
          (set-Run-revised! current (make-semaphore))
          (semaphore-post revised)
-         (when (equal? "ready" (Run-state current)) (verify-run! engine current))]
-        [else (start-run! engine revision documents buffers config roots)]))))
+         (when (member (Run-state current) '("indexing" "ready"))
+           (set-Run-unverified?! current #t))]
+        ;; A run of changes while a pass runs would otherwise start and stop a
+        ;; worker for each one, for a request that is waiting.
+        [else (replace-run! engine revision documents buffers config roots
+                            #:not-before (if (and current (equal? "indexing" (Run-state current)))
+                                             (+ (current-inexact-monotonic-milliseconds) 2000)
+                                             0))]))))
+
+;; Forgets what earlier analyses found, as for a file no analysis registered.
+(define (workspace-analysis-forget! engine)
+  (call-with-semaphore (WorkspaceAnalysis-lock engine)
+    (lambda () (set-WorkspaceAnalysis-results! engine (hash)))))
 
 (define (workspace-analysis-query engine operation params [cancel never-evt])
   (unless (memq operation '(references prepare-rename rename))
@@ -666,25 +671,21 @@
       (if (current-document run path)
           (replace-evt (semaphore-peek-evt revised) (lambda (_) (check)))
           always-evt)))
-  ;; A result stands while its run is current and holds the document. A run
-  ;; verifying its disk view for an adopted revision is awaited.
+  ;; A result stands while its run is current and holds the document.
   (define (settle run path respond)
-    (let check ()
-      (define-values (answer verifying?)
-        (call-with-semaphore (WorkspaceAnalysis-lock engine)
-          (lambda ()
-            (define current? (and (eq? run (WorkspaceAnalysis-current-run engine))
-                                  (not (sync/timeout 0 cancel)) (current-document run path)))
-            (define verifying? (and current? (equal? "indexing" (Run-state run))))
-            (values (and current? (not verifying?) (respond)) verifying?))))
-      (cond
-        [verifying?
-         (sync cancel (semaphore-peek-evt (Run-done run)) (semaphore-peek-evt (Run-cancel run))
-               (retired-evt run path))
-         (check)]
-        [else answer])))
+    (call-with-semaphore (WorkspaceAnalysis-lock engine)
+      (lambda ()
+        (and (eq? run (WorkspaceAnalysis-current-run engine))
+             (not (sync/timeout 0 cancel)) (current-document run path)
+             (respond)))))
   (let retry ()
-    (define run (call-with-semaphore (WorkspaceAnalysis-lock engine) (lambda () (WorkspaceAnalysis-current-run engine))))
+    (define run
+      (call-with-semaphore (WorkspaceAnalysis-lock engine)
+        (lambda ()
+          (define current (WorkspaceAnalysis-current-run engine))
+          (when (and current (Run-unverified? current) (equal? "ready" (Run-state current)))
+            (renew-run! engine current))
+          (WorkspaceAnalysis-current-run engine))))
     (define path (and run (file-uri? uri) (uri->path uri)))
     (define doc (and run (current-document run path)))
     (cond
@@ -696,7 +697,9 @@
            (AnalysisFailure 'unavailable "Enable workspace analysis to rename safely across files."))]
       [else
        (define retired (retired-evt run path))
-       (sync cancel (semaphore-peek-evt (Run-done run)) (semaphore-peek-evt (Run-cancel run)) retired)
+       (wait-for-pass engine run
+         (lambda ()
+           (sync cancel (semaphore-peek-evt (Run-done run)) (semaphore-peek-evt (Run-cancel run)) retired)))
        (cond
          [(or (cancelled? run) (sync/timeout 0 cancel) (sync/timeout 0 retired)) (retry)]
          [(not (eq? operation 'references))
@@ -734,8 +737,8 @@
                              (match result
                                ['(changed)
                                 (AnalysisFailure 'changed "Captured source differs from the current file")]
-                               [(list 'ok _ _ _ #f _ _) (accepted run '())]
-                               [(list 'ok _ _ _ (list locations binding) _ _)
+                               [(list 'ok _ _ _ #f _) (accepted run '())]
+                               [(list 'ok _ _ _ (list locations binding) _)
                                 (define live
                                   (Document-Reference-Result
                                     (Reference-Source (source-id (path->source path))

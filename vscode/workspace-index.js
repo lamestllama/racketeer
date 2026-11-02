@@ -10,20 +10,22 @@ const { createLanguageProcess, ownedArgs } = require('./language-process');
 // own document-local references and rename.
 const isSource = document => document.uri.scheme === 'file' && ['racket', 'rhombus'].includes(document.languageId);
 const settingsSection = 'racket-langserver.workspaceAnalysis';
-// A file event outside these suffixes starts no pass. A name with no suffix can
-// be a folder, whose deletion is reported by its own name alone. A macro reading
-// another kind of file is caught up by the next source change or a restart.
+// A file event outside these suffixes waits for the next request, so a program
+// writing logs cannot hold up one that is waiting. A name with no suffix can be a
+// folder, whose deletion is reported by its own name alone.
 const sourceSuffixes = ['.rkt', '.ss', '.scrbl', '.rhm', '.rktl', '.rktd', ''];
 
 // The index has its own document synchronisation and transport. It never sends
 // fake document opens to the language server or consumes the server's live traces.
 function createWorkspaceIndex(context, { executable, timeout, output, onStatus }) {
-  let connection, starting, disposed = false, requested = false, synchronized = false;
+  let connection, starting, disposed = false, synchronized = false;
   let identity = 0, heard = Date.now(), extensions = {}, folders = [];
   const identities = new WeakMap();
   // The documents the server holds, at the versions it has.
   const versions = new WeakMap();
   const watchers = new Map();
+  // File events waiting for the next request: the latest in each folder.
+  const held = new Map();
   const documentIdentity = document => {
     if (!identities.has(document)) identities.set(document, ++identity);
     return identities.get(document);
@@ -43,12 +45,9 @@ function createWorkspaceIndex(context, { executable, timeout, output, onStatus }
   function notify(method, params) {
     void connection.sendNotification(method, params).catch(failure);
   }
-  // Sends over a live connection. Before there is one, an event can still start
-  // the server, which then receives the current state.
+  // Sends over a live connection. A server started later receives the current state.
   function synchronize(send) {
-    if (disposed) return;
-    if (synchronized) send();
-    else if (requested && enabled()) void start().catch(failure);
+    if (!disposed && synchronized) send();
   }
   function didOpen(document) {
     versions.set(document, document.version);
@@ -74,8 +73,10 @@ function createWorkspaceIndex(context, { executable, timeout, output, onStatus }
   }
   function watch({ id, registerOptions }) {
     const report = type => uri => {
-      if (!sourceSuffixes.includes(path.extname(uri.fsPath).toLowerCase())) return;
-      synchronize(() => notify('workspace/didChangeWatchedFiles', { changes: [{ uri: uri.toString(), type }] }));
+      const change = { uri: uri.toString(), type };
+      if (sourceSuffixes.includes(path.extname(uri.fsPath).toLowerCase())) {
+        synchronize(() => notify('workspace/didChangeWatchedFiles', { changes: [change] }));
+      } else synchronize(() => held.set(path.dirname(uri.fsPath), change));
     };
     const items = registerOptions.watchers.flatMap(({ globPattern }) => {
       const watcher = vscode.workspace.createFileSystemWatcher(
@@ -88,8 +89,8 @@ function createWorkspaceIndex(context, { executable, timeout, output, onStatus }
     watchers.get(id)?.dispose();
     watchers.delete(id);
   }
+  // The server starts when first asked for, and its index when a request needs it.
   async function start() {
-    requested = true;
     if (disposed || !enabled()) return;
     if (starting) return starting;
     starting = (async () => {
@@ -130,8 +131,7 @@ function createWorkspaceIndex(context, { executable, timeout, output, onStatus }
       await connection.sendNotification('initialized', {});
       process.ready();
       synchronized = true;
-      // The server's first pass starts once it has its settings, which it can
-      // only have after these messages. It sees what happened during startup.
+      // It sees what happened during startup.
       didChangeFolders();
       for (const document of vscode.workspace.textDocuments) {
         if (isSource(document) && !document.isClosed) didOpen(document);
@@ -174,6 +174,10 @@ function createWorkspaceIndex(context, { executable, timeout, output, onStatus }
     const source = new CancellationTokenSource();
     const linked = token.onCancellationRequested(() => source.cancel());
     heard = Date.now();
+    if (held.size) {
+      notify('workspace/didChangeWatchedFiles', { changes: [...held.values()] });
+      held.clear();
+    }
     return new Promise((resolve, reject) => {
       const check = setInterval(() => {
         if (Date.now() - heard < timeout) return;

@@ -64,6 +64,12 @@ test('the language and workspace index servers end with an extension host that i
         workspaceFolders: [{ uri: ${JSON.stringify(pathToFileURL(directory).href)}, name: 'servers' }],
         capabilities: { workspace: { configuration: true } } });
       await connection.sendNotification('initialized', {});
+      // A pass runs for a request, and this one stays waiting for it.
+      const busy = ${JSON.stringify(pathToFileURL(path.join(directory, 'busy.rkt')).href)};
+      await connection.sendNotification('textDocument/didOpen', { textDocument: { uri: busy, languageId: 'racket', version: 1,
+        text: require('node:fs').readFileSync(${JSON.stringify(path.join(directory, 'busy.rkt'))}, 'utf8') } });
+      void connection.sendRequest('textDocument/references', { textDocument: { uri: busy },
+        position: { line: 0, character: 0 }, context: { includeDeclaration: false } }).catch(() => {});
       console.log(JSON.stringify([language.pid, index.pid]));
     })();`], { stdio: ['ignore', 'pipe', 'inherit'] });
   const servers = await new Promise((resolve, reject) => {

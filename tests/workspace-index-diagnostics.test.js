@@ -60,6 +60,8 @@ test('an untraced index logs a worker that takes seconds to stop, naming its fil
 (begin-for-syntax ((get-ffi-obj "sleep" #f (_fun _uint -> _uint)) 15))\n`);
   p.settings.timeoutSeconds = 5;
   await p.update();
+  const asking = p.references(p.origin).catch(() => {});
   await until(p, /worker at \d+ ms: analyse \S*stuck\.rkt: killed after \d+ ms\n[^]*stuck\.rkt: reaped after \d+ ms\n/, 90);
   assert.doesNotMatch(p.diagnostics(), /: (starting|kill requested)\n/);
+  await asking;
 });

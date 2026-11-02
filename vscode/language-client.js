@@ -157,11 +157,13 @@ function registerLanguageTools(context, debugSources) {
       executable, timeout: startupTimeoutSeconds * 1000, output,
       onStatus: result => {
         if (client !== next) return;
-        if (result.state !== 'indexing') output.appendLine(
+        if (!['indexing', 'outdated'].includes(result.state)) output.appendLine(
           `Workspace index: ${result.state}, ${result.indexed} files analysed, ${result.failures} failures.`);
         if (result.state === 'indexing') {
-          showStatus('$(sync~spin) Racket: indexing',
-            `Finding workspace references: ${result.message}. Reference requests wait for this pass.`);
+          showStatus(`$(sync~spin) Racket: indexing${result.message ? ` ${result.message}` : ''}`,
+            `Finding workspace references${result.message ? `: ${result.message} files analysed` : ''}. Reference requests wait for this pass.`);
+        } else if (result.state === 'outdated') {
+          showStatus('Racket: ready', 'Workspace references are analysed again at the next request for them.');
         } else if (result.state === 'partial') {
           showStatus('$(warning) Racket: partial references',
             'Some files could not be analysed or an indexing limit was reached. References may be incomplete. See Language Server Output; run Racket: Refresh Workspace References to retry.');
@@ -189,7 +191,6 @@ function registerLanguageTools(context, debugSources) {
     catch { return; } // The client has already reported the startup failure.
     if (!process.cancelled && !disposed && next.isRunning()) {
       debugSources.setLanguageClient(next, (...args) => nextIndex.provideReferences(...args));
-      await nextIndex.start().catch(error => output.appendLine(`Workspace index: ${error.message}`));
     }
   }
 

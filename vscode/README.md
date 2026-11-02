@@ -666,7 +666,10 @@ completion before using a build.
 Racketeer analyses unopened Racket module files in trusted workspaces using a
 separate indexing service. It works with either the bundled or installed language
 server, reusing the bundled analysis libraries.
-Find All References waits for the current analysis pass and can be cancelled.
+Nothing is analysed until a request asks: the first Find All References or Rename
+after a change waits for an analysis pass, which can be cancelled and which keeps
+what it finished. A pass analyses again only the files whose text or dependencies
+changed.
 Unsaved editor buffers remain authoritative for their own source files; closing
 a buffer returns that file to disk analysis. Dependencies are loaded from disk,
 so save changes to imported modules before relying on dependent analysis.
@@ -689,11 +692,12 @@ a pass accepts at most 16 MiB of source input and 200,000 reference/definition
 locations. Excluded directories and symbolic links are not scanned. Reaching
 a limit or failing to analyse a file produces a partial index.
 
-Changes to source files within watched workspace directories restart analysis about
-two seconds after the last change, and so does deleting a folder. Changes to other
-kinds of file do not, even if a reader or macro uses them. For those, dependencies
-outside those directories, excluded files, environment changes and nondeterministic
-macros require a manual refresh. Initial indexing can take time, especially
+Changes within watched workspace directories mark the analysis out of date. A
+pass then checks every file each analysis loaded or registered with the compiler,
+wherever it is. A macro reading a file it does not register sees that file only
+at the next change to a file loaded with it, after a refresh or a restart.
+Excluded files, environment changes and nondeterministic macros also require a
+manual refresh. Initial indexing can take time, especially
 when dependencies are not compiled. These limits bound work and retained facts;
 they are not a total process memory limit. Both language tools use Racket's
 compilation cache under the Racket addon directory's `racketeer`

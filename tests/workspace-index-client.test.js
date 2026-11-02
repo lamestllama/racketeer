@@ -364,7 +364,7 @@ test('captured references survive source document replacement and reject changed
   assert.equal(await refs(), undefined, 'Completed sessions cannot supply source references');
 });
 
-test('a file event starts a pass only for a source file or a name with no suffix', { timeout: 10000 }, async t => {
+test('a file event reaches the server at once only for a source file or a name with no suffix', { timeout: 10000 }, async t => {
   const c = indexPeer(t);
   c.open('definition.rkt', definition);
   await c.index.start();
@@ -380,6 +380,35 @@ test('a file event starts a pass only for a source file or a name with no suffix
   await updated(2);
   event('removed-folder');
   await updated(3);
+});
+
+test('the server starts at the first request, not for documents, edits or a refresh', { timeout: 10000 }, async t => {
+  let started = 0;
+  const c = indexPeer(t, () => { started++; return {}; });
+  const doc = c.open('definition.rkt', definition);
+  doc.version++; c.changed.emit({ document: doc, contentChanges: [{ text: definition }] });
+  c.index.refresh();
+  await new Promise(resolve => setTimeout(resolve, 100));
+  assert.equal(started, 0);
+  await c.refs(doc);
+  assert.equal(started, 1);
+  assert.equal(c.snapshots.length, 1, 'It hears the current documents once');
+});
+
+test('a file event outside the source suffixes waits for the next request and arrives once per folder', { timeout: 10000 }, async t => {
+  const c = indexPeer(t), doc = c.open('definition.rkt', definition), order = [];
+  const event = name => c.disk.emit(c.parse(`file://${path.join(c.directory, name)}`));
+  await c.index.start();
+  await new Promise(resolve => setTimeout(resolve, 100));
+  c.connection.onNotification('workspace/didChangeWatchedFiles', ({ changes }) => order.push(changes.map(change => path.basename(change.uri))));
+  c.connection.onRequest(wire('references'), () => { order.push('request'); return []; });
+  for (const name of ['program.log', 'program.log', 'later.log', 'build/output.json']) event(name);
+  await new Promise(resolve => setTimeout(resolve, 100));
+  assert.deepEqual(order, [], 'A request that is waiting cannot be held up by them');
+  await c.refs(doc);
+  assert.deepEqual(order, [['later.log', 'output.json'], 'request']);
+  await c.refs(doc);
+  assert.deepEqual(order, [['later.log', 'output.json'], 'request', 'request']);
 });
 
 test('a client leaves captured references to the language server unless the server offers them', async t => {

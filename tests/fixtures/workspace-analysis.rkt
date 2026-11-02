@@ -68,6 +68,8 @@
       (lambda ()
         (update! one (fixture first blocked))
         (update! two (fixture second))
+        ;; A pass runs for a request, and this one holds it open until the close.
+        (define asking (thread (lambda () (query one 'references (request first)))))
         (define ready (query two 'references (request second)))
         (check-true (result? ready) "one instance must not occupy another's worker slot")
         (define deadline (+ (current-inexact-milliseconds) 15000))
@@ -86,6 +88,7 @@
         (await closing 10 "engine shutdown")
         (check-eq? (failure-reason (await replies 5 "closed engine query")) 'closed)
         (await pending 5 "query thread exit")
+        (await asking 5 "first request's end")
         (check-true (result? (query two 'references (request second)))))
       (lambda ()
         (close! one) (close! two)

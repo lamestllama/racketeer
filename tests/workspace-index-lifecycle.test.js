@@ -160,6 +160,7 @@ test('index status is sent only to a client that asked for it', { timeout: 12000
   assert.equal((await plain.next()).id, 1, 'The first message is the answer');
   const asked = rawServer(t);
   await initialize(asked, asking, directory);
+  open(asked, directory); asked.send(references(directory, 1));
   const status = await asked.next();
   assert.equal(status.method, 'racketeer/indexStatus');
   assert.equal(status.params.state, 'ready', 'Status reports only the final state');
@@ -168,9 +169,11 @@ test('index status is sent only to a client that asked for it', { timeout: 12000
 test('a pass reports progress only to a client that offers it, and only once its token is accepted', { timeout: 120000 }, async t => {
   const directory = workspace(t), plain = rawServer(t);
   await initialize(plain, asking, directory);
+  open(plain, directory); plain.send(references(directory, 1));
   assert.equal((await plain.next()).method, 'racketeer/indexStatus', 'No progress without the offer');
   const server = rawServer(t);
   await initialize(server, { ...asking, window: { workDoneProgress: true } }, directory);
+  open(server, directory); server.send(references(directory, 1));
   const create = await server.next();
   assert.equal(create.method, 'window/workDoneProgress/create');
   const following = server.next();
@@ -178,11 +181,17 @@ test('a pass reports progress only to a client that offers it, and only once its
   assert.equal(held, 'nothing', 'Nothing is sent on a token the client has not accepted');
   server.send({ id: create.id, result: null });
   const seen = [];
+  let last;
   for (let message = await following; !seen.includes('status'); message = await server.next()) {
     if (message.method === '$/progress') {
+      const { value } = message.params;
       assert.equal(message.params.token, create.params.token);
-      seen.push(message.params.value.kind);
-      if (message.params.value.kind === 'begin') assert.equal(message.params.value.title, 'Analysing workspace');
+      seen.push(value.kind);
+      if (value.kind === 'begin') {
+        assert.equal(value.title, 'Analysing workspace');
+        assert.equal(value.percentage, 0, 'A percentage only counts when begin carries one');
+      }
+      if (value.kind === 'report') last = value;
     } else if (message.method === 'racketeer/indexStatus') {
       assert.equal(message.params.state, 'ready');
       seen.push('status');
@@ -191,13 +200,16 @@ test('a pass reports progress only to a client that offers it, and only once its
   }
   assert.equal(seen[0], 'begin');
   assert.deepEqual(seen.slice(-2), ['end', 'status']);
+  assert.deepEqual(last, { kind: 'report', percentage: 100, message: '1/1' });
 });
 
 test('a pass that ends before its token is accepted still begins and ends', { timeout: 120000 }, async t => {
   const directory = workspace(t), server = rawServer(t);
   await initialize(server, { ...asking, window: { workDoneProgress: true } }, directory);
+  open(server, directory); server.send(references(directory, 1));
   const create = await server.next();
   assert.equal((await server.next()).params.state, 'ready', 'The final state does not wait for the token');
+  assert.equal((await server.next()).id, 1, 'Nor does the answer');
   server.send({ id: create.id, result: null });
   assert.equal((await server.next()).params.value.kind, 'begin');
   assert.equal((await server.next()).params.value.kind, 'end');
@@ -269,13 +281,27 @@ test('a request waits for settings already asked for', { timeout: 120000 }, asyn
   assert.equal(asked.filter(message => message.method === 'workspace/configuration').length, 2);
 });
 
-test('the refresh command starts a pass and an unknown command is refused', { timeout: 120000 }, async t => {
+test('the refresh command makes the next request start a pass and an unknown command is refused', { timeout: 120000 }, async t => {
   const directory = workspace(t), server = rawServer(t);
   await initialize(server, asking, directory);
-  assert.equal((await server.next()).params.state, 'ready', 'The first pass');
+  open(server, directory);
+  server.send(references(directory, 'first'));
   server.send({ id: 'unknown', method: 'workspace/executeCommand', params: { command: 'no.such.command' } });
-  assert.equal((await server.next()).error.code, -32602);
+  const seen = new Map();
+  let passes = 0;
+  const until = async done => {
+    while (!done()) {
+      const message = await server.next();
+      if (message.id) seen.set(message.id, message);
+      if (message.params?.state === 'ready') passes++;
+    }
+  };
+  await until(() => seen.has('first') && seen.has('unknown') && passes === 1);
   server.send({ id: 'refresh', method: 'workspace/executeCommand', params: { command: 'racketeer.refreshWorkspaceIndex' } });
-  assert.equal((await server.next()).result, null);
-  assert.equal((await server.next()).params.state, 'ready', 'Another pass');
+  await until(() => seen.has('refresh'));
+  assert.equal(passes, 1, 'The refresh itself starts no pass');
+  server.send(references(directory, 'second'));
+  await until(() => seen.has('second') && passes === 2);
+  assert.equal(seen.get('unknown').error.code, -32602);
+  assert.equal(seen.get('refresh').result, null);
 });

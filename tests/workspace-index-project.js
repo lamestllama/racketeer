@@ -22,7 +22,7 @@ test.after(() => fs.rmSync(addon, { recursive: true, force: true }));
 // server that starts with nothing over the same files and buffers.
 async function project(t, env = {}, shared) {
   const directory = shared ? shared.directory : fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'racketeer-index-')));
-  const documents = new Map(), notifications = [];
+  const documents = new Map(), notifications = [], progress = [];
   let identity = 0, diagnostics = '';
   const child = spawn('racket', [path.join(root, 'vscode/workspace-index-server.rkt')], {
     cwd: directory, stdio: 'pipe', env: { ...process.env, PLTADDONDIR: addon, ...env }
@@ -32,6 +32,8 @@ async function project(t, env = {}, shared) {
   const connection = rpc.createMessageConnection(new rpc.StreamMessageReader(child.stdout), new rpc.StreamMessageWriter(child.stdin));
   connection.onClose(() => connection.dispose());
   connection.onNotification('racketeer/indexStatus', status => notifications.push(status));
+  connection.onRequest('window/workDoneProgress/create', () => null);
+  connection.onUnhandledProgress(({ value }) => progress.push(value));
   connection.listen();
   t.after(async () => {
     connection.dispose(); child.kill('SIGKILL');
@@ -97,13 +99,13 @@ async function project(t, env = {}, shared) {
   else { write('definition.rkt', definition); write('uses.rkt', uses); open('definition.rkt', definition); }
   const origin = uri(filename('definition.rkt'));
   await connection.sendRequest('initialize', { processId: null, rootUri: null, workspaceFolders: roots.map(root => ({ uri: root, name: root })),
-    capabilities: { textDocument: { rename: { prepareSupport: true } },
+    capabilities: { window: { workDoneProgress: true }, textDocument: { rename: { prepareSupport: true } },
       workspace: { configuration: true, workspaceEdit: { documentChanges: true },
         didChangeWatchedFiles: { dynamicRegistration: true } },
       experimental: { racketeer: { indexStatus: true, sourceReferences: true } } } });
   await notify('initialized', {});
   await update();
-  return { child, directory, documents, notifications, filename, write, open, origin, update, references, rename, settings, roots,
+  return { child, directory, documents, notifications, progress, filename, write, open, origin, update, references, rename, settings, roots,
     request: (method, params) => connection.sendRequest(method, params),
     diskChange: name => notify('workspace/didChangeWatchedFiles', { changes: [{ uri: uri(filename(name)), type: 2 }] }),
     diagnostics: () => diagnostics };
