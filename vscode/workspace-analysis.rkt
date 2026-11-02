@@ -185,9 +185,18 @@
   (define configured (string->number (or (getenv "RACKETEER_INDEX_WORKER_MEGABYTES") "")))
   (if (exact-positive-integer? configured) configured default-worker-megabytes))
 
+;; One allocation over the limit is refused as an exception, where a custodian would be
+;; shut down by many. The language server's diagnostics report such an exception from
+;; an expansion by printing it into their own error's message.
+(define out-of-memory '(out-of-memory))
+(define (out-of-memory? e)
+  (or (exn:fail:out-of-memory? e)
+      (and (exn? e) (regexp-match? #rx"struct:exn:fail:out-of-memory" (exn-message e)))))
+
 ;; What a worker does: everything that reads, expands or runs a user's code.
 (define (answer request observe)
-  (with-handlers ([(lambda (_) #t)
+  (with-handlers ([out-of-memory? (lambda (_) out-of-memory)]
+                  [(lambda (_) #t)
                    (lambda (e) (cons 'failed (if (exn? e) (exn-message e) (format "~s" e))))])
     (parameterize ([current-output-port (open-output-nowhere)]
                    [current-error-port (open-output-nowhere)]
@@ -236,6 +245,9 @@
   (void (sync (thread-dead-evt analysis)))
   (define reply
     (cond
+      [(equal? result out-of-memory)
+       (cons 'stopped (format "analysis~a could not allocate within the ~a MB memory limit for one worker"
+                              (if at (format " of ~a" at) "") megabytes))]
       [result result]
       [(custodian-shut-down? limited)
        (cons 'stopped (format "analysis~a went over the ~a MB memory limit for one worker"

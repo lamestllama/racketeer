@@ -76,6 +76,9 @@
              [source (path->source path)] [doc-text buffer] [lexer-state lexer]))
       (define expand? (Language-Policy-expand? (LexerState-language-policy lexer)))
       (define result (expand-source (path->source path) (open-input-string text) trace #:expand? expand?))
+      ;; Not a fault in the file, so it is not reported as one below.
+      (for ([problem (in-list (list (ExpandResult-pre-exn result) (ExpandResult-post-exn result)))])
+        (when (exn:fail:out-of-memory? problem) (raise problem)))
       (unless (and (ExpandResult-pre-syntax result)
                    (or (not expand?) (ExpandResult-post-syntax result)))
         (refuse (format "Cannot analyse ~a with the proposed names and current buffers." path)))

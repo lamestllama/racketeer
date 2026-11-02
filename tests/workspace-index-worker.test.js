@@ -95,6 +95,33 @@ test('a rename stopped by the memory limit says why and names the file, and a la
   });
 });
 
+// One allocation over the limit is refused as an exception, not by ending the custodian.
+const allocateOverLimit = '(let ([kept (make-vector 20000000 0)]) (collect-garbage) (void (vector-length kept)))';
+test('one allocation over the memory limit says so in words, and the index carries on', { timeout: 120000 }, async t => {
+  const p = await project(t, low);
+  p.write('bounded.rkt', compileTime(allocateOverLimit));
+  await p.update();
+  assert.equal(from(await p.references(p.origin), uri(p.filename('uses.rkt'))).length, 1);
+  assert.equal(p.notifications.at(-1).state, 'partial', p.diagnostics());
+  assert.match(p.diagnostics(), /bounded\.rkt \(analysis of [^)]*bounded\.rkt could not allocate within the 64 MB memory limit/);
+  assert.doesNotMatch(p.diagnostics(), /struct:/);
+});
+
+test('one allocation over the memory limit also explains why a rename stopped', { timeout: 120000 }, async t => {
+  const p = await project(t, low), marker = p.filename('allocate');
+  p.write('later.rkt', compileTime(`(when (file-exists? ${quoted(marker)}) ${allocateOverLimit})`));
+  await p.update();
+  await p.references(p.origin);
+  assert.equal(p.notifications.at(-1).state, 'ready', p.diagnostics());
+  fs.writeFileSync(marker, '');
+  await assert.rejects(p.rename(p.origin, 'squared'), error => {
+    assert.match(error.message, /64 MB memory limit/);
+    assert.match(error.message, /later\.rkt/);
+    assert.doesNotMatch(error.message, /struct:|Cannot analyse/);
+    return true;
+  });
+});
+
 test('a worker in a blocking C call is stopped at its time limit, and the index carries on', { timeout: 120000 }, async t => {
   const p = await project(t, {});
   p.settings.timeoutSeconds = 3;
