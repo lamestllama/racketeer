@@ -370,9 +370,10 @@ lifetime, and a request belongs to the lifetime current when the request is read
 everything sent before it has been read too. A later edit or close retires the request.
 Every change only marks the index out of date, and the next request starts a pass. Opening
 or closing a document over the same sources keeps the index's answers, and the next request
-has the disk verified by a pass. With `workspace.didChangeWatchedFiles.dynamicRegistration`, the server registers `**/*`
-under each folder and ignores reports from excluded directories; what else to report is the client's
-choice. With `workspace.configuration` it pulls the section
+has the disk verified by a pass. With `workspace.didChangeWatchedFiles.dynamicRegistration`, the server registers `**/*`:
+under each folder for a client that offers `relativePatternSupport`, and as a plain pattern otherwise.
+It ignores reports outside the folders and from excluded directories; what else to report is the
+client's choice. With `workspace.configuration` it pulls the section
 `racket-langserver.workspaceAnalysis` after `initialized` and on
 `workspace/didChangeConfiguration`, and a request waits for settings already asked for.
 Answers can arrive in any order, so only the latest pull's answer counts, and a request
@@ -404,8 +405,10 @@ can have the same version and other text. Without the capability, the edit is a 
 
 Passes report work-done progress to a client that offers `window.workDoneProgress`:
 `window/workDoneProgress/create`, then `begin`, `report` after each file, and `end`
-when the pass is `ready`, `partial` or `outdated`. `begin` carries `percentage` 0, since a
-client may otherwise ignore later percentages. Once the pass has found its files, each
+when the pass is `ready`, `partial` or `outdated`. A client that refuses a token gets no
+progress on it and is not asked again. `begin` carries a `percentage`, since a client may
+otherwise ignore later ones, and a token accepted after its pass has finished begins with
+the last count and ends straight away. Once the pass has found its files, each
 value carries the share analysed as `percentage` and the count as `message`, such as
 `12/53`. Partial results are not used, since a result is valid only once its pass settles.
 

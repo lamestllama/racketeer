@@ -233,7 +233,7 @@ test('a pass that ends before its token is accepted still begins and ends', { ti
   assert.equal((await server.next()).params.value.kind, 'end');
 });
 
-const settingsAnd = { workspace: { configuration: true, didChangeWatchedFiles: { dynamicRegistration: true } } };
+const settingsAnd = { workspace: { configuration: true, didChangeWatchedFiles: { dynamicRegistration: true, relativePatternSupport: true } } };
 // Answers the server's requests with `answer`, returning what it asked.
 function answering(server, answer) {
   const asked = [];
@@ -398,4 +398,23 @@ test('a request waits for the latest settings even when an older answer comes fi
     'Settings asked for since are not applied yet');
   latest({ enabled: true });
   assert.equal((await answered).id, 'refs');
+});
+
+test('watched files are registered by a plain pattern for a client without relative patterns', { timeout: 120000 }, async t => {
+  const directory = workspace(t), server = rawServer(t);
+  await initialize(server, { workspace: { didChangeWatchedFiles: { dynamicRegistration: true } } }, directory);
+  const { params: { registrations: [registration] } } = await server.next();
+  assert.equal(registration.registerOptions.watchers[0].globPattern, '**/*');
+});
+
+test('a progress token the client rejects is not used', { timeout: 120000 }, async t => {
+  const directory = workspace(t), server = rawServer(t);
+  await initialize(server, { window: { workDoneProgress: true } }, directory);
+  open(server, directory);
+  server.send(references(directory, 'refs'));
+  const create = await server.next();
+  assert.equal(create.method, 'window/workDoneProgress/create');
+  server.send({ id: create.id, error: { code: -32603, message: 'No progress here' } });
+  const next = await server.next();
+  assert.equal(next.id, 'refs', `Unexpected ${next.method} on a rejected token`);
 });

@@ -113,12 +113,19 @@
        (set! tokens (add1 tokens))
        (set! progress-token (format "racketeer-index-~a" tokens))
        (request! "window/workDoneProgress/create" (hasheq 'token progress-token)
-                 (lambda (_)
+                 ;; An error answer has no result. A client that refuses a token gets no
+                 ;; progress on it, and is not asked again.
+                 (lambda (accepted?)
                    (call-with-semaphore progress-lock
                      (lambda ()
-                       (set! progress-created? #t)
-                       (begin-progress!)
-                       (when progress-ended? (end-progress!))))))]))
+                       (cond
+                         [accepted?
+                          (set! progress-created? #t)
+                          (begin-progress!)
+                          (when progress-ended? (end-progress!))]
+                         [else
+                          (set! report-progress? #f)
+                          (set! progress-token #f)])))))]))
   (define (finish-progress!)
     (cond
       [progress-created? (end-progress!)]
@@ -209,7 +216,10 @@
                           (for/list ([root (in-list added)])
                             (hasheq 'id root 'method watched-files
                                     'registerOptions
-                                    (hasheq 'watchers (list (hasheq 'globPattern (hasheq 'baseUri root 'pattern "**/*")))))))))))
+                                    (hasheq 'watchers (list (hasheq 'globPattern
+                                        (if (capability client-capabilities 'workspace 'didChangeWatchedFiles 'relativePatternSupport)
+                                            (hasheq 'baseUri root 'pattern "**/*")
+                                            "**/*")))))))))))
   ;; Whether a reported change can change a pass: anything under a folder but
   ;; outside the excluded directories, which no glob can leave out.
   (define (relevant-change? uri)
