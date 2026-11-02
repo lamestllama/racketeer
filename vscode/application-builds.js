@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const vscode = require('vscode');
+const { selectedEditor } = require('./selected-editor');
 const path = require('node:path');
 const { activeTarget, targetFor } = require('./execution');
 const { buildPlan, executablePath } = require('./application-build');
@@ -40,7 +41,7 @@ function registerApplicationBuilds(context) {
     try {
       let selected;
       if (action === 'distribution') {
-        const activeUri = vscode.window.activeTextEditor?.document.uri;
+        const activeUri = selectedEditor(vscode.window)?.document.uri;
         const source = request.source ? vscode.Uri.file(request.source) : (await vscode.window.showOpenDialog({
           title: 'Select the Racket executable to distribute', defaultUri: lastExecutable,
           canSelectFiles: true, canSelectFolders: process.platform === 'darwin', canSelectMany: false,

@@ -42,7 +42,7 @@ function client(t, processFactory, timeout = 60000) {
   };
   const module = { exports: {} };
   const filename = path.join(root, 'vscode/workspace-index.js');
-  vm.runInNewContext(fs.readFileSync(filename, 'utf8'), { module, require: name => dependencies[name], setInterval, clearInterval }, { filename });
+  vm.runInNewContext(fs.readFileSync(filename, 'utf8'), { module, require: name => name === './selected-editor' ? require('../vscode/selected-editor') : dependencies[name], setInterval, clearInterval }, { filename });
   const index = module.exports.createWorkspaceIndex({ asAbsolutePath: file => path.join(root, 'vscode', file) }, {
     executable: 'racket', timeout, output: { append() {}, appendLine() {} }, onStatus: value => statuses.push(value)
   });

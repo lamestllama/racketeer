@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const vscode = require('vscode');
+const { selectedEditor } = require('./selected-editor');
 const path = require('node:path');
 const fs = require('node:fs/promises');
 const { createHash } = require('node:crypto');
@@ -134,7 +135,7 @@ function registerDependencies(context) {
   view.message = 'Choose Racket: Browse Module Dependencies. Imports show phase shifts relative to their parent.';
   const browse = async uri => {
     if (!vscode.workspace.isTrusted) return;
-    uri ||= vscode.window.activeTextEditor?.document.uri;
+    uri ||= selectedEditor(vscode.window)?.document.uri;
     if (!uri || uri.scheme !== 'file') { void vscode.window.showErrorMessage('Open a saved Racket module to browse dependencies. Unsaved edits in named buffers are included.'); return; }
     clearTimeout(provider.timer); provider.refresh(uri.fsPath);
     view.message = 'Includes open Racket buffers. Select a module to open its source; expand it to inspect imports.';

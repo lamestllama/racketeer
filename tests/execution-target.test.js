@@ -13,7 +13,7 @@ function setup() {
       save: async uri => { saves.push(uri.fsPath); tab.isDirty = false; return uri; } }
   };
   const module = { exports: {} };
-  vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../vscode/execution.js'), 'utf8'), { module, require: name => name === 'vscode' ? vscode : require(name) });
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../vscode/execution.js'), 'utf8'), { module, require: name => name === 'vscode' ? vscode : name === './selected-editor' ? require('../vscode/selected-editor') : require(name) });
   return { tab, saves, vscode, activeTarget: module.exports.activeTarget };
 }
 test('WXME commands capture the active custom document instead of a background text editor', async () => {

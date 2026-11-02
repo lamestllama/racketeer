@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const vscode = require('vscode');
+const { selectedEditor } = require('./selected-editor');
 const path = require('node:path');
 const os = require('node:os');
 const { createMacroProcess } = require('./macro-process');
@@ -46,7 +47,7 @@ function registerMacroStepper(context) {
   return async function open(wholeFile = false) {
     if (!vscode.workspace.isTrusted) throw new Error('Trust this workspace before expanding Racket macros.');
     if (disposed) throw new Error('The macro-stepper command has stopped.');
-    const target = macroTarget(vscode.window.activeTextEditor, wholeFile);
+    const target = macroTarget(selectedEditor(vscode.window), wholeFile);
     const written = new vscode.EventEmitter();
     const closed = new vscode.EventEmitter();
     const entry = {};

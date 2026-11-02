@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const vscode = require('vscode');
+const { selectedEditor } = require('./selected-editor');
 const { LanguageClient, State, CloseAction } = require('vscode-languageclient/node');
 const { createLanguageProcess, ownedArgs } = require('./language-process');
 const { createWorkspaceIndex } = require('./workspace-index');
@@ -31,7 +32,7 @@ function registerLanguageTools(context, debugSources) {
   function showStatus(text, detail) {
     status.text = text;
     status.tooltip = detail;
-    if (isLanguageDocument(vscode.window.activeTextEditor?.document)) status.show();
+    if (isLanguageDocument(selectedEditor(vscode.window)?.document)) status.show();
     else status.hide();
   }
 

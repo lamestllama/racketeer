@@ -66,7 +66,7 @@ function fixture(initialDocuments = [], source = 'bundled') {
       processes.push(process); return process;
     } }
   };
-  vm.runInNewContext(fs.readFileSync(filename, 'utf8'), { module, require: name => dependencies[name] }, { filename });
+  vm.runInNewContext(fs.readFileSync(filename, 'utf8'), { module, require: name => name === './selected-editor' ? require('../vscode/selected-editor') : dependencies[name] }, { filename });
   const language = module.exports.registerLanguageTools(context, { setLanguageClient() {} });
   return { language, vscode, status, clients, indexes, processes, opened, active, changed, commands, context,
     setEnabled(value) { enabled = value; changed.emit({ affectsConfiguration: key => key === 'racketdap.languageServer' }); } };

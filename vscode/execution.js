@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const vscode = require('vscode');
+const { selectedEditor } = require('./selected-editor');
 const path = require('node:path');
 
 function targetFor(uri) {
@@ -45,7 +46,7 @@ async function activeTarget({ allowWxme = false } = {}) {
     if (!allowWxme || !wxmeTab(tab)) throw new Error('Open a Racket text editor for this command.');
     return saveTarget({ ...targetFor(tab.input.uri), format: 'wxme' });
   }
-  const document = vscode.window.activeTextEditor?.document;
+  const document = selectedEditor(vscode.window)?.document;
   if (!document || document.languageId !== 'racket') throw new Error('Open a Racket source file first.');
   return saveDocument(document);
 }

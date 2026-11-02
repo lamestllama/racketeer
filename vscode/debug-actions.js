@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const vscode = require('vscode');
+const { selectedEditor } = require('./selected-editor');
 
 function registerDebugActions(context, debugSources) {
   const stops = new Map();
@@ -74,7 +75,7 @@ function registerDebugActions(context, debugSources) {
   });
   async function bindingName(name) {
     if (typeof name === 'string') return name;
-    const editor = vscode.window.activeTextEditor;
+    const editor = selectedEditor(vscode.window);
     if (editor) {
       const range = editor.selection.isEmpty
         ? editor.document.getWordRangeAtPosition(editor.selection.active, /[^()\[\]{}\s"'`,;]+/)
@@ -97,7 +98,7 @@ function registerDebugActions(context, debugSources) {
   });
   command('printResults', ({ session, threadId }, request) => session.customRequest(request, { threadId }));
   command('continueToCursor', async ({ session, threadId }, request) => {
-    const editor = vscode.window.activeTextEditor;
+    const editor = selectedEditor(vscode.window);
     if (!editor) throw new Error('Open the target Racket source file.');
     const uri = editor.document.uri;
     const sourcePath = uri.scheme === 'file' ? uri.fsPath : debugSources.pathFor(uri, session.id);

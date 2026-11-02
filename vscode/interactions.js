@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const vscode = require('vscode');
+const { selectedEditor } = require('./selected-editor');
 const path = require('node:path');
 const { InteractionOutput, pngBytes } = require('./interaction-output');
 const { interactionsHtml } = require('./interactions-view');
@@ -28,7 +29,7 @@ function registerInteractions(context, images) {
       // the source, even with preserveFocus, and only showing an editor with
       // focus activates the source group again. Reveal returns to this editor,
       // so commands on the active Racket file still find it.
-      const origin = vscode.window.activeTextEditor;
+      const origin = selectedEditor(vscode.window);
       const panel = vscode.window.createWebviewPanel('racketeer.interactions', `${interactive ? 'Interactions' : 'Results'}: ${path.basename(session.configuration.program)}`,
         { viewColumn: vscode.ViewColumn.Beside, preserveFocus: true },
         { enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [] });
@@ -142,10 +143,10 @@ function registerInteractions(context, images) {
       if (!view || view.closed) { void owner.stop(); return; }
       Object.assign(view, { owner, evaluate, restart });
       status(view);
-      const editor = view.origin || vscode.window.activeTextEditor;
+      const editor = view.origin || selectedEditor(vscode.window);
       view.origin = undefined;
       if (!view.panel.visible) view.panel.reveal(undefined, true);
-      if (editor && !editor.document.isClosed && vscode.window.activeTextEditor?.document !== editor.document)
+      if (editor && !editor.document.isClosed && selectedEditor(vscode.window)?.document !== editor.document)
         await vscode.window.showTextDocument(editor.document, { viewColumn: editor.viewColumn, preserveFocus: false });
     }
   };

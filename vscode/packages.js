@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const vscode = require('vscode');
+const { selectedEditor } = require('./selected-editor');
 const path = require('node:path');
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
@@ -15,7 +16,7 @@ async function runPackageTask(selected, label, args, token) {
 
 function registerPackages(context) {
   async function target() {
-    const uri = vscode.window.activeTextEditor?.document.uri;
+    const uri = selectedEditor(vscode.window)?.document.uri;
     let folder = uri && vscode.workspace.getWorkspaceFolder(uri);
     if (!folder) {
       const folders = vscode.workspace.workspaceFolders || [];

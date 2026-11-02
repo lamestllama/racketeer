@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const vscode = require('vscode');
+const { selectedEditor } = require('./selected-editor');
 const path = require('node:path');
 const { activeTarget } = require('./execution');
 const { registerMacroStepper } = require('./macro-stepper');
@@ -83,15 +84,15 @@ function registerFileCommands(context, sessions, testing, debugRepl, fileRuns) {
     ...Object.fromEntries(Object.entries(fileCommands).map(([name, command]) =>
       [name, async () => command(await activeTarget({ allowWxme: ['runFile', 'runFileInTerminal', 'debugFile'].includes(name) }))])),
     sendSelectionToDebugRepl: async () => {
-      const expressions = selectedExpressions(vscode.window.activeTextEditor);
+      const expressions = selectedExpressions(selectedEditor(vscode.window));
       return debugRepl.evaluate(await activeTarget(), expressions);
     },
     startRepl: () => {
-      const document = vscode.window.activeTextEditor?.document;
+      const document = selectedEditor(vscode.window)?.document;
       return repl(document?.uri.scheme === 'file' ? document : undefined);
     },
     sendSelection: async () => {
-      const editor = vscode.window.activeTextEditor;
+      const editor = selectedEditor(vscode.window);
       const expressions = selectedExpressions(editor);
       const terminal = repl(editor.document.uri.scheme === 'file' ? editor.document : undefined);
       for (const expression of expressions) terminal.sendText(expression);

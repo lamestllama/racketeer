@@ -588,3 +588,49 @@ test('attach trackers do not read a launch program or create an Interactions vie
   assert.equal(interactionsFactory.createDebugAdapterTracker(session), undefined);
   context.subscriptions.forEach(item => item.dispose());
 });
+
+function staleEditorFixture(sameDocument = false) {
+  const callbacks = new Map(), requests = [];
+  let factory;
+  const uri = file => ({ scheme: 'file', fsPath: file, toString: () => `file://${file}` });
+  const editor = (file, viewColumn, line, name) => ({
+    viewColumn,
+    document: { uri: uri(file), getWordRangeAtPosition: () => ({}), getText: () => name },
+    selection: { isEmpty: true, active: { line, character: 0 } }
+  });
+  const stale = editor(sameDocument ? '/workspace/intended.rkt' : '/workspace/old.rkt', 1, 1, 'wrong');
+  const intended = editor('/workspace/intended.rkt', 2, 3, 'right');
+  const session = { id: 'session', type: 'racketdap', customRequest: async (method, args) => { requests.push({ method, args }); } };
+  const vscode = {
+    window: { activeTextEditor: stale, visibleTextEditors: [stale, intended],
+      tabGroups: { activeTabGroup: { viewColumn: 2, activeTab: { input: { uri: intended.document.uri } } } },
+      showErrorMessage() {}, showInputBox() { throw Error('unexpected prompt'); } },
+    debug: { activeDebugSession: session, activeStackItem: { session, threadId: 1, frameId: 2 },
+      registerDebugAdapterTrackerFactory(_type, value) { factory = value; return disposable(); },
+      onDidChangeActiveDebugSession: disposable, onDidTerminateDebugSession: disposable },
+    commands: { registerCommand(id, callback) { callbacks.set(id, callback); return disposable(); }, executeCommand: async () => {} }
+  };
+  load('debug-actions.js', { vscode }).registerDebugActions({ subscriptions: [] }, {});
+  factory.createDebugAdapterTracker(session).onDidSendMessage({ type: 'event', event: 'stopped',
+    body: { threadId: 1, racketdapActions: ['racketdap/continueToLocation', 'racketdap/printBinding', 'racketdap/setBinding'] } });
+  return { callbacks, requests };
+}
+for (const same of [false, true]) test(`Continue to Cursor chooses the intended editor; same document = ${same}`, async () => {
+  const { callbacks, requests } = staleEditorFixture(same);
+  await callbacks.get('racketdap.continueToCursor')();
+  assert.equal(requests[0].args.source.path, '/workspace/intended.rkt');
+  assert.equal(requests[0].args.line, 4);
+});
+test('implicit Print Binding and Set Binding use the intended selection', async () => {
+  const { callbacks, requests } = staleEditorFixture();
+  await callbacks.get('racketdap.printBinding')();
+  await callbacks.get('racketdap.setBinding')(undefined, '10');
+  assert.deepEqual(requests.map(request => request.args.name), ['right', 'right']);
+});
+test('selected editor falls back to the active editor without a matching text tab', () => {
+  const { selectedEditor } = require('../vscode/selected-editor');
+  const active = { viewColumn: 1 };
+  assert.equal(selectedEditor({ activeTextEditor: active }), active);
+  assert.equal(selectedEditor({ activeTextEditor: active, visibleTextEditors: [],
+    tabGroups: { activeTabGroup: { viewColumn: 2, activeTab: { input: { viewType: 'webview' } } } } }), active);
+});
