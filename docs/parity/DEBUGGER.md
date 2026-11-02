@@ -29,7 +29,13 @@ full IDE parity.
 
 The native VS Code names Continue, Step Into, Step Over, Step Out, Call Stack,
 Variables, and Watch remain unchanged. Locals contains the selected frame's
-lexical variables. The Return values scope includes the number of returned
+lexical variables. A binding a macro generated is one of them when an identifier
+in the file refers to it, anywhere in its scope and also after the stop: `it` from
+an anaphoric macro, a name made by `format-id`, `local-pt-x` from a local structure
+whose accessor the source reads. It is the binding that identifier refers to, not
+another of the same name. Hover, Watch, the Debug Console and assignment reach it as
+they reach any variable. Names no source identifier refers to, such as `tmp`,
+`or-part` and `for-loop`, stay hidden. The Return values scope includes the number of returned
 values, including zero; assignment to a variable uses Racket's `set!` semantics.
 Racketeer deliberately retains the completion stop at a function's call site
 after it returns, so its return values can be inspected before advancing.

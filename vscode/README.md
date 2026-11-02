@@ -181,6 +181,10 @@ selected module definitions remain editable, while imported bindings retain
 Racket's assignment protections. **Watch** also evaluates Racket code. Hover reads
 lexical or module variables without expanding user macros.
 
+A variable a macro binds is listed when the source refers to it, as `it` from an
+anaphoric macro is, or an accessor of a local structure that the source reads.
+Temporaries of a macro's own, such as `tmp` or `for-loop`, are not.
+
 The editor context menu and Command Palette provide **Skip Expression** before
 an expression, **Change Return Values** and **Print Return Values to Console**
 after it, plus **Print Variable Value to Console** and **Set Variable Value

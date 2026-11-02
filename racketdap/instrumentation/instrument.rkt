@@ -118,8 +118,10 @@
   (define module-bindings known-module-bindings)
   (define seen-module-bindings (make-free-id-table))
   ;; Macros such as unit replace source bindings with fresh runtime identifiers.
-  ;; The expander retains their aliases in disappeared-binding metadata. Match
-  ;; their binding identities, never their printed names or source positions.
+  ;; The expander retains their aliases in disappeared-binding metadata. A binding
+  ;; a macro generated has a source name too when an identifier in the file refers
+  ;; to it, wherever in its scope that reference is. Match their binding identities,
+  ;; never their printed names or source positions.
   (define lexical-aliases (make-free-id-table))
   (define (collect-aliases value)
     (cond
@@ -131,6 +133,7 @@
   (define (collect-bindings stx)
     (cond
       [(identifier? stx)
+       (collect-aliases stx)
        ;; One entry per binding and name, however many times the form uses it.
        (when (and (original-binding? stx source) (list? (identifier-binding stx))
                   (not (memq (syntax-e stx) (free-id-table-ref seen-module-bindings stx '()))))

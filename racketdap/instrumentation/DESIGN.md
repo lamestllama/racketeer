@@ -119,7 +119,11 @@ span that stack traces and failure locations report.
 
 Source-visible lexical bindings have live accessors over the real program cells. Inner
 scopes shadow outer names; generated macro bindings do not hide source-authored
-identifiers merely because their printed names coincide. Each scope that binds source
+identifiers merely because their printed names coincide. A generated binding is
+source-visible when an original identifier of the file refers to it, found by binding
+identity in one walk of the form before instrumenting it, so a reference after a stop
+counts and a generated binding of the same name without a reference stays hidden.
+Each scope that binds source
 names has one procedure returning its live bindings, in front of its parent's, and
 every site in the scope finds it through the scope's mark. Each instrumented form likewise
 holds its module binding identifiers once, in a thunk that a stop calls, so syntax
