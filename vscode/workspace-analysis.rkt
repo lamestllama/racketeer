@@ -6,7 +6,6 @@
 ;; Each instance owns its runs and disposable workers. No editor connection or
 ;; request transport is required to use the engine.
 (require compiler/module-suffix
-         racket/fasl
          racket/file
          racket/list
          racket/match
@@ -23,7 +22,8 @@
          racket-langserver/doclib/internal-types
          racket-langserver/workspace/api
          racket-langserver/lsp/compose/references
-         "workspace-rename.rkt")
+         "workspace-rename.rkt"
+         "workspace-wire.rkt")
 
 (struct Settings (enabled? excluded max-files max-bytes timeout) #:transparent)
 (define default-excluded '(".git" "compiled" "node_modules" ".test-output" "dist" "build"))
@@ -219,7 +219,7 @@
 (module+ worker
   (define from-server (current-input-port))
   (define to-server (current-output-port))
-  (define request (fasl->s-exp from-server #:datum-intern? #f))
+  (define request (read-worker-message from-server))
   ;; The server closes this pipe when it no longer wants the worker, or when it ends.
   (void (thread (lambda ()
                   (let wait () (unless (eof-object? (read-byte from-server)) (wait)))
@@ -241,9 +241,9 @@
                               (if at (format " of ~a" at) "") megabytes))]
       [else (cons 'stopped (format "compile-time code~a ended the analysis" (if at (format " in ~a" at) "")))]))
   (void (with-handlers ([exn:fail? (lambda (e)
-                                     (s-exp->fasl (cons 'stopped (format "analysis worker could not send its result: ~a" (exn-message e)))
-                                                  to-server))])
-          (s-exp->fasl reply to-server)))
+                                     (write-worker-message (cons 'stopped (format "analysis worker could not send its result: ~a" (exn-message e)))
+                                                           to-server))])
+          (write-worker-message reply to-server)))
   (flush-output to-server)
   ;; Keep a successful reply distinguishable from an abnormal early exit.
   (void (sync never-evt)))
@@ -263,6 +263,7 @@
   (define said (regexp-match #rx"[^\r\n]+" (bytes->string/utf-8 errors #\?)))
   (if said (format "~a: ~a" stated (car said)) stated))
 
+(define decoding-bytes (* 512 1024 1024))
 (define (compute/slot run seconds request cancel)
   ;; Cancellation must discard the runtime doing the work, including its module
   ;; loading state, and a worker stopped this way cannot hold up anything else: the
@@ -297,13 +298,19 @@
                                      (if (path? root) (path->bytes root) root))
                                    (path->bytes this-module))
                              to-worker)
-                      (s-exp->fasl request to-worker)
+                      (write-worker-message request to-worker)
                       (flush-output to-worker)))))
     (define reply #f)
+    ;; A reply is bounded before it is read. So is what reading it takes, since nesting
+    ;; costs more to read than it costs to send. Ending this custodian ends the reader,
+    ;; which then counts as a reply that could not be read.
+    (define decoding (make-custodian))
+    (custodian-limit-memory decoding decoding-bytes decoding)
     (define reader
-      (thread (lambda ()
-                (with-handlers ([exn:fail? void])
-                  (set! reply (fasl->s-exp from-worker #:datum-intern? #f))))))
+      (parameterize ([current-custodian decoding])
+        (thread (lambda ()
+                  (with-handlers ([exn:fail? void])
+                    (set! reply (read-worker-message from-worker)))))))
     (define finished
       (sync/timeout seconds (thread-dead-evt reader) process
                     (semaphore-peek-evt (Run-cancel run)) cancel))

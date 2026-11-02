@@ -200,6 +200,62 @@ const plain = () => [path.join(root, 'vscode/workspace-index-server.rkt')];
 const owned = () => [path.join(root, 'racketdap/tools/owned-command.rkt'), ...plain()];
 const stops = (pid, describe) => eventually(() => !running(pid), 20, () => `Worker ${pid} is still running ${describe}`);
 
+const residentBytes = pid => Number(/^VmRSS:\s+(\d+)/m.exec(fs.readFileSync(`/proc/${pid}/status`, 'utf8'))[1]) * 1024;
+test('a truncated reply declaring a large graph allocates nothing like it in the server', { timeout: 120000, skip: process.platform !== 'linux' }, async t => {
+  const p = await project(t, low);
+  await p.references(p.origin);
+  const before = residentBytes(p.child.pid);
+  // Reaches the worker's reply pipe from compile-time code: a header naming sixteen
+  // million shared objects, and then nothing more.
+  p.write('forged.rkt', compileTime(`(call-with-output-file "/dev/stdout" #:exists 'append
+  (lambda (out)
+    (write-bytes (bytes 114 97 99 107 101 116 47 102 97 115 108 58 129 0 0 0 1) out)
+    (flush-output out)))
+(sync never-evt)`));
+  await p.update();
+  const cancel = new rpc.CancellationTokenSource();
+  const request = p.references(p.origin, undefined, false, cancel.token).catch(error => error);
+  let peak = before;
+  for (let n = 0; n < 100 && peak - before < 100 * 1024 * 1024; n++) {
+    peak = Math.max(peak, residentBytes(p.child.pid));
+    await delay(50);
+  }
+  cancel.cancel();
+  await request;
+  cancel.dispose();
+  assert.ok(peak - before < 80 * 1024 * 1024, `The server grew ${(peak - before) / 1024 / 1024} MiB`);
+});
+
+test('a reply nested too deeply to read stops at a limit in the server', { timeout: 120000, skip: process.platform !== 'linux' }, async t => {
+  const p = await project(t);
+  await p.references(p.origin);
+  const before = residentBytes(p.child.pid);
+  // Under the limit on a message's size, and far more to read than to send.
+  const size = 64 * 1024 * 1024;
+  p.write('nested.rkt', compileTime(`(call-with-output-file "/dev/stdout" #:exists 'append
+  (lambda (out)
+    (write ${size} out)
+    (newline out)
+    (write-bytes (make-bytes ${size} 91) out)
+    (flush-output out)))
+(sync never-evt)`));
+  await p.update();
+  const cancel = new rpc.CancellationTokenSource();
+  let settled = false;
+  const request = p.references(p.origin, undefined, false, cancel.token).then(found => { settled = true; return found; });
+  let peak = before;
+  for (let n = 0; n < 1200 && !settled && peak - before < 2048 * 1024 * 1024; n++) {
+    peak = Math.max(peak, residentBytes(p.child.pid));
+    await delay(50);
+  }
+  cancel.cancel();
+  await request.catch(() => {});
+  cancel.dispose();
+  assert.ok(peak - before < 2048 * 1024 * 1024, `The server grew ${(peak - before) / 1024 / 1024} MiB`);
+  assert.ok(settled, p.diagnostics());
+  assert.match(p.diagnostics(), /nested\.rkt \(analysis worker sent a reply that could not be read\)/);
+});
+
 test('each worker is a process of its own, and ends when the server is killed', { timeout: 120000 }, async t => {
   const s = await server(t, plain(), '(sync never-evt)');
   assert.notEqual(s.pid, s.child.pid, 'The worker runs in a separate process');

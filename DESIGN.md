@@ -324,6 +324,14 @@ A macro that reads a file it does not register leaves no record of it. Such a fi
 is seen only at the next change to the macro's file or to a file loaded with it,
 after a refresh, or after a restart. This is the limit the debugger's compiled cache has too.
 
+A worker and the server exchange one framed JSON message each way, through
+`vscode/workspace-wire.rkt`. Compile-time code can reach a worker's reply pipe, and FASL
+names the size of what it allocates ahead of the values, so 17 bytes grew the server by
+259 MB. JSON carries its elements, so what the server allocates follows what arrived. A
+message is limited to 128 MB, and reading one, which costs more than sending it when it
+nests deeply, to 512 MB under a custodian of its own. A reply over either limit counts as
+one that could not be read.
+
 `workspace-analysis-close!` is idempotent. It cancels active runs, waits for
 their completion and reaps worker processes. Further updates have no effect;
 queries return a closed-engine outcome. Closing one instance leaves other
