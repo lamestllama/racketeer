@@ -35,10 +35,9 @@ exports.run = async function () {
   const wxmeChecks = await stage('WXME', () => require('./vscode-wxme').run(extension, workspace));
   const debuggingStarted = Date.now();
   console.log('Integration stage debugging started');
-  // Earlier stages leave captured sources of their ended sessions open. Close
-  // them, so the editor this stage expects is the only captured source.
-  await vscode.window.tabGroups.close(vscode.window.tabGroups.all.flatMap(group => group.tabs)
-    .filter(tab => tab.input?.uri?.scheme === 'debug'));
+  // Earlier stages leave editors open in other groups, and on macOS one of them
+  // can keep text focus, which holds the active editor. Start from one empty group.
+  await vscode.commands.executeCommand('workbench.action.closeAllEditors');
   const program = path.join(workspace.uri.fsPath, 'demo.rkt');
   const document = await vscode.workspace.openTextDocument(program);
   await vscode.window.showTextDocument(document, { preview: false });
