@@ -1,17 +1,8 @@
 diff --git a/lsp/analysis-lifecycle.md b/lsp/analysis-lifecycle.md
-index 0b3cba3..11995b7 100644
+index 0b3cba3..b2328d7 100644
 --- a/lsp/analysis-lifecycle.md
 +++ b/lsp/analysis-lifecycle.md
-@@ -20,6 +20,8 @@ same revision creates a new attempt.
-   `completion-evt` is a newly scheduled attempt, or the installed result's
-   completion when a current success is reused. A ready outcome takes precedence
-   over reusable facts, including failure and stop.
-+- `source-controller-hasten-evt` ends any wait of a source's analysis, for a
-+  request thread about to wait on it.
- - `source-controller-current-view-evt` asks the consumer whether a captured view
-   is still current. It does not observe the filesystem.
- 
-@@ -61,7 +63,8 @@ The `owner` submodule exports operations for the session consumer only. Open
+@@ -61,7 +61,8 @@ The `owner` submodule exports operations for the session consumer only. Open
  registers the buffer, restores matching retained analysis, and schedules fresh
  analysis. Edit takes the registered buffer selected by the incoming URI, owns
  the write lock, invalidates eligibility before the supplied
@@ -21,7 +12,7 @@ index 0b3cba3..11995b7 100644
  mutation callback updates text and client version and must not acquire the same
  buffer lock. Close handles retention, cancellation, and removal of publications.
  `source-controller-refresh-analysis!` joins active work or starts another attempt
-@@ -81,8 +84,8 @@ private records and collections; none imports or receives the controller:
+@@ -81,8 +82,8 @@ private records and collections; none imports or receives the controller:
  
  - `workspace/source-store.rkt`: source authority, revisions, and change signals.
  - `disk-reader.rkt`: `Disk-Reader`, ordered per-source disk reads and waiters.
@@ -32,7 +23,7 @@ index 0b3cba3..11995b7 100644
  - `supervised-worker.rkt`: `Supervised-Worker`, resource ownership, timeout and
    premature-exit detection. It suppresses worker stdout and releases resources
    before reporting a result. Cancelling work does not kill its supervisor;
-@@ -121,10 +124,55 @@ workspace requests. Injecting a different publication workspace alone does not
+@@ -121,10 +122,58 @@ workspace requests. Injecting a different publication workspace alone does not
  create an isolated LSP session; the request layer must use that same workspace.
  Its folders are also project roots for imported modules, as described below.
  
@@ -64,18 +55,21 @@ index 0b3cba3..11995b7 100644
 +so it reads the buffers as the wait left them. A wait of zero, which
 +`#:analysis-wait` allows, starts at the pump that ends the edit.
 +
-+A request does not sit out the wait. The dispatcher ends it for every request
-+answered from the document's Check Syntax facts, before handling the request: hover,
-+definition, references, document highlight, rename and prepare rename, code actions,
-+inlay hints and semantic tokens. Acquiring analysis of a target file through
-+`source-controller-analysis-evt` joins the waiting attempt and ends its wait too. A
-+waiter that moves to a new completion after an import changed, in `analysis-query`,
-+ends that attempt's wait also. Ending a wait changes nothing else: exact queries
-+still wait for fresh completion and fast queries still answer from the adjusted
-+trace, as they do while an analysis runs. Completion and signature help are sent by
-+typing itself and leave the wait running, or every keystroke would start an analysis;
-+they too answer from the adjusted trace. Document symbols and formatting read the
-+text and use no analysis.
++A request a person makes does not sit out the wait. The dispatcher ends it before
++handling hover, definition, references, document highlight, rename, prepare rename
++and code actions, which answer from the adjusted trace as they do while an analysis
++runs. Acquiring analysis of a target file through `source-controller-analysis-evt`
++joins the waiting attempt and ends its wait too. A client also sends code actions by
++itself, but only after the cursor has paused for as long as the wait, so they do not
++start analyses during typing.
++
++What a client sends by itself during typing leaves the wait running, or every
++keystroke would start an analysis. Semantic tokens and inlay hints are exact
++queries: they join the waiting attempt through `SafeDoc-analysis-completion` and
++answer when it finishes, from the current text, about 250 ms later than a request
++that ended the wait. A further edit ends such a request with ContentModified as it
++always has. Completion and signature help answer from the adjusted trace. Document
++symbols and formatting read the text and use no analysis.
 +
 +An edit publishes nothing, during the wait as while an analysis runs: the client
 +keeps showing the last diagnostics published until the next analysis replaces them.
@@ -89,7 +83,7 @@ index 0b3cba3..11995b7 100644
  table the worker fills with every module file the expansion loads. An import
  of a file with an open buffer reads that buffer, unsaved edits included. Two
  buffers for one path make that import an error rather than a choice between
-@@ -135,13 +183,13 @@ ordinary compiled loading, even below a project root. Analysis never writes
+@@ -135,13 +184,13 @@ ordinary compiled loading, even below a project root. Analysis never writes
  compiled files.
  
  The controller keeps, for each open buffer, the module files its accepted
@@ -105,7 +99,7 @@ index 0b3cba3..11995b7 100644
  
  ## Available results and fresh completion
  
-@@ -151,7 +199,7 @@ joined—either a newly scheduled one or a reused completed success's event.
+@@ -151,7 +200,7 @@ joined—either a newly scheduled one or a reused completed success's event.
  Available analysis may answer queries while that event is pending. Restoring a
  product never completes that event or starts Resyntax.
  
@@ -114,7 +108,7 @@ index 0b3cba3..11995b7 100644
  attempt is removed. An accepted available result retains its completion event,
  so repeated acquisitions can reuse success without retaining the job. Resyntax
  acceptance compares its parent completion with the installed result's completion;
-@@ -198,6 +246,7 @@ Virtual sources never enter retention. Shutdown stops work and clears retention.
+@@ -198,6 +247,7 @@ Virtual sources never enter retention. Shutdown stops work and clears retention.
  `tests/lsp/source-controller-test.rkt` covers ordered observation through the
  production consumer. `analysis-controller-test.rkt` covers attempt identity,
  bounds, acceptance, available facts, cancellation, and URI preservation.
@@ -122,35 +116,8 @@ index 0b3cba3..11995b7 100644
  `closed-analysis-test.rkt` covers restoration, dependency changes, and eviction.
  `closed-analysis-cache-test.rkt`, `disk-reader-test.rkt`,
  `analysis-scheduler-test.rkt`, and `supervised-worker-test.rkt` exercise subsystem
-diff --git a/lsp/analysis-query.rkt b/lsp/analysis-query.rkt
-index 28bff67..36f82b8 100644
---- a/lsp/analysis-query.rkt
-+++ b/lsp/analysis-query.rkt
-@@ -60,7 +60,8 @@
- (define (analysis-query safe-doc request-id read-result empty-result)
-   (define deadline-ms (+ (current-deadline-milliseconds)
-                          (* 1000 (current-analysis-request-timeout))))
--  (define shutdown-evt (source-controller-shutdown-evt (current-source-controller)))
-+  (define controller (current-source-controller))
-+  (define shutdown-evt (source-controller-shutdown-evt controller))
-   (define-values (request-view initial-completion immediate-response)
-     (with-read-safedoc safe-doc
-       (lambda (locked-safe-doc)
-@@ -79,8 +80,11 @@
-            (error-response request-id ErrorCode-RequestFailed "Server shut down")]
-           [(available-analysis-response locked-safe-doc request-id read-result) => values]
-           ;; The buffer's completion event changed during the wait. Wait on the
--          ;; new event. The wake value is from the completion this waiter held.
-+          ;; new event, which a changed import may have left waiting and which
-+          ;; this request need not wait for. The wake value is from the
-+          ;; completion this waiter held.
-           [(and current-completion (not (eq? awaited-completion current-completion)))
-+           (source-controller-hasten-evt controller (Source-View-source request-view))
-            current-completion]
-           [(and (Analysis-Outcome? wake-result) (eq? 'errors (Analysis-Outcome-state wake-result)))
-            (success-response request-id (->jsexpr empty-result))]
 diff --git a/lsp/methods.rkt b/lsp/methods.rkt
-index c9a2d73..3f13417 100644
+index c9a2d73..b2ede0a 100644
 --- a/lsp/methods.rkt
 +++ b/lsp/methods.rkt
 @@ -44,7 +44,24 @@
@@ -159,23 +126,23 @@ index c9a2d73..3f13417 100644
  ;; `Analysis-Handle-completion-evt`. The consumer owns acceptance and shares
 -;; one analysis per revision, with four execution slots.
 +;; one analysis per revision, with four execution slots. The analysis of an edit
-+;; starts after a short wait, or at once for a request in `analysis-requests`.
++;; starts after a short wait, or at once for a request in `impatient-requests`.
 +
-+;; Requests answered from a document's Check Syntax facts. Completion and
-+;; signature help read them too, but typing itself sends those: they answer from
-+;; the adjusted trace and leave the wait running, or every keystroke would start
-+;; an analysis.
-+(define analysis-requests
++;; Requests that end the wait of their document's analysis. A person asks for
++;; these, and they answer from the adjusted trace, so the analysis serves what
++;; follows. A client also sends code actions by itself, but only once the cursor
++;; has paused, when the wait is ending anyway. What a client sends during typing
++;; leaves the wait running, or every keystroke would start an analysis: completion
++;; and signature help answer from the adjusted trace, and semantic tokens and
++;; inlay hints join the waiting attempt and answer when it finishes.
++(define impatient-requests
 +  '("textDocument/hover"
 +    "textDocument/codeAction"
 +    "textDocument/definition"
 +    "textDocument/documentHighlight"
 +    "textDocument/references"
-+    "textDocument/inlayHint"
 +    "textDocument/rename"
-+    "textDocument/prepareRename"
-+    "textDocument/semanticTokens/full"
-+    "textDocument/semanticTokens/range"))
++    "textDocument/prepareRename"))
  
  ;; Mutable variables
  (define already-initialized? #f)
@@ -183,27 +150,24 @@ index c9a2d73..3f13417 100644
            [(and uri (not (file-uri? uri)) (not (lsp-get-doc uri #f)))
             (error-response id ErrorCode-RequestFailed "Virtual document is not open")]
            [else
-+           (when (and uri (member method analysis-requests))
++           (when (and uri (member method impatient-requests))
 +             (source-controller-hasten-analysis! source-controller (uri->source uri)))
             (match method
               ["initialize"
                (initialize id params)]
 diff --git a/lsp/source-controller.rkt b/lsp/source-controller.rkt
-index 91b1a53..c7de85c 100644
+index 91b1a53..966bfe9 100644
 --- a/lsp/source-controller.rkt
 +++ b/lsp/source-controller.rkt
-@@ -15,8 +15,10 @@
+@@ -15,6 +15,7 @@
           Source-Controller?
           current-source-controller
           source-controller-events
 +         source-controller-analysis-wait-evt
           source-controller-observe-evt
           source-controller-analysis-evt
-+         source-controller-hasten-evt
           source-controller-current-view-evt
-          source-controller-shutdown-evt
-          (struct-out Analysis-Handle)
-@@ -37,7 +39,8 @@
+@@ -37,7 +38,8 @@
             source-controller-view
             source-controller-snapshot
             source-controller-ensure-analysis!
@@ -213,39 +177,6 @@ index 91b1a53..c7de85c 100644
  
  ;; Commands on `events`, beside worker completions. Request threads never
  ;; construct these records; the functions below submit them.
-@@ -60,6 +63,12 @@
-    [reply Completion-Event?])
-   #:transparent)
- 
-+;; End any wait of `source`'s analysis. Completes `reply` with void.
-+(struct/contract Hasten-Analysis
-+  ([source Source?]
-+   [reply Completion-Event?])
-+  #:transparent)
-+
- ;; Whether `view` is still this source's current view. Completes `reply` with
- ;; a boolean. Does not read disk.
- (struct/contract Validate-View
-@@ -91,6 +100,10 @@
- (define (source-controller-analysis-evt controller snapshot)
-   (submit controller (lambda (reply) (Acquire-Analysis snapshot reply))))
- 
-+;; End any wait of `source`'s analysis, for a request thread about to wait on it.
-+(define (source-controller-hasten-evt controller source)
-+  (submit controller (lambda (reply) (Hasten-Analysis source reply))))
-+
- ;; Whether `view` is still this source's current view. Does not read disk.
- (define (source-controller-current-view-evt controller view)
-   (submit controller (lambda (reply) (Validate-View view reply))))
-@@ -112,6 +125,8 @@
-      (answer! controller reply (lambda () (source-controller-observe! controller source)))]
-     [(Acquire-Analysis snapshot reply)
-      (answer! controller reply (lambda () (source-controller-acquire-analysis! controller snapshot)))]
-+    [(Hasten-Analysis source reply)
-+     (answer! controller reply (lambda () (source-controller-hasten-analysis! controller source)))]
-     [(Validate-View view reply)
-      (answer! controller reply (lambda () (source-controller-current-view? controller view)))]
-     [_ (source-controller-handle-completion! controller event)])
 diff --git a/lsp/source-controller/analysis-scheduler.rkt b/lsp/source-controller/analysis-scheduler.rkt
 index 92b2f57..995e200 100644
 --- a/lsp/source-controller/analysis-scheduler.rkt
@@ -430,7 +361,7 @@ index 92b2f57..995e200 100644
    (define snapshot (Analysis-Attempt-snapshot attempt))
    (set-Analysis-Attempt-state! attempt 'running)
 diff --git a/lsp/source-controller/source-owner.rkt b/lsp/source-controller/source-owner.rkt
-index 2906872..186c8a5 100644
+index 2906872..0462c4a 100644
 --- a/lsp/source-controller/source-owner.rkt
 +++ b/lsp/source-controller/source-owner.rkt
 @@ -30,6 +30,7 @@
@@ -560,7 +491,7 @@ index 2906872..186c8a5 100644
    (when snapshot (source-controller-ensure-analysis! controller snapshot #:refresh? #t))
    (void))
  
-+;; A request reads this source's analysis: it does not sit out the wait. An
++;; A person asked about this source: its analysis does not sit out the wait. An
 +;; attempt already queued or running is unaffected, and so is a source with none.
 +(define (source-controller-hasten-analysis! controller source)
 +  (hasten-analysis! (Source-Controller-scheduler controller) source)
@@ -684,14 +615,14 @@ index 210afeb..4f1f1a0 100644
        (lambda (scheduler events started release)
 diff --git a/tests/lsp/analysis-wait-test.rkt b/tests/lsp/analysis-wait-test.rkt
 new file mode 100644
-index 0000000..bad607d
+index 0000000..ea36291
 --- /dev/null
 +++ b/tests/lsp/analysis-wait-test.rkt
-@@ -0,0 +1,313 @@
+@@ -0,0 +1,340 @@
 +#lang racket/base
 +
-+;; The analysis of an edit waits for a pause in editing, and a request that reads
-+;; analysis does not sit out that wait. These tests run the production consumer
++;; The analysis of an edit waits for a pause in editing, and a request a person
++;; makes does not sit out that wait. These tests run the production consumer
 +;; and speak LSP to it, except where they own the controller to look at a
 +;; completion. Timing assertions are lower bounds, which a slow machine cannot
 +;; break; where a request must not wait, the wait is far longer than the test.
@@ -700,6 +631,7 @@ index 0000000..bad607d
 +         racket/file
 +         "../../common/path-util.rkt"
 +         "../../common/source.rkt"
++         "../../common/interfaces.rkt"
 +         "../../common/time.rkt"
 +         "../../lsp/analysis.rkt"
 +         "../../lsp/safedoc.rkt"
@@ -778,6 +710,7 @@ index 0000000..bad607d
 +(define (provider n)
 +  (format "#lang racket/base\n(provide value)\n(define value ~a)\n" n))
 +(define consumer-text "#lang racket/base\n(require \"dependency.rkt\")\nvalue\n")
++(define consumer-position (hasheq 'position (hasheq 'line 2 'character 0)))
 +
 +;; A project of one open consumer of one open dependency, settled.
 +(define (with-consumer controller starts proc)
@@ -793,8 +726,11 @@ index 0000000..bad607d
 +                      (open! session dependency (provider 0))
 +                      (await-publish session dependency)
 +                      ;; Opening the dependency analyses its consumer again.
-+                      (request! session 900 "textDocument/semanticTokens/full" consumer)
-+                      (check-false (hash-ref (response session 900 60) 'error #f))
++                      (request! session 900 "textDocument/documentHighlight" consumer
++                                consumer-position)
++                      (response session 900 60)
++                      (request! session 901 "textDocument/semanticTokens/full" consumer)
++                      (check-false (hash-ref (response session 901 60) 'error #f))
 +                      (drain starts)
 +                      (proc session dependency consumer))))))
 +
@@ -842,7 +778,7 @@ index 0000000..bad607d
 +             (try (add1 round))]
 +            [else (fail-check "the machine never kept the edits inside the wait")])))))
 +
-+  (test-case "a request reading analysis starts it at once, and others leave the wait alone"
++  (test-case "a request a person makes starts analysis at once, and others leave the wait alone"
 +    (define-values (starts analyze) (make-recorder))
 +    (with-session
 +      (long-wait-controller analyze)
@@ -865,10 +801,7 @@ index 0000000..bad607d
 +                           ("textDocument/prepareRename" ,position)
 +                           ("textDocument/rename" ,(hash-set position 'newName "y"))
 +                           ("textDocument/codeAction"
-+                            ,(hasheq 'range whole-range 'context (hasheq 'diagnostics '())))
-+                           ("textDocument/inlayHint" ,(hasheq 'range whole-range))
-+                           ("textDocument/semanticTokens/full" ,(hasheq))
-+                           ("textDocument/semanticTokens/range" ,(hasheq 'range whole-range))))]
++                            ,(hasheq 'range whole-range 'context (hasheq 'diagnostics '())))))]
 +              [id (in-naturals 1000)])
 +          (define text (edit!))
 +          (no-start-yet starts)
@@ -886,21 +819,45 @@ index 0000000..bad607d
 +          (check-false (hash-ref (response session id 20) 'error #f) (car request))
 +          (no-start-yet starts)))))
 +
-+  (test-case "semantic tokens during the wait answer from the current text"
++  (test-case "semantic tokens during the wait answer from the current text, after the wait"
 +    (define-values (starts analyze) (make-recorder))
 +    (with-session
-+      (long-wait-controller analyze)
++      (make-source-controller #:resyntax #f #:analyze analyze)
 +      (lambda (session)
 +        (define path (build-path scratch "wait-tokens.rkt"))
 +        (open-and-settle! session starts path (program 0))
 +        (request! session 1 "textDocument/semanticTokens/full" path)
 +        (define before (token-count (response session 1 20)))
 +        (define longer (string-append (program 0) "(define y 2)\ny\n"))
++        (define sent (current-deadline-milliseconds))
 +        (change! session path longer 1)
-+        (no-start-yet starts)
 +        (request! session 2 "textDocument/semanticTokens/full" path)
 +        (check-true (> (token-count (response session 2 20)) before))
-+        (check-equal? (Started-text (await starts 20)) longer))))
++        (define start (await starts 20))
++        (check-equal? (Started-text start) longer)
++        (check-true (>= (Started-at start) (+ sent the-wait)) "the request ended the wait"))))
++
++  (test-case "inlay hints and ranged tokens join the wait, and an edit ends their request"
++    (define-values (starts analyze) (make-recorder))
++    (with-session
++      (make-source-controller #:resyntax #f #:analyze analyze)
++      (lambda (session)
++        (define path (build-path scratch "wait-joining.rkt"))
++        (open-and-settle! session starts path (program 0))
++        (for ([method (in-list '("textDocument/inlayHint" "textDocument/semanticTokens/range"))]
++              [id (in-naturals 1)])
++          (define sent (current-deadline-milliseconds))
++          (change! session path (program id) id)
++          (request! session id method path (hasheq 'range whole-range))
++          (check-false (hash-ref (response session id 20) 'error #f) method)
++          (define start (await starts 20))
++          (check-equal? (Started-text start) (program id) method)
++          (check-true (>= (Started-at start) (+ sent the-wait)) method))
++        (change! session path (program 3) 3)
++        (request! session 3 "textDocument/semanticTokens/full" path)
++        (change! session path (program 4) 4)
++        (check-error (response session 3 20) ErrorCode-ContentModified)
++        (check-equal? (Started-text (await starts 20)) (program 4)))))
 +
 +  (test-case "dependents wait too, for the last edit of their import"
 +    (define-values (starts analyze) (make-recorder))
@@ -925,7 +882,7 @@ index 0000000..bad607d
 +      (lambda (session dependency consumer)
 +        (change! session dependency (provider 1) 1)
 +        (no-start-yet starts)
-+        (request! session 1 "textDocument/semanticTokens/full" consumer)
++        (request! session 1 "textDocument/documentHighlight" consumer consumer-position)
 +        (check-false (hash-ref (response session 1 20) 'error #f))
 +        (define start (start-of starts consumer-text))
 +        (check-equal? (hash-ref (Started-buffers start) (normalize-source-path dependency) #f)
@@ -933,7 +890,7 @@ index 0000000..bad607d
 +        ;; The dependency itself has not been asked for, so it goes on waiting.
 +        (no-start-yet starts))))
 +
-+  (test-case "a request whose analysis an import edit replaces does not wait for the successor"
++  (test-case "a token request whose analysis an import edit replaces follows it to the successor"
 +    ;; The analysis that reads the first edit never finishes.
 +    (define-values (starts analyze)
 +      (make-recorder
@@ -941,18 +898,19 @@ index 0000000..bad607d
 +          (and (equal? (Started-text start) consumer-text)
 +               (member (provider 1) (hash-values (Started-buffers start)))))))
 +    (with-consumer
-+      (long-wait-controller analyze)
++      (make-source-controller #:resyntax #f #:analyze analyze)
 +      starts
 +      (lambda (session dependency consumer)
 +        (change! session dependency (provider 1) 1)
-+        (no-start-yet starts)
 +        (request! session 1 "textDocument/semanticTokens/full" consumer)
 +        (start-of starts consumer-text)
++        (define sent (current-deadline-milliseconds))
 +        (change! session dependency (provider 2) 2)
-+        (check-false (hash-ref (response session 1 20) 'error #f))
-+        (check-equal? (hash-ref (Started-buffers (start-of starts consumer-text))
-+                                (normalize-source-path dependency) #f)
-+                      (provider 2)))))
++        (define start (start-of starts consumer-text))
++        (check-equal? (hash-ref (Started-buffers start) (normalize-source-path dependency) #f)
++                      (provider 2))
++        (check-true (>= (Started-at start) (+ sent the-wait)) "the successor did not wait")
++        (check-false (hash-ref (response session 1 20) 'error #f)))))
 +
 +  (for ([ending (in-list '(close shutdown))])
 +    (test-case (format "~a during a wait leaves nothing running" ending)

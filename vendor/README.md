@@ -63,9 +63,10 @@ Racketeer's own patches follow:
 - `analysis-wait.patch`: wait 250 ms after the last edit of a document before
   analysing it, and before analysing again the open documents that load it.
   Upstream starts a whole-file Check Syntax
-  for every edit, which held a core during typing. A request that reads analysis
-  starts it at once, and an edit still cancels a running analysis at once. The
-  wait is a time in the attempt, not a timer, and is described in
+  for every edit, which held a core during typing. A request a person makes, such
+  as hover or references, starts it at once; semantic tokens and inlay hints, which
+  a client sends by itself, join the wait and answer from the current text after it.
+  An edit still cancels a running analysis at once. The wait is a time in the attempt, not a timer, and is described in
   `lsp/analysis-lifecycle.md`. Meant for upstream, as a pull request not yet made.
 
 Workspace indexing belongs to Racketeer, in `vscode/workspace-analysis.rkt`,

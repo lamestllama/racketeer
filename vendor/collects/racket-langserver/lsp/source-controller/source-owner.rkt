@@ -310,7 +310,7 @@
   (when snapshot (source-controller-ensure-analysis! controller snapshot #:refresh? #t))
   (void))
 
-;; A request reads this source's analysis: it does not sit out the wait. An
+;; A person asked about this source: its analysis does not sit out the wait. An
 ;; attempt already queued or running is unaffected, and so is a source with none.
 (define (source-controller-hasten-analysis! controller source)
   (hasten-analysis! (Source-Controller-scheduler controller) source)

@@ -1,7 +1,7 @@
 #lang racket/base
 
-;; The analysis of an edit waits for a pause in editing, and a request that reads
-;; analysis does not sit out that wait. These tests run the production consumer
+;; The analysis of an edit waits for a pause in editing, and a request a person
+;; makes does not sit out that wait. These tests run the production consumer
 ;; and speak LSP to it, except where they own the controller to look at a
 ;; completion. Timing assertions are lower bounds, which a slow machine cannot
 ;; break; where a request must not wait, the wait is far longer than the test.
@@ -10,6 +10,7 @@
          racket/file
          "../../common/path-util.rkt"
          "../../common/source.rkt"
+         "../../common/interfaces.rkt"
          "../../common/time.rkt"
          "../../lsp/analysis.rkt"
          "../../lsp/safedoc.rkt"
@@ -88,6 +89,7 @@
 (define (provider n)
   (format "#lang racket/base\n(provide value)\n(define value ~a)\n" n))
 (define consumer-text "#lang racket/base\n(require \"dependency.rkt\")\nvalue\n")
+(define consumer-position (hasheq 'position (hasheq 'line 2 'character 0)))
 
 ;; A project of one open consumer of one open dependency, settled.
 (define (with-consumer controller starts proc)
@@ -103,8 +105,11 @@
                       (open! session dependency (provider 0))
                       (await-publish session dependency)
                       ;; Opening the dependency analyses its consumer again.
-                      (request! session 900 "textDocument/semanticTokens/full" consumer)
-                      (check-false (hash-ref (response session 900 60) 'error #f))
+                      (request! session 900 "textDocument/documentHighlight" consumer
+                                consumer-position)
+                      (response session 900 60)
+                      (request! session 901 "textDocument/semanticTokens/full" consumer)
+                      (check-false (hash-ref (response session 901 60) 'error #f))
                       (drain starts)
                       (proc session dependency consumer))))))
 
@@ -152,7 +157,7 @@
              (try (add1 round))]
             [else (fail-check "the machine never kept the edits inside the wait")])))))
 
-  (test-case "a request reading analysis starts it at once, and others leave the wait alone"
+  (test-case "a request a person makes starts analysis at once, and others leave the wait alone"
     (define-values (starts analyze) (make-recorder))
     (with-session
       (long-wait-controller analyze)
@@ -175,10 +180,7 @@
                            ("textDocument/prepareRename" ,position)
                            ("textDocument/rename" ,(hash-set position 'newName "y"))
                            ("textDocument/codeAction"
-                            ,(hasheq 'range whole-range 'context (hasheq 'diagnostics '())))
-                           ("textDocument/inlayHint" ,(hasheq 'range whole-range))
-                           ("textDocument/semanticTokens/full" ,(hasheq))
-                           ("textDocument/semanticTokens/range" ,(hasheq 'range whole-range))))]
+                            ,(hasheq 'range whole-range 'context (hasheq 'diagnostics '())))))]
               [id (in-naturals 1000)])
           (define text (edit!))
           (no-start-yet starts)
@@ -196,21 +198,45 @@
           (check-false (hash-ref (response session id 20) 'error #f) (car request))
           (no-start-yet starts)))))
 
-  (test-case "semantic tokens during the wait answer from the current text"
+  (test-case "semantic tokens during the wait answer from the current text, after the wait"
     (define-values (starts analyze) (make-recorder))
     (with-session
-      (long-wait-controller analyze)
+      (make-source-controller #:resyntax #f #:analyze analyze)
       (lambda (session)
         (define path (build-path scratch "wait-tokens.rkt"))
         (open-and-settle! session starts path (program 0))
         (request! session 1 "textDocument/semanticTokens/full" path)
         (define before (token-count (response session 1 20)))
         (define longer (string-append (program 0) "(define y 2)\ny\n"))
+        (define sent (current-deadline-milliseconds))
         (change! session path longer 1)
-        (no-start-yet starts)
         (request! session 2 "textDocument/semanticTokens/full" path)
         (check-true (> (token-count (response session 2 20)) before))
-        (check-equal? (Started-text (await starts 20)) longer))))
+        (define start (await starts 20))
+        (check-equal? (Started-text start) longer)
+        (check-true (>= (Started-at start) (+ sent the-wait)) "the request ended the wait"))))
+
+  (test-case "inlay hints and ranged tokens join the wait, and an edit ends their request"
+    (define-values (starts analyze) (make-recorder))
+    (with-session
+      (make-source-controller #:resyntax #f #:analyze analyze)
+      (lambda (session)
+        (define path (build-path scratch "wait-joining.rkt"))
+        (open-and-settle! session starts path (program 0))
+        (for ([method (in-list '("textDocument/inlayHint" "textDocument/semanticTokens/range"))]
+              [id (in-naturals 1)])
+          (define sent (current-deadline-milliseconds))
+          (change! session path (program id) id)
+          (request! session id method path (hasheq 'range whole-range))
+          (check-false (hash-ref (response session id 20) 'error #f) method)
+          (define start (await starts 20))
+          (check-equal? (Started-text start) (program id) method)
+          (check-true (>= (Started-at start) (+ sent the-wait)) method))
+        (change! session path (program 3) 3)
+        (request! session 3 "textDocument/semanticTokens/full" path)
+        (change! session path (program 4) 4)
+        (check-error (response session 3 20) ErrorCode-ContentModified)
+        (check-equal? (Started-text (await starts 20)) (program 4)))))
 
   (test-case "dependents wait too, for the last edit of their import"
     (define-values (starts analyze) (make-recorder))
@@ -235,7 +261,7 @@
       (lambda (session dependency consumer)
         (change! session dependency (provider 1) 1)
         (no-start-yet starts)
-        (request! session 1 "textDocument/semanticTokens/full" consumer)
+        (request! session 1 "textDocument/documentHighlight" consumer consumer-position)
         (check-false (hash-ref (response session 1 20) 'error #f))
         (define start (start-of starts consumer-text))
         (check-equal? (hash-ref (Started-buffers start) (normalize-source-path dependency) #f)
@@ -243,7 +269,7 @@
         ;; The dependency itself has not been asked for, so it goes on waiting.
         (no-start-yet starts))))
 
-  (test-case "a request whose analysis an import edit replaces does not wait for the successor"
+  (test-case "a token request whose analysis an import edit replaces follows it to the successor"
     ;; The analysis that reads the first edit never finishes.
     (define-values (starts analyze)
       (make-recorder
@@ -251,18 +277,19 @@
           (and (equal? (Started-text start) consumer-text)
                (member (provider 1) (hash-values (Started-buffers start)))))))
     (with-consumer
-      (long-wait-controller analyze)
+      (make-source-controller #:resyntax #f #:analyze analyze)
       starts
       (lambda (session dependency consumer)
         (change! session dependency (provider 1) 1)
-        (no-start-yet starts)
         (request! session 1 "textDocument/semanticTokens/full" consumer)
         (start-of starts consumer-text)
+        (define sent (current-deadline-milliseconds))
         (change! session dependency (provider 2) 2)
-        (check-false (hash-ref (response session 1 20) 'error #f))
-        (check-equal? (hash-ref (Started-buffers (start-of starts consumer-text))
-                                (normalize-source-path dependency) #f)
-                      (provider 2)))))
+        (define start (start-of starts consumer-text))
+        (check-equal? (hash-ref (Started-buffers start) (normalize-source-path dependency) #f)
+                      (provider 2))
+        (check-true (>= (Started-at start) (+ sent the-wait)) "the successor did not wait")
+        (check-false (hash-ref (response session 1 20) 'error #f)))))
 
   (for ([ending (in-list '(close shutdown))])
     (test-case (format "~a during a wait leaves nothing running" ending)

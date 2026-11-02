@@ -20,8 +20,6 @@ same revision creates a new attempt.
   `completion-evt` is a newly scheduled attempt, or the installed result's
   completion when a current success is reused. A ready outcome takes precedence
   over reusable facts, including failure and stop.
-- `source-controller-hasten-evt` ends any wait of a source's analysis, for a
-  request thread about to wait on it.
 - `source-controller-current-view-evt` asks the consumer whether a captured view
   is still current. It does not observe the filesystem.
 
@@ -152,18 +150,21 @@ back of the queue, oldest first, and takes each one's import context at that mom
 so it reads the buffers as the wait left them. A wait of zero, which
 `#:analysis-wait` allows, starts at the pump that ends the edit.
 
-A request does not sit out the wait. The dispatcher ends it for every request
-answered from the document's Check Syntax facts, before handling the request: hover,
-definition, references, document highlight, rename and prepare rename, code actions,
-inlay hints and semantic tokens. Acquiring analysis of a target file through
-`source-controller-analysis-evt` joins the waiting attempt and ends its wait too. A
-waiter that moves to a new completion after an import changed, in `analysis-query`,
-ends that attempt's wait also. Ending a wait changes nothing else: exact queries
-still wait for fresh completion and fast queries still answer from the adjusted
-trace, as they do while an analysis runs. Completion and signature help are sent by
-typing itself and leave the wait running, or every keystroke would start an analysis;
-they too answer from the adjusted trace. Document symbols and formatting read the
-text and use no analysis.
+A request a person makes does not sit out the wait. The dispatcher ends it before
+handling hover, definition, references, document highlight, rename, prepare rename
+and code actions, which answer from the adjusted trace as they do while an analysis
+runs. Acquiring analysis of a target file through `source-controller-analysis-evt`
+joins the waiting attempt and ends its wait too. A client also sends code actions by
+itself, but only after the cursor has paused for as long as the wait, so they do not
+start analyses during typing.
+
+What a client sends by itself during typing leaves the wait running, or every
+keystroke would start an analysis. Semantic tokens and inlay hints are exact
+queries: they join the waiting attempt through `SafeDoc-analysis-completion` and
+answer when it finishes, from the current text, about 250 ms later than a request
+that ended the wait. A further edit ends such a request with ContentModified as it
+always has. Completion and signature help answer from the adjusted trace. Document
+symbols and formatting read the text and use no analysis.
 
 An edit publishes nothing, during the wait as while an analysis runs: the client
 keeps showing the last diagnostics published until the next analysis replaces them.

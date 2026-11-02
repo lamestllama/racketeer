@@ -45,23 +45,23 @@
 ;; current analysis wait on `SafeDoc-analysis-completion` or
 ;; `Analysis-Handle-completion-evt`. The consumer owns acceptance and shares
 ;; one analysis per revision, with four execution slots. The analysis of an edit
-;; starts after a short wait, or at once for a request in `analysis-requests`.
+;; starts after a short wait, or at once for a request in `impatient-requests`.
 
-;; Requests answered from a document's Check Syntax facts. Completion and
-;; signature help read them too, but typing itself sends those: they answer from
-;; the adjusted trace and leave the wait running, or every keystroke would start
-;; an analysis.
-(define analysis-requests
+;; Requests that end the wait of their document's analysis. A person asks for
+;; these, and they answer from the adjusted trace, so the analysis serves what
+;; follows. A client also sends code actions by itself, but only once the cursor
+;; has paused, when the wait is ending anyway. What a client sends during typing
+;; leaves the wait running, or every keystroke would start an analysis: completion
+;; and signature help answer from the adjusted trace, and semantic tokens and
+;; inlay hints join the waiting attempt and answer when it finishes.
+(define impatient-requests
   '("textDocument/hover"
     "textDocument/codeAction"
     "textDocument/definition"
     "textDocument/documentHighlight"
     "textDocument/references"
-    "textDocument/inlayHint"
     "textDocument/rename"
-    "textDocument/prepareRename"
-    "textDocument/semanticTokens/full"
-    "textDocument/semanticTokens/range"))
+    "textDocument/prepareRename"))
 
 ;; Mutable variables
 (define already-initialized? #f)
@@ -169,7 +169,7 @@
           [(and uri (not (file-uri? uri)) (not (lsp-get-doc uri #f)))
            (error-response id ErrorCode-RequestFailed "Virtual document is not open")]
           [else
-           (when (and uri (member method analysis-requests))
+           (when (and uri (member method impatient-requests))
              (source-controller-hasten-analysis! source-controller (uri->source uri)))
            (match method
              ["initialize"

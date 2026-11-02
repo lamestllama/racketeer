@@ -60,8 +60,7 @@
 (define (analysis-query safe-doc request-id read-result empty-result)
   (define deadline-ms (+ (current-deadline-milliseconds)
                          (* 1000 (current-analysis-request-timeout))))
-  (define controller (current-source-controller))
-  (define shutdown-evt (source-controller-shutdown-evt controller))
+  (define shutdown-evt (source-controller-shutdown-evt (current-source-controller)))
   (define-values (request-view initial-completion immediate-response)
     (with-read-safedoc safe-doc
       (lambda (locked-safe-doc)
@@ -80,11 +79,8 @@
            (error-response request-id ErrorCode-RequestFailed "Server shut down")]
           [(available-analysis-response locked-safe-doc request-id read-result) => values]
           ;; The buffer's completion event changed during the wait. Wait on the
-          ;; new event, which a changed import may have left waiting and which
-          ;; this request need not wait for. The wake value is from the
-          ;; completion this waiter held.
+          ;; new event. The wake value is from the completion this waiter held.
           [(and current-completion (not (eq? awaited-completion current-completion)))
-           (source-controller-hasten-evt controller (Source-View-source request-view))
            current-completion]
           [(and (Analysis-Outcome? wake-result) (eq? 'errors (Analysis-Outcome-state wake-result)))
            (success-response request-id (->jsexpr empty-result))]
