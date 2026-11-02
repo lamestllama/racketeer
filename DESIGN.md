@@ -446,10 +446,12 @@ and present it as the running version.
 
 A client need not name a file as the loader does: a symbolic link gives another
 spelling, and so does another case on a file system that ignores case. Sources and
-sites keep the loader's spelling. Breakpoints keep the client's, because a request for
-one spelling replaces only what that spelling set, and they reach a source through
-`file-or-directory-identity`, read each time because saving can replace a file. A
-spelling's own source comes first, then the first loaded source of the same file. So a
+sites keep the loader's spelling. Breakpoints keep the client's name for the file, its
+path as spelled or a captured source's reference number, because an editor keeps one
+list for each and a request replaces only what that name set. A file tab and a captured
+source tab therefore keep their own breakpoints even when the paths agree. A path reaches
+a source through `file-or-directory-identity`, read each time because saving can replace
+a file. A spelling's own source comes first, then the first loaded source of the same file. So a
 file required under two names, through a link of either kind, keeps a breakpoint on the
 name it was set on, and a third spelling reaches only the first of them. A hard link
 counts as the same file until its own name loads. A request and a load can cross, since

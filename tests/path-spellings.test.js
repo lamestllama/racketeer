@@ -49,6 +49,62 @@ test('a request replaces the breakpoints of its own spelling only', { skip }, as
   assert.deepEqual(lines, [4, 4]);
 });
 
+// A captured source tab sends its requests by reference, and a file tab by path. An editor
+// keeps a list for each, so neither may replace the other's, even when the path is the same.
+const fourCalls = { ...called, 'main.rkt': '#lang racket/base\n(require "dep.rkt")\n(step)\n(step)\n(step)\n(step)\n' };
+
+test('a request by reference leaves the breakpoints set by path', async t => {
+  const { real } = project(t, called);
+  const dep = path.join(real, 'dep.rkt');
+  const lines = [];
+  await session({ program: path.join(real, 'main.rkt'), cwd: real }, { [dep]: [4] }, async context => {
+    const { client, ok } = context;
+    let stopped = await client.event('stopped');
+    const frame = await top(context, stopped.body.threadId);
+    lines.push(frame.line);
+    assert.ok(frame.source.sourceReference > 0);
+    await ok(client.request('setBreakpoints', { source: frame.source, breakpoints: [{ line: 5 }] }));
+    for (let i = 0; i < 3; i++) {
+      await ok(client.request('continue', { threadId: stopped.body.threadId }));
+      stopped = await client.event('stopped');
+      lines.push((await top(context, stopped.body.threadId)).line);
+    }
+    await ok(client.request('continue', { threadId: stopped.body.threadId }));
+  });
+  assert.deepEqual(lines, [4, 5, 4, 5]);
+});
+
+test('a request by path leaves the breakpoints set by reference, and each clears its own', async t => {
+  const { real } = project(t, fourCalls);
+  const dep = path.join(real, 'dep.rkt');
+  const lines = [];
+  await session({ program: path.join(real, 'main.rkt'), cwd: real }, { [dep]: [4] }, async context => {
+    const { client, ok } = context;
+    const resume = async stopped => {
+      await ok(client.request('continue', { threadId: stopped.body.threadId }));
+      const next = await client.event('stopped');
+      lines.push((await top(context, next.body.threadId)).line);
+      return next;
+    };
+    let stopped = await client.event('stopped');
+    const frame = await top(context, stopped.body.threadId);
+    lines.push(frame.line);
+    await ok(client.request('setBreakpoints', { source: frame.source, breakpoints: [{ line: 5 }] }));
+    stopped = await resume(stopped);
+    await ok(client.request('setBreakpoints', { source: { path: dep }, breakpoints: [] }));
+    stopped = await resume(stopped);
+    await ok(client.request('setBreakpoints', { source: { path: dep }, breakpoints: [{ line: 4 }] }));
+    stopped = await resume(stopped);
+    await ok(client.request('setBreakpoints', { source: frame.source, breakpoints: [] }));
+    stopped = await resume(stopped);
+    await ok(client.request('setBreakpoints', { source: { path: dep }, breakpoints: [] }));
+    await ok(client.request('continue', { threadId: stopped.body.threadId }));
+  });
+  // Call 1: 4, then 5. Path cleared: call 2 stops at 5 only. Path set again: call 3 stops
+  // at 4. Reference cleared: 5 no longer stops, so call 4 stops at 4. Path cleared: the end.
+  assert.deepEqual(lines, [4, 5, 5, 4, 4]);
+});
+
 for (const [kind, make] of [['hard', fs.linkSync], ['symbolic', fs.symlinkSync]]) {
   for (const breakpoint of ['a.rkt', 'b.rkt']) {
     test(`a file loaded under two names through a ${kind} link keeps a breakpoint on ${breakpoint} in ${breakpoint}`, { skip }, async t => {

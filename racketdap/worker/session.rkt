@@ -162,26 +162,30 @@
              (findf (lambda (source) (= (source-file-id source) reference)) (hash-values sources)))
         (error 'source "Unknown source reference.")))
   ;; A client need not name a file as the loader does. Sources and sites keep the loader's
-  ;; spelling, and breakpoints the client's, since its next request for that spelling
-  ;; replaces just those. A spelling's own source comes first, then the first source of
-  ;; the same file. A request and a load can cross: each stores what it brings before it
-  ;; reads what the other stored, so at least one of them makes the link.
+  ;; spelling, and breakpoints the client's name for the file: its path as spelled, or a
+  ;; captured source's reference number. A request replaces just what that name set, as an
+  ;; editor keeps one list for each. `loaded-as` links a name to its source. A spelling's
+  ;; own source comes first, then the first source of the same file. A request and a load
+  ;; can cross: each stores what it brings before it reads what the other stored, so at
+  ;; least one of them makes the link.
   (define loaded-as (make-hash))
   (define (breakpoints-in path)
-    (for*/list ([(spelling bps) (in-hash breakpoints)]
-                #:when (equal? (hash-ref loaded-as spelling spelling) path)
+    (for*/list ([(name bps) (in-hash breakpoints)]
+                #:when (equal? (hash-ref loaded-as name name) path)
                 [bp (in-list bps)])
       bp))
   (define (breakpoint-in-file? path)
-    (for/or ([(spelling bps) (in-hash breakpoints)])
-      (and (pair? bps) (same-file? spelling path))))
-  (define (requested-path source)
+    (for/or ([(name bps) (in-hash breakpoints)])
+      (define named (hash-ref loaded-as name name))
+      (and (pair? bps) (path? named) (same-file? named path))))
+  (define (requested-name source)
     (define reference (arg source 'sourceReference 0))
     (if (equal? reference 0)
         (canonical (hash-ref source 'path))
-        (source-file-path (referenced-source reference))))
+        (source-file-id (referenced-source reference))))
   (define (source-path source)
-    (define path (requested-path source))
+    (define name (requested-name source))
+    (define path (if (path? name) name (source-file-path (referenced-source name))))
     (define same-file
       (if (hash-has-key? sources path)
           '()
@@ -241,10 +245,10 @@
       (define source (capture-source path (fresh-id) #:text text))
       (hash-set! sources path source)
       (hash-remove! loaded-as path)
-      (for ([spelling (in-list (hash-keys breakpoints))]
-            #:unless (or (hash-has-key? sources spelling) (hash-has-key? loaded-as spelling))
-            #:when (same-file? spelling path))
-        (hash-set! loaded-as spelling path))
+      (for ([name (in-list (hash-keys breakpoints))]
+            #:unless (or (not (path? name)) (hash-has-key? sources name) (hash-has-key? loaded-as name))
+            #:when (same-file? name path))
+        (hash-set! loaded-as name path))
       (event "loadedSource" (hasheq 'reason "new" 'source (source-json source)))))
   (define (on-test-event result)
     (when (and (arg config 'coverage #f) (equal? (hash-ref result 'kind) "summary")
@@ -784,21 +788,21 @@
        (application-log-filter! application-log (arg a 'filter))
        (reply request)]
       [(setBreakpoints)
-       (define spelling (requested-path (hash-ref a 'source)))
+       (define name (requested-name (hash-ref a 'source)))
        (define requested (arg a 'breakpoints '()))
        (unless (list? requested) (error 'setBreakpoints "breakpoints must be an array"))
        ;; A pending breakpoint is resolved later on the target thread. Validate
        ;; all locations now so a malformed request cannot poison source loading
        ;; or replace the previously installed breakpoint set.
        (for-each validate-breakpoint requested)
-       (define old (hash-ref breakpoints spelling '()))
+       (define old (hash-ref breakpoints name '()))
        (define updated
          (for/list ([b (in-list requested)])
            (define existing (findf (lambda (o) (equal? (breakpoint-request o) b)) old))
            (or existing (new-breakpoint b))))
-       (hash-set! breakpoints spelling updated)
+       (hash-set! breakpoints name updated)
        (define path (source-path (hash-ref a 'source)))
-       (unless (equal? path spelling) (hash-set! loaded-as spelling path))
+       (unless (equal? path name) (hash-set! loaded-as name path))
        (resolve! path)
        (reply request (hasheq 'breakpoints (map (lambda (b) (breakpoint-json b path)) updated)))]
       [(setExceptionBreakpoints)
