@@ -11,8 +11,8 @@
 (provide serve-session (struct-out attach-hooks) (struct-out attached-controller))
 
 ;; These hooks describe ownership; the session still owns DAP and stepping.
-(struct attach-hooks (marked? program-thread thread-name inside? on-pause install! ready!) #:transparent)
-(struct attached-controller (on-event on-exception on-sites on-source-snapshot selected? run-code pause! close!) #:transparent)
+(struct attach-hooks (marked? program-thread thread-name inside? on-pause install! ready! gate) #:transparent)
+(struct attached-controller (on-event on-thread on-exception on-sites on-source-snapshot selected? run-code pause! close!) #:transparent)
 
 ;; One connection owns all mutable debugger state and its program launcher.
 (define (serve-session control-in control-out config client run-program #:attach [attach #f])
@@ -85,6 +85,32 @@
     (application-log-flush! application-log #:final? final?)
     (for ([port (in-list (list (current-output-port) (current-error-port)))])
       (unless (port-closed? port) (flush-output port))))
+  ;; Open while something other than a breakpoint needs to see every site. Sites with
+  ;; breakpoints or run-to targets are armed instead, and cost nothing elsewhere.
+  (define gate (if attach (attach-hooks-gate attach) (box #f)))
+  (define (refresh-gate!)
+    (set-box! gate
+              (and (not ended?)
+                   (or (and pending-pause #t) (and entry-pending? #t)
+                       (for/or ([st (in-hash-values states)])
+                         (or (state-step st) (state-pause? st)))
+                       (for/or ([call (in-hash-values attached-calls)])
+                         (or (attached-call-armed? call) (not (attached-call-ran? call)))))
+                   #t)))
+  (define armed-sites '())
+  (define (rearm!)
+    (for ([target (in-list armed-sites)]) (arm-site! target #f))
+    (set! armed-sites
+          (if ended?
+              '()
+              (append
+               (for*/list ([bps (in-hash-values breakpoints)] [bp (in-list bps)]
+                           [target (in-list (breakpoint-targets bp))])
+                 target)
+               (for*/list ([st (in-hash-values states)] #:when (state-run-to st)
+                           [target (in-list (cdr (state-run-to st)))])
+                 target))))
+    (for ([target (in-list armed-sites)]) (arm-site! target #t)))
   (define (new-breakpoint request)
     (define bp (breakpoint (fresh-id) request '() "Pending source loading" #f 0 'before))
     (with-handlers ([exn:fail? (lambda (e) (set-breakpoint-description! bp (exn-message e)))])
@@ -174,7 +200,8 @@
        bp (cond [(not (breakpoint-rule bp)) (breakpoint-description bp)]
                 [(pair? selected) (if (eq? phase 'after) "Expression completion breakpoint" "Expression breakpoint")]
                 [source "No executable expression begins at this location."]
-                [else "Pending source loading; an already loaded dependency requires restart."]))))
+                [else "Pending source loading; an already loaded dependency requires restart."])))
+    (rearm!))
   (define (on-source-snapshot path text)
     (unless (hash-has-key? sources path)
       (define source (capture-source path (fresh-id) #:text text))
@@ -453,13 +480,17 @@
                    (define path (source-path (hash-ref a 'source)))
                    (define-values (targets phase) (select-targets path a))
                    (when (null? targets) (error 'continue-to "No executable expression boundary at this location."))
-                   (set-state-run-to! st (cons phase targets)))
+                   (set-state-run-to! st (cons phase targets))
+                   (rearm!))
                  #t))
              (cond
                [valid?
                 (set-state-step! st (and (command-flag? command 'step)
                                         (make-step (string->symbol command) stop)))
-                (when (state-step st) (set-state-run-to! st #f))
+                (when (state-step st)
+                  (set-state-run-to! st #f)
+                  (rearm!))
+                (refresh-gate!)
                 (unless (command-flag? command 'internal)
                   (reply request (if (equal? command "continue")
                                      (hasheq 'allThreadsContinued (not (arg a 'singleThread #f))) (hasheq))))
@@ -478,7 +509,9 @@
   (define (on-event stop #:entry? [entry? #f])
     ;; This check belongs only to callbacks running instrumented code.
     ;; Suspension inspection below runs in an unmarked service thread.
-    (when (accepted-thread?) (handle-event stop #:entry? entry?)))
+    (when (accepted-thread?)
+      (handle-event stop #:entry? entry?)
+      (refresh-gate!)))
   (define (handle-event stop #:entry? [entry? #f])
     (define st (register-thread))
     (when (and (state-pause? st) (host-pauses? (state-thread st)))
@@ -529,7 +562,9 @@
     (define reached?
       (and run-to (eq? (car run-to) (stop-kind stop))
            (for/or ([target (in-list (cdr run-to))]) (= (site-id target) (site-id where)))))
-    (when reached? (set-state-run-to! st #f))
+    (when reached?
+      (set-state-run-to! st #f)
+      (rearm!))
     (cond
       [(pair? hit-ids) (set! entry-pending? #f) (pause-loop st stop "breakpoint" (or failure (if before? "Before expression" "Expression returned")) hit-ids)]
       [reached? (pause-loop st stop "goto" "Continue-to target reached" '())]
@@ -542,6 +577,8 @@
                    '())]
       [(and before? (state-pause? st)) (pause-loop st stop "pause" "Paused before expression" '())]
       [step-message (pause-loop st stop "step" step-message '())]))
+  (define (on-thread)
+    (when (accepted-thread?) (register-thread)))
   (define (on-exception stop)
     (when (accepted-thread?) (handle-exception stop)))
   (define (handle-exception stop)
@@ -558,6 +595,7 @@
   (define (request-source-pause! st batch)
     (unless (or ended? (state-paused st) (state-pause? st) (thread-dead? (state-thread st)))
       (set-state-pause?! st batch)
+      (refresh-gate!)
       (parameterize ([current-custodian controller-custodian])
         (thread
          (lambda ()
@@ -619,6 +657,7 @@
         original))
   (define (start-program)
     (set! started? #t)
+    (refresh-gate!)
     (set! target-thread
      (thread
      (lambda ()
@@ -654,6 +693,8 @@
                         #:images? (arg config 'racketdapRichInteractions #f)
                         #:coverage? (arg config 'coverage #f)
                         #:on-event (if (arg config 'coverage #f) on-coverage-visit on-event)
+                        #:on-thread (and (not (arg config 'coverage #f)) on-thread)
+                        #:gate gate
                         #:on-exception (and (not (arg config 'noDebug #f)) on-exception)
                         #:on-error on-error
                         #:on-entry (and entry-pending? (not stop-at-first-expression?)
@@ -796,7 +837,8 @@
        (for ([other (in-hash-values states-by-id)]) (set-state-pause?! other #f))
        (request-pause! st pending-pause)
        (for ([other (in-hash-values states-by-id)] #:unless (eq? other st))
-         (request-pause! other pending-pause))]
+         (request-pause! other pending-pause))
+       (refresh-gate!)]
       [else
        (unless (command-flag? command 'paused) (error 'debugger "Unsupported request: ~a" command))
        (define owner
@@ -814,7 +856,8 @@
          (set! pending-pause #f)
          (for ([st (in-hash-values states-by-id)]) (set-state-pause?! st #f))
          (for ([st (in-hash-values states-by-id)] #:when (and (state-paused st) (not (eq? (state-paused st) owner))))
-           (async-channel-put (paused-inbox (state-paused st)) (hasheq 'command "internalContinue"))))
+           (async-channel-put (paused-inbox (state-paused st)) (hasheq 'command "internalContinue")))
+         (refresh-gate!))
        (when (command-flag? command 'evaluate)
          (queue-evaluation! evaluations (hash-ref request 'seq)))
        (hash-set! awaiting (hash-ref request 'seq) (cons owner request))
@@ -828,7 +871,10 @@
       (semaphore-post session-ended)
       (for ([st (in-hash-values states)])
         (set-state-step! st #f)
-        (set-state-pause?! st #f))))
+        (set-state-pause?! st #f))
+      (rearm!)
+      (refresh-gate!)
+      (forget-noted-thread!)))
   (define (run-attached-code thunk step-in?)
     (define t (current-thread))
     (define previous (hash-ref attached-calls t #f))
@@ -836,7 +882,9 @@
     (define st (hash-ref states t #f))
     (when st (set-state-step! st #f))
     (dynamic-wind
-      (lambda () (hash-set! attached-calls t call))
+      (lambda ()
+        (hash-set! attached-calls t call)
+        (refresh-gate!))
       (lambda ()
         (define results
           (call-with-values
@@ -849,10 +897,11 @@
       (lambda ()
         (if previous (hash-set! attached-calls t previous) (hash-remove! attached-calls t))
         (define st (hash-ref states t #f))
-        (when st (set-state-step! st #f)))))
+        (when st (set-state-step! st #f))
+        (refresh-gate!))))
   (when attach
     ((attach-hooks-install! attach)
-     (attached-controller on-event on-exception on-sites on-source-snapshot
+     (attached-controller on-event on-thread on-exception on-sites on-source-snapshot
                           (lambda (path) (pair? (hash-ref breakpoints path '())))
                           run-attached-code
                           (lambda (t)

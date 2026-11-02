@@ -1,7 +1,9 @@
 #lang racket/base
 ;; Copyright (c) 2026 Eric Parsonage
 ;; SPDX-License-Identifier: Apache-2.0 OR MIT
-(require racket/list racket/path syntax/id-table "runtime.rkt")
+(require racket/list racket/path syntax/id-table "runtime.rkt"
+         (only-in '#%unsafe unsafe-unbox* unsafe-vector*-ref unsafe-vector*-set!)
+         (only-in '#%kernel [apply kernel-apply]))
 (provide instrument-module
          make-module-binding-context record-module-bindings!
          module-binding-context-identifiers module-binding-context-child! module-binding-context-key
@@ -94,6 +96,10 @@
                      (not (port-constructor-name? (cadr binding)))))))))
 
 (struct boundary (range authored? [visible? #:mutable]))
+;; A call or module-level form being generated: the variable that will hold its frame,
+;; how many slots the frame needs, and whether any site uses it.
+(struct activation (frame [slots #:mutable] [used? #:mutable]))
+(struct scope (variable slot parent bindings [reached? #:mutable] [sited? #:mutable]))
 
 ;; Returns the rewritten expression, the visible site descriptors, and every
 ;; descriptor in slot order paired with whether it is visible. form names the
@@ -107,9 +113,6 @@
                            #:tail? [initial-tail? #f])
   (define descriptors '())
   (define table '())
-  (define table-size 0)
-  (define sites-id (car (generate-temporaries '(sites))))
-  (define callback-expression #`(#%plain-app vector-ref #,sites-id '0))
   ;; Retain source-facing aliases for module bindings that expansion may rename.
   ;; Lexical evaluation alone cannot reconstruct these names from namespace maps.
   (define module-bindings known-module-bindings)
@@ -144,34 +147,47 @@
        (collect-bindings (cdr stx))]
       [else (void)]))
   (collect-bindings expanded)
-  (define activation-id (car (generate-temporaries '(activation))))
-  ;; Every frame of this form shares one list of module binding identifiers.
-  (define module-bindings-id (car (generate-temporaries '(module-bindings))))
-  ;; An environment is the variable holding its scope's live bindings, in
-  ;; lexical order with the innermost first, or #f when none are visible. A
-  ;; scope that binds source names conses them onto its parent's list once, so
-  ;; each site refers to that list rather than rebuilding every visible binding.
-  ;; Returns the scope's environment and the clauses that bind its list.
-  (define (extend ids environment)
+  (define form-id (car (generate-temporaries '(form))))
+  (define gate-id (car (generate-temporaries '(gate))))
+  (define armed-id (car (generate-temporaries '(armed))))
+  ;; A scope is the variable holding a procedure that returns the live bindings
+  ;; visible in it, innermost first, and the frame slot it stores that procedure in.
+  ;; Nothing is built for a scope no site or closure of a site can reach.
+  (define (new-scope ids parent slot)
     (define live-bindings
-      (for/list ([id (in-list ids)]
-                 #:do [(define name (if (original-binding? id source)
-                                        (syntax-e id)
-                                        (free-id-table-ref lexical-aliases id #f)))]
-                 #:when name)
-        #`(#%plain-app make-live-binding '#,name (#%plain-lambda () #,id)
-                       (#%plain-lambda (replacement) (set! #,id replacement)))))
+      (if coverage?
+          '()
+          (for/list ([id (in-list ids)]
+                     #:do [(define name (if (original-binding? id source)
+                                            (syntax-e id)
+                                            (free-id-table-ref lexical-aliases id #f)))]
+                     #:when name)
+            #`(#%plain-app make-live-binding '#,name
+                           (case-lambda [() #,id] [(replacement) (set! #,id replacement)])))))
     (if (null? live-bindings)
-        (values environment '())
-        (let ([variable (car (generate-temporaries '(bindings)))])
-          (values variable
-                  (list #`[(#,variable)
-                           (#%plain-app list* #,@live-bindings #,(bindings-expression environment))])))))
-  (define (bindings-expression environment)
-    (or environment #''()))
-  ;; Bind a scope's list around its body, which keeps its tail positions.
-  (define (in-scope clauses expressions)
-    (if (null? clauses) expressions (list #`(let-values #,clauses #,@expressions))))
+        parent
+        (scope (car (generate-temporaries '(variables))) slot parent live-bindings #f #f)))
+  (define (scope-procedure this)
+    (when (scope-parent this) (set-scope-reached?! (scope-parent this) #t))
+    #`(#%plain-lambda ()
+        (#%plain-app list* #,@(scope-bindings this)
+                     #,(if (scope-parent this)
+                           #`(#%plain-app #,(scope-variable (scope-parent this)))
+                           #''()))))
+  (define (store-scope this act)
+    #`(#%plain-app unsafe-vector*-set! #,(activation-frame act) '#,(scope-slot this) #,(scope-variable this)))
+  (define (fresh-scope-slot! act)
+    (begin0 (activation-slots act)
+      (set-activation-slots! act (add1 (activation-slots act)))))
+  ;; Whether this binding form introduced the scope, rather than inheriting it.
+  (define (own-scope? this parent) (and this (not (eq? this parent))))
+  ;; Bind a scope's procedure around its body, which keeps its tail positions.
+  (define (in-scope this parent act expressions)
+    (if (and (own-scope? this parent) (scope-reached? this))
+        (list #`(let-values ([(#,(scope-variable this)) #,(scope-procedure this)])
+                  #,@(if (scope-sited? this) (list (store-scope this act)) '())
+                  #,@expressions))
+        expressions))
   (define (stoppable? expression)
     (and (not (identifier? expression))
          (let ([parts (syntax->list expression)])
@@ -200,21 +216,8 @@
           (cond [(identifier? origin) (and (original-binding? origin source) (in-source? origin) origin)]
                 [(pair? origin) (or (walk (car origin)) (walk (cdr origin)))]
                 [else #f]))))
-  (define (site-for expression located tail? visible?)
-    (and (or coverage? (stoppable? expression)
-             ;; A complete module expression is executable even when it is
-             ;; only a constant or reference. Keep atomic operands inside
-             ;; other expressions out of the ordinary stepping sequence.
-             (and expression-boundary? (eq? expression expanded)))
-         located
-         (let ([s (site (fresh-id) (syntax-source located)
-                        (syntax-line located) (syntax-column located)
-                        (syntax-position located) (syntax-span located)
-                        tail? (syntax->datum expression))])
-           (when visible? (set! descriptors (cons s descriptors)))
-           (set! table (cons (cons s visible?) table))
-           (set! table-size (add1 table-size))
-           #`(#%plain-app vector-ref #,sites-id '#,table-size))))
+  (define enclosing-site (make-parameter 0))
+  (define next-slot 0)
   ;; Source syntax or its expansion origin owns a range ahead of a generated
   ;; wrapper that borrowed it. A child can relinquish the wrapper's boundary
   ;; before its descriptor is emitted; sibling source executions stay distinct.
@@ -234,13 +237,43 @@
     (for/list ([e (in-list expressions)] [i (in-naturals)])
       (define last? (= i (sub1 (length expressions))))
       (walk e environment act (and tail? last?) (and last? inferred-name))))
+  ;; A frame is made only for a call that has a site to note in it. It holds the form,
+  ;; the running site, the tokens made so far, and one slot per scope; the first scope
+  ;; slot holds what the call started with.
+  (define (frame-around act entry-scope expressions)
+    (if (activation-used? act)
+        (list #`(let-values ([(#,(activation-frame act))
+                              (#%plain-app vector #,form-id '0 '#f
+                                           #,(if (and entry-scope (scope-sited? entry-scope))
+                                                 (scope-variable entry-scope)
+                                                 #''#f)
+                                           #,@(for/list ([_ (in-range (- (activation-slots act) first-scope-slot 1))])
+                                                #''#f))])
+                  (#%plain-app note-thread #,form-id)
+                  (with-continuation-mark frame-key #,(activation-frame act)
+                    (begin #,@expressions))))
+        expressions))
   (define (lambda-clause formals expressions environment)
-    (define act (car (generate-temporaries '(activation))))
-    (define-values (env clauses) (extend (formal-identifiers formals) environment))
-    #`[#,formals
-       (let-values ([(#,act) (#%plain-app make-activation)] #,@clauses)
-         #,@(parameterize ([enclosing-boundary #f])
-              (body expressions env act #t)))])
+    (define act (activation (car (generate-temporaries '(frame))) (add1 first-scope-slot) #f))
+    (define own (new-scope (formal-identifiers formals) environment first-scope-slot))
+    ;; A call with no variables of its own starts with those it closes over.
+    (define entry
+      (if (eq? own environment)
+          (and environment
+               (scope (scope-variable environment) first-scope-slot environment #f #f #f))
+          own))
+    (define rewritten
+      (parameterize ([enclosing-boundary #f] [enclosing-site 0])
+        (body expressions entry act #t)))
+    (when (and entry (eq? own environment) (scope-reached? entry))
+      (set-scope-reached?! environment #t))
+    #`[#,formals #,@(in-scope-binding-only own environment (frame-around act entry rewritten))])
+  ;; A call's own scope is stored by the frame that starts with it.
+  (define (in-scope-binding-only this parent expressions)
+    (if (and (own-scope? this parent) (scope-reached? this))
+        (list #`(let-values ([(#,(scope-variable this)) #,(scope-procedure this)])
+                  #,@expressions))
+        expressions))
   (define (application expressions environment act)
     (define rewritten (body expressions environment act #f))
     ;; A primitive other than a port constructor needs no check, and the compiler
@@ -261,6 +294,15 @@
           (set-boundary-visible?! parent #f)
           (set-boundary-visible?! current #f)))
     (define inferred-name (or (syntax-property expression 'inferred-name) context-name))
+    (define slot
+      (and located
+           (or coverage? (stoppable? expression)
+               ;; A complete module expression is executable even when it is
+               ;; only a constant or reference. Keep atomic operands inside
+               ;; other expressions out of the ordinary stepping sequence.
+               (and expression-boundary? (eq? expression expanded)))
+           (begin (set! next-slot (add1 next-slot)) next-slot)))
+    (define enclosing (enclosing-site))
     (define (remember-lambda rewritten)
       ;; Preserve source/properties, notably method-arity-error and inferred-name.
       ;; The registration call must not replace the compiler's contextual name
@@ -301,25 +343,33 @@
          #`(begin0 #,(walk #'expression environment act #f inferred-name)
                    #,@(body (syntax->list #'(rest ...)) environment act #f))]
         [(let-values ([(id ...) rhs] ...) expression ...)
-         (let*-values ([(groups) (syntax->list #'((id ...) ...))]
-                       [(env clauses) (extend (apply append (map syntax->list groups)) environment)])
-           #`(let-values
-                 (#,@(for/list ([ids (in-list groups)] [rhs (in-list (syntax->list #'(rhs ...)))])
+         (let* ([groups (syntax->list #'((id ...) ...))]
+                [this (new-scope (apply append (map syntax->list groups)) environment
+                                 (if coverage? first-scope-slot (fresh-scope-slot! act)))]
+                [rhss (for/list ([ids (in-list groups)] [rhs (in-list (syntax->list #'(rhs ...)))])
                         #`[#,ids #,(walk rhs environment act #f
                                          (and (= (length (syntax->list ids)) 1)
-                                              (syntax-e (car (syntax->list ids)))))]))
-               #,@(in-scope clauses (body (syntax->list #'(expression ...)) env act tail? inferred-name))))]
+                                              (syntax-e (car (syntax->list ids)))))])]
+                [bodies (body (syntax->list #'(expression ...)) this act tail? inferred-name)])
+           #`(let-values #,rhss #,@(in-scope this environment act bodies)))]
         [(letrec-values ([(id ...) rhs] ...) expression ...)
-         (let*-values ([(groups) (syntax->list #'((id ...) ...))]
-                       [(env clauses) (extend (apply append (map syntax->list groups)) environment)])
-           ;; The scope's list comes first: its getters may run in any initializer.
-           #`(letrec-values
-                 (#,@clauses
-                  #,@(for/list ([ids (in-list groups)] [rhs (in-list (syntax->list #'(rhs ...)))])
-                        #`[#,ids #,(walk rhs env act #f
+         (let* ([groups (syntax->list #'((id ...) ...))]
+                [this (new-scope (apply append (map syntax->list groups)) environment
+                                 (if coverage? first-scope-slot (fresh-scope-slot! act)))]
+                [rhss (for/list ([ids (in-list groups)] [rhs (in-list (syntax->list #'(rhs ...)))])
+                        #`[#,ids #,(walk rhs this act #f
                                          (and (= (length (syntax->list ids)) 1)
-                                              (syntax-e (car (syntax->list ids)))))]))
-               #,@(body (syntax->list #'(expression ...)) env act tail? inferred-name)))]
+                                              (syntax-e (car (syntax->list ids)))))])]
+                [bodies (body (syntax->list #'(expression ...)) this act tail? inferred-name)]
+                [scope-clauses
+                 (if (and (own-scope? this environment) (scope-reached? this))
+                     (cons #`[(#,(scope-variable this)) #,(scope-procedure this)]
+                           (if (scope-sited? this)
+                               (list #`[(#,(car (generate-temporaries '(stored)))) #,(store-scope this act)])
+                               '()))
+                     '())])
+           ;; The scope's procedure comes first: its getters may run in any initializer.
+           #`(letrec-values (#,@scope-clauses #,@rhss) #,@bodies))]
         [(set! id rhs) #`(set! id #,(walk #'rhs environment act #f (syntax-e #'id)))]
         [(with-continuation-mark key value result)
          #`(with-continuation-mark #,(walk #'key environment act #f)
@@ -336,46 +386,83 @@
     (define rewritten
       (parameterize ([enclosing-boundary
                       (if (and (boundary-visible? current) range (stoppable? expression))
-                          current parent)])
+                          current parent)]
+                     [enclosing-site (or slot enclosing)])
         (rewrite)))
     (define visible? (boundary-visible? current))
-    (define descriptor (site-for expression located tail? visible?))
-    (define callback (if visible? callback-expression #''#f))
     (cond
-      [(not descriptor) rewritten]
-      ;; Coverage runs without debugging, so a visit is the only event.
+      [(not slot) rewritten]
+      [else
+       (define descriptor
+         (site (fresh-id) (syntax-source located)
+               (syntax-line located) (syntax-column located)
+               (syntax-position located) (syntax-span located)
+               tail? (syntax->datum expression) enclosing
+               (if environment (scope-slot environment) first-scope-slot)))
+       (when visible? (set! descriptors (cons descriptor descriptors)))
+       (set! table (cons (cons slot (cons descriptor visible?)) table))
+       (unless coverage?
+         (set-activation-used?! act #t)
+         (when environment
+           (set-scope-reached?! environment #t)
+           (set-scope-sited?! environment #t)))
+       (emit-site slot rewritten tail? visible? enclosing act)]))
+  ;; A site notes itself in its frame, and returns the frame to what encloses it when
+  ;; it completes, as a mark would disappear. It enters the debugger only when the
+  ;; gate is open or the site is armed; those reads are all it costs otherwise.
+  (define (emit-site slot rewritten tail? visible? enclosing act)
+    (define (attention?)
+      #`(if (#%plain-app unsafe-unbox* #,gate-id) '#t (#%plain-app unsafe-vector*-ref #,armed-id '#,slot)))
+    (cond
       [coverage?
        (if visible?
-           #`(begin (#%plain-app announce-visit #,descriptor #,callback) #,rewritten)
+           #`(begin
+               (if (#%plain-app unsafe-vector*-ref #,armed-id '#,slot)
+                   (#%plain-app announce-visit #,form-id '#,slot)
+                   '#f)
+               #,rewritten)
            rewritten)]
       [else
-        (let* ([token (car (generate-temporaries '(token)))]
-               [decision (car (generate-temporaries '(decision)))]
-               [frame-expression
-                #`(#%plain-app make-frame #,act
-                              #,(bindings-expression environment)
-                              #,module-bindings-id
-                              '#,(and module-context (module-binding-context-key module-context))
-                              (#%plain-lambda ()
-                                (#%plain-app variable-reference->namespace
-                                 #,(datum->syntax expression (list #'#%variable-reference) expression)))
-                              #,descriptor)]
-               [before #`(#%plain-app announce-before #,descriptor #,(if tail? #''#f token) #,callback)])
-          (if tail?
-              #`(with-continuation-mark frame-key #,frame-expression
-                  (let-values ([(#,decision) #,before])
-                    (if #,decision (#%plain-app apply values #,decision) #,rewritten)))
-              #`(let-values ([(#,token) (#%plain-app gensym 'expression)])
-                  (with-continuation-mark context-key #,token
-                    (with-continuation-mark frame-key #,frame-expression
-                      (let-values ([(#,decision) #,before])
-                        (#%plain-app call-with-values
-                         (#%plain-lambda ()
-                           (if #,decision (#%plain-app apply values #,decision) #,rewritten))
-                         (#%plain-lambda results
-                           (#%plain-app announce-after #,descriptor #,token #,callback results)))))))))]))
+       (define f (activation-frame act))
+       (define enter #`(#%plain-app unsafe-vector*-set! #,f '1 '#,slot))
+       (define leave #`(#%plain-app unsafe-vector*-set! #,f '1 '#,enclosing))
+       (define decision (car (generate-temporaries '(decision))))
+       (define start
+         #`(if #,(attention?) (#%plain-app announce-before #,f '#,slot) '#f))
+       (define single (car (generate-temporaries '(value))))
+       (define results (car (generate-temporaries '(results))))
+       (cond
+         [(and tail? visible?)
+          #`(begin #,enter
+                   (let-values ([(#,decision) #,start])
+                     (if #,decision (#%plain-app kernel-apply values #,decision) #,rewritten)))]
+         [tail? #`(begin #,enter #,rewritten)]
+         [visible?
+          #`(begin
+              #,enter
+              (let-values ([(#,decision) #,start])
+                (#%plain-app
+                 call-with-values
+                 (#%plain-lambda ()
+                   (if #,decision (#%plain-app kernel-apply values #,decision) #,rewritten))
+                 (case-lambda
+                   [(#,single)
+                    (if #,(attention?)
+                        (#%plain-app announce-after #,f '#,slot (#%plain-app list #,single))
+                        (begin #,leave #,single))]
+                   [#,results (#%plain-app leave-with-values #,f '#,slot #,results)]))))]
+         [else
+          #`(begin
+              #,enter
+              (#%plain-app
+               call-with-values
+               (#%plain-lambda () #,rewritten)
+               (case-lambda
+                 [(#,single) (begin #,leave #,single)]
+                 [#,results (begin #,leave (#%plain-app kernel-apply values #,results))])))])]))
   (define local-name (and (syntax-transforming?) (syntax-local-name)))
-  (define result (walk expanded #f activation-id initial-tail?
+  (define form-activation (activation (car (generate-temporaries '(frame))) (add1 first-scope-slot) #f))
+  (define result (walk expanded #f form-activation initial-tail?
                        (if (identifier? local-name) (syntax-e local-name) local-name)))
   (define (identifiers-thunk identifiers)
     #`(#%plain-lambda () (#%plain-app list #,@(for/list ([id (in-list identifiers)]) #`(quote-syntax #,id)))))
@@ -393,10 +480,19 @@
                               #`(#%plain-app cons '#,(module-binding-context-key ancestor)
                                       #,(identifiers-thunk (module-binding-context-own-identifiers ancestor))))))))
         '()))
-  (values #`(let-values ([(#,activation-id) (#%plain-app make-activation)]
-                         [(#,module-bindings-id) #,(identifiers-thunk module-bindings)]
-                         [(#,sites-id) (#%plain-app form-sites '#,(car form) '#,(cdr form) '#,table-size)])
-              #,@register-context
-              #,result)
+  (define framed (car (frame-around form-activation #f (list result))))
+  (values (if (and (zero? next-slot) (null? register-context))
+              result
+              #`(let-values ([(#,form-id)
+                              (#%plain-app form-sites '#,(car form) '#,(cdr form) '#,next-slot
+                                           #,(identifiers-thunk module-bindings)
+                                           '#,(and module-context (module-binding-context-key module-context))
+                                           (#%plain-lambda ()
+                                             (#%plain-app variable-reference->namespace
+                                                          #,(datum->syntax expanded (list #'#%variable-reference) expanded))))])
+                  (let-values ([(#,gate-id) (#%plain-app form-gate #,form-id)]
+                               [(#,armed-id) (#%plain-app form-armed #,form-id)])
+                    #,@register-context
+                    #,framed)))
           (reverse descriptors)
-          (reverse table)))
+          (for/list ([entry (in-list (sort table < #:key car))]) (cdr entry))))

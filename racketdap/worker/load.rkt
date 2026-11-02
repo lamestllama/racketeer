@@ -54,6 +54,8 @@
                            #:on-sites [on-sites void]
                            #:on-event [on-event #f]
                            #:on-entry [on-entry #f]
+                           #:on-thread [on-thread #f]
+                           #:gate [gate (box #t)]
                            #:on-source [on-source void]
                            #:on-source-snapshot [on-source-snapshot void]
                            #:exclude [excluded? (lambda (_path) #f)]
@@ -178,14 +180,15 @@
                                #:expression-boundary? expression-boundary?))
           (define module-path (hash-ref module-paths bindings '()))
           (when live?
-            (register-form-sites! unit index (form-callback selected-source module-path) (map car table))
+            (register-form-sites! unit index (form-callback selected-source module-path) (map car table)
+                                  #:gate gate #:on-thread on-thread #:armed? coverage?)
             (on-sites sites))
           (when rec
             (record! rec (list 'form module-path index
                                (for/list ([entry (in-list table)])
                                  (define s (car entry))
                                  (vector (site-line s) (site-column s) (site-position s) (site-span s)
-                                         (site-tail? s) (cdr entry))))))
+                                         (site-tail? s) (site-parent s) (site-scope s) (cdr entry))))))
           annotated)
         (define (make-transform bindings)
           (lambda (kind stx)
@@ -447,10 +450,11 @@
         [(form)
          (define descriptors
            (for/list ([entry (in-list (cadddr event))])
-             (define-values (line column position span tail? visible?) (vector->values entry))
-             (cons (site (fresh-id) resolved line column position span tail? #f) visible?)))
+             (define-values (line column position span tail? parent scope visible?) (vector->values entry))
+             (cons (site (fresh-id) resolved line column position span tail? #f parent scope) visible?)))
          (register-form-sites! unit (caddr event) (form-callback resolved (cadr event))
-                               (map car descriptors))
+                               (map car descriptors)
+                               #:gate gate #:on-thread on-thread #:armed? coverage?)
          (on-sites (for/list ([descriptor (in-list descriptors)] #:when (cdr descriptor))
                      (car descriptor)))])))
   ;; Load one file through the cache. Falls back to the ordinary path on failure
@@ -652,6 +656,8 @@
                     #:on-sites [on-sites void]
                     #:on-event [on-event #f]
                     #:on-entry [on-entry #f]
+                    #:on-thread [on-thread #f]
+                    #:gate [gate (box #t)]
                     #:on-exception [on-exception #f]
                     #:on-error [on-error void]
                     #:on-pause [on-pause #f]
@@ -692,6 +698,7 @@
     (make-debug-loader namespace source
                        #:instrument? instrument? #:coverage? coverage? #:language language
                        #:on-sites on-sites #:on-event on-event #:on-entry on-entry
+                       #:on-thread on-thread #:gate gate
                        #:on-source on-source #:on-source-snapshot on-source-snapshot
                        #:source-selected? source-selected? #:sources selected-sources
                        #:source-roots roots #:test? test? #:test-selection test-selection

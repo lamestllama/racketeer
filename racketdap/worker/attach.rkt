@@ -12,7 +12,7 @@
 (define attach-api-version 1)
 (struct connection (ready ended [controller #:mutable] [listener #:mutable]
                           [input #:mutable] [output #:mutable] [closed? #:mutable]))
-(struct attachment (exclude on-pause thread-name mark boundaries snapshots [sites #:mutable]
+(struct attachment (exclude on-pause thread-name mark boundaries snapshots gate [sites #:mutable]
                             [program-thread #:mutable] [connection #:mutable]
                             [loaders #:mutable] [roots #:mutable] [next-site #:mutable]))
 (define (new-connection)
@@ -22,7 +22,7 @@
   (define c (new-connection))
   (semaphore-post (connection-ended c))
   (attachment excluded? on-pause name (make-thread-cell #f #t)
-              (make-weak-hasheq) (make-hash) '() #f c (make-weak-hasheq) '() 0))
+              (make-weak-hasheq) (make-hash) (box #f) '() #f c (make-weak-hasheq) '() 0))
 (define (attachment-ready-evt a)
   (semaphore-peek-evt (connection-ready (attachment-connection a))))
 (define (attachment-ended-evt a)
@@ -84,7 +84,11 @@
               (when c ((attached-controller-on-sites c) sites)))
             #:on-event (lambda (stop)
                          (define c (controller a))
-                         (when c ((attached-controller-on-event c) stop)))))
+                         (when c ((attached-controller-on-event c) stop)))
+            #:on-thread (lambda ()
+                          (define c (controller a))
+                          (when c ((attached-controller-on-thread c))))
+            #:gate (attachment-gate a)))
          (cons compiled source)))))
   (dynamic-wind
     (lambda () (thread-cell-set! cell a))
@@ -134,7 +138,8 @@
           (for ([(path text) (in-hash (attachment-snapshots a))])
             ((attached-controller-on-source-snapshot control) path text))
           ((attached-controller-on-sites control) (attachment-sites a)))
-        (lambda () (semaphore-post (connection-ready c))))))
+        (lambda () (semaphore-post (connection-ready c)))
+        (attachment-gate a))))
     (lambda () (close-connection! c))))
 
 (define (attachment-listen! a)

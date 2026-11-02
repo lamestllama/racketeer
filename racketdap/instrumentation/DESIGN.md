@@ -14,11 +14,12 @@ It does not expand source, read files, or select modules. The loader owns those
 operations and must preserve one ordinary set of expansion effects.
 
 Generated code holds no debugger state, so it can be compiled to a file. A form
-quotes its unit symbol and index, and reads a vector from form-sites when it is
-instantiated: slot 0 is the event callback and the descriptors follow. The loader
-fills that entry with register-form-sites!, during expansion or, for code read from
-the cache, from the saved record. An instance with no entry gets a vector of #f and
-delivers nothing, which is also how a helper instance above phase zero stays quiet.
+quotes its unit symbol and index, and asks form-sites for its entry when it is
+instantiated: the descriptors, the event callback, the gate and the armed flags. The
+loader fills that entry with register-form-sites!, during expansion or, for code read
+from the cache, from the saved record. An instance with no entry gets a closed gate
+and no callback, and delivers nothing, which is also how a helper instance above phase
+zero stays quiet.
 A unit's symbol must stay reachable while its forms can start: the table is
 weak in it, and code read from a file does not intern the symbol until it runs.
 
@@ -40,25 +41,53 @@ Binding containers introduced for internal definitions have neither an operator
 source nor an expansion origin. Their inherited enclosing-body range is not a
 separate stop; their initializers and body are still traversed and instrumented.
 Explicit and macro-originated binding forms retain their normal stops.
-The containers retain their frame marks for exception and asynchronous Pause
-inspection, but are omitted from breakpoint sites and expression callbacks.
+The containers stay in the frame for exception and asynchronous Pause inspection,
+but are omitted from breakpoint sites and expression callbacks.
 
-Non-tail expressions allocate an evaluation identity and preserve all returned
-values through a completion continuation. Tail wrappers retain the original
-expression or supplied skip values in tail position and have no completion
-event. A with-continuation-mark body is tail relative to its marked continuation,
-including when the entire mark expression is non-tail. Its tail paths have no
-separate completion wrapper: same-key user marks must replace each other on that
-continuation. The enclosing non-tail mark expression still supplies its normal
-completion event and return token. Activation identities associate source frames
-with function invocations;
-continuation marks hold live frames and enclosing expression identities.
-Inspecting the innermost frame per activation yields bounded tail-frame depth
-and restores the appropriate identities during continuation re-entry.
+## What a site costs
 
-There is one before callback delivery and, when available, one after delivery
-per dynamic expression evaluation. Consumer breakpoint filtering and stepping
-decisions happen inside that one callback. Each delivery has a fresh optional
+Most programs spend almost all of their time at sites nothing wants, so a site with
+nothing to do is two reads, a branch and a store: no call and no allocation, whatever
+the depth of the stack. It enters the debugger only when the gate is open or its own
+armed flag is set. The gate is a box owned by the loader's creator, open while a step,
+Pause or entry stop is pending. An armed flag is set while a breakpoint or run-to
+target is at that site. A loader created without a gate gets one that stays open, and
+delivers every site. Code that calls no site at all, such as a procedure returning its
+argument, makes no frame.
+
+A call makes one frame, as a mark set when the call begins. Tail calls replace it, so
+tail recursion stays bounded. A frame is a vector: slot 1 is the running site, which a
+site stores on entry and its parent's slot restores on completion, as a Python frame
+holds its last instruction. A scope that binds source names stores a procedure that
+returns its live bindings, and those bindings are built only when a stop asks. Every
+scope needs one closure when it is entered; every variable a site can show is assigned
+through that closure, so the compiler boxes it. That is the remaining cost, and it is
+per call and per variable, not per site.
+
+An expression evaluation's identity is its frame and site, and its enclosing
+evaluations follow from each site's parent. Tokens naming them are made when a stepper
+asks, kept on the frame so they stay eq?, and include the host boundary marks attach
+sets. A stop reads its frames and contexts from its marks when asked, so a callback that
+lets the program go on does not pay for the depth of the stack.
+
+Re-entering a continuation captured in a frame that has since moved on leaves the frame
+showing a later site until the next site runs. An exception raised again after its
+frames have moved on shows them where they now are. Nothing else observes the difference
+from a mark per site: completion events name their own site. A suspended thread's
+parameters are read from its marks up to its nearest prompt, and beyond that are those it
+had when it first ran instrumented code.
+
+Non-tail expressions preserve all returned values through a completion continuation.
+Tail wrappers retain the original expression or supplied skip values in tail position
+and have no completion event. A with-continuation-mark body is tail relative to its
+marked continuation, including when the entire mark expression is non-tail. Its tail
+paths have no separate completion wrapper: same-key user marks must replace each other
+on that continuation. The enclosing non-tail mark expression still supplies its normal
+completion event and return token.
+
+When the gate is open there is one before callback delivery and, when available, one
+after delivery per dynamic expression evaluation. Consumer breakpoint filtering and
+stepping decisions happen inside that one callback. Each delivery has a fresh optional
 action box. stop-skip! selects actual values at entry; stop-replace-results!
 selects actual values at completion and immediately changes stop-results.
 Repeated actions update the pending list. Empty lists preserve zero values;
@@ -70,15 +99,14 @@ stops and decisions. Callback return values do not replace program results.
 A frame carries its site descriptor, which supplies the source, position and
 span that stack traces and failure locations report.
 
-Source-visible lexical bindings have live getter/setter closures over the real
-program cells. Inner scopes shadow outer names; generated macro bindings do not
-hide source-authored identifiers merely because their printed names coincide.
-Each scope that binds source names builds its live bindings once, in front of
-its parent's list, and every site in the scope refers to that list. Each
-instrumented form likewise holds its module binding identifiers once, in a thunk
-that a stop calls, so syntax literals are not read until something inspects them.
-Generated code therefore grows with the source, not with the number of sites times the
-visible bindings, which made long bodies slow to expand and compile.
+Source-visible lexical bindings have live accessors over the real program cells. Inner
+scopes shadow outer names; generated macro bindings do not hide source-authored
+identifiers merely because their printed names coincide. Each scope that binds source
+names has one procedure returning its live bindings, in front of its parent's, and
+every site in the scope finds it through a frame slot. Each instrumented form likewise
+holds its module binding identifiers once, in a thunk that a stop calls, so syntax
+literals are not read until something inspects them. Generated code therefore grows
+with the source, not with the number of sites times the visible bindings.
 The ordinary-expansion hook's introduction scope is removed only for the
 syntax-original? source-classification check.
 
@@ -225,6 +253,10 @@ module fragments, binding identity, result edits, and asynchronous pause.
 The production artifact list remains only instrument.rkt and runtime.rkt.
 
 ## Compiled code on disk
+
+Generated code is written only in core forms, so the expander has no macro to apply to
+it, and a known primitive stays inline; any other operator goes through a check for port
+constructors once, in a call that takes no copy of the arguments.
 
 Compiled instrumented code is an ordinary module apart from three things. It imports
 runtime.rkt and worker/expand.rkt by absolute path, so the cache key includes
