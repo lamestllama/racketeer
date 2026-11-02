@@ -20,6 +20,8 @@ same revision creates a new attempt.
   `completion-evt` is a newly scheduled attempt, or the installed result's
   completion when a current success is reused. A ready outcome takes precedence
   over reusable facts, including failure and stop.
+- `source-controller-hasten-evt` ends any wait of a source's analysis, for a
+  request thread about to wait on it.
 - `source-controller-current-view-evt` asks the consumer whether a captured view
   is still current. It does not observe the filesystem.
 
@@ -61,7 +63,8 @@ The `owner` submodule exports operations for the session consumer only. Open
 registers the buffer, restores matching retained analysis, and schedules fresh
 analysis. Edit takes the registered buffer selected by the incoming URI, owns
 the write lock, invalidates eligibility before the supplied
-document mutation, and schedules the successor after releasing the lock. Its
+document mutation, and installs the successor, to start after a wait, after
+releasing the lock. Its
 mutation callback updates text and client version and must not acquire the same
 buffer lock. Close handles retention, cancellation, and removal of publications.
 `source-controller-refresh-analysis!` joins active work or starts another attempt
@@ -81,8 +84,8 @@ private records and collections; none imports or receives the controller:
 
 - `workspace/source-store.rkt`: source authority, revisions, and change signals.
 - `disk-reader.rkt`: `Disk-Reader`, ordered per-source disk reads and waiters.
-- `analysis-scheduler.rkt`: `Analysis-Scheduler`, shared queued/running attempts,
-  FIFO dispatch, capacity, cancellation, and attempt completion.
+- `analysis-scheduler.rkt`: `Analysis-Scheduler`, shared waiting, queued and
+  running attempts, FIFO dispatch, capacity, cancellation, and attempt completion.
 - `supervised-worker.rkt`: `Supervised-Worker`, resource ownership, timeout and
   premature-exit detection. It suppresses worker stdout and releases resources
   before reporting a result. Cancelling work does not kill its supervisor;
@@ -121,10 +124,55 @@ workspace requests. Injecting a different publication workspace alone does not
 create an isolated LSP session; the request layer must use that same workspace.
 Its folders are also project roots for imported modules, as described below.
 
+## The wait after an edit
+
+An edit cancels any running analysis of its document at once, since that text is
+gone, and then waits 250 ms before starting another; each further edit restarts
+the wait. So a burst of edits analyses its last text once. This wait
+treats running and pending checks the same way, with the same 250 ms. The wait
+belongs to the attempt: edit installs an attempt in the `waiting` state with the
+time it is due, and its completion is what `SafeDoc-analysis-completion` holds, so
+a waiter has an event from the moment of the edit and the attempt obeys every rule
+below for attempts. Revisions certify it as they do any other: its snapshot is the
+edited text, and a further edit, close, invalidation or shutdown settles it like
+a running attempt.
+
+Other open documents that load the edited file wait the same way, each restarted by
+each edit of its import, and so do those of a file that opened, closed or was
+invalidated, and a document whose analysis read an import since changed. Opening a
+document and invalidating a file start that document's own analysis at once: neither
+comes in bursts from typing.
+
+No timer runs. The consumer also syncs on `source-controller-analysis-wait-evt`,
+whose guard reads the earliest due time among the attempts when each sync begins.
+Only the consumer changes attempts and it syncs afresh after every dispatch, so
+settling an attempt is all it takes to end its wait, and nothing is left to cancel
+at close or shutdown. The pump that follows every dispatch moves due attempts to the
+back of the queue, oldest first, and takes each one's import context at that moment,
+so it reads the buffers as the wait left them. A wait of zero, which
+`#:analysis-wait` allows, starts at the pump that ends the edit.
+
+A request does not sit out the wait. The dispatcher ends it for every request
+answered from the document's Check Syntax facts, before handling the request: hover,
+definition, references, document highlight, rename and prepare rename, code actions,
+inlay hints and semantic tokens. Acquiring analysis of a target file through
+`source-controller-analysis-evt` joins the waiting attempt and ends its wait too. A
+waiter that moves to a new completion after an import changed, in `analysis-query`,
+ends that attempt's wait also. Ending a wait changes nothing else: exact queries
+still wait for fresh completion and fast queries still answer from the adjusted
+trace, as they do while an analysis runs. Completion and signature help are sent by
+typing itself and leave the wait running, or every keystroke would start an analysis;
+they too answer from the adjusted trace. Document symbols and formatting read the
+text and use no analysis.
+
+An edit publishes nothing, during the wait as while an analysis runs: the client
+keeps showing the last diagnostics published until the next analysis replaces them.
+
 ## Imports from open buffers
 
 Each analysis attempt carries an `Analysis-Context`: an immutable table of the
-open file buffers taken when the attempt is requested, the project roots, and a
+open file buffers taken when the attempt is requested or its wait ends, the
+project roots, and a
 table the worker fills with every module file the expansion loads. An import
 of a file with an open buffer reads that buffer, unsaved edits included. Two
 buffers for one path make that import an error rather than a choice between
@@ -135,13 +183,13 @@ ordinary compiled loading, even below a project root. Analysis never writes
 compiled files.
 
 The controller keeps, for each open buffer, the module files its accepted
-analysis loaded. Opening, editing or closing a buffer starts a new attempt for
+analysis loaded. Opening, editing or closing a buffer installs a waiting attempt for
 every other open buffer whose accepted analysis, or whose running attempt, has
 loaded that file. The new attempt supersedes outstanding work for the same
 revision and clears exact availability first, so queries wait for facts from
 the new text. Acceptance compares the buffer texts an analysis read with the
 current buffers; a product that read a buffer since changed, opened or closed
-is not installed, and another attempt starts in its place.
+is not installed, and a waiting attempt takes its place.
 
 ## Available results and fresh completion
 
@@ -151,7 +199,7 @@ joined—either a newly scheduled one or a reused completed success's event.
 Available analysis may answer queries while that event is pending. Restoring a
 product never completes that event or starts Resyntax.
 
-Only queued and running attempts occupy the scheduler's private attempt table. Every terminal
+Only waiting, queued and running attempts occupy the scheduler's private attempt table. Every terminal
 attempt is removed. An accepted available result retains its completion event,
 so repeated acquisitions can reuse success without retaining the job. Resyntax
 acceptance compares its parent completion with the installed result's completion;
@@ -198,6 +246,7 @@ Virtual sources never enter retention. Shutdown stops work and clears retention.
 `tests/lsp/source-controller-test.rkt` covers ordered observation through the
 production consumer. `analysis-controller-test.rkt` covers attempt identity,
 bounds, acceptance, available facts, cancellation, and URI preservation.
+`analysis-wait-test.rkt` covers the wait after an edit and what ends it.
 `closed-analysis-test.rkt` covers restoration, dependency changes, and eviction.
 `closed-analysis-cache-test.rkt`, `disk-reader-test.rkt`,
 `analysis-scheduler-test.rkt`, and `supervised-worker-test.rkt` exercise subsystem

@@ -60,6 +60,14 @@ Racketeer's own patches follow:
   expected to go away with PR #246. The editor keeps its extending conversion for its
   internal callers, which an upstream multi-line edit test needs.
 
+- `analysis-wait.patch`: wait 250 ms after the last edit of a document before
+  analysing it, and before analysing again the open documents that load it.
+  Upstream starts a whole-file Check Syntax
+  for every edit, which held a core during typing. A request that reads analysis
+  starts it at once, and an edit still cancels a running analysis at once. The
+  wait is a time in the attempt, not a timer, and is described in
+  `lsp/analysis-lifecycle.md`. Meant for upstream, as a pull request not yet made.
+
 Workspace indexing belongs to Racketeer, in `vscode/workspace-analysis.rkt`,
 its request adapter `vscode/workspace-index.rkt` and the VS Code client. The
 separate process reuses the pinned analyser, the source-snapshot loader and the

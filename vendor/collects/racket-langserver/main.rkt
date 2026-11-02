@@ -28,7 +28,8 @@
 (define (start-consumer server client-evt)
   (define controller (send server get-source-controller))
   (define internal-evt
-    (wrap-evt (source-controller-events controller)
+    (wrap-evt (choice-evt (source-controller-events controller)
+                          (source-controller-analysis-wait-evt controller))
               (λ (event) (cons 'internal event))))
   (define message-evt
     (wrap-evt client-evt (λ (msg) (cons 'client msg))))

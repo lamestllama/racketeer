@@ -15,8 +15,10 @@
          Source-Controller?
          current-source-controller
          source-controller-events
+         source-controller-analysis-wait-evt
          source-controller-observe-evt
          source-controller-analysis-evt
+         source-controller-hasten-evt
          source-controller-current-view-evt
          source-controller-shutdown-evt
          (struct-out Analysis-Handle)
@@ -37,7 +39,8 @@
            source-controller-view
            source-controller-snapshot
            source-controller-ensure-analysis!
-           source-controller-refresh-analysis!))
+           source-controller-refresh-analysis!
+           source-controller-hasten-analysis!))
 
 ;; Commands on `events`, beside worker completions. Request threads never
 ;; construct these records; the functions below submit them.
@@ -57,6 +60,12 @@
 ;; `Analysis-Handle`.
 (struct/contract Acquire-Analysis
   ([snapshot Source-Snapshot?]
+   [reply Completion-Event?])
+  #:transparent)
+
+;; End any wait of `source`'s analysis. Completes `reply` with void.
+(struct/contract Hasten-Analysis
+  ([source Source?]
    [reply Completion-Event?])
   #:transparent)
 
@@ -91,6 +100,10 @@
 (define (source-controller-analysis-evt controller snapshot)
   (submit controller (lambda (reply) (Acquire-Analysis snapshot reply))))
 
+;; End any wait of `source`'s analysis, for a request thread about to wait on it.
+(define (source-controller-hasten-evt controller source)
+  (submit controller (lambda (reply) (Hasten-Analysis source reply))))
+
 ;; Whether `view` is still this source's current view. Does not read disk.
 (define (source-controller-current-view-evt controller view)
   (submit controller (lambda (reply) (Validate-View view reply))))
@@ -112,6 +125,8 @@
      (answer! controller reply (lambda () (source-controller-observe! controller source)))]
     [(Acquire-Analysis snapshot reply)
      (answer! controller reply (lambda () (source-controller-acquire-analysis! controller snapshot)))]
+    [(Hasten-Analysis source reply)
+     (answer! controller reply (lambda () (source-controller-hasten-analysis! controller source)))]
     [(Validate-View view reply)
      (answer! controller reply (lambda () (source-controller-current-view? controller view)))]
     [_ (source-controller-handle-completion! controller event)])

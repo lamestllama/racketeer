@@ -44,7 +44,24 @@
 ;; Fast queries read the adjusted projection under its lock. Features needing
 ;; current analysis wait on `SafeDoc-analysis-completion` or
 ;; `Analysis-Handle-completion-evt`. The consumer owns acceptance and shares
-;; one analysis per revision, with four execution slots.
+;; one analysis per revision, with four execution slots. The analysis of an edit
+;; starts after a short wait, or at once for a request in `analysis-requests`.
+
+;; Requests answered from a document's Check Syntax facts. Completion and
+;; signature help read them too, but typing itself sends those: they answer from
+;; the adjusted trace and leave the wait running, or every keystroke would start
+;; an analysis.
+(define analysis-requests
+  '("textDocument/hover"
+    "textDocument/codeAction"
+    "textDocument/definition"
+    "textDocument/documentHighlight"
+    "textDocument/references"
+    "textDocument/inlayHint"
+    "textDocument/rename"
+    "textDocument/prepareRename"
+    "textDocument/semanticTokens/full"
+    "textDocument/semanticTokens/range"))
 
 ;; Mutable variables
 (define already-initialized? #f)
@@ -152,6 +169,8 @@
           [(and uri (not (file-uri? uri)) (not (lsp-get-doc uri #f)))
            (error-response id ErrorCode-RequestFailed "Virtual document is not open")]
           [else
+           (when (and uri (member method analysis-requests))
+             (source-controller-hasten-analysis! source-controller (uri->source uri)))
            (match method
              ["initialize"
               (initialize id params)]

@@ -1,0 +1,1003 @@
+diff --git a/lsp/analysis-lifecycle.md b/lsp/analysis-lifecycle.md
+index 0b3cba3..11995b7 100644
+--- a/lsp/analysis-lifecycle.md
++++ b/lsp/analysis-lifecycle.md
+@@ -20,6 +20,8 @@ same revision creates a new attempt.
+   `completion-evt` is a newly scheduled attempt, or the installed result's
+   completion when a current success is reused. A ready outcome takes precedence
+   over reusable facts, including failure and stop.
++- `source-controller-hasten-evt` ends any wait of a source's analysis, for a
++  request thread about to wait on it.
+ - `source-controller-current-view-evt` asks the consumer whether a captured view
+   is still current. It does not observe the filesystem.
+ 
+@@ -61,7 +63,8 @@ The `owner` submodule exports operations for the session consumer only. Open
+ registers the buffer, restores matching retained analysis, and schedules fresh
+ analysis. Edit takes the registered buffer selected by the incoming URI, owns
+ the write lock, invalidates eligibility before the supplied
+-document mutation, and schedules the successor after releasing the lock. Its
++document mutation, and installs the successor, to start after a wait, after
++releasing the lock. Its
+ mutation callback updates text and client version and must not acquire the same
+ buffer lock. Close handles retention, cancellation, and removal of publications.
+ `source-controller-refresh-analysis!` joins active work or starts another attempt
+@@ -81,8 +84,8 @@ private records and collections; none imports or receives the controller:
+ 
+ - `workspace/source-store.rkt`: source authority, revisions, and change signals.
+ - `disk-reader.rkt`: `Disk-Reader`, ordered per-source disk reads and waiters.
+-- `analysis-scheduler.rkt`: `Analysis-Scheduler`, shared queued/running attempts,
+-  FIFO dispatch, capacity, cancellation, and attempt completion.
++- `analysis-scheduler.rkt`: `Analysis-Scheduler`, shared waiting, queued and
++  running attempts, FIFO dispatch, capacity, cancellation, and attempt completion.
+ - `supervised-worker.rkt`: `Supervised-Worker`, resource ownership, timeout and
+   premature-exit detection. It suppresses worker stdout and releases resources
+   before reporting a result. Cancelling work does not kill its supervisor;
+@@ -121,10 +124,55 @@ workspace requests. Injecting a different publication workspace alone does not
+ create an isolated LSP session; the request layer must use that same workspace.
+ Its folders are also project roots for imported modules, as described below.
+ 
++## The wait after an edit
++
++An edit cancels any running analysis of its document at once, since that text is
++gone, and then waits 250 ms before starting another; each further edit restarts
++the wait. So a burst of edits analyses its last text once. This wait
++treats running and pending checks the same way, with the same 250 ms. The wait
++belongs to the attempt: edit installs an attempt in the `waiting` state with the
++time it is due, and its completion is what `SafeDoc-analysis-completion` holds, so
++a waiter has an event from the moment of the edit and the attempt obeys every rule
++below for attempts. Revisions certify it as they do any other: its snapshot is the
++edited text, and a further edit, close, invalidation or shutdown settles it like
++a running attempt.
++
++Other open documents that load the edited file wait the same way, each restarted by
++each edit of its import, and so do those of a file that opened, closed or was
++invalidated, and a document whose analysis read an import since changed. Opening a
++document and invalidating a file start that document's own analysis at once: neither
++comes in bursts from typing.
++
++No timer runs. The consumer also syncs on `source-controller-analysis-wait-evt`,
++whose guard reads the earliest due time among the attempts when each sync begins.
++Only the consumer changes attempts and it syncs afresh after every dispatch, so
++settling an attempt is all it takes to end its wait, and nothing is left to cancel
++at close or shutdown. The pump that follows every dispatch moves due attempts to the
++back of the queue, oldest first, and takes each one's import context at that moment,
++so it reads the buffers as the wait left them. A wait of zero, which
++`#:analysis-wait` allows, starts at the pump that ends the edit.
++
++A request does not sit out the wait. The dispatcher ends it for every request
++answered from the document's Check Syntax facts, before handling the request: hover,
++definition, references, document highlight, rename and prepare rename, code actions,
++inlay hints and semantic tokens. Acquiring analysis of a target file through
++`source-controller-analysis-evt` joins the waiting attempt and ends its wait too. A
++waiter that moves to a new completion after an import changed, in `analysis-query`,
++ends that attempt's wait also. Ending a wait changes nothing else: exact queries
++still wait for fresh completion and fast queries still answer from the adjusted
++trace, as they do while an analysis runs. Completion and signature help are sent by
++typing itself and leave the wait running, or every keystroke would start an analysis;
++they too answer from the adjusted trace. Document symbols and formatting read the
++text and use no analysis.
++
++An edit publishes nothing, during the wait as while an analysis runs: the client
++keeps showing the last diagnostics published until the next analysis replaces them.
++
+ ## Imports from open buffers
+ 
+ Each analysis attempt carries an `Analysis-Context`: an immutable table of the
+-open file buffers taken when the attempt is requested, the project roots, and a
++open file buffers taken when the attempt is requested or its wait ends, the
++project roots, and a
+ table the worker fills with every module file the expansion loads. An import
+ of a file with an open buffer reads that buffer, unsaved edits included. Two
+ buffers for one path make that import an error rather than a choice between
+@@ -135,13 +183,13 @@ ordinary compiled loading, even below a project root. Analysis never writes
+ compiled files.
+ 
+ The controller keeps, for each open buffer, the module files its accepted
+-analysis loaded. Opening, editing or closing a buffer starts a new attempt for
++analysis loaded. Opening, editing or closing a buffer installs a waiting attempt for
+ every other open buffer whose accepted analysis, or whose running attempt, has
+ loaded that file. The new attempt supersedes outstanding work for the same
+ revision and clears exact availability first, so queries wait for facts from
+ the new text. Acceptance compares the buffer texts an analysis read with the
+ current buffers; a product that read a buffer since changed, opened or closed
+-is not installed, and another attempt starts in its place.
++is not installed, and a waiting attempt takes its place.
+ 
+ ## Available results and fresh completion
+ 
+@@ -151,7 +199,7 @@ joined—either a newly scheduled one or a reused completed success's event.
+ Available analysis may answer queries while that event is pending. Restoring a
+ product never completes that event or starts Resyntax.
+ 
+-Only queued and running attempts occupy the scheduler's private attempt table. Every terminal
++Only waiting, queued and running attempts occupy the scheduler's private attempt table. Every terminal
+ attempt is removed. An accepted available result retains its completion event,
+ so repeated acquisitions can reuse success without retaining the job. Resyntax
+ acceptance compares its parent completion with the installed result's completion;
+@@ -198,6 +246,7 @@ Virtual sources never enter retention. Shutdown stops work and clears retention.
+ `tests/lsp/source-controller-test.rkt` covers ordered observation through the
+ production consumer. `analysis-controller-test.rkt` covers attempt identity,
+ bounds, acceptance, available facts, cancellation, and URI preservation.
++`analysis-wait-test.rkt` covers the wait after an edit and what ends it.
+ `closed-analysis-test.rkt` covers restoration, dependency changes, and eviction.
+ `closed-analysis-cache-test.rkt`, `disk-reader-test.rkt`,
+ `analysis-scheduler-test.rkt`, and `supervised-worker-test.rkt` exercise subsystem
+diff --git a/lsp/analysis-query.rkt b/lsp/analysis-query.rkt
+index 28bff67..36f82b8 100644
+--- a/lsp/analysis-query.rkt
++++ b/lsp/analysis-query.rkt
+@@ -60,7 +60,8 @@
+ (define (analysis-query safe-doc request-id read-result empty-result)
+   (define deadline-ms (+ (current-deadline-milliseconds)
+                          (* 1000 (current-analysis-request-timeout))))
+-  (define shutdown-evt (source-controller-shutdown-evt (current-source-controller)))
++  (define controller (current-source-controller))
++  (define shutdown-evt (source-controller-shutdown-evt controller))
+   (define-values (request-view initial-completion immediate-response)
+     (with-read-safedoc safe-doc
+       (lambda (locked-safe-doc)
+@@ -79,8 +80,11 @@
+            (error-response request-id ErrorCode-RequestFailed "Server shut down")]
+           [(available-analysis-response locked-safe-doc request-id read-result) => values]
+           ;; The buffer's completion event changed during the wait. Wait on the
+-          ;; new event. The wake value is from the completion this waiter held.
++          ;; new event, which a changed import may have left waiting and which
++          ;; this request need not wait for. The wake value is from the
++          ;; completion this waiter held.
+           [(and current-completion (not (eq? awaited-completion current-completion)))
++           (source-controller-hasten-evt controller (Source-View-source request-view))
+            current-completion]
+           [(and (Analysis-Outcome? wake-result) (eq? 'errors (Analysis-Outcome-state wake-result)))
+            (success-response request-id (->jsexpr empty-result))]
+diff --git a/lsp/methods.rkt b/lsp/methods.rkt
+index c9a2d73..3f13417 100644
+--- a/lsp/methods.rkt
++++ b/lsp/methods.rkt
+@@ -44,7 +44,24 @@
+ ;; Fast queries read the adjusted projection under its lock. Features needing
+ ;; current analysis wait on `SafeDoc-analysis-completion` or
+ ;; `Analysis-Handle-completion-evt`. The consumer owns acceptance and shares
+-;; one analysis per revision, with four execution slots.
++;; one analysis per revision, with four execution slots. The analysis of an edit
++;; starts after a short wait, or at once for a request in `analysis-requests`.
++
++;; Requests answered from a document's Check Syntax facts. Completion and
++;; signature help read them too, but typing itself sends those: they answer from
++;; the adjusted trace and leave the wait running, or every keystroke would start
++;; an analysis.
++(define analysis-requests
++  '("textDocument/hover"
++    "textDocument/codeAction"
++    "textDocument/definition"
++    "textDocument/documentHighlight"
++    "textDocument/references"
++    "textDocument/inlayHint"
++    "textDocument/rename"
++    "textDocument/prepareRename"
++    "textDocument/semanticTokens/full"
++    "textDocument/semanticTokens/range"))
+ 
+ ;; Mutable variables
+ (define already-initialized? #f)
+@@ -152,6 +169,8 @@
+           [(and uri (not (file-uri? uri)) (not (lsp-get-doc uri #f)))
+            (error-response id ErrorCode-RequestFailed "Virtual document is not open")]
+           [else
++           (when (and uri (member method analysis-requests))
++             (source-controller-hasten-analysis! source-controller (uri->source uri)))
+            (match method
+              ["initialize"
+               (initialize id params)]
+diff --git a/lsp/source-controller.rkt b/lsp/source-controller.rkt
+index 91b1a53..c7de85c 100644
+--- a/lsp/source-controller.rkt
++++ b/lsp/source-controller.rkt
+@@ -15,8 +15,10 @@
+          Source-Controller?
+          current-source-controller
+          source-controller-events
++         source-controller-analysis-wait-evt
+          source-controller-observe-evt
+          source-controller-analysis-evt
++         source-controller-hasten-evt
+          source-controller-current-view-evt
+          source-controller-shutdown-evt
+          (struct-out Analysis-Handle)
+@@ -37,7 +39,8 @@
+            source-controller-view
+            source-controller-snapshot
+            source-controller-ensure-analysis!
+-           source-controller-refresh-analysis!))
++           source-controller-refresh-analysis!
++           source-controller-hasten-analysis!))
+ 
+ ;; Commands on `events`, beside worker completions. Request threads never
+ ;; construct these records; the functions below submit them.
+@@ -60,6 +63,12 @@
+    [reply Completion-Event?])
+   #:transparent)
+ 
++;; End any wait of `source`'s analysis. Completes `reply` with void.
++(struct/contract Hasten-Analysis
++  ([source Source?]
++   [reply Completion-Event?])
++  #:transparent)
++
+ ;; Whether `view` is still this source's current view. Completes `reply` with
+ ;; a boolean. Does not read disk.
+ (struct/contract Validate-View
+@@ -91,6 +100,10 @@
+ (define (source-controller-analysis-evt controller snapshot)
+   (submit controller (lambda (reply) (Acquire-Analysis snapshot reply))))
+ 
++;; End any wait of `source`'s analysis, for a request thread about to wait on it.
++(define (source-controller-hasten-evt controller source)
++  (submit controller (lambda (reply) (Hasten-Analysis source reply))))
++
+ ;; Whether `view` is still this source's current view. Does not read disk.
+ (define (source-controller-current-view-evt controller view)
+   (submit controller (lambda (reply) (Validate-View view reply))))
+@@ -112,6 +125,8 @@
+      (answer! controller reply (lambda () (source-controller-observe! controller source)))]
+     [(Acquire-Analysis snapshot reply)
+      (answer! controller reply (lambda () (source-controller-acquire-analysis! controller snapshot)))]
++    [(Hasten-Analysis source reply)
++     (answer! controller reply (lambda () (source-controller-hasten-analysis! controller source)))]
+     [(Validate-View view reply)
+      (answer! controller reply (lambda () (source-controller-current-view? controller view)))]
+     [_ (source-controller-handle-completion! controller event)])
+diff --git a/lsp/source-controller/analysis-scheduler.rkt b/lsp/source-controller/analysis-scheduler.rkt
+index 92b2f57..995e200 100644
+--- a/lsp/source-controller/analysis-scheduler.rkt
++++ b/lsp/source-controller/analysis-scheduler.rkt
+@@ -5,6 +5,7 @@
+ (require racket/async-channel
+          racket/contract
+          "../../common/source.rkt"
++         "../../common/time.rkt"
+          "../../workspace/source-store.rkt"
+          "../analysis.rkt"
+          "completion-event.rkt"
+@@ -15,24 +16,31 @@
+          scheduled-analysis-event
+          scheduled-analysis-context
+          request-analysis!
+-         restart-analysis!
++         defer-analysis!
++         hasten-analysis!
+          schedule-resyntax!
+          cancel-source-analysis!
+          stop-analysis-scheduler!
+          pump-analysis-scheduler!
++         analysis-wait-evt
++         Analysis-Wait-Over?
+          Analysis-Completed?
+          finish-analysis-task!)
+ 
+ ;; parent-completion identifies the accepted analysis refined by Resyntax.
+-;; context is the editor state imports read, or #f for ordinary loading.
+-;; worker is #f until execution starts. Terminal attempts leave the registry.
++;; context is the editor state imports read, or #f for ordinary loading; a
++;; waiting attempt reads it when it joins the queue, so that it sees the buffers
++;; as the wait left them. due is when a waiting attempt joins the queue, on the
++;; deadline clock. worker is #f until execution starts. Terminal attempts leave
++;; the registry.
+ (struct/contract Analysis-Attempt
+   ([snapshot Source-Snapshot?]
+-   [context (or/c #f Analysis-Context?)]
++   [(context #:mutable) (or/c #f Analysis-Context?)]
+    [kind (or/c 'analysis 'resyntax)]
+    [parent-completion (or/c #f evt?)]
+    [completion Completion-Event?]
+-   [(state #:mutable) (or/c 'queued 'running 'terminal)]
++   [(due #:mutable) real?]
++   [(state #:mutable) (or/c 'waiting 'queued 'running 'terminal)]
+    [(worker #:mutable) (or/c #f Supervised-Worker?)]))
+ 
+ (struct/contract Analysis-Scheduler
+@@ -41,6 +49,7 @@
+    [resyntax (or/c #f (-> string? string? list?))]
+    [timeout (and/c real? (>=/c 0))]
+    [slots exact-positive-integer?]
++   [wait (and/c real? (>=/c 0))]
+    [attempts (hash/c (cons/c Source-Id? (or/c 'analysis 'resyntax))
+                      Analysis-Attempt? #:immutable #f)]
+    [(queue #:mutable) (listof Analysis-Attempt?)]
+@@ -50,9 +59,14 @@
+ ;; attempt removed by completion, cancellation, or a same-revision retry.
+ (struct Analysis-Completed (attempt result))
+ 
++;; The value of `analysis-wait-evt`. It carries nothing: the pump that follows
++;; every dispatch queues whatever is due.
++(struct Analysis-Wait-Over ())
++
++;; wait is in seconds, as is timeout.
+ (define (make-analysis-scheduler events #:analyze analyze #:resyntax resyntax
+-                                 #:timeout [timeout 90] #:slots [slots 4])
+-  (Analysis-Scheduler events analyze resyntax timeout slots (make-hash) '() #f))
++                                 #:timeout [timeout 90] #:slots [slots 4] #:wait [wait 1/4])
++  (Analysis-Scheduler events analyze resyntax timeout slots wait (make-hash) '() #f))
+ 
+ (define (attempt-key attempt)
+   (cons (Source-Snapshot-id (Analysis-Attempt-snapshot attempt))
+@@ -74,14 +88,15 @@
+ 
+ (define (enqueue! scheduler snapshot kind parent-completion [context #f])
+   (define attempt
+-    (Analysis-Attempt snapshot context kind parent-completion (make-completion-event) 'queued #f))
++    (Analysis-Attempt snapshot context kind parent-completion (make-completion-event) 0 'queued #f))
+   (hash-set! (Analysis-Scheduler-attempts scheduler) (attempt-key attempt) attempt)
+   (set-Analysis-Scheduler-queue! scheduler
+                                  (append (Analysis-Scheduler-queue scheduler) (list attempt)))
+   (Analysis-Attempt-completion attempt))
+ 
+-;; Requests for the same revision share an attempt. A successor revision
+-;; supersedes outstanding work for this source, including its Resyntax.
++;; Requests for the same revision share an attempt, and do not wait for it. A
++;; successor revision supersedes outstanding work for this source, including its
++;; Resyntax.
+ (define (request-analysis! scheduler snapshot #:context [context #f])
+   (define source (Source-Snapshot-source snapshot))
+   (define active
+@@ -91,19 +106,38 @@
+     [(and active
+           (eq? (Source-Snapshot-revision snapshot)
+                (Source-Snapshot-revision (Analysis-Attempt-snapshot active))))
++     (hasten-analysis! scheduler source)
+      (Analysis-Attempt-completion active)]
+     [else
+      (cancel-source-analysis! scheduler source)
+      (enqueue! scheduler snapshot 'analysis #f context)]))
+ 
+-;; Imported text changed under an unchanged revision. Supersede outstanding
+-;; work for this source with a new attempt that reads the given context.
+-(define (restart-analysis! scheduler snapshot #:context context)
++;; Supersede outstanding work for this source with an attempt that joins the
++;; queue once the wait has passed, unless a further call supersedes it first.
++;; Nothing runs meanwhile: the wait is a time in the attempt, seen by
++;; `analysis-wait-evt`, so settling the attempt is all it takes to end it.
++(define (defer-analysis! scheduler snapshot [reason 'source-changed])
+   (cond
+     [(Analysis-Scheduler-stopped? scheduler) (ready-evt (Analysis-Outcome 'stopped 'shutdown))]
+     [else
+-     (cancel-source-analysis! scheduler (Source-Snapshot-source snapshot) 'dependency-changed)
+-     (enqueue! scheduler snapshot 'analysis #f context)]))
++     (cancel-source-analysis! scheduler (Source-Snapshot-source snapshot) reason)
++     (define attempt
++       (Analysis-Attempt snapshot #f 'analysis #f (make-completion-event)
++                         (+ (current-deadline-milliseconds)
++                            (* 1000 (Analysis-Scheduler-wait scheduler)))
++                         'waiting #f))
++     (hash-set! (Analysis-Scheduler-attempts scheduler) (attempt-key attempt) attempt)
++     (Analysis-Attempt-completion attempt)]))
++
++;; End any wait of this source's analysis; the next pump queues the attempt.
++(define (hasten-analysis! scheduler source)
++  (define attempt
++    (hash-ref (Analysis-Scheduler-attempts scheduler) (cons (source-id source) 'analysis) #f))
++  (when (and attempt (waiting? attempt))
++    (set-Analysis-Attempt-due! attempt 0)))
++
++(define (waiting? attempt)
++  (eq? 'waiting (Analysis-Attempt-state attempt)))
+ 
+ (define (schedule-resyntax! scheduler snapshot parent-completion)
+   (when (and (not (Analysis-Scheduler-stopped? scheduler))
+@@ -140,8 +174,10 @@
+ 
+ ;; current? checks source eligibility at dispatch, after any time spent queued.
+ ;; It receives a snapshot and never receives the scheduler's private state.
+-(define (pump-analysis-scheduler! scheduler current?)
++;; make-context supplies the import context of each attempt whose wait is over.
++(define (pump-analysis-scheduler! scheduler current? #:make-context [make-context (lambda () #f)])
+   (unless (Analysis-Scheduler-stopped? scheduler)
++    (queue-due-attempts! scheduler make-context)
+     (let loop ()
+       (define queue (Analysis-Scheduler-queue scheduler))
+       (define running
+@@ -157,6 +193,33 @@
+             (settle! scheduler attempt (Analysis-Outcome 'stopped 'source-changed)))
+         (loop)))))
+ 
++;; Oldest wait first, behind what is already queued.
++(define (queue-due-attempts! scheduler make-context)
++  (define now (current-deadline-milliseconds))
++  (define due
++    (sort (for/list ([attempt (in-hash-values (Analysis-Scheduler-attempts scheduler))]
++                     #:when (and (waiting? attempt) (<= (Analysis-Attempt-due attempt) now)))
++            attempt)
++          < #:key Analysis-Attempt-due))
++  (for ([attempt (in-list due)])
++    (set-Analysis-Attempt-context! attempt (make-context))
++    (set-Analysis-Attempt-state! attempt 'queued))
++  (set-Analysis-Scheduler-queue! scheduler (append (Analysis-Scheduler-queue scheduler) due)))
++
++;; Ready when the earliest wait ends. Only the owner changes the attempts and
++;; syncs on this, and it syncs afresh after each change, so the guard always
++;; sees the current attempts and no timer needs cancelling.
++(define (analysis-wait-evt scheduler)
++  (guard-evt
++    (lambda ()
++      (define waits
++        (for/list ([attempt (in-hash-values (Analysis-Scheduler-attempts scheduler))]
++                   #:when (waiting? attempt))
++          (Analysis-Attempt-due attempt)))
++      (if (null? waits)
++          never-evt
++          (wrap-evt (deadline-evt (apply min waits)) (lambda (_) (Analysis-Wait-Over)))))))
++
+ (define (start-attempt! scheduler attempt)
+   (define snapshot (Analysis-Attempt-snapshot attempt))
+   (set-Analysis-Attempt-state! attempt 'running)
+diff --git a/lsp/source-controller/source-owner.rkt b/lsp/source-controller/source-owner.rkt
+index 2906872..186c8a5 100644
+--- a/lsp/source-controller/source-owner.rkt
++++ b/lsp/source-controller/source-owner.rkt
+@@ -30,6 +30,7 @@
+          Source-Controller?
+          current-source-controller
+          source-controller-events
++         source-controller-analysis-wait-evt
+          source-controller-shutdown-evt
+          source-controller-stopped?
+          source-controller-observe!
+@@ -47,6 +48,7 @@
+          source-controller-snapshot
+          source-controller-ensure-analysis!
+          source-controller-refresh-analysis!
++         source-controller-hasten-analysis!
+          (struct-out Analysis-Handle)
+          (struct-out Source-Result)
+          (struct-out Source-Failure)
+@@ -90,22 +92,26 @@
+    [closed-analysis Closed-Analysis-Cache?]
+    [publisher Analysis-Publisher?]))
+ 
+-;; Timeouts are seconds. The workspace supplies publication only, not session
+-;; isolation for request-layer workspace access. Zero cache capacity disables
+-;; closed-file retention; #f Resyntax disables its follow-on work.
++;; Timeouts and analysis-wait, the pause after an edit before analysing it, are
++;; seconds. The workspace
++;; supplies publication only, not session isolation for request-layer workspace
++;; access. Zero cache capacity disables closed-file retention; #f Resyntax disables
++;; its follow-on work.
+ (define (make-source-controller #:workspace [workspace current-workspace]
+                                 #:read [read read-source-text]
+                                 #:read-timeout [read-timeout 3]
+                                 #:analyze [analyze analyze-source]
+                                 #:analysis-slots [slots 4]
+                                 #:analysis-timeout [analysis-timeout 90]
++                                #:analysis-wait [analysis-wait 1/4]
+                                 #:closed-analysis-limit [closed-analysis-limit 64]
+                                 #:resyntax [resyntax (and (resyntax-available?) run-resyntax/in-place)])
+   (define events (make-async-channel))
+   (Source-Controller workspace (make-hash) (make-source-store) events (make-semaphore 0)
+                      (make-disk-reader events #:read read #:timeout read-timeout)
+                      (make-analysis-scheduler events #:analyze analyze #:resyntax resyntax
+-                                              #:slots slots #:timeout analysis-timeout)
++                                              #:slots slots #:timeout analysis-timeout
++                                              #:wait analysis-wait)
+                      (make-closed-analysis-cache closed-analysis-limit)
+                      (make-analysis-publisher workspace)))
+ 
+@@ -117,6 +123,11 @@
+ (define (source-controller-events controller)
+   (Source-Controller-events controller))
+ 
++;; For the consumer alone, beside `source-controller-events`. Its value goes to
++;; `source-controller-handle-completion!` like theirs.
++(define (source-controller-analysis-wait-evt controller)
++  (analysis-wait-evt (Source-Controller-scheduler controller)))
++
+ (define (source-controller-shutdown-evt controller)
+   (semaphore-peek-evt (Source-Controller-shutdown controller)))
+ 
+@@ -162,14 +173,16 @@
+     [(? Analysis-Completed?)
+      (finish-analysis-task! (Source-Controller-scheduler controller) event
+                             (lambda (snapshot kind completion parent result)
+-                              (accept-analysis-result! controller snapshot kind completion parent result)))]))
++                              (accept-analysis-result! controller snapshot kind completion parent result)))]
++    [(? Analysis-Wait-Over?) (void)]))
+ 
+ (define (source-controller-current-view? controller view)
+   (eq? view (source-controller-view controller (Source-View-source view))))
+ 
+ (define (source-controller-pump! controller)
+   (pump-analysis-scheduler! (Source-Controller-scheduler controller)
+-                            (lambda (snapshot) (snapshot-current? controller snapshot))))
++                            (lambda (snapshot) (snapshot-current? controller snapshot))
++                            #:make-context (lambda () (analysis-context controller))))
+ 
+ (define (source-controller-observe! controller source)
+   (match (source-controller-view controller source)
+@@ -235,9 +248,9 @@
+   (or (and accepted (hash-has-key? accepted path))
+       (and context (hash-has-key? (unbox (Analysis-Context-loaded context)) path))))
+ 
+-;; Restart analysis of every other open buffer that loaded `changed`. Exact
+-;; availability is cleared first, so queries wait for facts computed from the
+-;; new text.
++;; Analyse again, after the wait, every other open buffer that loaded `changed`.
++;; Exact availability is cleared first, so queries wait for facts computed from
++;; the new text.
+ (define (refresh-dependents! controller changed)
+   (define path (source-file-path changed))
+   (when path
+@@ -248,21 +261,17 @@
+                         entry))
+     (source-controller-pump! controller)))
+ 
+-;; Enqueue fresh attempts; the caller pumps.
++;; Install waiting attempts; the caller pumps.
+ (define (restart-buffers! controller entries)
+-  (unless (null? entries)
+-    (define context (analysis-context controller))
+-    (define scheduler (Source-Controller-scheduler controller))
+-    (for ([entry (in-list entries)])
+-      (define snapshot (source-controller-snapshot controller (car entry)))
+-      (when snapshot
+-        (with-write-safedoc (cdr entry)
+-          (lambda (sd)
+-            (set-SafeDoc-available! sd #f)
+-            (set-SafeDoc-analysis-completion!
+-              sd (restart-analysis! scheduler snapshot
+-                                    #:context (struct-copy Analysis-Context context
+-                                                [loaded (box (hash))])))))))))
++  (define scheduler (Source-Controller-scheduler controller))
++  (for ([entry (in-list entries)])
++    (define snapshot (source-controller-snapshot controller (car entry)))
++    (when snapshot
++      (with-write-safedoc (cdr entry)
++        (lambda (sd)
++          (set-SafeDoc-available! sd #f)
++          (set-SafeDoc-analysis-completion!
++            sd (defer-analysis! scheduler snapshot 'dependency-changed)))))))
+ 
+ ;; An analysis read its imports from the buffers open when it started. Any
+ ;; that have since changed, opened or closed make the result stale.
+@@ -301,6 +310,12 @@
+   (when snapshot (source-controller-ensure-analysis! controller snapshot #:refresh? #t))
+   (void))
+ 
++;; A request reads this source's analysis: it does not sit out the wait. An
++;; attempt already queued or running is unaffected, and so is a source with none.
++(define (source-controller-hasten-analysis! controller source)
++  (hasten-analysis! (Source-Controller-scheduler controller) source)
++  (source-controller-pump! controller))
++
+ (define (discard-analysis! controller source)
+   (discard-closed-analysis! (Source-Controller-closed-analysis controller) source)
+   (define buffer (source-buffer controller source))
+@@ -402,7 +417,8 @@
+ ;; `safe-doc` is the already-registered buffer; this does not look up by URI.
+ ;; Invalidate eligibility before adjusting the mutable trace. The controller
+ ;; owns the lock and schedules the successor only after the whole edit is
+-;; visible. `mutate-doc` receives the Doc, must update its text and client
++;; visible, to start after the wait, so that a burst of edits analyses only its
++;; last text. `mutate-doc` receives the Doc, must update its text and client
+ ;; version, and must not acquire the same buffer lock.
+ (define (source-controller-edit! controller safe-doc mutate-doc)
+   (define source
+@@ -416,8 +432,13 @@
+         (cancel-source-analysis! (Source-Controller-scheduler controller) source)
+         (mutate-doc (SafeDoc-doc sd))
+         source)))
+-  (source-controller-refresh-analysis! controller source)
+-  (refresh-dependents! controller source))
++  (define snapshot (source-controller-snapshot controller source))
++  (with-write-safedoc safe-doc
++    (lambda (sd)
++      (set-SafeDoc-analysis-completion!
++        sd (defer-analysis! (Source-Controller-scheduler controller) snapshot))))
++  (refresh-dependents! controller source)
++  (source-controller-pump! controller))
+ 
+ ;; Drop buffer authority without a read. File content becomes unknown; virtual
+ ;; sources are removed because they have no disk fallback. Retain a completed
+diff --git a/main.rkt b/main.rkt
+index 0caf732..49f3242 100644
+--- a/main.rkt
++++ b/main.rkt
+@@ -28,7 +28,8 @@
+ (define (start-consumer server client-evt)
+   (define controller (send server get-source-controller))
+   (define internal-evt
+-    (wrap-evt (source-controller-events controller)
++    (wrap-evt (choice-evt (source-controller-events controller)
++                          (source-controller-analysis-wait-evt controller))
+               (λ (event) (cons 'internal event))))
+   (define message-evt
+     (wrap-evt client-evt (λ (msg) (cons 'client msg))))
+diff --git a/tests/lsp/analysis-controller-test.rkt b/tests/lsp/analysis-controller-test.rkt
+index 22c54de..33b7846 100644
+--- a/tests/lsp/analysis-controller-test.rkt
++++ b/tests/lsp/analysis-controller-test.rkt
+@@ -902,6 +902,7 @@
+     (define release (make-async-channel))
+     (define controller
+       (make-source-controller
++        #:analysis-wait 0
+         #:analyze (controlled-analyzer probes)
+         #:resyntax (lambda (_text _uri)
+                      (async-channel-put started #t)
+diff --git a/tests/lsp/analysis-scheduler-test.rkt b/tests/lsp/analysis-scheduler-test.rkt
+index 210afeb..4f1f1a0 100644
+--- a/tests/lsp/analysis-scheduler-test.rkt
++++ b/tests/lsp/analysis-scheduler-test.rkt
+@@ -46,6 +46,56 @@
+     (check-true (Analysis-Product-succeeded? product))
+     (Analysis-Outcome 'succeeded (Analysis-Product-summary product)))
+ 
++  (test-case "a waiting attempt joins the queue when due or asked for, and is settled like others"
++    (define events (make-async-channel))
++    (define started (make-async-channel))
++    (define custodian (make-custodian))
++    (define (scheduler-waiting wait)
++      (make-analysis-scheduler
++        events #:slots 1 #:resyntax #f #:wait wait
++        #:analyze (lambda (snapshot)
++                    (async-channel-put started
++                                       (cons snapshot (Analysis-Context-loaded (current-analysis-context))))
++                    (sync never-evt))))
++    (define (pump! scheduler)
++      (pump-analysis-scheduler!
++        scheduler (lambda (_) #t)
++        #:make-context (lambda () (Analysis-Context (hash) '() (box (hash))))))
++    (parameterize ([current-custodian custodian])
++      ;; A wait of a minute: nothing starts, and the event is not ready.
++      (define scheduler (scheduler-waiting 60))
++      (check-false (sync/timeout 0 (analysis-wait-evt scheduler)))
++      (define a (snapshot "wait-a.rkt"))
++      (define first (defer-analysis! scheduler a))
++      (pump! scheduler)
++      (check-false (sync/timeout 0 started))
++      (check-false (sync/timeout 0 (analysis-wait-evt scheduler)))
++      ;; A successor settles it, and asking for the successor starts it, with a
++      ;; context made at that moment.
++      (define b (struct-copy Source-Snapshot a [revision (gensym 'revision)]))
++      (define second (defer-analysis! scheduler b))
++      (check-equal? (await first) (Analysis-Outcome 'stopped 'source-changed))
++      (check-eq? second (request-analysis! scheduler b))
++      (pump! scheduler)
++      (check-eq? (car (await started)) b)
++      ;; Asking again changes nothing for a running attempt.
++      (check-eq? second (request-analysis! scheduler b))
++      ;; Stopping ends a wait, and the event with it.
++      (define c (snapshot "wait-c.rkt"))
++      (define third (defer-analysis! scheduler c))
++      (stop-analysis-scheduler! scheduler)
++      (check-equal? (await third) (Analysis-Outcome 'stopped 'shutdown))
++      (check-false (sync/timeout 0.01 (analysis-wait-evt scheduler)))
++      ;; A short wait: the event wakes the owner, whose pump starts the attempt.
++      (define brief (scheduler-waiting 1/100))
++      (defer-analysis! brief a)
++      (check-true (Analysis-Wait-Over? (await (analysis-wait-evt brief))))
++      (pump! brief)
++      (check-eq? (car (await started)) a)
++      (check-false (sync/timeout 0.02 (analysis-wait-evt brief)))
++      (stop-analysis-scheduler! brief))
++    (custodian-shutdown-all custodian))
++
+   (test-case "FIFO capacity, shared requests, and acceptance before completion"
+     (with-scheduler
+       (lambda (scheduler events started release)
+diff --git a/tests/lsp/analysis-wait-test.rkt b/tests/lsp/analysis-wait-test.rkt
+new file mode 100644
+index 0000000..bad607d
+--- /dev/null
++++ b/tests/lsp/analysis-wait-test.rkt
+@@ -0,0 +1,313 @@
++#lang racket/base
++
++;; The analysis of an edit waits for a pause in editing, and a request that reads
++;; analysis does not sit out that wait. These tests run the production consumer
++;; and speak LSP to it, except where they own the controller to look at a
++;; completion. Timing assertions are lower bounds, which a slow machine cannot
++;; break; where a request must not wait, the wait is far longer than the test.
++(require rackunit
++         racket/async-channel
++         racket/file
++         "../../common/path-util.rkt"
++         "../../common/source.rkt"
++         "../../common/time.rkt"
++         "../../lsp/analysis.rkt"
++         "../../lsp/safedoc.rkt"
++         "../../lsp/source-controller.rkt"
++         (submod "../../lsp/source-controller.rkt" owner)
++         "../../workspace/source-store.rkt"
++         "controller-support.rkt")
++
++(define the-wait 250)
++
++;; One start of an analyser: its text, the buffers its imports read, and when.
++(struct Started (text buffers at))
++
++;; hold? is asked about each start; a held analysis runs until it is cancelled.
++(define (make-recorder [hold? (lambda (_started) #f)])
++  (define starts (make-async-channel))
++  (values starts
++          (lambda (snapshot)
++            (define context (current-analysis-context))
++            (define start
++              (Started (Source-Snapshot-text snapshot)
++                       (if context (Analysis-Context-buffers context) (hash))
++                       (current-deadline-milliseconds)))
++            (async-channel-put starts start)
++            (when (hold? start) (sync never-evt))
++            (analyze-source snapshot))))
++
++(define (drain channel)
++  (let loop ([values '()])
++    (define value (sync/timeout 0 channel))
++    (if value (loop (cons value values)) (reverse values))))
++
++(define (start-of starts text)
++  (let loop ()
++    (define start (await starts 30))
++    (if (equal? text (Started-text start)) start (loop))))
++
++(define (program n)
++  (format "#lang racket/base\n(define x ~a)\nx\n" n))
++
++;; The first diagnostics published for `path` from now on.
++(define (await-publish session path)
++  (define uri (path->uri path))
++  (let loop ()
++    (define message (await (Session-notifications session) 30))
++    (define params (hash-ref message 'params (hasheq)))
++    (unless (and (equal? (hash-ref message 'method #f) "textDocument/publishDiagnostics")
++                 (equal? (hash-ref params 'uri #f) uri))
++      (loop))))
++
++(define (open-and-settle! session starts path text)
++  (open! session path text)
++  (start-of starts text)
++  (await-publish session path))
++
++;; A controller whose wait outlasts every test, so that a request can only have
++;; been answered by not waiting.
++(define (long-wait-controller analyze)
++  (make-source-controller #:resyntax #f #:analyze analyze #:analysis-wait 30))
++
++(define (no-start-yet starts)
++  (sleep 0.05)
++  (check-equal? (map Started-text (drain starts)) '() "analysis started during the wait"))
++
++(define position (hasheq 'position (hasheq 'line 1 'character 8)))
++(define whole-range
++  (hasheq 'start (hasheq 'line 0 'character 0) 'end (hasheq 'line 2 'character 0)))
++
++(define (token-count response)
++  (length (hash-ref (hash-ref response 'result) 'data)))
++
++(define (with-project proc)
++  (define root (make-temporary-file "analysis-wait~a" 'directory))
++  (dynamic-wind void (lambda () (proc root)) (lambda () (delete-directory/files root))))
++
++(define (provider n)
++  (format "#lang racket/base\n(provide value)\n(define value ~a)\n" n))
++(define consumer-text "#lang racket/base\n(require \"dependency.rkt\")\nvalue\n")
++
++;; A project of one open consumer of one open dependency, settled.
++(define (with-consumer controller starts proc)
++  (with-project
++    (lambda (root)
++      (define dependency (build-path root "dependency.rkt"))
++      (define consumer (build-path root "consumer.rkt"))
++      (display-to-file (provider 0) dependency)
++      (display-to-file consumer-text consumer)
++      (with-session controller
++                    (lambda (session)
++                      (open-and-settle! session starts consumer consumer-text)
++                      (open! session dependency (provider 0))
++                      (await-publish session dependency)
++                      ;; Opening the dependency analyses its consumer again.
++                      (request! session 900 "textDocument/semanticTokens/full" consumer)
++                      (check-false (hash-ref (response session 900 60) 'error #f))
++                      (drain starts)
++                      (proc session dependency consumer))))))
++
++;; Live threads of the session and of the workers below it. Each test gives the
++;; session a parent so that it may ask.
++(define (session-threads parent)
++  (for/sum ([item (in-list (custodian-managed-list (current-custodian) parent))]
++            #:when (and (thread? item) (thread-running? item)))
++    1))
++
++(module+ test
++  (test-case "a burst of edits starts one analysis of its last text, after the wait"
++    (define-values (starts analyze) (make-recorder))
++    (with-session
++      (make-source-controller #:resyntax #f #:analyze analyze)
++      (lambda (session)
++        (define path (build-path scratch "wait-burst.rkt"))
++        (open-and-settle! session starts path (program 0))
++        ;; Four edits 100 ms apart span more than the wait, so only restarting
++        ;; it at each edit keeps the earlier texts from being analysed. A machine
++        ;; too busy to keep the edits inside the wait proves nothing: try again.
++        (let try ([round 1])
++          (define texts (for/list ([edit 4]) (program (+ edit (* round 100)))))
++          (define-values (last-sent gaps)
++            (for/fold ([sent #f] [gaps '()])
++                      ([text (in-list texts)] [version (in-naturals (* round 10))])
++              (when sent (sleep 0.1))
++              (define now (current-deadline-milliseconds))
++              (change! session path text version)
++              (values now (if sent (cons (- now sent) gaps) gaps))))
++          (define start (await starts 30))
++          (await-publish session path)
++          (define published (current-deadline-milliseconds))
++          (cond
++            [(andmap (lambda (gap) (< gap the-wait)) gaps)
++             (check-equal? (Started-text start) (car (reverse texts)))
++             (check-true (>= (Started-at start) (+ last-sent the-wait))
++                         "analysis started before the wait passed")
++             (check-true (>= published (+ last-sent the-wait))
++                         "diagnostics published during the wait")
++             (check-false (sync/timeout (/ (* 2 the-wait) 1000) starts) "a further analysis started")
++             (check-false (sync/timeout 0 (Session-notifications session)) "published again")]
++            [(< round 5)
++             (drain starts)
++             (try (add1 round))]
++            [else (fail-check "the machine never kept the edits inside the wait")])))))
++
++  (test-case "a request reading analysis starts it at once, and others leave the wait alone"
++    (define-values (starts analyze) (make-recorder))
++    (with-session
++      (long-wait-controller analyze)
++      (lambda (session)
++        (define path (build-path scratch "wait-requests.rkt"))
++        (define version 0)
++        (define (edit!)
++          (set! version (add1 version))
++          (define text (program version))
++          (change! session path text version)
++          (barrier session)
++          text)
++        (open-and-settle! session starts path (program 0))
++        (for ([request (in-list
++                         `(("textDocument/hover" ,position)
++                           ("textDocument/definition" ,position)
++                           ("textDocument/references"
++                            ,(hash-set position 'context (hasheq 'includeDeclaration #t)))
++                           ("textDocument/documentHighlight" ,position)
++                           ("textDocument/prepareRename" ,position)
++                           ("textDocument/rename" ,(hash-set position 'newName "y"))
++                           ("textDocument/codeAction"
++                            ,(hasheq 'range whole-range 'context (hasheq 'diagnostics '())))
++                           ("textDocument/inlayHint" ,(hasheq 'range whole-range))
++                           ("textDocument/semanticTokens/full" ,(hasheq))
++                           ("textDocument/semanticTokens/range" ,(hasheq 'range whole-range))))]
++              [id (in-naturals 1000)])
++          (define text (edit!))
++          (no-start-yet starts)
++          (request! session id (car request) path (cadr request))
++          (check-false (hash-ref (response session id 20) 'error #f) (car request))
++          (check-equal? (Started-text (await starts 20)) text (car request)))
++        (for ([request (in-list
++                         `(("textDocument/completion" ,position)
++                           ("textDocument/signatureHelp" ,position)
++                           ("textDocument/documentSymbol" ,(hasheq))))]
++              [id (in-naturals 2000)])
++          (edit!)
++          (drain starts)
++          (request! session id (car request) path (cadr request))
++          (check-false (hash-ref (response session id 20) 'error #f) (car request))
++          (no-start-yet starts)))))
++
++  (test-case "semantic tokens during the wait answer from the current text"
++    (define-values (starts analyze) (make-recorder))
++    (with-session
++      (long-wait-controller analyze)
++      (lambda (session)
++        (define path (build-path scratch "wait-tokens.rkt"))
++        (open-and-settle! session starts path (program 0))
++        (request! session 1 "textDocument/semanticTokens/full" path)
++        (define before (token-count (response session 1 20)))
++        (define longer (string-append (program 0) "(define y 2)\ny\n"))
++        (change! session path longer 1)
++        (no-start-yet starts)
++        (request! session 2 "textDocument/semanticTokens/full" path)
++        (check-true (> (token-count (response session 2 20)) before))
++        (check-equal? (Started-text (await starts 20)) longer))))
++
++  (test-case "dependents wait too, for the last edit of their import"
++    (define-values (starts analyze) (make-recorder))
++    (with-consumer
++      (make-source-controller #:resyntax #f #:analyze analyze)
++      starts
++      (lambda (session dependency consumer)
++        (change! session dependency (provider 1) 1)
++        (define sent (current-deadline-milliseconds))
++        (change! session dependency (provider 2) 2)
++        (define start (start-of starts consumer-text))
++        (check-true (>= (Started-at start) (+ sent the-wait))
++                    "the dependent started before the wait passed")
++        (check-equal? (hash-ref (Started-buffers start) (normalize-source-path dependency) #f)
++                      (provider 2)))))
++
++  (test-case "a request on a dependent starts it at once, reading its import as it is now"
++    (define-values (starts analyze) (make-recorder))
++    (with-consumer
++      (long-wait-controller analyze)
++      starts
++      (lambda (session dependency consumer)
++        (change! session dependency (provider 1) 1)
++        (no-start-yet starts)
++        (request! session 1 "textDocument/semanticTokens/full" consumer)
++        (check-false (hash-ref (response session 1 20) 'error #f))
++        (define start (start-of starts consumer-text))
++        (check-equal? (hash-ref (Started-buffers start) (normalize-source-path dependency) #f)
++                      (provider 1))
++        ;; The dependency itself has not been asked for, so it goes on waiting.
++        (no-start-yet starts))))
++
++  (test-case "a request whose analysis an import edit replaces does not wait for the successor"
++    ;; The analysis that reads the first edit never finishes.
++    (define-values (starts analyze)
++      (make-recorder
++        (lambda (start)
++          (and (equal? (Started-text start) consumer-text)
++               (member (provider 1) (hash-values (Started-buffers start)))))))
++    (with-consumer
++      (long-wait-controller analyze)
++      starts
++      (lambda (session dependency consumer)
++        (change! session dependency (provider 1) 1)
++        (no-start-yet starts)
++        (request! session 1 "textDocument/semanticTokens/full" consumer)
++        (start-of starts consumer-text)
++        (change! session dependency (provider 2) 2)
++        (check-false (hash-ref (response session 1 20) 'error #f))
++        (check-equal? (hash-ref (Started-buffers (start-of starts consumer-text))
++                                (normalize-source-path dependency) #f)
++                      (provider 2)))))
++
++  (for ([ending (in-list '(close shutdown))])
++    (test-case (format "~a during a wait leaves nothing running" ending)
++      ;; Only the text that opens the document may finish.
++      (define-values (starts analyze)
++        (make-recorder (lambda (start) (not (equal? (Started-text start) (program 0))))))
++      (define parent (make-custodian))
++      (parameterize ([current-custodian parent])
++        (with-session
++          (make-source-controller #:resyntax #f #:analyze analyze)
++          (lambda (session)
++            (define path (build-path scratch (format "wait-~a.rkt" ending)))
++            (open-and-settle! session starts path (program 0))
++            (sleep 0.2)
++            (define threads (session-threads parent))
++            (change! session path (program 1) 1)
++            (barrier session)
++            (sleep 0.05)
++            (check-true (<= (session-threads parent) threads) "the wait started threads")
++            (case ending
++              [(close) (close! session path) (barrier session)]
++              [(shutdown) (shutdown! session)])
++            (sleep (/ (* 2 the-wait) 1000))
++            (check-equal? (map Started-text (drain starts)) '() "analysis started after the wait ended")
++            (check-true (<= (session-threads parent) threads) "threads remain after the wait ended"))))
++      (custodian-shutdown-all parent)))
++
++  (test-case "a further edit, close or shutdown settles what a waiter holds"
++    (define-values (starts analyze) (make-recorder))
++    (define controller (make-source-controller #:resyntax #f #:analyze analyze))
++    (define path (build-path scratch "wait-settle.rkt"))
++    (define source (path->source path))
++    (define (open-buffer)
++      (define sd (new-safedoc (path->uri path) (program 0) 0))
++      (source-controller-open! controller source sd)
++      sd)
++    (define (edit! sd)
++      (source-controller-edit! controller sd (lambda (doc) (void)))
++      (with-read-safedoc sd SafeDoc-analysis-completion))
++    (define sd (open-buffer))
++    (define first (edit! sd))
++    (define second (edit! sd))
++    (check-equal? (await first) (Analysis-Outcome 'stopped 'source-changed))
++    (source-controller-close! controller source sd)
++    (check-equal? (await second) (Analysis-Outcome 'stopped 'source-changed))
++    (define third (edit! (open-buffer)))
++    (source-controller-shutdown! controller)
++    (check-equal? (await third) (Analysis-Outcome 'stopped 'shutdown))))

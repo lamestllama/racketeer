@@ -902,6 +902,7 @@
     (define release (make-async-channel))
     (define controller
       (make-source-controller
+        #:analysis-wait 0
         #:analyze (controlled-analyzer probes)
         #:resyntax (lambda (_text _uri)
                      (async-channel-put started #t)

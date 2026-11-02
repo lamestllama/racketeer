@@ -30,6 +30,7 @@
          Source-Controller?
          current-source-controller
          source-controller-events
+         source-controller-analysis-wait-evt
          source-controller-shutdown-evt
          source-controller-stopped?
          source-controller-observe!
@@ -47,6 +48,7 @@
          source-controller-snapshot
          source-controller-ensure-analysis!
          source-controller-refresh-analysis!
+         source-controller-hasten-analysis!
          (struct-out Analysis-Handle)
          (struct-out Source-Result)
          (struct-out Source-Failure)
@@ -90,22 +92,26 @@
    [closed-analysis Closed-Analysis-Cache?]
    [publisher Analysis-Publisher?]))
 
-;; Timeouts are seconds. The workspace supplies publication only, not session
-;; isolation for request-layer workspace access. Zero cache capacity disables
-;; closed-file retention; #f Resyntax disables its follow-on work.
+;; Timeouts and analysis-wait, the pause after an edit before analysing it, are
+;; seconds. The workspace
+;; supplies publication only, not session isolation for request-layer workspace
+;; access. Zero cache capacity disables closed-file retention; #f Resyntax disables
+;; its follow-on work.
 (define (make-source-controller #:workspace [workspace current-workspace]
                                 #:read [read read-source-text]
                                 #:read-timeout [read-timeout 3]
                                 #:analyze [analyze analyze-source]
                                 #:analysis-slots [slots 4]
                                 #:analysis-timeout [analysis-timeout 90]
+                                #:analysis-wait [analysis-wait 1/4]
                                 #:closed-analysis-limit [closed-analysis-limit 64]
                                 #:resyntax [resyntax (and (resyntax-available?) run-resyntax/in-place)])
   (define events (make-async-channel))
   (Source-Controller workspace (make-hash) (make-source-store) events (make-semaphore 0)
                      (make-disk-reader events #:read read #:timeout read-timeout)
                      (make-analysis-scheduler events #:analyze analyze #:resyntax resyntax
-                                              #:slots slots #:timeout analysis-timeout)
+                                              #:slots slots #:timeout analysis-timeout
+                                              #:wait analysis-wait)
                      (make-closed-analysis-cache closed-analysis-limit)
                      (make-analysis-publisher workspace)))
 
@@ -116,6 +122,11 @@
 
 (define (source-controller-events controller)
   (Source-Controller-events controller))
+
+;; For the consumer alone, beside `source-controller-events`. Its value goes to
+;; `source-controller-handle-completion!` like theirs.
+(define (source-controller-analysis-wait-evt controller)
+  (analysis-wait-evt (Source-Controller-scheduler controller)))
 
 (define (source-controller-shutdown-evt controller)
   (semaphore-peek-evt (Source-Controller-shutdown controller)))
@@ -162,14 +173,16 @@
     [(? Analysis-Completed?)
      (finish-analysis-task! (Source-Controller-scheduler controller) event
                             (lambda (snapshot kind completion parent result)
-                              (accept-analysis-result! controller snapshot kind completion parent result)))]))
+                              (accept-analysis-result! controller snapshot kind completion parent result)))]
+    [(? Analysis-Wait-Over?) (void)]))
 
 (define (source-controller-current-view? controller view)
   (eq? view (source-controller-view controller (Source-View-source view))))
 
 (define (source-controller-pump! controller)
   (pump-analysis-scheduler! (Source-Controller-scheduler controller)
-                            (lambda (snapshot) (snapshot-current? controller snapshot))))
+                            (lambda (snapshot) (snapshot-current? controller snapshot))
+                            #:make-context (lambda () (analysis-context controller))))
 
 (define (source-controller-observe! controller source)
   (match (source-controller-view controller source)
@@ -235,9 +248,9 @@
   (or (and accepted (hash-has-key? accepted path))
       (and context (hash-has-key? (unbox (Analysis-Context-loaded context)) path))))
 
-;; Restart analysis of every other open buffer that loaded `changed`. Exact
-;; availability is cleared first, so queries wait for facts computed from the
-;; new text.
+;; Analyse again, after the wait, every other open buffer that loaded `changed`.
+;; Exact availability is cleared first, so queries wait for facts computed from
+;; the new text.
 (define (refresh-dependents! controller changed)
   (define path (source-file-path changed))
   (when path
@@ -248,21 +261,17 @@
                         entry))
     (source-controller-pump! controller)))
 
-;; Enqueue fresh attempts; the caller pumps.
+;; Install waiting attempts; the caller pumps.
 (define (restart-buffers! controller entries)
-  (unless (null? entries)
-    (define context (analysis-context controller))
-    (define scheduler (Source-Controller-scheduler controller))
-    (for ([entry (in-list entries)])
-      (define snapshot (source-controller-snapshot controller (car entry)))
-      (when snapshot
-        (with-write-safedoc (cdr entry)
-          (lambda (sd)
-            (set-SafeDoc-available! sd #f)
-            (set-SafeDoc-analysis-completion!
-              sd (restart-analysis! scheduler snapshot
-                                    #:context (struct-copy Analysis-Context context
-                                                [loaded (box (hash))])))))))))
+  (define scheduler (Source-Controller-scheduler controller))
+  (for ([entry (in-list entries)])
+    (define snapshot (source-controller-snapshot controller (car entry)))
+    (when snapshot
+      (with-write-safedoc (cdr entry)
+        (lambda (sd)
+          (set-SafeDoc-available! sd #f)
+          (set-SafeDoc-analysis-completion!
+            sd (defer-analysis! scheduler snapshot 'dependency-changed)))))))
 
 ;; An analysis read its imports from the buffers open when it started. Any
 ;; that have since changed, opened or closed make the result stale.
@@ -300,6 +309,12 @@
   (define snapshot (source-controller-snapshot controller source))
   (when snapshot (source-controller-ensure-analysis! controller snapshot #:refresh? #t))
   (void))
+
+;; A request reads this source's analysis: it does not sit out the wait. An
+;; attempt already queued or running is unaffected, and so is a source with none.
+(define (source-controller-hasten-analysis! controller source)
+  (hasten-analysis! (Source-Controller-scheduler controller) source)
+  (source-controller-pump! controller))
 
 (define (discard-analysis! controller source)
   (discard-closed-analysis! (Source-Controller-closed-analysis controller) source)
@@ -402,7 +417,8 @@
 ;; `safe-doc` is the already-registered buffer; this does not look up by URI.
 ;; Invalidate eligibility before adjusting the mutable trace. The controller
 ;; owns the lock and schedules the successor only after the whole edit is
-;; visible. `mutate-doc` receives the Doc, must update its text and client
+;; visible, to start after the wait, so that a burst of edits analyses only its
+;; last text. `mutate-doc` receives the Doc, must update its text and client
 ;; version, and must not acquire the same buffer lock.
 (define (source-controller-edit! controller safe-doc mutate-doc)
   (define source
@@ -416,8 +432,13 @@
         (cancel-source-analysis! (Source-Controller-scheduler controller) source)
         (mutate-doc (SafeDoc-doc sd))
         source)))
-  (source-controller-refresh-analysis! controller source)
-  (refresh-dependents! controller source))
+  (define snapshot (source-controller-snapshot controller source))
+  (with-write-safedoc safe-doc
+    (lambda (sd)
+      (set-SafeDoc-analysis-completion!
+        sd (defer-analysis! (Source-Controller-scheduler controller) snapshot))))
+  (refresh-dependents! controller source)
+  (source-controller-pump! controller))
 
 ;; Drop buffer authority without a read. File content becomes unknown; virtual
 ;; sources are removed because they have no disk fallback. Retain a completed

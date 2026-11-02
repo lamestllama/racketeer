@@ -46,6 +46,56 @@
     (check-true (Analysis-Product-succeeded? product))
     (Analysis-Outcome 'succeeded (Analysis-Product-summary product)))
 
+  (test-case "a waiting attempt joins the queue when due or asked for, and is settled like others"
+    (define events (make-async-channel))
+    (define started (make-async-channel))
+    (define custodian (make-custodian))
+    (define (scheduler-waiting wait)
+      (make-analysis-scheduler
+        events #:slots 1 #:resyntax #f #:wait wait
+        #:analyze (lambda (snapshot)
+                    (async-channel-put started
+                                       (cons snapshot (Analysis-Context-loaded (current-analysis-context))))
+                    (sync never-evt))))
+    (define (pump! scheduler)
+      (pump-analysis-scheduler!
+        scheduler (lambda (_) #t)
+        #:make-context (lambda () (Analysis-Context (hash) '() (box (hash))))))
+    (parameterize ([current-custodian custodian])
+      ;; A wait of a minute: nothing starts, and the event is not ready.
+      (define scheduler (scheduler-waiting 60))
+      (check-false (sync/timeout 0 (analysis-wait-evt scheduler)))
+      (define a (snapshot "wait-a.rkt"))
+      (define first (defer-analysis! scheduler a))
+      (pump! scheduler)
+      (check-false (sync/timeout 0 started))
+      (check-false (sync/timeout 0 (analysis-wait-evt scheduler)))
+      ;; A successor settles it, and asking for the successor starts it, with a
+      ;; context made at that moment.
+      (define b (struct-copy Source-Snapshot a [revision (gensym 'revision)]))
+      (define second (defer-analysis! scheduler b))
+      (check-equal? (await first) (Analysis-Outcome 'stopped 'source-changed))
+      (check-eq? second (request-analysis! scheduler b))
+      (pump! scheduler)
+      (check-eq? (car (await started)) b)
+      ;; Asking again changes nothing for a running attempt.
+      (check-eq? second (request-analysis! scheduler b))
+      ;; Stopping ends a wait, and the event with it.
+      (define c (snapshot "wait-c.rkt"))
+      (define third (defer-analysis! scheduler c))
+      (stop-analysis-scheduler! scheduler)
+      (check-equal? (await third) (Analysis-Outcome 'stopped 'shutdown))
+      (check-false (sync/timeout 0.01 (analysis-wait-evt scheduler)))
+      ;; A short wait: the event wakes the owner, whose pump starts the attempt.
+      (define brief (scheduler-waiting 1/100))
+      (defer-analysis! brief a)
+      (check-true (Analysis-Wait-Over? (await (analysis-wait-evt brief))))
+      (pump! brief)
+      (check-eq? (car (await started)) a)
+      (check-false (sync/timeout 0.02 (analysis-wait-evt brief)))
+      (stop-analysis-scheduler! brief))
+    (custodian-shutdown-all custodian))
+
   (test-case "FIFO capacity, shared requests, and acceptance before completion"
     (with-scheduler
       (lambda (scheduler events started release)

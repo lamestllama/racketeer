@@ -5,6 +5,7 @@
 (require racket/async-channel
          racket/contract
          "../../common/source.rkt"
+         "../../common/time.rkt"
          "../../workspace/source-store.rkt"
          "../analysis.rkt"
          "completion-event.rkt"
@@ -15,24 +16,31 @@
          scheduled-analysis-event
          scheduled-analysis-context
          request-analysis!
-         restart-analysis!
+         defer-analysis!
+         hasten-analysis!
          schedule-resyntax!
          cancel-source-analysis!
          stop-analysis-scheduler!
          pump-analysis-scheduler!
+         analysis-wait-evt
+         Analysis-Wait-Over?
          Analysis-Completed?
          finish-analysis-task!)
 
 ;; parent-completion identifies the accepted analysis refined by Resyntax.
-;; context is the editor state imports read, or #f for ordinary loading.
-;; worker is #f until execution starts. Terminal attempts leave the registry.
+;; context is the editor state imports read, or #f for ordinary loading; a
+;; waiting attempt reads it when it joins the queue, so that it sees the buffers
+;; as the wait left them. due is when a waiting attempt joins the queue, on the
+;; deadline clock. worker is #f until execution starts. Terminal attempts leave
+;; the registry.
 (struct/contract Analysis-Attempt
   ([snapshot Source-Snapshot?]
-   [context (or/c #f Analysis-Context?)]
+   [(context #:mutable) (or/c #f Analysis-Context?)]
    [kind (or/c 'analysis 'resyntax)]
    [parent-completion (or/c #f evt?)]
    [completion Completion-Event?]
-   [(state #:mutable) (or/c 'queued 'running 'terminal)]
+   [(due #:mutable) real?]
+   [(state #:mutable) (or/c 'waiting 'queued 'running 'terminal)]
    [(worker #:mutable) (or/c #f Supervised-Worker?)]))
 
 (struct/contract Analysis-Scheduler
@@ -41,6 +49,7 @@
    [resyntax (or/c #f (-> string? string? list?))]
    [timeout (and/c real? (>=/c 0))]
    [slots exact-positive-integer?]
+   [wait (and/c real? (>=/c 0))]
    [attempts (hash/c (cons/c Source-Id? (or/c 'analysis 'resyntax))
                      Analysis-Attempt? #:immutable #f)]
    [(queue #:mutable) (listof Analysis-Attempt?)]
@@ -50,9 +59,14 @@
 ;; attempt removed by completion, cancellation, or a same-revision retry.
 (struct Analysis-Completed (attempt result))
 
+;; The value of `analysis-wait-evt`. It carries nothing: the pump that follows
+;; every dispatch queues whatever is due.
+(struct Analysis-Wait-Over ())
+
+;; wait is in seconds, as is timeout.
 (define (make-analysis-scheduler events #:analyze analyze #:resyntax resyntax
-                                 #:timeout [timeout 90] #:slots [slots 4])
-  (Analysis-Scheduler events analyze resyntax timeout slots (make-hash) '() #f))
+                                 #:timeout [timeout 90] #:slots [slots 4] #:wait [wait 1/4])
+  (Analysis-Scheduler events analyze resyntax timeout slots wait (make-hash) '() #f))
 
 (define (attempt-key attempt)
   (cons (Source-Snapshot-id (Analysis-Attempt-snapshot attempt))
@@ -74,14 +88,15 @@
 
 (define (enqueue! scheduler snapshot kind parent-completion [context #f])
   (define attempt
-    (Analysis-Attempt snapshot context kind parent-completion (make-completion-event) 'queued #f))
+    (Analysis-Attempt snapshot context kind parent-completion (make-completion-event) 0 'queued #f))
   (hash-set! (Analysis-Scheduler-attempts scheduler) (attempt-key attempt) attempt)
   (set-Analysis-Scheduler-queue! scheduler
                                  (append (Analysis-Scheduler-queue scheduler) (list attempt)))
   (Analysis-Attempt-completion attempt))
 
-;; Requests for the same revision share an attempt. A successor revision
-;; supersedes outstanding work for this source, including its Resyntax.
+;; Requests for the same revision share an attempt, and do not wait for it. A
+;; successor revision supersedes outstanding work for this source, including its
+;; Resyntax.
 (define (request-analysis! scheduler snapshot #:context [context #f])
   (define source (Source-Snapshot-source snapshot))
   (define active
@@ -91,19 +106,38 @@
     [(and active
           (eq? (Source-Snapshot-revision snapshot)
                (Source-Snapshot-revision (Analysis-Attempt-snapshot active))))
+     (hasten-analysis! scheduler source)
      (Analysis-Attempt-completion active)]
     [else
      (cancel-source-analysis! scheduler source)
      (enqueue! scheduler snapshot 'analysis #f context)]))
 
-;; Imported text changed under an unchanged revision. Supersede outstanding
-;; work for this source with a new attempt that reads the given context.
-(define (restart-analysis! scheduler snapshot #:context context)
+;; Supersede outstanding work for this source with an attempt that joins the
+;; queue once the wait has passed, unless a further call supersedes it first.
+;; Nothing runs meanwhile: the wait is a time in the attempt, seen by
+;; `analysis-wait-evt`, so settling the attempt is all it takes to end it.
+(define (defer-analysis! scheduler snapshot [reason 'source-changed])
   (cond
     [(Analysis-Scheduler-stopped? scheduler) (ready-evt (Analysis-Outcome 'stopped 'shutdown))]
     [else
-     (cancel-source-analysis! scheduler (Source-Snapshot-source snapshot) 'dependency-changed)
-     (enqueue! scheduler snapshot 'analysis #f context)]))
+     (cancel-source-analysis! scheduler (Source-Snapshot-source snapshot) reason)
+     (define attempt
+       (Analysis-Attempt snapshot #f 'analysis #f (make-completion-event)
+                         (+ (current-deadline-milliseconds)
+                            (* 1000 (Analysis-Scheduler-wait scheduler)))
+                         'waiting #f))
+     (hash-set! (Analysis-Scheduler-attempts scheduler) (attempt-key attempt) attempt)
+     (Analysis-Attempt-completion attempt)]))
+
+;; End any wait of this source's analysis; the next pump queues the attempt.
+(define (hasten-analysis! scheduler source)
+  (define attempt
+    (hash-ref (Analysis-Scheduler-attempts scheduler) (cons (source-id source) 'analysis) #f))
+  (when (and attempt (waiting? attempt))
+    (set-Analysis-Attempt-due! attempt 0)))
+
+(define (waiting? attempt)
+  (eq? 'waiting (Analysis-Attempt-state attempt)))
 
 (define (schedule-resyntax! scheduler snapshot parent-completion)
   (when (and (not (Analysis-Scheduler-stopped? scheduler))
@@ -140,8 +174,10 @@
 
 ;; current? checks source eligibility at dispatch, after any time spent queued.
 ;; It receives a snapshot and never receives the scheduler's private state.
-(define (pump-analysis-scheduler! scheduler current?)
+;; make-context supplies the import context of each attempt whose wait is over.
+(define (pump-analysis-scheduler! scheduler current? #:make-context [make-context (lambda () #f)])
   (unless (Analysis-Scheduler-stopped? scheduler)
+    (queue-due-attempts! scheduler make-context)
     (let loop ()
       (define queue (Analysis-Scheduler-queue scheduler))
       (define running
@@ -156,6 +192,33 @@
             (start-attempt! scheduler attempt)
             (settle! scheduler attempt (Analysis-Outcome 'stopped 'source-changed)))
         (loop)))))
+
+;; Oldest wait first, behind what is already queued.
+(define (queue-due-attempts! scheduler make-context)
+  (define now (current-deadline-milliseconds))
+  (define due
+    (sort (for/list ([attempt (in-hash-values (Analysis-Scheduler-attempts scheduler))]
+                     #:when (and (waiting? attempt) (<= (Analysis-Attempt-due attempt) now)))
+            attempt)
+          < #:key Analysis-Attempt-due))
+  (for ([attempt (in-list due)])
+    (set-Analysis-Attempt-context! attempt (make-context))
+    (set-Analysis-Attempt-state! attempt 'queued))
+  (set-Analysis-Scheduler-queue! scheduler (append (Analysis-Scheduler-queue scheduler) due)))
+
+;; Ready when the earliest wait ends. Only the owner changes the attempts and
+;; syncs on this, and it syncs afresh after each change, so the guard always
+;; sees the current attempts and no timer needs cancelling.
+(define (analysis-wait-evt scheduler)
+  (guard-evt
+    (lambda ()
+      (define waits
+        (for/list ([attempt (in-hash-values (Analysis-Scheduler-attempts scheduler))]
+                   #:when (waiting? attempt))
+          (Analysis-Attempt-due attempt)))
+      (if (null? waits)
+          never-evt
+          (wrap-evt (deadline-evt (apply min waits)) (lambda (_) (Analysis-Wait-Over)))))))
 
 (define (start-attempt! scheduler attempt)
   (define snapshot (Analysis-Attempt-snapshot attempt))
