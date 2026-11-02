@@ -132,6 +132,32 @@ test('an early worker exit fails launch promptly', { skip: process.platform === 
   await client.event('terminated');
 });
 
+const workerPrograms = {
+  // Expansion runs while the debugger loads the program, before it starts.
+  loading: '#lang racket/base\n(require (for-syntax racket/base racket/os))\n' +
+    '(begin-for-syntax (printf "worker ~a\\n" (getpid)) (flush-output) (sync never-evt))\n',
+  running: '#lang racket/base\n(require racket/os)\n(printf "worker ~a\\n" (getpid))\n(flush-output)\n(sync never-evt)\n'
+};
+for (const [moment, source] of Object.entries(workerPrograms)) {
+  test(`a debug worker killed while ${moment} names its ending and the session terminates`, { skip: process.platform === 'win32' }, async t => {
+    const directory = await temporary(t);
+    const target = path.join(directory, 'killed-worker.rkt');
+    await fs.writeFile(target, source);
+    const client = await clientFor(t);
+    await ok(client.request('launch', { program: target }));
+    await client.event('initialized');
+    await ok(client.request('configurationDone'));
+    const started = await client.event('output', event => /worker \d+/.test(event.body.output));
+    const killed = Date.now();
+    process.kill(Number(/worker (\d+)/.exec(started.body.output)[1]), 'SIGKILL');
+    const report = await client.event('output', event => event.body.category === 'stderr');
+    assert.match(report.body.output, /Racket worker was killed by signal 9 before the program finished\. .*memory runs out/);
+    assert.equal((await client.event('exited')).body.exitCode, 137);
+    await client.event('terminated');
+    assert.ok(Date.now() - killed < 5000, 'the session must end promptly after its worker dies');
+  });
+}
+
 test('terminate cancels a worker that has not connected', { skip: process.platform === 'win32' }, async t => {
   const executable = await peer(t, false);
   const client = await clientFor(t);

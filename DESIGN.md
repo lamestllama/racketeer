@@ -175,6 +175,9 @@ by the runner. DAP's debug console is for evaluation, not implicit program stdin
 Interactive terminal support can use a small launcher and DAP `runInTerminal`
 without changing the control protocol; it is a later milestone. A worker exit,
 `(exit)`, or native crash must leave the adapter able to report termination.
+A worker that ends without reporting a program exit, such as one the system
+kills when memory runs out, is named in the Debug Console with its exit code or
+signal before the session terminates.
 
 Termination requests a cooperative shutdown, closes program resources through
 the custodian, then uses a bounded OS-process fallback. Owned child-process

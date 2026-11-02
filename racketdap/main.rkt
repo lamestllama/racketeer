@@ -64,8 +64,21 @@
     (when worker-out (close-output-port worker-out))
     (when worker-in (close-input-port worker-in))
     (when connection-custodian (custodian-shutdown-all connection-custodian))))
+;; Racket reports a Unix process ended by a signal as 128 plus its number.
+(define (worker-ending code)
+  (define signal (and (not (eq? (system-type 'os) 'windows)) (> code 128) (- code 128)))
+  (case signal
+    [(9) "was killed by signal 9 before the program finished. The system kills a process this way when memory runs out."]
+    [(#f) (format "exited with code ~a before the program finished." code)]
+    [else (format "was ended by signal ~a before the program finished." signal)]))
 (define (maybe-complete)
-  (when (and actual-exit (= streams-done 2)) (complete! (or desired-exit actual-exit))))
+  (when (and actual-exit (= streams-done 2))
+    ;; A connected worker reports every program exit itself. Without that
+    ;; report the worker process ended, so the session says why it closes.
+    (when (and worker-out (not desired-exit) (not finished?))
+      (event "output" (hasheq 'category "stderr"
+                              'output (format "The Racket worker ~a\n" (worker-ending actual-exit)))))
+    (complete! (or desired-exit actual-exit))))
 (define (copy-output port category)
   (set! output-ports (cons port output-ports))
   (thread
