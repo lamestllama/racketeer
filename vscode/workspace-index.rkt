@@ -14,11 +14,13 @@
 
 ;; A frame is written in several steps, and a full pipe can suspend any of them.
 ;; Results and status reports come from different threads, so each frame waits
-;; for the one before it.
+;; for the one before it. A procedure makes its message once those are written, so
+;; that it can answer from what has been read while they were.
 (define (make-reply out)
   (define writing (make-semaphore 1))
   (lambda (message)
-    (call-with-semaphore writing (lambda () (display-message/flush message out)))))
+    (call-with-semaphore writing
+      (lambda () (display-message/flush (if (procedure? message) (message) message) out)))))
 
 ;; LSP 3.17 error codes.
 (define parse-error -32700)
@@ -317,10 +319,15 @@
            (dynamic-wind
              void
              (lambda ()
-               (reply (with-handlers ([exn:fail? (lambda (e) (error-response id request-failed (exn-message e)))])
-                        (sync applied (semaphore-peek-evt cancel))
-                        (response id operation
-                                  (workspace-analysis-query engine operation bound (semaphore-peek-evt cancel))))))
+               (define (failed e) (AnalysisFailure 'failed (exn-message e)))
+               (define result
+                 (with-handlers ([exn:fail? failed])
+                   (sync applied (semaphore-peek-evt cancel))
+                   (workspace-analysis-query engine operation bound (semaphore-peek-evt cancel))))
+               ;; Whether a rename still stands is decided once it is next to be written.
+               (reply (lambda ()
+                        (with-handlers ([exn:fail? (lambda (e) (response id operation (failed e)))])
+                          (response id operation result)))))
              (lambda () (hash-remove! pending id)))))]
       ["initialize" (reply (error-response id invalid-request "The index server is already initialized"))]
       [_ (when id (reply (error-response id method-not-found "Unknown index method")))]))

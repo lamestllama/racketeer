@@ -6,9 +6,10 @@ const test = require('./support/node-test');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { setTimeout: delay } = require('node:timers/promises');
 const { root, definition, uri, rawServer } = require('./workspace-index-project');
 
-const invalidRequest = -32600, serverNotInitialized = -32002;
+const invalidRequest = -32600, serverNotInitialized = -32002, requestFailed = -32803;
 const exitCode = async server => (await server.closed)[0];
 const asking = { experimental: { racketeer: { indexStatus: true, sourceReferences: true } } };
 
@@ -304,4 +305,41 @@ test('the refresh command makes the next request start a pass and an unknown com
   await until(() => seen.has('second') && passes === 2);
   assert.equal(seen.get('unknown').error.code, -32602);
   assert.equal(seen.get('refresh').result, null);
+});
+
+test('a rename waiting for the writer refuses after a change read meanwhile', { timeout: 180000 }, async t => {
+  const directory = workspace(t), origin = path.join(directory, 'definition.rkt'), consumer = path.join(directory, 'uses.rkt');
+  // Enough references to fill the pipe, so that a reply behind them waits to be written.
+  const text = '#lang racket/base\n(require "definition.rkt")\n' + '(square 3)\n'.repeat(6000);
+  fs.writeFileSync(consumer, text);
+  const server = rawServer(t, { RACKETEER_INDEX_TRACE: '1' });
+  let logged = '';
+  server.child.stderr.on('data', bytes => { logged += bytes; });
+  await initialize(server, { workspace: { workspaceEdit: { documentChanges: true } } }, directory);
+  open(server, directory);
+  server.send(references(directory, 'warm'));
+  await server.next();
+  server.child.stdout.pause();
+  server.send(references(directory, 'fill'));
+  await delay(2000);
+  server.send({ id: 'rename', method: 'textDocument/rename', params: { textDocument: { uri: uri(origin) },
+    position: { line: 2, character: 10 }, newName: 'squared' } });
+  const deadline = Date.now() + 90000;
+  while (!/rename [^\n]*: reaped/.test(logged)) {
+    assert.ok(Date.now() < deadline, logged);
+    await delay(50);
+  }
+  await delay(100);
+  // The old answer's ranges would now address other text.
+  fs.writeFileSync(consumer, `; a new first line\n${text}`);
+  server.send({ method: 'workspace/didChangeWatchedFiles', params: { changes: [{ uri: uri(consumer), type: 2 }] } });
+  await delay(500);
+  server.child.stdout.resume();
+  let answer;
+  while (!answer) {
+    const message = await server.next();
+    if (message.id === 'rename') answer = message;
+  }
+  assert.equal(answer.error?.code, requestFailed);
+  assert.equal(answer.error?.message, 'Workspace changed during rename. Try Rename again.');
 });
