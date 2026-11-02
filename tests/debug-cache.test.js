@@ -551,7 +551,7 @@ for (const [where, arrange] of arrangements) {
 test('Evaluate in a submodule works from a working directory other than the program\'s', { timeout: 300000 }, async t => {
   const p = project(t);
   const line = lineIn(p.main, "(displayln (list 'main total))");
-  for (const options of [{}, { debugCacheDirectory: p.cache }, { debugCacheDirectory: p.cache }]) {
+  for (const options of [{ debugCache: false }, { debugCacheDirectory: p.cache }, { debugCacheDirectory: p.cache }]) {
     const results = [];
     await session({ program: p.main, cwd: path.dirname(p.source), ...options }, { [p.main]: [line] }, async ({ client, ok }) => {
       const stopped = await client.event('stopped');
@@ -574,7 +574,7 @@ test('a module in a language defined in the project stops from another working d
     '#lang racket/base\n(provide (all-from-out racket/base) marker)\n(define (marker) (quote marker-one))\n');
   const main = path.join(p.source, 'in-language.rkt');
   fs.writeFileSync(main, '(module main "my-language.rkt"\n(define (f x)\n  (list x))\n(displayln (f (marker)))\n)\n');
-  for (const options of [{}, { debugCacheDirectory: p.cache }, { debugCacheDirectory: p.cache }]) {
+  for (const options of [{ debugCache: false }, { debugCacheDirectory: p.cache }, { debugCacheDirectory: p.cache }]) {
     const { messages } = await session({ program: main, cwd: path.dirname(p.source), ...options }, { [main]: [3] }, async ({ client, ok }) => {
       const stopped = await client.event('stopped');
       await ok(client.request('continue', { threadId: stopped.body.threadId }));
@@ -589,7 +589,7 @@ test('a language given as a submodule stops from another working directory', { t
     '#lang racket/base\n(module inner racket/base\n  (provide (all-from-out racket/base) marker)\n  (define (marker) (quote marker-two)))\n');
   const main = path.join(p.source, 'in-submodule-language.rkt');
   fs.writeFileSync(main, '(module main (submod "my-language.rkt" inner)\n(define (f x)\n  (list x))\n(displayln (f (marker)))\n)\n');
-  for (const options of [{}, { debugCacheDirectory: p.cache }, { debugCacheDirectory: p.cache }]) {
+  for (const options of [{ debugCache: false }, { debugCacheDirectory: p.cache }, { debugCacheDirectory: p.cache }]) {
     const { messages } = await session({ program: main, cwd: path.dirname(p.source), ...options }, { [main]: [3] }, async ({ client, ok }) => {
       const stopped = await client.event('stopped');
       await ok(client.request('continue', { threadId: stopped.body.threadId }));
@@ -615,7 +615,7 @@ for (const [name, spell] of [
     t.after(() => fs.rmSync(linked, { force: true }));
     const line = lineIn(path.join(p.source, 'macros.rkt'), '(add1 doubled)');
     const { program, breakpoint } = spell(linked, p.source);
-    for (const options of [{}, { debugCacheDirectory: p.cache }, { debugCacheDirectory: p.cache }]) {
+    for (const options of [{ debugCache: false }, { debugCacheDirectory: p.cache }, { debugCacheDirectory: p.cache }]) {
       let lineStopped;
       await session({ program: path.join(program, 'main.rkt'), cwd: program, ...options },
         { [path.join(breakpoint, 'macros.rkt')]: [line] }, async ({ client, ok }) => {
@@ -636,7 +636,7 @@ test('a breakpoint stops when its path differs in case, where the file system ig
   const line = lineIn(path.join(p.source, 'macros.rkt'), '(add1 doubled)');
   const folder = path.join(path.dirname(p.source), 'PROJECT');
   for (const breakpoint of [path.join(p.source, 'MACROS.rkt'), path.join(folder, 'macros.rkt')]) {
-    for (const options of [{}, { debugCacheDirectory: p.cache }, { debugCacheDirectory: p.cache }]) {
+    for (const options of [{ debugCache: false }, { debugCacheDirectory: p.cache }, { debugCacheDirectory: p.cache }]) {
       let lineStopped;
       await session({ program: p.main, cwd: p.source, ...options }, { [breakpoint]: [line] }, async ({ client, ok }) => {
         const stopped = await client.event('stopped');

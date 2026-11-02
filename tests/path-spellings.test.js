@@ -146,7 +146,7 @@ for (const [name, layout] of [
   test(`Step In enters a dependency when ${name}`, { timeout: 300000, skip }, async t => {
     const p = project(t, called);
     const cache = path.join(path.dirname(p.real), 'cache');
-    for (const options of [{}, { debugCacheDirectory: cache }, { debugCacheDirectory: cache }]) {
+    for (const options of [{ debugCache: false }, { debugCacheDirectory: cache }, { debugCacheDirectory: cache }]) {
       assert.equal(await stepIn({ ...layout(p), ...options }), 'dep.rkt');
     }
   });
