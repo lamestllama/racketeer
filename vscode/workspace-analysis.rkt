@@ -5,7 +5,8 @@
 ;; Workspace analysis accepts complete source views and returns domain results.
 ;; Each instance owns its runs and disposable workers. No editor connection or
 ;; request transport is required to use the engine.
-(require compiler/module-suffix
+(require compiler/compilation-path
+         compiler/module-suffix
          racket/file
          racket/list
          racket/match
@@ -489,6 +490,11 @@
                      (buffer-fingerprint (hash-ref buffers file))
                      (disk-fingerprint file)))))
   (record! file)
+  ;; With no source to read, what the loader reads is the compiled code.
+  (unless (or (hash-has-key? buffers file) (file-exists? file))
+    (for* ([root (in-list (current-compiled-file-roots))]
+           [mode (in-list (use-compiled-file-paths))])
+      (record! (get-compilation-bytecode-file file #:modes (list mode) #:roots (list root)))))
   (when (equal? (path-get-extension file) #".ss")
     (record! (path-replace-extension file #".rkt"))))
 

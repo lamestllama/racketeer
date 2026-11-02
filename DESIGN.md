@@ -320,6 +320,8 @@ contributions enter the store in the order of a fresh pass, so the answers are t
 same to the byte. A file that failed has no result and is analysed by every pass. Results last for one instance, are never written to disk, and are dropped by
 `workspace-analysis-forget!`, which the Refresh command calls.
 
+A library with no source is compared by the compiled file its loader would read.
+
 A macro that reads a file it does not register leaves no record of it. Such a file
 is seen only at the next change to the macro's file or to a file loaded with it,
 after a refresh, or after a restart. This is the limit the debugger's compiled cache has too.

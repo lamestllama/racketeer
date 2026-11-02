@@ -208,6 +208,30 @@ test('a file outside the workspace changed reanalyses the files that loaded it',
   assert.equal(after.other, before.other, 'An unrelated file must be reused');
 });
 
+test('a library with only compiled code is compared by that code', { timeout: 180000 }, async t => {
+  const p = await project(t);
+  const folder = fs.mkdtempSync(path.join(addon, 'compiled-only-')), library = path.join(folder, 'macro.rkt');
+  const compileOnly = text => {
+    fs.writeFileSync(library, text);
+    const made = spawnSync('raco', ['make', library], { encoding: 'utf8', env: { ...process.env, PLTADDONDIR: addon }, timeout: 60000 });
+    assert.equal(made.status, 0, made.stderr);
+    fs.unlinkSync(library);
+  };
+  compileOnly('#lang racket/base\n(provide call)\n(define-syntax-rule (call f) (f 1))\n');
+  const consumer = tracked(p, 'consumer', `(require (file ${JSON.stringify(library)}) "definition.rkt")\n(call square)`);
+  p.write('consumer.rkt', consumer.text);
+  await p.update();
+  const count = async () => from(await p.references(p.origin), uri(p.filename('consumer.rkt'))).length;
+  assert.equal(await count(), 1, p.diagnostics());
+  const expansions = consumer.expansions();
+  await p.update();
+  assert.equal(await count(), 1);
+  assert.equal(consumer.expansions(), expansions, 'Unchanged compiled code keeps the result');
+  compileOnly('#lang racket/base\n(provide call)\n(define-syntax-rule (call f) 1)\n');
+  await p.update();
+  assert.equal(await count(), 0, 'Replaced compiled code is read afresh');
+});
+
 test('a file deleted is dropped, its consumers fail as in a fresh pass, and the rest are reused', { timeout: 180000 }, async t => {
   const p = await workspace(t);
   const before = { other: p.other.expansions() };
