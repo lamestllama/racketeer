@@ -91,6 +91,9 @@ test('a launch runs from source and starts the build, and later launches load co
   }
   assert.equal(compiledFiles(racketdap).length, 0, 'Nothing is written beside the sources');
   assert.equal(finished(storage).length, 1);
+  const [build] = finished(storage);
+  assert.deepEqual(compiledFiles(path.join(storage, build)).filter(name => !name.split(path.sep).includes('racketdap')), [],
+    'The build holds the debugger, not the libraries it uses');
 });
 
 test('a program and its children see what they see without the launcher', { timeout: 300000 }, async t => {

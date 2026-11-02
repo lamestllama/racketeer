@@ -32,6 +32,9 @@
 
 (define (compile-all! building sources root snapshots)
   (define check (use-compiled-file-check))
+  ;; A Unix-style installation keeps its libraries' compiled files under a root of
+  ;; its own, so only the roots this Racket was given find them.
+  (define library-roots (current-compiled-file-roots))
   (define ordinary-load (current-load/use-compiled))
   (define ordinary-open (moddep-current-open-input-file))
   (define (library? file) (not (under? (simplify-path file) root)))
@@ -46,12 +49,12 @@
                  [current-load/use-compiled
                   (lambda (file name)
                     (if (library? file)
-                        (parameterize ([current-compiled-file-roots '(same)]) (ordinary-load file name))
+                        (parameterize ([current-compiled-file-roots library-roots]) (ordinary-load file name))
                         (ordinary-load file name)))]
                  [manager-skip-file-handler
                   (lambda (file)
                     (and (library? file)
-                         (ordinary-compiled-stamp file (use-compiled-file-paths) '(same) check)))])
+                         (ordinary-compiled-stamp file (use-compiled-file-paths) library-roots check)))])
     (define compile-file (make-caching-managed-compile-zo))
     ;; A file that needs a library this installation lacks, such as the GUI, or one
     ;; only its own command line supplies, stays on source, and fails if it would
