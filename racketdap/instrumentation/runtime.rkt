@@ -13,7 +13,7 @@
          announce-before announce-after announce-visit current-expression-token register-module-context!
          form-sites register-form-sites!
          remember-procedure instrumented-procedure-name
-         port-constructor? remember-ports instrumented-port?)
+         port-constructor-name? checked-operator instrumented-port?)
 
 ;; Only the lambda/case-lambda rewrite can register a value. Keeping this
 ;; operation private lets inspection trust these names without querying an
@@ -37,11 +37,18 @@
                                          open-input-file open-output-file open-input-output-file
                                          make-pipe make-input-port make-output-port))])
     (values constructor #t)))
+(define (port-constructor-name? name)
+  (for/or ([constructor (in-hash-keys port-constructors)]) (eq? name (object-name constructor))))
 (define ports (make-weak-hasheq))
-(define (port-constructor? value) (hash-ref port-constructors value #f))
 (define (remember-ports . results)
   (for ([value (in-list results)]) (hash-set! ports value #t))
   (apply values results))
+;; What an application whose operator is not a known primitive calls: the operator
+;; itself, unless it is a port constructor, whose results are recorded.
+(define (checked-operator operator)
+  (if (hash-ref port-constructors operator #f)
+      (lambda arguments (call-with-values (lambda () (apply operator arguments)) remember-ports))
+      operator))
 (define (instrumented-port? value) (hash-ref ports value #f))
 
 (struct site (id source line column position span tail? expression) #:transparent)

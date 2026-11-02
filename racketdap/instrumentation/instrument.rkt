@@ -10,7 +10,7 @@
 (define quoted-forms (syntax->list #'(quote quote-syntax)))
 (define atomic-forms
   (syntax->list #'(quote quote-syntax #%datum #%top #%variable-reference
-                        lambda #%plain-lambda case-lambda)))
+                        #%plain-lambda case-lambda)))
 (define binding-forms (syntax->list #'(let-values letrec-values)))
 (define (bound-form? identifier forms)
   (and (identifier? identifier)
@@ -82,6 +82,17 @@
           [(pair? v) (append (walk (car v)) (walk (cdr v)))]
           [else '()])))
 
+;; An operator bound to a primitive that does not make ports. Fully expanded code
+;; names primitives through modules whose names begin #%.
+(define (primitive-operator? operator)
+  (and (identifier? operator)
+       (let ([binding (identifier-binding operator)])
+         (and (list? binding)
+              (let ([module-name (resolved-module-path-name (module-path-index-resolve (car binding)))])
+                (and (symbol? module-name)
+                     (regexp-match? #rx"^#%" (symbol->string module-name))
+                     (not (port-constructor-name? (cadr binding)))))))))
+
 (struct boundary (range authored? [visible? #:mutable]))
 
 ;; Returns the rewritten expression, the visible site descriptors, and every
@@ -98,10 +109,11 @@
   (define table '())
   (define table-size 0)
   (define sites-id (car (generate-temporaries '(sites))))
-  (define callback-expression #`(vector-ref #,sites-id 0))
+  (define callback-expression #`(#%plain-app vector-ref #,sites-id '0))
   ;; Retain source-facing aliases for module bindings that expansion may rename.
   ;; Lexical evaluation alone cannot reconstruct these names from namespace maps.
   (define module-bindings known-module-bindings)
+  (define seen-module-bindings (make-free-id-table))
   ;; Macros such as unit replace source bindings with fresh runtime identifiers.
   ;; The expander retains their aliases in disappeared-binding metadata. Match
   ;; their binding identities, never their printed names or source positions.
@@ -116,7 +128,10 @@
   (define (collect-bindings stx)
     (cond
       [(identifier? stx)
-       (when (and (original-binding? stx source) (list? (identifier-binding stx)))
+       ;; One entry per binding and name, however many times the form uses it.
+       (when (and (original-binding? stx source) (list? (identifier-binding stx))
+                  (not (memq (syntax-e stx) (free-id-table-ref seen-module-bindings stx '()))))
+         (free-id-table-update! seen-module-bindings stx (lambda (names) (cons (syntax-e stx) names)) '())
          (set! module-bindings (cons stx module-bindings)))]
       [(syntax? stx)
        (define parts (syntax->list stx))
@@ -144,14 +159,14 @@
                                         (syntax-e id)
                                         (free-id-table-ref lexical-aliases id #f)))]
                  #:when name)
-        #`(make-live-binding '#,name (lambda () #,id)
-                             (lambda (replacement) (set! #,id replacement)))))
+        #`(#%plain-app make-live-binding '#,name (#%plain-lambda () #,id)
+                       (#%plain-lambda (replacement) (set! #,id replacement)))))
     (if (null? live-bindings)
         (values environment '())
         (let ([variable (car (generate-temporaries '(bindings)))])
           (values variable
                   (list #`[(#,variable)
-                           (list* #,@live-bindings #,(bindings-expression environment))])))))
+                           (#%plain-app list* #,@live-bindings #,(bindings-expression environment))])))))
   (define (bindings-expression environment)
     (or environment #''()))
   ;; Bind a scope's list around its body, which keeps its tail positions.
@@ -199,7 +214,7 @@
            (when visible? (set! descriptors (cons s descriptors)))
            (set! table (cons (cons s visible?) table))
            (set! table-size (add1 table-size))
-           #`(vector-ref #,sites-id #,table-size))))
+           #`(#%plain-app vector-ref #,sites-id '#,table-size))))
   ;; Source syntax or its expansion origin owns a range ahead of a generated
   ;; wrapper that borrowed it. A child can relinquish the wrapper's boundary
   ;; before its descriptor is emitted; sibling source executions stay distinct.
@@ -223,23 +238,16 @@
     (define act (car (generate-temporaries '(activation))))
     (define-values (env clauses) (extend (formal-identifiers formals) environment))
     #`[#,formals
-       (let-values ([(#,act) (make-activation)] #,@clauses)
+       (let-values ([(#,act) (#%plain-app make-activation)] #,@clauses)
          #,@(parameterize ([enclosing-boundary #f])
               (body expressions env act #t)))])
-  (define (application operator expressions environment act)
+  (define (application expressions environment act)
     (define rewritten (body expressions environment act #f))
-    (cond
-      [(null? rewritten) #`(#,operator)]
-      [else
-       (define function (car (generate-temporaries '(function))))
-       (define call #`(#,operator #,function #,@(cdr rewritten)))
-       ;; Evaluate the operator once and arguments in their original order.
-       ;; Ordinary calls remain tail calls; only known primitive constructors
-       ;; need a receiver to record their one or more unchanged port results.
-       #`(let ([#,function #,(car rewritten)])
-           (if (#%plain-app port-constructor? #,function)
-               (call-with-values (lambda () #,call) remember-ports)
-               #,call))]))
+    ;; A primitive other than a port constructor needs no check, and the compiler
+    ;; keeps it inline. Any other operator might turn out to be a constructor.
+    (if (primitive-operator? (car expressions))
+        #`(#%plain-app #,@rewritten)
+        #`(#%plain-app (#%plain-app checked-operator #,(car rewritten)) #,@(cdr rewritten))))
   (define (walk expression environment act tail? [context-name #f])
     (define located (location-of expression))
     (define range (and located (cons (syntax-position located) (syntax-span located))))
@@ -262,9 +270,9 @@
       #`(#%plain-app remember-procedure #,named))
     (define (rewrite)
       (syntax-case* expression (quote quote-syntax #%datum #%top #%variable-reference
-                                    lambda #%plain-lambda case-lambda if begin begin0
+                                    #%plain-lambda case-lambda if begin begin0
                                     let-values letrec-values set! with-continuation-mark
-                                    #%app #%plain-app #%expression)
+                                    #%plain-app #%expression)
                     free-identifier=?
         [id (identifier? #'id) expression]
         [(quote . ignored) expression]
@@ -272,9 +280,6 @@
         [(#%datum . ignored) expression]
         [(#%top . ignored) expression]
         [(#%variable-reference . ignored) expression]
-        [(lambda formals expression ...)
-         (with-syntax ([(new-formals new-body ...) (lambda-clause #'formals (syntax->list #'(expression ...)) environment)])
-           (remember-lambda #'(lambda new-formals new-body ...)))]
         [(#%plain-lambda formals expression ...)
          (with-syntax ([(new-formals new-body ...) (lambda-clause #'formals (syntax->list #'(expression ...)) environment)])
            (remember-lambda #'(#%plain-lambda new-formals new-body ...)))]
@@ -323,10 +328,8 @@
              ;; form has a pending completion. A body completion wrapper would
              ;; keep same-key marks that the program normally replaces.
              #,(walk #'result environment act #t inferred-name))]
-        [(#%app expression ...)
-         (application #'#%app (syntax->list #'(expression ...)) environment act)]
         [(#%plain-app expression ...)
-         (application #'#%plain-app (syntax->list #'(expression ...)) environment act)]
+         (application (syntax->list #'(expression ...)) environment act)]
         [(#%expression expression)
          #`(#%expression #,(walk #'expression environment act tail? inferred-name))]
         [_ (raise-syntax-error 'instrument-module "unsupported expanded runtime form" expression)]))
@@ -337,62 +340,62 @@
         (rewrite)))
     (define visible? (boundary-visible? current))
     (define descriptor (site-for expression located tail? visible?))
-    (define callback (and visible? callback-expression))
+    (define callback (if visible? callback-expression #''#f))
     (cond
       [(not descriptor) rewritten]
       ;; Coverage runs without debugging, so a visit is the only event.
       [coverage?
-       (if callback
-           #`(begin (announce-visit #,descriptor #,callback) #,rewritten)
+       (if visible?
+           #`(begin (#%plain-app announce-visit #,descriptor #,callback) #,rewritten)
            rewritten)]
       [else
         (let* ([token (car (generate-temporaries '(token)))]
                [decision (car (generate-temporaries '(decision)))]
                [frame-expression
-                #`(make-frame #,act
+                #`(#%plain-app make-frame #,act
                               #,(bindings-expression environment)
                               #,module-bindings-id
                               '#,(and module-context (module-binding-context-key module-context))
-                              (lambda ()
-                                (variable-reference->namespace
+                              (#%plain-lambda ()
+                                (#%plain-app variable-reference->namespace
                                  #,(datum->syntax expression (list #'#%variable-reference) expression)))
                               #,descriptor)]
-               [before #`(announce-before #,descriptor #,(if tail? #'#f token) #,callback)])
+               [before #`(#%plain-app announce-before #,descriptor #,(if tail? #''#f token) #,callback)])
           (if tail?
               #`(with-continuation-mark frame-key #,frame-expression
-                  (let ([#,decision #,before])
-                    (if #,decision (apply values #,decision) #,rewritten)))
-              #`(let ([#,token (gensym 'expression)])
+                  (let-values ([(#,decision) #,before])
+                    (if #,decision (#%plain-app apply values #,decision) #,rewritten)))
+              #`(let-values ([(#,token) (#%plain-app gensym 'expression)])
                   (with-continuation-mark context-key #,token
                     (with-continuation-mark frame-key #,frame-expression
-                      (let ([#,decision #,before])
-                        (call-with-values
-                         (lambda ()
-                           (if #,decision (apply values #,decision) #,rewritten))
-                         (lambda results
-                           (announce-after #,descriptor #,token #,callback results)))))))))]))
+                      (let-values ([(#,decision) #,before])
+                        (#%plain-app call-with-values
+                         (#%plain-lambda ()
+                           (if #,decision (#%plain-app apply values #,decision) #,rewritten))
+                         (#%plain-lambda results
+                           (#%plain-app announce-after #,descriptor #,token #,callback results)))))))))]))
   (define local-name (and (syntax-transforming?) (syntax-local-name)))
   (define result (walk expanded #f activation-id initial-tail?
                        (if (identifier? local-name) (syntax-e local-name) local-name)))
   (define (identifiers-thunk identifiers)
-    #`(lambda () (list #,@(for/list ([id (in-list identifiers)]) #`(quote-syntax #,id)))))
+    #`(#%plain-lambda () (#%plain-app list #,@(for/list ([id (in-list identifiers)]) #`(quote-syntax #,id)))))
   ;; One registration per module: repeating the identifiers in each of its forms
   ;; would grow with forms times declarations.
   (define register-context
     (if (and module-context (not (module-binding-context-registered? module-context)))
         (begin
           (set-module-binding-context-registered?! module-context #t)
-          (list #`(register-module-context!
+          (list #`(#%plain-app register-module-context!
                    '#,(module-binding-context-key module-context)
                    #,(datum->syntax expanded (list #'#%variable-reference) expanded)
                    #,(identifiers-thunk (module-binding-context-own-identifiers module-context))
-                   (list #,@(for/list ([ancestor (in-list (module-binding-context-ancestors module-context))])
-                              #`(cons '#,(module-binding-context-key ancestor)
+                   (#%plain-app list #,@(for/list ([ancestor (in-list (module-binding-context-ancestors module-context))])
+                              #`(#%plain-app cons '#,(module-binding-context-key ancestor)
                                       #,(identifiers-thunk (module-binding-context-own-identifiers ancestor))))))))
         '()))
-  (values #`(let ([#,activation-id (make-activation)]
-                  [#,module-bindings-id #,(identifiers-thunk module-bindings)]
-                  [#,sites-id (form-sites '#,(car form) #,(cdr form) #,table-size)])
+  (values #`(let-values ([(#,activation-id) (#%plain-app make-activation)]
+                         [(#,module-bindings-id) #,(identifiers-thunk module-bindings)]
+                         [(#,sites-id) (#%plain-app form-sites '#,(car form) '#,(cdr form) '#,table-size)])
               #,@register-context
               #,result)
           (reverse descriptors)
