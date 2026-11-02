@@ -188,9 +188,11 @@ Temporaries of a macro's own, such as `tmp` or `for-loop`, are not.
 In a class's methods and initialisers, **Locals** has a row named `this`, which hover,
 **Watch** and the Debug Console read too. It opens to the object's fields, numbered,
 since the object holds no field names; a field not yet set shows `<uninitialized>`.
-Field names themselves are not variables, because a field read in the source expands
-to a call on the object: hover and the console refuse them, and
-`(get-field count this)` in the console reads a public field.
+A field the method's code reads or assigns also has a row of its own, under its name,
+which hover, **Watch** and the console read and **Set Value** writes. A field the method
+does not touch stays a numbered row under `this`. An inherited field can be set only
+if the class assigns it. A row over an object the program has chaperoned says it is
+wrapped, and the console reads it through the chaperone when asked.
 
 The editor context menu and Command Palette provide **Skip Expression** before
 an expression, **Change Return Values** and **Print Return Values to Console**

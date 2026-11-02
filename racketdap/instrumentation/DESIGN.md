@@ -126,7 +126,13 @@ counts and a generated binding of the same name without a reference stays hidden
 The class form's object variable is shown as `this` whether or not the source reads it,
 known by its gensym in the lexical context of the class implementation. Its binding has
 no setter, so the variable stays immutable, and it follows the source's names in its
-scope, so a parameter the source names `this` wins. Each scope that binds source
+scope, so a parameter the source names `this` wins. A field the method's code reads or
+assigns follows it as a row of the method's scope, known from what the class form
+writes: a `declare-field-use` or `declare-inherit-use` marker beside the accessor call,
+the shape of an assignment, which an inherited field writes with no marker, and the
+accessor and mutator it declares together. The row calls them on the method's object
+only when asked, so a site costs nothing, and the variable holding the object stays
+immutable. Each scope that binds source
 names has one procedure returning its live bindings, in front of its parent's, and
 every site in the scope finds it through the scope's mark. Each instrumented form likewise
 holds its module binding identifiers once, in a thunk that a stop calls, so syntax

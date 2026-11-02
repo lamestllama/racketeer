@@ -81,11 +81,13 @@
 ;; the source reaches it. The class form names it with a gensym in its own lexical
 ;; context, so no program's identifier can be taken for it.
 (define (class-object? identifier)
-  (and (regexp-match? #rx"^self[0-9]+$" (symbol->string (syntax-e identifier)))
+  (and (identifier? identifier)
+       (regexp-match? #rx"^self[0-9]+$" (symbol->string (syntax-e identifier)))
        (let ([module-source (syntax-source-module identifier #t)])
          (and (path? module-source)
               (let-values ([(base name directory?) (split-path module-source)])
                 (equal? name (string->path "class-internal.rkt")))))))
+(define (syntax-e* v) (and (syntax? v) (syntax-e v)))
 (define (formal-identifiers stx)
   (let walk ([v stx])
     (cond [(identifier? v) (list v)]
@@ -132,6 +134,76 @@
   ;; to it, wherever in its scope that reference is. Match their binding identities,
   ;; never their printed names or source positions.
   (define lexical-aliases (make-free-id-table))
+  ;; A field is no variable: the class form writes each read or assignment of one as a call
+  ;; on the object, and declares its accessor and mutator together once. Only a name the
+  ;; file wrote counts. One class has one field of a name the file can reach, so the name
+  ;; ties an accessor and a mutator together across methods.
+  (define class-fields (make-hasheq))
+  (define method-fields (make-free-id-table))
+  (define field-partners (make-free-id-table))
+  (define (note-field! self name accessor mutator)
+    (define field (hash-ref! (hash-ref! class-fields (syntax-e self) make-hasheq) name (lambda () (mcons #f #f))))
+    (when accessor (set-mcar! field accessor))
+    (when mutator (set-mcdr! field mutator))
+    (free-id-table-update! method-fields self
+                           (lambda (names) (if (memq name names) names (append names (list name)))) '()))
+  ;; A marker followed by the read. Expansion splices a begin into a body, so they are
+  ;; neighbours in whatever form holds them.
+  (define (note-field-reads parts)
+    (for ([marked (in-list parts)] [read (in-list (cdr parts))]
+          #:when (let ([e (syntax-e marked)]) (and (pair? e) (eq? (syntax-e* (car e)) 'quote))))
+      (syntax-case* #`(#,marked #,read) (quote let-values #%plain-app) free-identifier=?
+        [((quote (marker name)) (let-values ([(object) self]) (#%plain-app (#%plain-app accessor o) . arguments)))
+         (field-read? #'marker #'name #'self #'object #'o)
+         (note-field! #'self (syntax-e #'name) #'accessor #f)]
+        [((quote (marker name)) (let-values ([(object) self]) (#%plain-app accessor o)))
+         (and (identifier? #'accessor) (field-read? #'marker #'name #'self #'object #'o))
+         (note-field! #'self (syntax-e #'name) #'accessor #f)]
+        [_ (void)])))
+  (define (field-read? marker name self object o)
+    (and (memq (syntax-e marker) '(declare-field-use declare-inherit-use))
+         (class-object? self) (original-binding? name source) (free-identifier=? object o)))
+  ;; The two shapes start in a binding form's first initialiser, which rules out nearly all.
+  (define (class-field-form? clauses)
+    (define clause (and (pair? clauses) (syntax->list (car clauses))))
+    (define rhs (and clause (= (length clause) 2) (cadr clause)))
+    (define parts (and rhs (syntax->list rhs)))
+    (if (identifier? rhs)
+        (class-object? rhs)
+        (and parts (pair? parts) (pair? (cdr parts))
+             (memq (syntax-e* (cadr parts)) '(make-struct-field-accessor make-struct-field-mutator)))))
+  (define (note-class-field stx)
+    (syntax-case* stx (let-values #%plain-app make-struct-field-accessor make-struct-field-mutator)
+                  free-identifier=?
+      ;; An inherited field's assignment has no marker; every assignment has this shape.
+      [(let-values ([(object) self]) (let-values ([(id) value]) (#%plain-app mutator o argument)))
+       (and (class-object? #'self) (original-binding? #'id source)
+            (free-identifier=? #'object #'o) (free-identifier=? #'id #'argument))
+       (note-field! #'self (syntax-e #'id) #f #'mutator)]
+      [(let-values ([(id) (#%plain-app maker type (quote index) . rest)] ...) . body)
+       (let ([made (map list (syntax->list #'(id ...)) (syntax->list #'(maker ...)) (syntax->datum #'(index ...)))])
+         (for* ([accessor (in-list made)]
+                #:when (free-identifier=? (cadr accessor) #'make-struct-field-accessor)
+                [mutator (in-list made)]
+                #:when (and (free-identifier=? (cadr mutator) #'make-struct-field-mutator)
+                            (equal? (caddr accessor) (caddr mutator))))
+           (free-id-table-set! field-partners (car accessor) (car mutator))
+           (free-id-table-set! field-partners (car mutator) (car accessor))))]
+      [_ (void)]))
+  ;; A row for each field this method's code reads or assigns, on its object. With no setter
+  ;; found, the row can only be read, and a program's chaperone is not run to fill it.
+  (define (field-rows self)
+    (for*/list ([name (in-list (free-id-table-ref method-fields self '()))]
+                [field (in-value (hash-ref (hash-ref class-fields (syntax-e self)) name))]
+                [partner (in-value (lambda (id) (and id (free-id-table-ref field-partners id #f))))]
+                [getter (in-value (or (mcar field) (partner (mcdr field))))]
+                [setter (in-value (or (mcdr field) (partner (mcar field))))]
+                #:when getter)
+      (with-syntax ([(value) (generate-temporaries '(value))])
+        #`(#%plain-app make-field-binding '#,name
+                       (case-lambda [() (#%plain-app #,getter #,self)]
+                                    #,@(if setter (list #`[(value) (#%plain-app #,setter #,self value)]) '()))
+                       #,self))))
   (define (collect-aliases value)
     (cond
       [(identifier? value)
@@ -153,6 +225,11 @@
        (unless (and (pair? parts) (identifier? (car parts))
                     (bound-form? (car parts) quoted-forms))
          (collect-aliases (syntax-property stx 'disappeared-binding))
+         (when (pair? parts)
+           (note-field-reads parts)
+           (when (and (eq? (syntax-e* (car parts)) 'let-values) (pair? (cdr parts))
+                      (class-field-form? (syntax->list (cadr parts))))
+             (note-class-field stx)))
          (collect-bindings (syntax-e stx)))]
       [(pair? stx)
        (collect-bindings (car stx))
@@ -179,8 +256,10 @@
                             (case-lambda [() #,id] [(replacement) (set! #,id replacement)])))
            ;; After the source's names, one of which may be this. A class cannot assign
            ;; its object, so this code does not either and the variable stays immutable.
-           (for/list ([id (in-list ids)] #:when (class-object? id))
-             #`(#%plain-app make-live-binding 'this (case-lambda [() #,id]))))))
+           (for*/list ([id (in-list ids)] #:when (class-object? id)
+                       [row (in-list (cons #`(#%plain-app make-live-binding 'this (case-lambda [() #,id]))
+                                           (field-rows id)))])
+             row))))
     (if (null? live-bindings)
         parent
         (scope (car (generate-temporaries '(variables))) parent live-bindings #f #f)))

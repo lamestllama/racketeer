@@ -40,9 +40,15 @@ closures made there, Locals has a row named `this` for the object, read by hover
 Watch and the Debug Console too. It cannot be assigned, and a parameter the source
 names `this` is what the row shows. It opens to the object's fields as the program's
 inspector allows: numbered, because the object holds no field names, and shown as
-`<uninitialized>` until set. A field is no variable: its name in the source expands to
-a call on the object, so it has no row, and hover and the Debug Console refuse it.
-`(get-field count this)` in the Debug Console reads a public field. A request with no
+`<uninitialized>` until set. A field that a method's code reads or assigns, public,
+private or inherited, is also a row of that method and its closures, with its name in
+the source: hover, Watch and the Debug Console read it, and Set Value goes through
+the field's mutator. A method's own variable of that name wins, a field that method
+does not touch stays a numbered row under `this`, and `get-field` and `set-field!`
+make no row. An inherited field can be assigned only if its class assigns it, and an
+inherited field the class only assigns has no row, since the expansion names no
+accessor for it. A row over an object a program has chaperoned shows it is wrapped
+rather than run the program's code; the Debug Console runs it when asked. A request with no
 count returns every row of a scope, however many, and Variables asks that way. A
 container reports its size as `indexedVariables` or `namedVariables`, so a client pages
 a long one by `start` and `count`, as the Variables panel does; a list opens to its

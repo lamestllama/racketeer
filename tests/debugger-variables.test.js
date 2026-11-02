@@ -6,6 +6,8 @@ const test = require('./support/node-test');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
+const { execFile } = require('node:child_process');
+const { promisify } = require('node:util');
 const { DapClient } = require('./dap-client');
 
 async function ok(promise) {
@@ -366,8 +368,9 @@ test('a method, an initialiser and a closure in a class show this, and it opens 
   ], async (name, stop) => {
     const rows = await stop.rows();
     const expected = {
-      'class-body': ['this'], method: ['next', 'step', 'this'], closure: ['this', 'x'],
-      'no-arguments': ['this'], keyword: ['k', 'o', 'this'], 'not-a-class': ['self1']
+      'class-body': ['start', 'this'], method: ['count', 'hidden', 'next', 'step', 'this'],
+      closure: ['count', 'this', 'x'], 'no-arguments': ['count', 'this'], keyword: ['k', 'o', 'this'],
+      'not-a-class': ['self1']
     };
     assert.deepEqual(names(rows), expected[name].sort(), name);
     if (name === 'not-a-class') {
@@ -396,14 +399,11 @@ test('a method, an initialiser and a closure in a class show this, and it opens 
     assert.equal(fromConsole.success, false);
     assert.match(fromConsole.message, /cannot be assigned/);
     assert.equal(shown(await stop.rows()).this, '#<object:counter% 1 1 5>');
-    // A field is no variable: its source name expands to a call on the object.
-    for (const field of ['count', 'hidden', 'start']) {
-      const hovered = await stop.hover(field);
-      assert.equal(hovered.success, false, field);
-      assert.match(hovered.message, new RegExp(`no source-visible variable named ${field}`));
-      assert.equal((await stop.console(field)).success, false, field);
-    }
-    assert.ok(!(await stop.rows()).some(row => ['count', 'hidden', 'start'].includes(row.name)));
+    // This method's code does not touch start, so it stays a numbered field of this.
+    const hovered = await stop.hover('start');
+    assert.equal(hovered.success, false);
+    assert.match(hovered.message, /no source-visible variable named start/);
+    assert.equal((await stop.console('start')).success, false);
   });
   assert.deepEqual(seen, ['class-body', 'method', 'closure', 'no-arguments', 'keyword', 'not-a-class']);
   assert.equal(output, "8\n'(9)\n8\n'(3 2)\n4\n");
@@ -583,4 +583,295 @@ test('a vector of a million opens in pages at once, and an unpaged request says 
     assert.equal(later.length, 5000);
     assert.equal(later.at(-1).name, '999999');
   });
+});
+
+const fields = [
+  '#lang racket/base',
+  '(require racket/class)',
+  '(define count 99)',
+  '(define counter%',
+  '  (class object%',
+  '    (field [count 5] [(inner outer) 3] [never 9] [written 0] [call add1])',
+  '    (define hidden 7)',
+  '    (super-new)',
+  '    (define-syntax-rule (from-template) never)',
+  '    (define/public (bump step)',
+  '      (define next (+ count step hidden inner))',
+  "      (void 'stop-bump)",
+  '      (set! count next)',
+  "      (void 'stop-assigned)",
+  '      count)',
+  '    (define/public (writes)',
+  "      (void 'stop-writes)",
+  '      (set! written 6))',
+  '    (define/public (calls)',
+  "      (void 'stop-calls)",
+  '      (call 1))',
+  '    (define/public (touches-nothing)',
+  "      (void 'stop-touches-nothing)",
+  '      1)',
+  '    (define/public (in-closure)',
+  '      ((lambda (x)',
+  "         (void 'stop-in-closure)",
+  '         (+ x hidden)) 1))',
+  '    (define/public (own-parameter count)',
+  "      (void 'stop-own-parameter)",
+  '      count)',
+  '    (define/public (own-local)',
+  '      (let ([hidden 1])',
+  "        (void 'stop-own-local)",
+  '        hidden))',
+  '    (define/public (by-template)',
+  "      (void 'stop-by-template)",
+  '      (from-template))',
+  '    (define/public (by-reflection)',
+  "      (void 'stop-by-reflection)",
+  '      (set-field! never this (get-field never this)))))'
+];
+
+test('a field the source reads or assigns is a row, and reads and writes the field', async t => {
+  const { output } = await eachStop(t, [
+    ...fields,
+    '(define obj (new counter%))',
+    '(send obj bump 1)',
+    '(send obj writes)',
+    '(get-field written obj)',
+    '(send obj calls)'
+  ], async (name, stop) => {
+    const rows = shown(await stop.rows());
+    if (name === 'bump') {
+      assert.deepEqual(rows, { next: '16', step: '1', this: '#<object:counter% 5 3 9 0 #<procedure:add1> 7>', count: '5', inner: '3', hidden: '7' });
+      assert.equal((await ok(stop.hover('count'))).result, '5');
+      assert.equal((await ok(stop.hover('hidden'))).result, '7');
+      assert.equal((await ok(stop.watch('(* count 2)'))).result, '10');
+      assert.equal((await ok(stop.console('count'))).result, '5');
+      // A name the file renames is the name the file reads. A field not touched has no row.
+      assert.equal((await stop.hover('outer')).success, false);
+      assert.equal((await stop.hover('never')).success, false);
+      assert.equal((await ok(stop.set('hidden', '70'))).value, '70');
+      assert.equal(shown(await stop.rows()).hidden, '70');
+      assert.match(shown(await stop.rows()).this, / 70>$/);
+      assert.equal((await ok(stop.console('(set! inner 30)'))).variablesReference, 0);
+      assert.equal(shown(await stop.rows()).inner, '30');
+    } else if (name === 'assigned') {
+      assert.equal(rows.count, '16');
+      assert.equal((await ok(stop.set('count', '100'))).value, '100');
+    } else if (name === 'writes') {
+      // Assigned but not read: the row reads through the accessor declared with its mutator.
+      assert.equal(rows.written, '0');
+    } else {
+      assert.equal(rows.call, '#<procedure:add1>');
+      assert.equal((await ok(stop.console('(call 2)'))).result, '3');
+    }
+  });
+  assert.equal(output, '100\n6\n2\n');
+});
+
+test('a row belongs to the method whose code touches the field, and to nothing else', async t => {
+  await eachStop(t, [
+    ...fields,
+    '(define (outside o)',
+    "  (void 'stop-outside)",
+    '  (set-field! never o 1)',
+    '  (get-field never o))',
+    '(define obj (new counter%))',
+    '(send obj touches-nothing) (send obj in-closure) (send obj own-parameter 1) (send obj own-local)',
+    '(send obj by-template) (send obj by-reflection) (outside obj)'
+  ], async (name, stop) => {
+    const rows = shown(await stop.rows());
+    const fieldRows = names(await stop.rows()).filter(row => !['this', 'x', 'o'].includes(row));
+    const expected = {
+      'touches-nothing': [], 'in-closure': ['hidden'], 'own-parameter': ['count'], 'own-local': ['hidden'],
+      'by-template': [], 'by-reflection': [], outside: []
+    };
+    assert.deepEqual(fieldRows, expected[name], name);
+    // The module's definition of the same name stands where the field is not read.
+    if (name === 'touches-nothing' || name === 'outside') assert.equal((await ok(stop.hover('count'))).result, '99');
+    if (name === 'in-closure') assert.equal(rows.hidden, '7');
+    if (name === 'own-parameter') assert.equal(rows.count, '1');
+    if (name === 'own-local') assert.equal(rows.hidden, '1');
+  });
+});
+
+test('an inherited field is a row, and can be assigned where the class assigns it', async t => {
+  const { output } = await eachStop(t, [
+    '#lang racket/base',
+    '(require racket/class)',
+    '(define base%',
+    '  (class object%',
+    '    (field [read-here 1] [both 2] [written-here 3])',
+    '    (super-new)))',
+    '(define sub%',
+    '  (class base%',
+    '    (inherit-field read-here both written-here)',
+    '    (super-new)',
+    '    (define/public (reads)',
+    "      (void 'stop-reads)",
+    '      (+ read-here both))',
+    '    (define/public (writes)',
+    '      (set! both 20)',
+    '      (set! written-here 30)',
+    "      (void 'stop-writes))))",
+    '(define obj (new sub%))',
+    '(send obj reads)',
+    '(send obj writes)',
+    '(send obj reads)'
+  ], async (name, stop) => {
+    const rows = shown(await stop.rows());
+    if (name === 'writes') {
+      // The class form names no accessor for a field only assigned through inherit-field.
+      assert.deepEqual(names(await stop.rows()), ['both', 'this']);
+      assert.equal((await ok(stop.set('both', '40'))).value, '40');
+      return;
+    }
+    assert.deepEqual(names(await stop.rows()), ['both', 'read-here', 'this']);
+    assert.equal(rows['read-here'], '1');
+    assert.equal((await ok(stop.hover('read-here'))).result, '1');
+    // Only read in this class: the expansion names no mutator for it, so the row says so.
+    const refused = await stop.set('read-here', '5');
+    assert.equal(refused.success, false);
+    assert.match(refused.message, /read-here cannot be assigned/);
+  });
+  assert.equal(output, '3\n41\n');
+});
+
+test('a field before it is set reads as uninitialized, with or without the class guarding it', async t => {
+  await eachStop(t, [
+    '#lang racket/base',
+    '(require racket/class)',
+    '(define plain%',
+    '  (class object%',
+    '    (super-new)',
+    '    (field [unset (begin',
+    "                    (void 'stop-plain)",
+    '                    1)]',
+    '           [after unset])))',
+    '(define guarded%',
+    '  (class object%',
+    '    (super-new)',
+    '    (define/public (peek)',
+    "      (void 'stop-guarded)",
+    '      (when #f late))',
+    '    (send this peek)',
+    '    (field [late 2])',
+    '    (define/public (read)',
+    "      (void 'stop-set)",
+    '      late)))',
+    '(define unguarded%',
+    '  (class object%',
+    '    (field [early 1])',
+    "    (void 'stop-unguarded)",
+    '    (field [later 2])',
+    '    (super-new)))',
+    '(new plain%)',
+    '(send (new guarded%) read)',
+    '(new unguarded%)'
+  ], async (name, stop) => {
+    const rows = Object.fromEntries((await stop.rows()).map(row => [row.name, row]));
+    if (name === 'unguarded') {
+      // With no guard, the object holds the undefined value itself, and a read gets it.
+      assert.equal((await ok(stop.console('(impersonator? this)'))).result, '#f');
+      assert.equal(rows.this.value, '#<object:unguarded% 1 <uninitialized>>');
+      assert.deepEqual((await stop.open(rows.this.variablesReference)).map(row => row.value), ['1', '<uninitialized>']);
+      return;
+    }
+    const field = name === 'plain' ? 'unset' : 'late';
+    if (name === 'set') {
+      assert.equal(rows.late.value, '2');
+      return;
+    }
+    assert.equal(rows[field].value, '<uninitialized>');
+    assert.equal(rows[field].type, 'unavailable');
+    assert.equal((await ok(stop.hover(field))).result, '<uninitialized>');
+    if (name === 'guarded') {
+      // The program's own read would raise here, and so does the console's, as an answer.
+      const read = await stop.console(field);
+      assert.equal(read.success, false);
+      assert.match(read.message, /late/);
+      const assigned = await stop.set(field, '1');
+      assert.equal(assigned.success, false);
+      assert.equal(shown(await stop.rows())[field], '<uninitialized>');
+    }
+  });
+});
+
+test('a chaperone of the program is not run to fill a row, and the console runs it when asked', async t => {
+  const { output } = await eachStop(t, [
+    '#lang racket/base',
+    '(require racket/class)',
+    '(define effects 0)',
+    '(define open%',
+    '  (class object%',
+    '    (inspect #f)',
+    '    (field [watched 1])',
+    '    (super-new)',
+    '    (define/public (read)',
+    "      (void 'stop-read)",
+    '      watched)))',
+    '(define obj (new open%))',
+    '(define-values (type skipped) (struct-info obj))',
+    '(define-values (name init auto ref set immutable super skip) (struct-type-info type))',
+    '(define wrapped',
+    '  (chaperone-struct obj (make-struct-field-accessor ref 0)',
+    '                    (lambda (self value) (set! effects (add1 effects)) value)))',
+    '(send wrapped read)',
+    'effects'
+  ], async (name, stop) => {
+    const rows = Object.fromEntries((await stop.rows()).map(row => [row.name, row]));
+    const shownWrapped = '<wrapped value; inspect explicitly in the console>';
+    assert.equal(rows.this.value, shownWrapped);
+    assert.equal(rows.this.type, 'wrapped value');
+    assert.equal(rows.this.variablesReference, 0);
+    assert.equal(rows.watched.value, shownWrapped);
+    assert.equal((await ok(stop.hover('watched'))).result, shownWrapped);
+    assert.equal((await ok(stop.console('effects'))).result, '0');
+    assert.equal((await ok(stop.console('watched'))).result, '1');
+    assert.equal((await ok(stop.console('effects'))).result, '1');
+  });
+  assert.equal(output, '1\n2\n');
+});
+
+test('rows are read at every stop and the program prints what it prints without the debugger', async t => {
+  const lines = [
+    ...fields,
+    '(define sub%',
+    '  (class counter%',
+    '    (inherit-field count)',
+    '    (super-new)',
+    '    (define/override (bump step)',
+    "      (void 'stop-override)",
+    '      (super bump (+ step count)))',
+    '    (define/public (keyword #:k [k count] [o k])',
+    "      (void 'stop-keyword)",
+    '      (list k o count))))',
+    '(define in-long-body',
+    '  (let ()',
+    ...Array.from({ length: 40 }, (_, i) => `    (define d${i} ${i})`),
+    '    (define obj (new (class counter%',
+    '                       (inherit-field written)',
+    '                       (super-new)',
+    '                       (define/public (late)',
+    "                         (void 'stop-in-long-body)",
+    '                         (+ written d39)))))',
+    '    (send obj late)))',
+    'in-long-body',
+    '(define o (new sub%))',
+    '(send o bump 1)',
+    '(send o keyword)',
+    '(send o touches-nothing)',
+    '(get-field written o)'
+  ];
+  const { seen, output } = await eachStop(t, lines, async (name, stop) => {
+    const first = await stop.rows();
+    for (const row of first) await stop.hover(row.name);
+    assert.deepEqual((await stop.rows()).map(row => row.value), first.map(row => row.value), name);
+    if (name === 'in-long-body') assert.equal(shown(first).written, '0');
+    if (name === 'keyword') assert.equal(shown(first).count, shown(first).k);
+  });
+  assert.ok(seen.includes('in-long-body') && seen.includes('override') && seen.includes('keyword'), seen.join());
+  const program = path.join(await fs.mkdtemp(path.join(os.tmpdir(), 'racketeer-variables-plain-')), 'specimen.rkt');
+  t.after(() => fs.rm(path.dirname(program), { recursive: true, force: true }));
+  await fs.writeFile(program, lines.join('\n') + '\n');
+  const { stdout } = await promisify(execFile)('racket', [program]);
+  assert.equal(output, stdout);
 });

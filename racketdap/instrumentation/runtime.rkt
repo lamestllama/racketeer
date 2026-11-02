@@ -11,7 +11,7 @@
          stop-skip! stop-replace-results! stop-approximate?
          stop-token stop-contexts stop-within? stop-return-token call-with-exception-stop call-with-pause-stop
          call-with-thread-stop debugger-active-key
-         make-live-binding frame-key context-key note-thread
+         make-live-binding make-field-binding program-wrapped? frame-key context-key note-thread
          announce-before announce-after leave-with-values announce-visit register-module-context!
          form-sites form-gate form-armed register-form-sites! forget-noted-thread!
          plain-procedure-name
@@ -70,7 +70,8 @@
            position
            (and (exact-positive-integer? span) (+ position span -1)))))
 (struct unavailable (reason) #:transparent)
-(struct live-binding (name access) #:transparent)
+;; object is the object a field's row reads, or #f.
+(struct live-binding (name access object) #:transparent)
 ;; A frame is one function call, or the run of one module-level form. It is a vector
 ;; that generated code makes with `vector` and writes with unsafe-vector*-set!, so
 ;; these are the only costs a site has: slot 1 is the site running now, as a frame
@@ -208,7 +209,16 @@
     (error 'stop-evaluate "module binding context has not been registered"))
   owner-namespace)
 
-(define make-live-binding live-binding)
+(define (make-live-binding name access) (live-binding name access #f))
+(define make-field-binding live-binding)
+;; An impersonator that might run program code. A class whose object may be seen before its
+;; fields are set makes each object a chaperone, whose only effect is to refuse to read an
+;; unset field. The machine tells that record from a program's chaperone over the object.
+(define machine-record-type (vm-primitive 'record-rtd))
+(define machine-record-type-name (vm-primitive 'record-type-name))
+(define (program-wrapped? value)
+  (and (impersonator? value)
+       (not (eq? (machine-record-type-name (machine-record-type value)) 'struct-undefined-chaperone))))
 
 ;; One frame's scoped mark for each call, the innermost: the scopes nested in a call leave
 ;; adjacent marks. A frame between its sites has nothing to show, as if its call had not begun.
@@ -334,7 +344,9 @@
 (define (read-binding b)
   (with-handlers ([exn:fail:contract:variable?
                    (lambda (e) (unavailable 'uninitialized))])
-    ((live-binding-access b))))
+    (if (program-wrapped? (live-binding-object b))
+        (unavailable 'wrapped)
+        ((live-binding-access b)))))
 ;; A binding with no setter can only be read, as a class's object can.
 (define (assignable? b) (procedure-arity-includes? (live-binding-access b) 1))
 (define (stop-locals s [i 0])

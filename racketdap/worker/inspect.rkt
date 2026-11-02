@@ -10,20 +10,7 @@
   (parameterize ([current-inspector debugger-inspector])
     (define-values (type skipped?) (struct-info value))
     (and (not (unavailable? value)) (not skipped?) type)))
-;; A class whose object may be seen before its fields are set makes each object a chaperone,
-;; whose only effect is to refuse to read an unset field. That guard runs no program code,
-;; so such an object is shown as any other. A chaperone that could run program code needs
-;; the object's own field accessors, which the class form keeps to itself.
-(define (object-structure-type? type)
-  (let loop ([type type])
-    (define-values (name init auto ref set immutable super skipped?) (struct-type-info type))
-    (if super (loop super) (and (eq? name 'object) (zero? (+ init auto))))))
-(define (guarded-object? value)
-  (parameterize ([current-inspector debugger-inspector])
-    (define-values (type skipped?) (struct-info value))
-    (and type (not skipped?) (object-structure-type? type)
-         (regexp-match? #rx"^object:" (symbol->string (object-name type))))))
-(define (wrapped? value) (and (impersonator? value) (not (guarded-object? value))))
+(define wrapped? program-wrapped?)
 (define (clip s [limit 160])
   (if (> (string-length s) limit) (string-append (substring s 0 limit) "…") s))
 (define (name-atom-preview value)
@@ -56,7 +43,7 @@
                (struct-mutator-procedure? value))
            (object-name value))))
 (define (value-type v)
-  (cond [(unavailable? v) "unavailable"] [(wrapped? v) "wrapped value"]
+  (cond [(or (unavailable? v) (eq? v unsafe-undefined)) "unavailable"] [(wrapped? v) "wrapped value"]
         [(null? v) "null"] [(pair? v) "pair"] [(vector? v) "vector"]
         [(box? v) "box"] [(hash? v) "hash"] [(string? v) "string"]
         [(bytes? v) "bytes"] [(number? v) "number"] [(boolean? v) "boolean"]
@@ -73,16 +60,14 @@
                (> (integer-length (denominator n)) 2048))
            (or (large-number? (real-part n)) (large-number? (imag-part n))))))
 
+(define wrapped-preview "<wrapped value; inspect explicitly in the console>")
 (define preview-items 6)
 (define preview-depth 3)
 (define preview-hierarchy 32)
-;; An object's field before its initialiser has run holds the undefined value, and a guarded
-;; object refuses to read it.
+;; A guarded object refuses to read a field before its initialiser has run.
 (define (field-value ref value i)
-  (define field
-    (with-handlers ([exn:fail:contract:variable? (lambda (_) unsafe-undefined)])
-      (ref value i)))
-  (if (eq? field unsafe-undefined) (unavailable 'uninitialized) field))
+  (with-handlers ([exn:fail:contract:variable? (lambda (_) (unavailable 'uninitialized))])
+    (ref value i)))
 ;; Fetch only the requested fields. The optional hierarchy limit is used for
 ;; previews: an unusually deep hierarchy must not defeat their work budget.
 ;; Returning #f means the hierarchy limit was reached, not an opaque field.
@@ -123,8 +108,10 @@
     (clip
      (cond
        [(not (visit!)) "…"]
-       [(unavailable? v) "<uninitialized>"]
-       [(wrapped? v) "<wrapped value; inspect explicitly in the console>"]
+       [(and (unavailable? v) (eq? (unavailable-reason v) 'wrapped)) wrapped-preview]
+       ;; A field holds the undefined value until its initialiser has run.
+       [(or (unavailable? v) (eq? v unsafe-undefined)) "<uninitialized>"]
+       [(wrapped? v) wrapped-preview]
        [(string? v) (format "~s" (clip v))]
        [(bytes? v) (string-append (format "~s" (subbytes v 0 (min 80 (bytes-length v))))
                                  (if (> (bytes-length v) 80) "…" ""))]
