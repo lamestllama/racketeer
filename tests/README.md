@@ -141,7 +141,8 @@ watched-file notifications. Run its native regression suites on Linux with:
 ```sh
 PLTCOLLECTS="$PWD/vendor/collects:" raco test \
   vendor/collects/racket-langserver/tests/lib/doc-test.rkt \
-  vendor/collects/racket-langserver/tests/lsp/workspace-lifecycle-test.rkt
+  vendor/collects/racket-langserver/tests/lsp/workspace-lifecycle-test.rkt \
+  vendor/collects/racket-langserver/tests/lsp/analysis-wait-test.rkt
 ```
 
 This includes the upstream document cases, viewport bounds and preservation

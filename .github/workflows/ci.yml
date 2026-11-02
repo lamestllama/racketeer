@@ -194,7 +194,7 @@ jobs:
         env:
           PLTCOLLECTS: '${{ github.workspace }}/vendor/collects:'
         run: |
-          xvfb-run -a raco test vendor/collects/racket-langserver/tests/lib/doc-test.rkt vendor/collects/racket-langserver/tests/lsp/workspace-lifecycle-test.rkt 2>&1 | tee .test-output/ci/language.log
+          xvfb-run -a raco test vendor/collects/racket-langserver/tests/lib/doc-test.rkt vendor/collects/racket-langserver/tests/lsp/workspace-lifecycle-test.rkt vendor/collects/racket-langserver/tests/lsp/analysis-wait-test.rkt 2>&1 | tee .test-output/ci/language.log
       - name: Test the installed extension
         id: integration
         if: ${{ !cancelled() && steps.artifact.outcome == 'success' }}
