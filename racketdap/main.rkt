@@ -4,7 +4,7 @@
 
 (require racket/async-channel racket/file racket/list racket/path racket/port
          racket/random racket/runtime-path racket/string racket/tcp
-         "protocol.rkt" "commands.rkt" "process-group.rkt" "log-filter.rkt")
+         "protocol.rkt" "commands.rkt" "process-group.rkt" "log-filter.rkt" "launcher.rkt")
 (define-runtime-path worker-path "worker/main.rkt")
 (define input (current-input-port))
 (define output (current-output-port))
@@ -47,6 +47,7 @@
     [process (subprocess-kill process #t)]))
 (define (fail-launch! message)
   (when launch-request
+    (start-debugger-build!)
     (reply launch-request (hasheq) message)
     (set! launch-request #f)
     (set! launch-deadline #f)
@@ -177,7 +178,7 @@
                      ;; creation on Windows Racket. Use its normal handle policy.
                      [current-subprocess-keep-file-descriptors
                       (if (eq? (system-type 'os) 'windows) 'inherited '())])
-        (subprocess #f #f #f group-leader executable (path->string worker-path))))
+        (apply subprocess #f #f #f group-leader executable (debugger-command worker-path))))
     (set! process child)
     (set! bootstrap-out child-in)
     (set! launch-request request)
@@ -307,7 +308,11 @@
        (reply launch-request)
        (set! launch-request #f)
        (set! launch-deadline #f)
-       (event "initialized"))]
+       (event "initialized")
+       ;; Compiling waits until the worker has connected, so it never uses up the
+       ;; start limit. A launch that fails starts it too, in fail-launch!, so a
+       ;; machine too slow to start from source is faster on the next attempt.
+       (start-debugger-build!))]
     [(startupTimeout startupError)
      (when launch-request
        (fail-launch! (if (eq? (car item) 'startupTimeout)

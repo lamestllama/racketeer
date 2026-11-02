@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Eric Parsonage
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
+const path = require('node:path');
 const { spawn } = require('node:child_process');
 
 // LanguageClient cannot stop an initializing connection. Own its process so
@@ -64,6 +65,15 @@ function createLanguageProcess(command, args, options, { timeout = 180000, onTim
   };
 }
 
+// The arguments that start a file of the debugger. Compiled once into the
+// extension's storage, so that Racket need not compile it again in memory on
+// every start. racketdap/launcher.rkt keeps that from the programs it runs.
+function debuggerArgs(context, file) {
+  const target = context.asAbsolutePath(`runtime/racketdap/${file}`);
+  const storage = context.globalStorageUri?.fsPath;
+  return storage ? [context.asAbsolutePath('runtime/racketdap/launcher.rkt'), path.join(storage, 'debugger'), target] : [target];
+}
+
 // A server runs in a process tree the extension owns. The tree ends when the
 // server ends, which it does when its input closes, including when the
 // extension host exits without warning.
@@ -71,4 +81,4 @@ function ownedArgs(context, args) {
   return [context.asAbsolutePath('runtime/racketdap/tools/owned-command.rkt'), ...args];
 }
 
-module.exports = { createLanguageProcess, ownedArgs };
+module.exports = { createLanguageProcess, debuggerArgs, ownedArgs };

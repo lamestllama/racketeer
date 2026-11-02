@@ -162,6 +162,36 @@ namespace, module instances, instrumentation, threads, live values, and
 evaluation. Its controller stays outside the program's custodian. Target code
 runs under a dedicated custodian. There is one worker per launch.
 
+**Compiled debugger:** an extension package holds sources only, because a compiled
+file serves one Racket, and Racket compiles in memory and discards what it was
+given no compiled file for. So the extension starts the adapter through
+`racketdap/launcher.rkt` with a folder in its storage, and the debugger is compiled
+once into that folder. The folder is named by the Racket version, VM, library paths,
+what its links say and the debugger's location. A manifest records the hash of every
+debugger source and every compiled file, and each process compares them before loading
+anything: Chez reads machine code without checking it, and a build unpacked over
+another can change sources under the same path and version. A folder that does not
+match is treated as absent.
+
+Launching never waits for a compile, and a launch that finds nothing to load runs
+from source. `racketdap/tools/compile-debugger.rkt` runs as a process of its own,
+started after the worker has connected or has failed to, so the worker's 15 second
+start limit is never spent on it: a machine too slow to start from source succeeds on
+the attempt after the build finishes. It builds in a `.building` folder and renames
+that into place, which is how readers see a whole build or none. The building folder
+is also the lock, so two windows start one build, and one abandoned for 10 minutes is
+taken over. A storage folder that refuses the building folder ends the attempt before
+any process starts.
+
+The compiled folder is a root only while debugger files load. The launcher declares
+the debugger's own modules under it, then runs them under the ordinary settings, and
+the loader adds it again only for the debugger files a program's namespace loads, such
+as the expander. So a program, and any process it starts, sees the compiled-file roots,
+the date check, the environment, the command line and the run file it would see
+without the launcher. This is why it is not `PLTCOMPILEDROOTS`, which children inherit,
+or `racket -R`, which the program would read. Starting `racketdap/main.rkt` directly
+runs from source or from ordinary compiled files, as other DAP clients do.
+
 Use an ephemeral loopback TCP connection for private control traffic. The worker
 authenticates with a one-use token delivered through its bootstrap stdin pipe;
 the adapter then closes that bootstrap stream. Bind only to loopback and close

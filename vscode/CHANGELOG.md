@@ -2,6 +2,7 @@
 
 ## 0.8.50 (unreleased)
 
+- Debugging starts about three times faster: a small program goes from launch to exit in about 0.85 s instead of about 2.8 s. An extension package cannot hold compiled files, so Racket compiled the debugger in memory on every launch. It is now compiled once for each Racket version and VM into the extension's storage, in the background after the first launch begins, and that first launch runs as before. A program and the processes it starts see the same compiled-file settings, environment and command line as without this. If the compiled folder is damaged, out of date or cannot be written, the debugger runs from source and, where it can, compiles again.
 - The workspace index restarts only for changes to source files, and waits 2 seconds after the last change before starting a pass. A macro that reads another kind of file is caught up by the next source change or a restart.
 - Commands act on the editor showing the active tab in the active group. While the window had no focus, they could use another group's editor or cursor.
 - Continuous integration uses Node.js 22 and current GitHub actions.

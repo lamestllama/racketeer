@@ -9,6 +9,7 @@ const { promisify } = require('node:util');
 const execute = promisify(execFile);
 const { createProgramTerminal } = require('./terminal');
 const { registerLanguageTools } = require('./language-client');
+const { debuggerArgs } = require('./language-process');
 const { registerFileCommands } = require('./commands');
 const { registerDebugActions } = require('./debug-actions');
 const { registerDebugImages } = require('./debug-images');
@@ -93,7 +94,7 @@ function activate(context) {
     vscode.debug.registerDebugAdapterDescriptorFactory('racketdap', {
       createDebugAdapterDescriptor(session) {
         return new vscode.DebugAdapterExecutable(session.configuration.racketExecutable,
-          [context.asAbsolutePath('runtime/racketdap/main.rkt')]);
+          debuggerArgs(context, 'main.rkt'));
       }
     }),
     vscode.debug.registerDebugAdapterTrackerFactory('racketdap', {

@@ -15,6 +15,7 @@
          "../test-discovery.rkt"
          "../wxme-source.rkt"
          "../instrumentation/instrument.rkt"
+         "../launcher.rkt"
          "debug-cache.rkt")
 (provide run-module make-debug-loader make-debug-exception-handler)
 
@@ -521,6 +522,9 @@
       [else
        (define resolved (simplify-path (path->complete-path path)))
        (define selected? (selected-source? resolved))
+       ;; The program's modules name the debugger's expander, which loads in the
+       ;; program's namespace. It alone reads the debugger's compiled folder.
+       (define debugger-file? (debugger-source? resolved))
        (define owner (current-compilation-policy-owner))
        (if (and (not selected?) owner (not (eq? owner policy-owner)))
            ;; A loader nested in this registry, such as a hosted debugger
@@ -532,8 +536,10 @@
            (parameterize ([compile-enforce-module-constants
                            (if (and selected? instrument?) #f enforce-module-constants?)]
                           [use-compiled-file-paths (if selected? '() compiled-paths)]
-                          [current-compiled-file-roots compiled-roots]
-                          [use-compiled-file-check compiled-check]
+                          [current-compiled-file-roots
+                           (if debugger-file? (compiled-debugger-roots compiled-roots) compiled-roots)]
+                          [use-compiled-file-check
+                           (if debugger-file? (compiled-debugger-check compiled-check) compiled-check)]
                           [current-path->mode #f]
                           [current-compile ordinary-compile]
                           [selected-load-request (and selected? resolved)]

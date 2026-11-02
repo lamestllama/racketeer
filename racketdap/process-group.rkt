@@ -2,7 +2,7 @@
 ;; Copyright (c) 2026 Eric Parsonage
 ;; SPDX-License-Identifier: Apache-2.0 OR MIT
 
-(require racket/runtime-path)
+(require racket/runtime-path "launcher.rkt")
 (provide start-process-group stop-process-group! process-group-name join-process-group!)
 
 (define-runtime-path anchor-path "process-group.rkt")
@@ -21,8 +21,7 @@
                          (error 'process-group "Cannot resolve the Racket executable: ~a" executable)))
      (define-values (leader output lease stderr)
        (parameterize ([current-subprocess-keep-file-descriptors '()])
-         (subprocess #f #f #f 'new command
-                     (path->string anchor-path))))
+         (apply subprocess #f #f #f 'new command (debugger-command anchor-path))))
      (values (process-group leader lease output stderr) leader)]))
 
 (define (process-group-name group)
