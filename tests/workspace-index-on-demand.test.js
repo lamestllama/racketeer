@@ -222,63 +222,128 @@ function gatedSource(p, name) {
       }
       fs.unlinkSync(entered);
     },
+    hold: () => fs.writeFileSync(gate, 'held'),
     release: () => fs.rmSync(gate, { force: true })
   };
 }
 
-// An editor closes a document some time after its tab, however long ago its file was
-// deleted, and a buffer with no file is a source until then. Each close replaces the
-// pass, with nothing changing on disk. It comes while a worker still holds the gated
-// source, whose time limit began when the pass reached it, and only once `seconds` have
-// passed since `from`.
-const closeAfter = async (p, name, from, seconds) => {
+// A change on disk, while a worker still holds the gated source, whose time limit began
+// when the pass reached it, and only once `seconds` have passed since `from`.
+const changeAfter = async (p, from, seconds) => {
   await delay(Math.max(0, from + seconds * 1000 - Date.now()));
-  p.documents.delete(uri(p.filename(name)));
-  await p.update(true);
-};
-const buffersWithNoFile = p => {
-  for (const name of ['gone-1.rkt', 'gone-2.rkt']) p.open(name, '#lang racket/base\n');
+  p.write('other.rkt', `#lang racket/base\n; ${Date.now()}\n`);
+  await p.diskChange('other.rkt');
 };
 
-test('a pass replaced after it got further than the last is waited for, past the time limit', { timeout: 120000 }, async t => {
+test('a pass replaced with more files analysed than before is waited for, past the time limit', { timeout: 120000 }, async t => {
   const p = await project(t, { RACKETEER_INDEX_WORKERS: '1' });
   p.settings.timeoutSeconds = 6;
-  buffersWithNoFile(p);
   const first = gatedSource(p, 'first.rkt'), second = gatedSource(p, 'second.rkt');
   t.after(() => { first.release(); second.release(); });
   await p.update();
   const request = p.references(p.origin).then(value => ({ value }), error => ({ error }));
   await first.reached();
   const replaced = Date.now();
-  await closeAfter(p, 'gone-1.rkt', replaced, 0);
-  // The next pass goes past the file where the last one stopped.
+  await changeAfter(p, replaced, 0);
+  // The next pass analyses the file where the last one stopped.
   await first.reached();
   first.release();
   await second.reached();
-  await closeAfter(p, 'gone-2.rkt', replaced, 6.5);
+  await changeAfter(p, replaced, 6.5);
   await delay(500);
   second.release();
   const { value, error } = await request;
-  assert.equal(error, undefined, 'Two closes further apart than the limit are not sources that keep changing');
+  assert.equal(error, undefined, 'Two changes further apart than the limit are not sources that keep changing');
   assert.equal(from(value, uri(p.filename('uses.rkt'))).length, 1);
 });
 
-test('a pass replaced no further than the last still ends in a refusal, however far apart the changes', { timeout: 120000 }, async t => {
+test('a pass replaced with no more files analysed still ends in a refusal, however far apart the changes', { timeout: 120000 }, async t => {
   const p = await project(t, { RACKETEER_INDEX_WORKERS: '1' });
   p.settings.timeoutSeconds = 3;
-  buffersWithNoFile(p);
   const held = gatedSource(p, 'first.rkt');
   t.after(held.release);
   await p.update();
   const request = p.references(p.origin).then(value => ({ value }), error => ({ error }));
   await held.reached();
   const replaced = Date.now();
-  await closeAfter(p, 'gone-1.rkt', replaced, 0);
+  await changeAfter(p, replaced, 0);
   await held.reached();
-  await closeAfter(p, 'gone-2.rkt', replaced, 3.5);
+  await changeAfter(p, replaced, 3.5);
   const { error } = await request;
   assert.equal(error?.code, -32803, 'Its pass never finishes while this goes on');
   assert.match(error.message, /Workspace sources kept changing for 3 seconds/);
+});
+
+// An editor closes a document some time after its tab, however long ago its file was
+// deleted, and a buffer with no file is a source until then.
+test('documents closing are not sources changing, however far apart and with no more files analysed', { timeout: 120000 }, async t => {
+  const p = await project(t, { RACKETEER_INDEX_WORKERS: '1' });
+  p.settings.timeoutSeconds = 3;
+  for (const name of ['gone-1.rkt', 'gone-2.rkt']) p.open(name, '#lang racket/base\n');
+  const held = gatedSource(p, 'first.rkt');
+  t.after(held.release);
+  await p.update();
+  const request = p.references(p.origin).then(value => ({ value }), error => ({ error }));
+  const close = async name => { p.documents.delete(uri(p.filename(name))); await p.update(true); };
+  await held.reached();
+  const replaced = Date.now();
+  await close('gone-1.rkt');
+  await held.reached();
+  await delay(Math.max(0, replaced + 3500 - Date.now()));
+  await close('gone-2.rkt');
+  const refused = await Promise.race([held.reached().then(() => undefined, () => undefined), request]);
+  assert.equal(refused?.error, undefined, 'Nothing in the project changed');
+  held.release();
+  const { value, error } = await request;
+  assert.equal(error, undefined);
+  assert.equal(from(value, uri(p.filename('uses.rkt'))).length, 1);
+});
+
+test('a rename whose own work outlasts the time limit is not refused for two changes during it', { timeout: 120000 }, async t => {
+  const p = await project(t, { RACKETEER_INDEX_WORKERS: '1' });
+  p.settings.timeoutSeconds = 10;
+  const held = gatedSource(p, 'first.rkt');
+  held.release();
+  t.after(held.release);
+  await p.update();
+  // Every later pass keeps this one's results, so only the rename's own worker waits.
+  await p.references(p.origin);
+  held.hold();
+  const renaming = p.rename(p.origin, 'squared').then(value => ({ value }), error => ({ error }));
+  await held.reached();
+  const replaced = Date.now();
+  await changeAfter(p, replaced, 0);
+  await held.reached();
+  await changeAfter(p, replaced, 10.5);
+  const refused = await Promise.race([held.reached().then(() => undefined, () => undefined), renaming]);
+  assert.equal(refused?.error, undefined, 'Nearly all of that time was its own work');
+  held.release();
+  const { value, error } = await renaming;
+  assert.equal(error, undefined);
+  assert.ok(value.changes[uri(p.filename('uses.rkt'))]);
+});
+
+test('a rename cut short each time it starts is still refused', { timeout: 120000 }, async t => {
+  const p = await project(t, { RACKETEER_INDEX_WORKERS: '1' });
+  p.settings.timeoutSeconds = 4;
+  p.write('generated.rkt', '#lang racket/base\n');
+  const held = gatedSource(p, 'first.rkt');
+  held.release();
+  t.after(held.release);
+  await p.update();
+  // Every later pass keeps this one's results, so only the rename's own worker waits,
+  // for longer than the gap between changes.
+  await p.references(p.origin);
+  held.hold();
+  const writer = rewriting(p, 'generated.rkt', 1500);
+  t.after(writer.stop);
+  const outcome = await Promise.race([
+    p.rename(p.origin, 'squared').then(value => ({ value }), error => ({ error })),
+    delay(90000, 'still waiting', { ref: false })
+  ]);
+  writer.stop();
+  assert.notEqual(outcome, 'still waiting', `Pending after ${writer.count()} rewrites`);
+  assert.match(outcome.error?.message, /Workspace sources kept changing for 4 seconds/);
 });
 
 test('a burst of changes that ends is waited out, however many it held', { timeout: 120000 }, async t => {

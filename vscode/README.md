@@ -688,7 +688,7 @@ Settings under `racket-langserver.workspaceAnalysis` control whether analysis
 is enabled, excluded directory names, file count, maximum source size and the
 time limit per file. Defaults are 1,000 files, 1 MiB per file and 20 seconds per
 file. A request stops waiting and says so when sources keep changing, as under a
-generator or a build, and no pass has got further than the last for that time limit. A pass runs at most three workers at once and no
+generator or a build, and no more files have been analysed for that time limit. A pass runs at most three workers at once and no
 more than half the number of processors, each in a process of its own, and gives the
 same answers as one at a time. Compile-time code in different files can therefore run at
 the same moment. Each worker adds about 260 MB to the index's memory, more with heavy

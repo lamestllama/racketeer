@@ -36,7 +36,9 @@
 ;; document again. `unverified?` means such a revision came after the pass began,
 ;; so the next request needs the disk checked by another pass. A pass starts no
 ;; sooner than `not-before`, and `waiting` counts the requests waiting for it.
-(struct Run (generation cancel done revised state indexed total failures workspace documents buffers settings roots sources unverified? not-before waiting) #:mutable)
+;; `changed?` says that what replaced the run before it changed the sources themselves,
+;; where a buffer closing or a pass begun again over the same view does not.
+(struct Run (generation cancel done revised state indexed total failures workspace documents buffers settings roots sources unverified? not-before waiting changed?) #:mutable)
 ;; `results` holds each file's last successful analysis across runs, as an
 ;; immutable table that a pass can read while a retired one finishes, and `interned`
 ;; the entries that most of those analyses share, so they are held once.
@@ -785,7 +787,7 @@
 
 ;; Replaces the current run with one that has no pass yet. A pass it stops is
 ;; reported, since a client shows it as running. The caller holds the lock.
-(define (replace-run! engine revision documents buffers config roots #:not-before [not-before 0])
+(define (replace-run! engine revision documents buffers config roots #:not-before [not-before 0] #:changed? [changed? #t])
   (define current (WorkspaceAnalysis-current-run engine))
   (when current (semaphore-post (Run-cancel current)))
   (define workspace (make-workspace))
@@ -793,7 +795,7 @@
   (define run
     (Run revision (make-semaphore) (make-semaphore) (make-semaphore)
          (if (Settings-enabled? config) "outdated" "disabled") 0 0 0
-         workspace documents buffers config roots (make-hash) #f not-before 0))
+         workspace documents buffers config roots (make-hash) #f not-before 0 changed?))
   (set-WorkspaceAnalysis-current-run! engine run)
   (cond
     [(not (Settings-enabled? config))
@@ -805,7 +807,7 @@
 ;; The same source view, to be analysed when next asked for. The caller holds the lock.
 (define (renew-run! engine run)
   (replace-run! engine (Run-generation run) (Run-documents run) (Run-buffers run)
-                (Run-settings run) (Run-roots run)))
+                (Run-settings run) (Run-roots run) #:changed? #f))
 
 ;; Waits with `wait` for what a run's pass decides. The first to wait starts the
 ;; pass, and the last to leave an unfinished one stops it: its completed files
@@ -884,6 +886,7 @@
         ;; A run of changes while a pass runs would otherwise start and stop a
         ;; worker for each one, for a request that is waiting.
         [else (replace-run! engine revision documents buffers config roots
+                            #:changed? (not (eq? #t (hash-ref params 'documentsOnly #f)))
                             #:not-before (if (and current (equal? "indexing" (Run-state current)))
                                              (+ (current-inexact-monotonic-milliseconds) 2000)
                                              0))]))))
@@ -927,27 +930,32 @@
              (respond)))))
   ;; A request waits for the sources to settle, and a large first pass takes as long as
   ;; it takes. A replaced pass loses little, as what it finished is kept for the next, so
-  ;; a pass that leaves fewer files to do than the last is on its way to an answer, however
-  ;; long that takes and however slow the machine. But sources that keep changing can
-  ;; replace every pass at the same place. A request found replaced with no pass getting
-  ;; further for the time limit stops waiting. It refuses, and answers from no older view
-  ;; of the sources, which could be wrong. A pass replaced before it found its files got
-  ;; nowhere.
+  ;; one after which more files have results is on its way to an answer, however long that
+  ;; takes and however slow the machine. But sources that keep changing can replace every
+  ;; pass at the same place. A request found replaced by a change, after waiting for the
+  ;; time limit with no more results, stops waiting. It refuses, and answers from no older
+  ;; view of the sources, which could be wrong. A document closing is no such change, even
+  ;; one whose file has gone and whose buffer was a source: an editor closes documents long
+  ;; after their tabs, and it has only so many. The request's own work is not waiting, and
+  ;; has a limit of its own.
   (define last-run #f)
-  (define fewest-left +inf.0)
+  (define most-results 0)
   (define further-at #f)
   (define (still-changing? run)
-    (define replaced (and last-run (not (eq? last-run run)) last-run))
+    (define replaced? (and last-run (not (eq? last-run run))))
     (set! last-run run)
-    (and replaced
-         (let ([left (if (zero? (Run-total replaced))
-                         +inf.0
-                         (- (Run-total replaced) (Run-indexed replaced) (Run-failures replaced)))]
+    (and replaced? (Run-changed? run)
+         (let ([results (hash-count (WorkspaceAnalysis-results engine))]
                [now (current-inexact-monotonic-milliseconds)])
-           (when (or (not further-at) (< left fewest-left))
-             (set! fewest-left left)
+           (when (or (not further-at) (> results most-results))
+             (set! most-results results)
              (set! further-at now))
            (>= (- now further-at) (* 1000 (Settings-timeout (Run-settings run)))))))
+  (define (own-work run seconds request evt)
+    (define began (current-inexact-monotonic-milliseconds))
+    (begin0 (compute engine run seconds request evt)
+            (when further-at
+              (set! further-at (+ further-at (- (current-inexact-monotonic-milliseconds) began))))))
   (let retry ()
     (define run
       (call-with-semaphore (WorkspaceAnalysis-lock engine)
@@ -982,7 +990,7 @@
                 (cons 'failed (incomplete-index run))
                 ;; Rename validates both complete source views. Bound the whole
                 ;; transaction separately from the per-file indexing budget.
-                (compute engine run (if (eq? operation 'rename) 90 (Settings-timeout (Run-settings run)))
+                (own-work run (if (eq? operation 'rename) 90 (Settings-timeout (Run-settings run)))
                          (list 'rename (make-immutable-hash (hash->list (Run-sources run)))
                                (Run-roots run) (Settings-excluded (Run-settings run))
                                (Settings-max-files (Run-settings run)) (Run-buffers run)
@@ -1000,7 +1008,7 @@
           ;; Local and module references use the same fresh analysis. No global
           ;; LSP trace or stale contribution is mixed into the index's results.
           (define result
-            (compute engine run (Settings-timeout (Run-settings run))
+            (own-work run (Settings-timeout (Run-settings run))
                      (list 'analyse path (Settings-max-bytes (Run-settings run))
                            (hash-ref doc 'text) (list uri (hash-ref params 'position) include? captured-text)
                            (Run-buffers run) (Run-roots run) (hash))

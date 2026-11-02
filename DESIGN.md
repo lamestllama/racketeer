@@ -422,7 +422,7 @@ waits for that one. A client without that capability gets the defaults.
 | References for a retired lifetime | ContentModified |
 | Rename or prepareRename for a retired lifetime or an overtaken result | RequestFailed, `Workspace changed during rename. Try Rename again.` |
 | Rename refused, analysis failed or index incomplete | RequestFailed |
-| A request whose run was replaced with no pass having got further for `timeoutSeconds` | RequestFailed, `Workspace sources kept changing for N seconds. Try again when they settle.` |
+| A request whose run was replaced by a change after it had waited `timeoutSeconds` with no more files analysed | RequestFailed, `Workspace sources kept changing for N seconds. Try again when they settle.` |
 | A request interrupted by `shutdown` | InvalidRequest |
 | Malformed JSON | ParseError with a null id |
 
@@ -430,12 +430,13 @@ A source that keeps changing replaces every pass, so a waiting request is bounde
 stops waiting at the limit above and refuses. It never answers from an older view of the
 sources, which could give a wrong rename, and a burst of changes that ends within the
 limit is waited out however many it held. A pass keeps what it finished for the next, so
-one replaced after getting further than the last is on its way to an answer, and a large
+one replaced with more files analysed than before is on its way to an answer, and a large
 first pass takes as long as it takes on however slow a machine, whether or not something
-replaces it along the way. Time alone cannot tell these apart: a pass on a slow machine
-outlasts the limit many times over, and an editor closing the buffers of files deleted long
-ago replaces a pass each time, with nothing changing on disk. A pass gets further by leaving
-fewer files to do than any before it. The VS Code client shows a refusal of references as
+replaces it along the way. Time alone cannot tell these apart, since a pass on a slow
+machine outlasts the limit many times over. The time a request spends on its own work
+after a pass does not count. Nor does a document closing, which replaces a pass when its
+file has gone but is no source changing: an editor closes documents long after their
+tabs, and it has only so many. The VS Code client shows a refusal of references as
 a warning, since an editor shows no provider's error.
 
 ContentModified is not used for rename because LSP clients do not show it, and the user must
