@@ -1,11 +1,11 @@
 # Debugger parity target
 
-The initial target is the behavior of a graphical Racket debugger.
+The initial target is the behaviour of a graphical Racket debugger.
 The overall target includes IDE facilities, presented through native
 VS Code workflows. This matrix covers the debugger portion; it does not establish
 full IDE parity.
 
-| Debugger operation | Extension behavior | Regression evidence |
+| Debugger operation | Extension behaviour | Regression evidence |
 | --- | --- | --- |
 | Start paused | Debug Current File / `stopOnEntry` | DAP and editor suites |
 | Go, Stop | Continue; Stop terminates the worker and descendants | DAP suite |

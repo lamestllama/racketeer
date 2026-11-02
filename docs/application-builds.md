@@ -71,7 +71,7 @@ language's reader support. These options do not apply to launchers or the
 distribution step.
 
 Builds write directly to the selected paths using the public tools' overwrite
-behavior. A cancelled or failed build can leave partial output; successful task
+behaviour. A cancelled or failed build can leave partial output; successful task
 completion is required before using the result.
 
 References: [executable and launcher creation](https://docs.racket-lang.org/raco/exe.html),

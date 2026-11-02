@@ -35,7 +35,7 @@
 ## 0.8.47
 
 - Combine the thread pausing and suspension work with the editor, debugger view and test tooling releases.
-- Suspend paused threads without delivering application breaks, so programs that catch breaks keep their behavior. Inspect a suspended thread's live source frames with its captured parameterization, and keep evaluation cancellation scoped to the selected program thread.
+- Suspend paused threads without delivering application breaks, so programs that catch breaks keep their behaviour. Inspect a suspended thread's live source frames with its captured parameterisation, and keep evaluation cancellation scoped to the selected program thread.
 - Pause requests a source stop in every registered application thread and focuses the first executing expression. Blocked calls remain suspended, and resuming cancels a pending pause.
 - Step from a GUI or other callback to the next source boundary when no return target is observable.
 - Label debugger results as Return values with a count, clarify lexical variables and `set!`, and align expression and printing commands while retaining native VS Code controls and call-site completion stops.
@@ -43,9 +43,9 @@
 - Preserve custom error display and escape handlers after an exception stop so program recovery can continue in its original context.
 - Show bounded list, vector, hash, structure and syntax previews, expandable syntax source details, and procedure arity without invoking custom printers or wrapped accessors.
 - Escape symbol and keyword names consistently, and show port direction plus safely known names and state without performing port I/O or invoking user callbacks.
-- Start debugging at the first expression in main, preserving explicit breakpoints during module initialization.
-- Offer `stopOnEntryMode: "firstExpression"` to pause before initialization, with a launch configuration snippet for that mode.
-- Step into function initializers without stopping on generated binding containers that make Step Over skip the remaining body.
+- Start debugging at the first expression in main, preserving explicit breakpoints during module initialisation.
+- Offer `stopOnEntryMode: "firstExpression"` to pause before initialisation, with a launch configuration snippet for that mode.
+- Step into function initialisers without stopping on generated binding containers that make Step Over skip the remaining body.
 - Resolve the Unix cleanup helper through PATH so adapter crashes also stop grandchildren.
 - Own debugger and macro-stepper descendants with Windows Job Objects.
 - Evaluate multiple selections in source order in the plain and Debug REPLs.
@@ -141,7 +141,7 @@
 
 ## 0.8.16
 
-- Honor quiet RackUnit output and send failing suite summaries to stderr while retaining Test Explorer results.
+- Honour quiet RackUnit output and send failing suite summaries to stderr while retaining Test Explorer results.
 - Avoid repeated linear searches when tracking generated and selected test cases.
 
 ## 0.8.15
@@ -227,7 +227,7 @@
   owned process groups after worker or adapter failure on Unix systems.
 - Execute and display one captured source snapshot, select late external
   breakpoints at load time, and validate breakpoint coordinates and ranges.
-- Recover from stalled language-server initialization and retain ownership of
+- Recover from stalled language-server initialisation and retain ownership of
   pending debug launches during disposal. Allow a configurable startup deadline
   for cold language-server compilation.
 - Preserve open language-server buffers when delayed file-creation notifications arrive.

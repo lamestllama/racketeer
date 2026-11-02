@@ -1,7 +1,7 @@
 # Release quality requirements
 
 The extension is a development release. A passing test count is evidence for
-the behaviors exercised on the recorded environment; it is not a declaration
+the behaviours exercised on the recorded environment; it is not a declaration
 of production readiness on other platforms or configurations.
 
 ## Required evidence for each release
@@ -25,18 +25,18 @@ of production readiness on other platforms or configurations.
 
 See [the test workflow](../tests/README.md) for executable checks and
 [release records](releases/) for evidence. A failing required check blocks the
-release; disabling a check or relabeling a failure as success is not a fix.
+release; disabling a check or relabelling a failure as success is not a fix.
 
 ## Clean-room development of new features
 
 Specify new features from public language and protocol documentation and
-observable behavior. Implementation and regression tests must be written
+observable behaviour. Implementation and regression tests must be written
 independently, without copying, translating, or consulting the corresponding
 implementation or tests in another tool.
 
-A source-aware comparison must hand off only behavioral requirements to an
+A source-aware comparison must hand off only behavioural requirements to an
 implementer who has not seen the compared implementation. Record the sources
-used for the specification and the checks establishing the resulting behavior.
+used for the specification and the checks establishing the resulting behaviour.
 Do not describe source-informed rewriting as clean-room work.
 
 Existing third-party dependencies remain explicitly identified dependencies,

@@ -36,13 +36,13 @@ GUI application modules. The browser does not parse `require` forms or maintain 
 workspace reference index.
 
 `vscode/dependencies.js` adapts those results to VS Code's `TreeDataProvider`.
-Source commands use native `vscode.open`. Analysis is lazy, serialized and cached
+Source commands use native `vscode.open`. Analysis is lazy, serialised and cached
 per file within a view generation; a refresh replaces that generation and cancels
 its work. Content fingerprints and filesystem watches prevent an older result
 from being accepted after an observed source change.
 
 Each request has a 20-second deadline. The view accepts at most 32 MiB of open
-source buffers and 200 analyzed files per generation. Individual results are
+source buffers and 200 analysed files per generation. Individual results are
 limited to 8 MiB, 2,000 modules, 64 levels of submodules and 20,000 imports per
 module. Reaching a limit reports an error rather than a complete-looking partial
 tree. A smaller module can be selected as a new root.

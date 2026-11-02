@@ -5,16 +5,16 @@ their returned values. It does not simply move to the next source line.
 
 In [the multi-file example](../examples/multi-file/main.rkt), the default launch
 stops at `(quote-order)` on line 10, the first executable expression inside
-`module+ main`. Module initialization has created the function on lines 5–7;
+`module+ main`. Module initialisation has created the function on lines 5–7;
 its body has not run yet. `stopOnEntry` waits for the selected entry module,
-while explicit breakpoints can still stop during initialization.
+while explicit breakpoints can still stop during initialisation.
 
 Without a `main` submodule, entry is the first instrumented expression in the
 program's module body. An explicit submodule selection uses that submodule;
 test mode uses `test` when present. Plain files start at their first instrumented
 expression. An entry module without executable stops runs to completion.
 
-To pause before initialization, add this to your launch configuration:
+To pause before initialisation, add this to your launch configuration:
 
 ```json
 "stopOnEntry": true,
@@ -22,7 +22,7 @@ To pause before initialization, add this to your launch configuration:
 ```
 
 The default mode is `"entryPoint"`. `"firstExpression"` pauses at the first
-instrumented expression, including initialization in debugged dependencies.
+instrumented expression, including initialisation in debugged dependencies.
 In the multi-file example it stops at the function setup on line 5, before
 `main` runs. Files outside the configured debug sources and compile-time code
 are not covered by this stop. Use **Racket: debug initialization** from
@@ -66,8 +66,8 @@ file suspends these features until the contents match again or debugging restart
 
 Internal definitions expand into binding containers whose source range can
 cover the whole function. Those generated containers are not separate stepping
-stops. Step Into enters the first executable initializer, and Step Over advances
-through the remaining initializers and body expressions. Explicit binding forms
+stops. Step Into enters the first executable initialiser, and Step Over advances
+through the remaining initialisers and body expressions. Explicit binding forms
 such as `let` and `letrec` retain their own expression stops. Macros can still
 execute a source expression more than once. Each execution retains its start
 and returned-value stops. When expansion metadata identifies the source
@@ -76,7 +76,7 @@ owns the stop. Step Over then completes one execution, not the whole wrapper.
 
 Standalone expressions in a module body or plain file also have stops when
 they are a literal, a variable reference, or a function expression. Atomic
-operands inside larger expressions and atomic definition initializers remain
+operands inside larger expressions and atomic definition initialisers remain
 outside the stepping sequence.
 
 Structures show bounded field previews and expand in Variables and Watch.
@@ -92,10 +92,10 @@ Ports show their input/output direction. When an instrumented call invokes a
 known Racket port constructor directly or through an unchanged alias, the preview
 also shows its name; expanding it exposes direction, name, and `closed?`.
 Inspection does not read, write, flush, or close the port. Ports obtained through
-unobserved library calls, `apply`, keyword or optimized constructor dispatch,
+unobserved library calls, `apply`, keyword or optimised constructor dispatch,
 wrapped constructors, or
 delegating structures retain a conservative direction-only preview. These paths
 can involve user callbacks, so their names and state are not queried implicitly.
-Racket can use optimized dispatch for file constructors even without explicit
+Racket can use optimised dispatch for file constructors even without explicit
 keywords; calling the unchanged constructor through a local alias retains its
 identity and allows metadata inspection.

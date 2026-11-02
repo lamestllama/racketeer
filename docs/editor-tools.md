@@ -180,7 +180,7 @@ Explorer compatibility.
 
 ## Independent implementation
 
-The behavioral specifications and acceptance criteria use public language and
+The behavioural specifications and acceptance criteria use public language and
 API documentation. The new integration, grammar, and regression tests were
 written independently by implementers who had not inspected the compared
 editor implementation. Third-party libraries remain identified dependencies

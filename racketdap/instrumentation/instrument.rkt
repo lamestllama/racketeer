@@ -459,7 +459,7 @@
                         (if marked? (scope-mark (scope-variable this) act expressions) expressions))]
                 [rhss (for/list ([ids (in-list groups)] [rhs (in-list initializers)]
                                  [rewritten (in-list rewritten-initializers)])
-                        ;; Only an initializer that can stop needs the mark.
+                        ;; Only an initialiser that can stop needs the mark.
                         #`[#,ids #,@(if (stoppable? rhs) (mark (list rewritten)) (list rewritten))])])
            ;; The scope's procedure comes first: its getters may run in any initializer.
            #`(letrec-values (#,@(if (and own? (scope-reached? this))

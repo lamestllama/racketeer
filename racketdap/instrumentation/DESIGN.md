@@ -23,12 +23,12 @@ zero stays quiet.
 A unit's symbol must stay reachable while its forms can start: the table is
 weak in it, and code read from a file does not intern the symbol until it runs.
 
-Runtime forms are recognized by binding identity. Arbitrary rename-in/prefix-in
+Runtime forms are recognised by binding identity. Arbitrary rename-in/prefix-in
 aliases are supported, and familiar printed names do not override their actual
 bindings. Input binding identifiers retain their syntax scopes. Literal values,
 identifier reads, variable-reference construction, and function construction
 have stop sites only when they are complete module body expressions or plain
-loaded top-level expressions. Atomic definition initializers and operands inside
+loaded top-level expressions. Atomic definition initialisers and operands inside
 larger expressions remain without their own sites. Descriptors retain original
 source coordinates and expanded expression data; duplicated macro occurrences
 receive independent site IDs.
@@ -39,7 +39,7 @@ has a site. Code located anywhere in the source keeps that location, including
 a macro's chosen range within its use.
 Binding containers introduced for internal definitions have neither an operator
 source nor an expansion origin. Their inherited enclosing-body range is not a
-separate stop; their initializers and body are still traversed and instrumented.
+separate stop; their initialisers and body are still traversed and instrumented.
 Explicit and macro-originated binding forms retain their normal stops.
 The containers stay in the frame for exception and asynchronous Pause inspection,
 but are omitted from breakpoint sites and expression callbacks.
@@ -131,8 +131,8 @@ syntax-original? source-classification check.
 stop-binding-value reads a single symbol/string binding without evaluating user
 syntax. It checks lexical getters first, then source module aliases and ordinary
 namespace mappings. Direct namespace reads reject syntax-only bindings without
-invoking macro or set!-transformer bodies. Real top-level variables are recognized
-through identifier-binding's top-level-symbol? option. Uninitialized variables
+invoking macro or set!-transformer bodies. Real top-level variables are recognised
+through identifier-binding's top-level-symbol? option. Uninitialised variables
 produce (unavailable 'uninitialized); absent and syntax-only names raise errors.
 Strings are treated as literal binding names, never parsed as expressions.
 
@@ -178,7 +178,7 @@ For complete module binding visibility:
   flag. All fragments of one module+ use the same context; inherited-language
   children use a live parent link.
 - Feed expanded define-values/define-syntaxes declarations to
-  record-module-bindings! before their initializers.
+  record-module-bindings! before their initialisers.
 - Pass the context via instrument-module's #:module-context keyword.
 
 A context has a symbol key, which is all generated code quotes. A module records
@@ -242,7 +242,7 @@ Over and Step Out use the next source boundary when a callback has no observable
 caller or expression-completion target, rather than waiting for a nonexistent
 return stop.
 
-Approximate-pause evaluation uses the suspended thread's parameterization, read
+Approximate-pause evaluation uses the suspended thread's parameterisation, read
 from its marks up to its root, and live bindings on the service thread, which has
 its own thread identity and thread cells. Breakpoint, step and
 exception evaluation still runs on the target thread. Operations that require
@@ -255,7 +255,7 @@ live lexical and module bindings, evaluation and mutation, continuation re-entry
 tail recursion, multiple values, event actions, thread ownership, expired stops,
 language expansion, and loader isolation. instrumentation-lifetime.rkt compares
 nested user continuation marks with ordinary execution, exercises marked skip,
-replacement and step-out behavior, and checks target collection using weak
+replacement and step-out behaviour, and checks target collection using weak
 references while preserving binding access for live targets.
 
 Run from the repository root:

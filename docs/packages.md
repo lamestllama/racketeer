@@ -7,7 +7,7 @@ commands use the active file's folder (or ask for a folder). The language client
 currently uses the first folder's Racket executable for the whole window; use
 separate windows when folders require different Racket installations.
 
-| Action | Behavior |
+| Action | Behaviour |
 | --- | --- |
 | Install Package | Accepts a package name, Git URL, archive, or local directory; `raco pkg` resolves dependencies. |
 | Link Local Package | Installs a directory link so edits apply to the package's source. |

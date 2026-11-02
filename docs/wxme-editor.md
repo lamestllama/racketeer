@@ -13,7 +13,7 @@ which owns dirty state, undo/redo, save commands and backup scheduling.
   in `wxme-render.js` escapes content and restricts webview resources.
 - `vscode/wxme-storage.js` handles bounded reads and staged file replacement.
 - `racketdap/tools/wxme-edit.rkt` handles the process protocol and input lease.
-  `wxme-codec.rkt` uses public Racket editor APIs to copy and serialize content.
+  `wxme-codec.rkt` uses public Racket editor APIs to copy and serialise content.
 - `wxme-editable.rkt` validates decoded object kinds and modes before GUI
   libraries are loaded. `wxme-xml.rkt` supplies independent XML/Racket snip
   classes using the public Racket editor stream APIs.
@@ -25,7 +25,7 @@ a text node. Text slots can be empty. Supported objects are embedded bitmap
 images, comment boxes, nested text editors, XML boxes and Racket boxes. XML nodes
 carry `eliminateWhitespace`; Racket nodes carry `splicing`. Both are booleans,
 retained by text edits, structural changes, mode changes and recovery. Each node has a stable identity.
-Original identities name normalized paths; inserted identities use a monotonic
+Original identities name normalised paths; inserted identities use a monotonic
 sequence. Moving surrounding text does not renumber existing objects.
 
 Text uses a piece table. A piece is either literal inserted text or a span of an
@@ -33,9 +33,9 @@ original text node. Span offsets use UTF-16 code units and cannot split a Unicod
 character. The codec converts these offsets to Racket character positions and
 copies the original text snips, retaining styles on unchanged text. Original
 objects are copied through their public `copy` method before nested content is
-updated. The original serialization remains available throughout undo history.
+updated. The original serialisation remains available throughout undo history.
 The public comment-box reader applies its standard text style when loading;
-moving styled text into a comment box follows that behavior. Undo restores the
+moving styled text into a comment box follows that behaviour. Undo restores the
 original spans and their styles. Ordinary nested editors retain moved styles.
 
 Each edit produces immutable before/after trees. Inserting a box moves the
@@ -48,7 +48,7 @@ document and generation token; messages from an older view are refused.
 
 Codec requests and responses use protocol version 1. A request contains the
 original base64 `bytes` and an optional `tree`, or an `image` containing a PNG to
-import. The response contains version, serialized bytes and decoded parts.
+import. The response contains version, serialised bytes and decoded parts.
 Original readers are checked before loading. A no-edit round trip must preserve
 decoded content before editing opens. Each edited save is compared with the
 model's content before any file is replaced. Opening and saving do not evaluate
@@ -64,7 +64,7 @@ The writer needs the Racket GUI libraries; it does not load GUI application modu
 or the XML and Racket box GUI readers.
 
 Unchanged saves retain exact original bytes. Edited saves can change binary
-serialization. Replacement checks the saved-file hash, stages bytes beside the
+serialisation. Replacement checks the saved-file hash, stages bytes beside the
 destination, retains permissions and follows existing symlinks. A conflicting
 external change requires Revert or Save As. Cancellation or a changed revision
 during encoding leaves the file intact. Saves for one document run in order.

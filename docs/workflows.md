@@ -9,13 +9,13 @@ Run, Debug, Debug REPL, and both test profiles share the existing adapter and
 worker. File and test Run set DAP `noDebug`; the loader disables instrumentation
 and exception stops. Debug uses the same module selection with instrumentation
 enabled. Run in Terminal uses a process task. Plain REPL terminals retain
-Racket's ordinary `racket/enter` behavior.
+Racket's ordinary `racket/enter` behaviour.
 
 Run Current File and Debug Current File save the source and execute its root
 module and optional `main` submodule. A Results view retains text, images and
 available error locations after exit. It has no expression prompt. Debug keeps
 VS Code's native toolbar, Call Stack, Variables and source stepping. Existing
-launch configurations retain their configured console behavior.
+launch configurations retain their configured console behaviour.
 
 Results uses the same output capture as Interactions. Image conversion shares
 the public `file/convertible` property with the program even when instrumentation
@@ -136,7 +136,7 @@ logged counts and their own output.
 Choose **Run with package policies (raco test)** in Test Explorer to delegate
 selected files to `raco test --process --modules --timeout +inf.0`. This enables
 per-file timeouts while leaving the default unlimited. Racket handles `info.rkt`
-omissions, arguments, timeouts and locks. Standard error retains native behavior. Results reflect each
+omissions, arguments, timeouts and locks. Standard error retains native behaviour. Results reflect each
 native process's exit status, including a successful omission; native output
 appears in the task terminal. This profile runs files and supports cancellation.
 The ordinary Run, Debug and Coverage profiles provide individual results and
@@ -165,7 +165,7 @@ Generated expressions sharing a range contribute one result. Edited sources and
 different revisions loaded by separate test processes are omitted rather than
 combined. Run coverage again after editing to refresh the totals.
 
-The behavior comparison used original examples in the Racket 9.1 IDE. Two
+The behaviour comparison used original examples in the Racket 9.1 IDE. Two
 `check-expect` forms, one failing, produced two tests and one failure. With
 syntactic test suite coverage enabled, `(if flag 'left 'right)` called with
 `#t` marked `'right` as unexecuted. Racketeer's native test results and coverage
@@ -173,12 +173,12 @@ now report those same outcomes. The regression fixtures in
 [`teaching-tests.test.js`](../tests/teaching-tests.test.js) and
 [`test-coverage.test.js`](../tests/test-coverage.test.js) were written independently
 from those observations and public documentation, without consulting that IDE's
-implementation or tests. This comparison establishes these behaviors only.
+implementation or tests. This comparison establishes these behaviours only.
 
 The adapter accepts `coverage: true` together with `testMode: true` and
 `noDebug: true`. Before the final test summary it emits `racketdap/coverage`
 events containing an absolute `path`, a `sourceHash` of the captured UTF-8 text
-with CRLF normalized to LF, and `statements`. Each statement has zero-based
+with CRLF normalised to LF, and `statements`. Each statement has zero-based
 UTF-16 `line`, `column`, `endLine`, `endColumn` (exclusive end), and a boolean
 `executed`. The hash uses the same SHA-1 convention as test selection.
 
@@ -192,7 +192,7 @@ on cancellation. Concurrent runs remain independent. Source edits invalidate
 previous Test Explorer results.
 
 Debug REPL sessions are keyed by program, executable, and working directory.
-Repeated opens reuse a session; lifecycle operations for one key are serialized.
+Repeated opens reuse a session; lifecycle operations for one key are serialised.
 Restart terminates that session, waits for termination, and loads a fresh saved
 module. Other REPLs remain usable. Loading chooses only the root module and
 does not run `main` or `test`.

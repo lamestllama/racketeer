@@ -39,7 +39,7 @@ runs execute sequentially to avoid competing cold language-server starts.
 Editor jobs first run the ordinary integration suite with no additional
 language packages. A second, explicit `--rhombus` integration run provisions
 the four packages in `scripts/rhombus-runtime-lock.json` into a fresh private
-addon directory and exercises Rhombus language-server behavior. Sources are
+addon directory and exercises Rhombus language-server behaviour. Sources are
 pinned to Git commits; dependency discovery cannot fetch unlisted packages.
 This step requires network access and fails on installation or identity-check
 errors. Test Explorer dogfooding then runs with another pristine addon.

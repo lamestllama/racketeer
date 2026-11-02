@@ -7,7 +7,7 @@ cooperative cancellation, interactive sessions, terminal line input, and a
 separate target worker. Racketeer packages these with language-server editing
 support, syntax highlighting, run/test tasks, and a normal Racket REPL in one
 extension. The delivery gates below
-remain the acceptance plan, not a statement that all behavior is supported.
+remain the acceptance plan, not a statement that all behaviour is supported.
 See [README.md](README.md) for the implemented release and its limits.
 
 ## 1. Product decision
@@ -107,7 +107,7 @@ Collection dependencies run normally unless selected for debugging.
 The first supported languages are `racket/base` and `racket`. Common macros such
 as `for`, `match`, and `class` require compatibility fixtures. Other languages,
 including Typed Racket and custom `#lang` implementations, gain support through
-tested expansion and source-location behavior, not through a blanket claim that
+tested expansion and source-location behaviour, not through a blanket claim that
 all languages work because they expand to Racket.
 
 Runtime debugging of macro-generated code belongs in the core. Debugging a
@@ -137,7 +137,7 @@ adapter's documented public contract.
 
 Until extraction, enforce the same dependency boundary in this repository and
 retain the standalone protocol regression. The split should change packaging
-and release ownership without changing debugger behavior.
+and release ownership without changing debugger behaviour.
 
 ```mermaid
 flowchart LR
@@ -152,8 +152,8 @@ flowchart LR
 
 **Adapter process:** owns DAP transport, request sequencing, session state,
 breakpoint requests, source presentation, and translation of worker events.
-It never evaluates user Racket code. A single session owner serializes state
-changes; output sequence numbers are allocated inside the output serializer.
+It never evaluates user Racket code. A single session owner serialises state
+changes; output sequence numbers are allocated inside the output serialiser.
 Slow evaluations must not prevent the adapter from receiving termination or
 cancellation requests.
 
@@ -278,7 +278,7 @@ relative loading paths, submodule identities, readers, and phase instances.
 Selected modules must bypass ordinary cached bytecode when source instrumentation
 is required. Leave unselected modules on the ordinary loading path. Debug builds
 never overwrite the project's normal `.zo` cache; see
-[Compiled instrumented code](#compiled-instrumented-code). The hook behavior is specified by Racket's
+[Compiled instrumented code](#compiled-instrumented-code). The hook behaviour is specified by Racket's
 [evaluation and compilation reference](https://docs.racket-lang.org/reference/eval.html).
 
 An implementation must not expand a module once to discover breakpoints and then
@@ -361,9 +361,9 @@ is the same contract as `raco make`.
 ### Semantic obligations
 
 Instrumentation must preserve evaluation order, multiple-value arity, mutation,
-exception propagation, proper tail recursion, continuation behavior, and
+exception propagation, proper tail recursion, continuation behaviour, and
 `dynamic-wind` effects, except for deliberate debugger pauses and evaluations.
-Instrumentation changes timing, allocation, and optimization; it is not
+Instrumentation changes timing, allocation, and optimisation; it is not
 observationally invisible to code that inspects its own execution.
 
 Use private continuation marks for debugger context. Do not retain every tail
@@ -376,10 +376,10 @@ and [continuation marks](https://docs.racket-lang.org/reference/contmarks.html).
 
 Getter closures retain accessible lexical bindings. For ordinary assignable
 lexical variables, generate setters and accept the associated debug-build
-optimization cost. For module bindings, provide setters only when the expanded
+optimisation cost. For module bindings, provide setters only when the expanded
 program already establishes their mutability. Imported bindings and module
 constants remain read-only. The new core uses binding-preserving aliases for
-module evaluation. Test binding behavior as well as values;
+module evaluation. Test binding behaviour as well as values;
 do not make every module binding mutable merely for editor convenience.
 
 ## 5. Source and runtime model
@@ -407,14 +407,14 @@ and present it as the running version.
 
 Translate source coordinates from the captured text. Racket's counted port
 positions treat CRLF as one position and expand tabs in its column count; DAP
-columns count UTF-16 code units. Honor the client's zero/one-based preferences.
+columns count UTF-16 code units. Honour the client's zero/one-based preferences.
 Tests must include tabs, CRLF, non-BMP characters, and non-ASCII paths. See
 [Racket position counting](https://docs.racket-lang.org/reference/linecol.html)
 and the [DAP schema](https://raw.githubusercontent.com/microsoft/debug-adapter-protocol/main/debugAdapterProtocol.json).
 
 ### Source view and macros
 
-The default source view favors expressions written by the programmer and hides
+The default source view favours expressions written by the programmer and hides
 debugger machinery. Preserve original syntax locations and useful expansion
 origin information; use them as evidence, not as a guaranteed reversible source
 map. Missing or ambiguous origin data must remain visible as a limitation.
@@ -431,7 +431,7 @@ Racket documents these distinctions through its
 The stack is reconstructed from the current stop and the debugger's continuation
 marks. Name frames using source procedure names when available, falling back to
 `lambda` plus a source location. Module/phase identity is available as metadata.
-Uninstrumented regions may contribute labeled source context, but must not
+Uninstrumented regions may contribute labelled source context, but must not
 pretend to expose live lexical frames.
 
 No synthetic history of eliminated tail callers appears as live stack frames.
@@ -443,7 +443,7 @@ Each step command records its starting event sequence and dynamic return/context
 identity. This is separate from persistent user breakpoints. The algorithm must
 be proved by the semantic fixtures before its interface is treated as stable.
 
-| Command | Intended behavior |
+| Command | Intended behaviour |
 | --- | --- |
 | Step In | Stop at the next visible expression event, including entry to an instrumented callee. |
 | Step Over | At a non-tail expression entry, run to that occurrence's completion, or a user breakpoint/exception/control transfer encountered first. |
@@ -453,7 +453,7 @@ be proved by the semantic fixtures before its interface is treated as stable.
 For a tail expression there is no separate local return boundary. Step Over
 follows the enclosing return context instead; it may reach the caller, finish
 the interaction, or finish the program. Explain this in the stop description.
-Do not synthesize an after-hook that destroys tail position just to make the
+Do not synthesise an after-hook that destroys tail position just to make the
 button look uniform.
 
 When a continuation abandons a step target, stop at the first visible event
@@ -497,7 +497,7 @@ must produce an honest limitation rather than misleading evaluation.
 
 Execute paused evaluation on the paused program thread, preserving its dynamic
 context. Selecting an older frame selects that frame's lexical environment; it
-does not magically restore that caller's historical parameterization. Document
+does not magically restore that caller's historical parameterisation. Document
 that dynamic parameters come from the pause site.
 
 During paused evaluation, suppress recursive debugger hooks and isolate the
@@ -525,7 +525,7 @@ thread. The adapter must remain responsive enough to terminate the worker.
 | Procedures | Name when available without program callbacks; expandable arity, without an invented list of closure captures |
 | Syntax objects | Bounded datum preview; expandable datum and source coordinates |
 | Promises, ports, threads, continuations | Descriptive handles; no implicit forcing, reading, execution, or resumption |
-| Uninitialized/unavailable bindings | Explicit unavailable state, distinct from `#f` and `#<void>` |
+| Uninitialised/unavailable bindings | Explicit unavailable state, distinct from `#f` and `#<void>` |
 
 Implement a bounded structural renderer. Default preview must not call arbitrary
 custom writers, force promises, or invoke object methods. Treat impersonated or
@@ -557,7 +557,7 @@ and places are not automatically inspectable Racket-thread frames.
 The default stop suspends the triggering thread at a cooperative instrumentation
 point. Other threads can continue. Report `allThreadsStopped: false`; shared
 objects may consequently change during inspection. Several threads can have
-independent pending stops, serialized into DAP events by the adapter.
+independent pending stops, serialised into DAP events by the adapter.
 
 Implement Pause as a cooperative request acknowledged at a safe point. Blocking
 or native code may delay acknowledgment; do not report it stopped prematurely.
@@ -572,7 +572,7 @@ and native/FFI execution need explicit support boundaries and later fixtures.
 ### Exceptions
 
 The first exception filter is **uncaught**. Preserve normal Racket handler and
-exit behavior after inspection. A stopped uncaught exception is not a promise
+exit behaviour after inspection. A stopped uncaught exception is not a promise
 that Continue can resume the failed expression; Continue allows error handling
 and termination to finish.
 
@@ -632,7 +632,7 @@ program input, and an explicit submodule path.
 With no `submodule`, use command-line-style entry: instantiate the root module
 and invoke its `main` submodule once if present. `"submodule": ["test"]` selects
 the test submodule without invoking `main`. `"submodule": []` loads only the root
-module. Test these rules against Racket's runner behavior. Launching a test
+module. Test these rules against Racket's runner behaviour. Launching a test
 submodule is not a claim to reproduce every `raco test` option or isolation mode.
 
 An interactive session keeps its runner available after the entry action. When
@@ -650,9 +650,9 @@ Initial DAP surface, enabled as implementation milestones pass:
 - Output, breakpoint, stopped, continued, thread, exited, and terminated events
   where the corresponding lifecycle actually occurs.
 
-Capabilities describe implemented behavior. Do not advertise restartFrame,
+Capabilities describe implemented behaviour. Do not advertise restartFrame,
 reverse execution, native disassembly, data breakpoints, or arbitrary-process
-attach. In particular, attaching to an already optimized process does not
+attach. In particular, attaching to an already optimised process does not
 retroactively install lexical accessors and source instrumentation.
 
 ## 10. Delivery sequence and proof gates
@@ -667,7 +667,7 @@ manual debugger evaluations out of equivalence comparisons. Prove:
   and `begin0` preserve arity, results, and effect order.
 - Non-tail recursion and same-source macro occurrences remain distinguishable.
 - `call/cc`, composable/delimited continuations, re-entry, cross-thread invocation,
-  and `dynamic-wind` preserve behavior and implement the proposed step policy.
+  and `dynamic-wind` preserve behaviour and implement the proposed step policy.
 - Modules, submodules, phase-shifted imports, and transformer effects are not
   accidentally loaded or expanded twice by instrumentation.
 - Frame evaluation resolves lexical shadowing and module names; supported
@@ -689,10 +689,10 @@ client as well as a protocol harness.
 Finish expression/line stepping, multiple source files, conditional breakpoints,
 logpoints, bounded value inspection, uncaught errors, test submodule launch,
 and interactive module sessions. Verify stale-handle rejection, source edits,
-thread-stop interleavings, canceled evaluation, and repeated fresh launches.
+thread-stop interleavings, cancelled evaluation, and repeated fresh launches.
 
 This is the first useful release. Its thread and pause limitations must be
-documented, and common macros must have good source-level behavior.
+documented, and common macros must have good source-level behaviour.
 
 ### Gate D: broaden deliberately
 
@@ -764,10 +764,10 @@ tasks, and debugger operation with an empty Racket addon directory. Local
 dependency patches and their reproduction are recorded in `vendor/README.md`.
 
 The instrumentation component lives under `racketdap/instrumentation/`.
-Regression tests cover initialization-time module
+Regression tests cover initialisation-time module
 bindings, expansion-renamed identifiers, merged `module+` fragments, inherited
 bindings, and parent modules containing only syntax definitions. The new core
-retains the established stepping and continuation behavior.
+retains the established stepping and continuation behaviour.
 
 Breakpoint resolution remains restricted to the requested line. Stops on every
 caught exception, line coalescing, full TTY input, and
