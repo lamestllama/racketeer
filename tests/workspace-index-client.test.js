@@ -74,7 +74,7 @@ function indexPeer(t, initialize = () => ({}), starting = Promise.resolve(), tim
   connection.onRequest('initialize', () => initialize());
   connection.onNotification('initialized', () => {
     void connection.sendRequest('client/registerCapability', { registrations: [{ id: 'folder', method: 'workspace/didChangeWatchedFiles',
-      registerOptions: { watchers: [{ globPattern: { baseUri: uri(c.directory), pattern: '**/*' } }] } }] });
+      registerOptions: { watchers: [{ globPattern: { baseUri: uri(c.directory), pattern: '**/*' } }] } }] }).catch(() => {});
   });
   connection.onNotification('textDocument/didOpen', ({ textDocument: { uri: key, version, text } }) => {
     documents.set(key, { uri: key, identity: ++lifetimes, version, text });
@@ -406,4 +406,61 @@ test('a server that does not answer shutdown holds up dispose only briefly', { t
   const started = Date.now();
   await c.index.dispose();
   assert.ok(Date.now() - started < 5000);
+});
+
+// A rename the peer answers once `during` has happened.
+function renameDuring(t, during, version = 1) {
+  const c = indexPeer(t), doc = c.open('definition.rkt', definition);
+  c.connection.onRequest('textDocument/rename', async () => {
+    await during(c, doc);
+    return { documentChanges: [{ textDocument: { uri: doc.uri.toString(), version }, edits: [
+      { range: { start: { line: 2, character: 9 }, end: { line: 2, character: 15 } }, newText: 'squared' }] }] };
+  });
+  const request = c.index.start().then(() => c.refs(doc))
+    .then(() => c.index.provideRenameEdits(doc, { line: 2, character: 10 }, 'squared', rpc.CancellationToken.None));
+  return { c, doc, request };
+}
+const refused = /Workspace changed during rename/;
+
+test('a rename keeps its edit when an unrelated document opens during it', async t => {
+  const { request } = renameDuring(t, c => { c.open('uses.rkt', uses); });
+  assert.equal((await request).size, 1);
+});
+
+test('a rename keeps its edit when a document it read from disk opens unchanged during it', async t => {
+  const c = indexPeer(t), doc = c.open('definition.rkt', definition);
+  let other;
+  const target = uri(path.join(c.directory, 'uses.rkt'));
+  c.connection.onRequest('textDocument/rename', async () => {
+    other = c.open('uses.rkt', uses);
+    return { documentChanges: [{ textDocument: { uri: target, version: null }, edits: [] }] };
+  });
+  await c.index.start();
+  await c.index.provideRenameEdits(doc, { line: 2, character: 10 }, 'squared', rpc.CancellationToken.None);
+  other.isDirty = true;
+  c.connection.onRequest('textDocument/rename', async () =>
+    ({ documentChanges: [{ textDocument: { uri: target, version: null }, edits: [] }] }));
+  await assert.rejects(c.index.provideRenameEdits(doc, { line: 2, character: 10 }, 'squared', rpc.CancellationToken.None), refused,
+    'A buffer that differs from the disk text refuses the edit');
+});
+
+test('a rename refuses its edit when an edited buffer it analysed closes during it', async t => {
+  const c = indexPeer(t), doc = c.open('definition.rkt', definition), buffer = c.open('uses.rkt', uses);
+  buffer.version = 4; buffer.isDirty = true;
+  c.connection.onRequest('textDocument/rename', async () => {
+    buffer.isClosed = true; c.closed.emit(buffer);
+    return { documentChanges: [{ textDocument: { uri: buffer.uri.toString(), version: 4 }, edits: [] }] };
+  });
+  await c.index.start();
+  await assert.rejects(c.index.provideRenameEdits(doc, { line: 2, character: 10 }, 'squared', rpc.CancellationToken.None), refused);
+});
+
+test('a rename refuses its edit when a document it analysed moves to another version', async t => {
+  const { request } = renameDuring(t, () => {}, 5);
+  await assert.rejects(request, refused);
+});
+
+test('a rename refuses its edit when the disk changes during it', async t => {
+  const { request } = renameDuring(t, c => { c.disk.emit(c.parse(uri(path.join(c.directory, 'uses.rkt')))); });
+  await assert.rejects(request, refused);
 });

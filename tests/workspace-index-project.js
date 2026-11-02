@@ -89,12 +89,14 @@ async function project(t, env = {}) {
   const rename = (key, newName, position = { line: 2, character: 10 }, token = rpc.CancellationToken.None) =>
     connection.sendRequest(newName === undefined ? 'textDocument/prepareRename' : 'textDocument/rename', {
       textDocument: { uri: key }, position, ...(newName === undefined ? {} : { newName })
-    }, token).then(({ revision, ...result }) => result);
+    }, token).then(result => !result.documentChanges ? result : { ...result,
+      changes: Object.fromEntries(result.documentChanges.map(({ textDocument, edits }) => [textDocument.uri, edits])) });
   write('definition.rkt', definition); write('uses.rkt', uses);
   const origin = open('definition.rkt', definition);
   await connection.sendRequest('initialize', { processId: null, rootUri: null, workspaceFolders: roots.map(root => ({ uri: root, name: root })),
     capabilities: { textDocument: { rename: { prepareSupport: true } },
-      workspace: { configuration: true, didChangeWatchedFiles: { dynamicRegistration: true } },
+      workspace: { configuration: true, workspaceEdit: { documentChanges: true },
+        didChangeWatchedFiles: { dynamicRegistration: true } },
       experimental: { racketeer: { indexStatus: true, sourceReferences: true } } } });
   await notify('initialized', {});
   await update();

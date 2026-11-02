@@ -61,11 +61,6 @@
                   'experimental (hasheq 'racketeer (hasheq 'version 1 'indexStatus #t 'sourceReferences #t)))
           'serverInfo (hasheq 'name "racketeer-workspace-index")))
 
-;; The messages that change the source view. The client counts the same ones.
-(define synchronizing
-  '("textDocument/didOpen" "textDocument/didChange" "textDocument/didClose" "workspace/didChangeWatchedFiles"
-    "workspace/didChangeWorkspaceFolders" "workspace/didChangeConfiguration" "workspace/executeCommand"))
-
 (define (workspace-roots params)
   (match* ((hash-ref params 'workspaceFolders #f) (hash-ref params 'rootUri #f))
     [((? list? folders) _) (map (lambda (folder) (hash-ref folder 'uri)) folders)]
@@ -93,20 +88,21 @@
   (define roots '())
   ;; No pass starts until the first settings are known.
   (define settings #f)
-  ;; The revision of the last snapshot, and how many such messages have been read.
-  (define generation 0)
-  (define received 0)
+  ;; The revision of the last snapshot and the document versions it held. The
+  ;; pair is replaced whole, since results are compared with it on other threads.
+  (define submitted (cons 0 (hash)))
   ;; Settings are pulled from the client, so they arrive after later messages.
   ;; `settled` is ready when the settings asked for so far have been applied.
-  (define pulling 0)
   (define settled always-evt)
   (define awaited (make-hash))
   (define requests 0)
   (define (submit! #:documents-only? [documents-only? #f])
     (when settings
-      (set! generation (add1 generation))
+      (set! submitted (cons (add1 (car submitted))
+                            (for/hash ([(uri document) (in-hash documents)])
+                              (values uri (hash-ref document 'version)))))
       (workspace-analysis-update! engine
-        (hasheq 'revision generation 'documentsOnly documents-only? 'settings settings
+        (hasheq 'revision (car submitted) 'documentsOnly documents-only? 'settings settings
                 'roots roots 'documents (hash-values documents)))))
   (define (request! method params [on-answer void])
     (set! requests (add1 requests))
@@ -121,12 +117,10 @@
     (cond
       [(capability client-capabilities 'workspace 'configuration)
        (define applied (make-semaphore))
-       (set! pulling (add1 pulling))
        (set! settled (semaphore-peek-evt applied))
        (request! "workspace/configuration"
                  (hasheq 'items (list (hasheq 'section settings-section)))
                  (lambda (result)
-                   (set! pulling (sub1 pulling))
                    (set! settings (match result
                                     [(list (? hash? pulled) _ ...) pulled]
                                     [_ (or settings (hasheq))]))
@@ -161,13 +155,29 @@
                   (not (for/or ([part (in-list (explode-path (find-relative-path folder file)))])
                          (and (path? part) (member (path->string part) excluded)))))))))
   (thread watch-analysis-timer)
+  ;; Each file's edits name the version analysed: the buffer's, or null for the
+  ;; text on disk. The client refuses an edit whose documents have moved on.
+  (define (workspace-edit edit versions)
+    (if (capability client-capabilities 'workspace 'workspaceEdit 'documentChanges)
+        (hasheq 'documentChanges
+                (for/list ([(uri edits) (in-hash (hash-ref edit 'changes))])
+                  (hasheq 'textDocument
+                          (hasheq 'uri (symbol->string uri)
+                                  'version (hash-ref versions (symbol->string uri) (json-null)))
+                          'edits edits)))
+        edit))
   (define (response id operation result)
+    ;; LSP clients do not show ContentModified, and the user must try a rename again.
+    (define stale (error-response id request-failed "Workspace changed during rename. Try Rename again."))
     (match result
+      [(AnalysisResult _ value) #:when (eq? operation 'references) (success-response id value)]
       [(AnalysisResult revision value)
-       ;; The client compares `revision` with the messages it has sent. Null
-       ;; refuses a result that a message already read has overtaken.
-       (success-response id (if (eq? operation 'references) value
-                                (hash-set value 'revision (if (and (= revision generation) (zero? pulling)) received (json-null)))))]
+       (define current submitted)
+       (cond
+         [(not (= revision (car current))) stale]
+         [(eq? operation 'rename) (success-response id (workspace-edit value (cdr current)))]
+         [else (success-response id value)])]
+      [(AnalysisFailure 'changed _) #:when (not (eq? operation 'references)) stale]
       [(AnalysisFailure reason message)
        (error-response id (case reason
                             [(cancelled) request-cancelled]
@@ -179,7 +189,6 @@
   (define (close-engine!)
     (sync/timeout 5 (thread (lambda () (workspace-analysis-close! engine)))))
   (define (serve-message id method params)
-    (when (member method synchronizing) (set! received (add1 received)))
     (match method
       ["initialized"
        (watch-folders! roots '())

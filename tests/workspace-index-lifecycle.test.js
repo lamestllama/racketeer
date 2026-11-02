@@ -132,6 +132,17 @@ test('a captured source answers references privately while its text is the file\
   assert.equal((await server.next()).error.code, -32801);
 });
 
+test('a client without documentChanges receives a plain WorkspaceEdit', { timeout: 120000 }, async t => {
+  const directory = workspace(t), server = rawServer(t);
+  await initialize(server, {}, directory);
+  open(server, directory);
+  server.send({ id: 1, method: 'textDocument/rename', params: { newName: 'squared',
+    textDocument: { uri: uri(path.join(directory, 'definition.rkt')) }, position: { line: 2, character: 10 } } });
+  const { result } = await server.next();
+  assert.equal(result.documentChanges, undefined);
+  assert.equal(result.changes[uri(path.join(directory, 'definition.rkt'))].length, 2);
+});
+
 test('index status is sent only to a client that asked for it', { timeout: 120000 }, async t => {
   const directory = workspace(t);
   const plain = rawServer(t);

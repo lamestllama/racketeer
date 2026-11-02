@@ -102,7 +102,9 @@ test('rename refuses partial indexes, stale disk snapshots and retired requests'
   await p.update();
   const retired = p.rename(p.origin, 'squared');
   p.open('definition.rkt', definition, 1); await p.update();
-  await assert.rejects(retired, error => error.code === -32801);
+  await assert.rejects(retired, error => error.code === -32803 &&
+    error.message === 'Workspace changed during rename. Try Rename again.');
+  assert.equal(fs.readFileSync(p.filename('definition.rkt'), 'utf8'), definition, 'A refused rename makes no edits');
   const cancel = new rpc.CancellationTokenSource();
   const cancelled = p.rename(p.origin, 'squared', undefined, cancel.token);
   cancel.cancel();
@@ -129,4 +131,15 @@ test('workspace rename releases expansion state within the worker memory limit',
       assert.equal(edited(uses, changes[uri(p.filename(`consumer-${index}.rkt`))]), uses.replace('square', name));
     }
   }
+});
+
+test('rename names the version of each buffer it analysed, and null for text on disk', { timeout: 120000 }, async t => {
+  const p = await project(t), consumer = p.open('uses.rkt', uses + '(square 4)\n', 7);
+  await p.update();
+  const { documentChanges } = await p.rename(p.origin, 'squared');
+  const versions = Object.fromEntries(documentChanges.map(({ textDocument }) => [textDocument.uri, textDocument.version]));
+  assert.deepEqual(versions, { [p.origin]: 1, [consumer]: 7 });
+  p.documents.delete(consumer); await p.update();
+  const after = await p.rename(p.origin, 'squared');
+  assert.equal(after.documentChanges.find(({ textDocument }) => textDocument.uri === consumer).textDocument.version, null);
 });

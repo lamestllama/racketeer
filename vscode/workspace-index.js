@@ -19,10 +19,9 @@ const sourceSuffixes = ['.rkt', '.ss', '.scrbl', '.rhm', '.rktl', '.rktd', ''];
 // fake document opens to the language server or consumes the server's live traces.
 function createWorkspaceIndex(context, { executable, timeout, output, onStatus }) {
   let connection, starting, disposed = false, requested = false, synchronized = false;
-  // `revision` counts the messages sent that change the source view, as the
-  // server counts those it has read, so a rename's answer shows whether any is
-  // still on its way.
-  let revision = 0, identity = 0, heard = Date.now(), extensions = {}, folders = [];
+  // `outside` counts what was reported from outside the documents: disk, settings
+  // and folders. A rename refuses its edit if any arrived while it was asked.
+  let outside = 0, identity = 0, heard = Date.now(), extensions = {}, folders = [];
   const identities = new WeakMap();
   // The documents the server holds, at the versions it has.
   const versions = new WeakMap();
@@ -44,7 +43,6 @@ function createWorkspaceIndex(context, { executable, timeout, output, onStatus }
     { timeout, name: 'Workspace index', onTimeout: failure });
   const currentFolders = () => (vscode.workspace.workspaceFolders || []).map(folder => ({ uri: folder.uri.toString(), name: folder.name }));
   function notify(method, params) {
-    revision++;
     void connection.sendNotification(method, params).catch(failure);
   }
   // Sends over a live connection. Before there is one, an event can still start
@@ -74,11 +72,15 @@ function createWorkspaceIndex(context, { executable, timeout, output, onStatus }
     const absent = (list, other) => list.filter(folder => !other.some(item => item.uri === folder.uri));
     const added = absent(current, folders), removed = absent(folders, current);
     folders = current;
-    if (added.length || removed.length) notify('workspace/didChangeWorkspaceFolders', { event: { added, removed } });
+    if (added.length || removed.length) {
+      outside++;
+      notify('workspace/didChangeWorkspaceFolders', { event: { added, removed } });
+    }
   }
   function watch({ id, registerOptions }) {
     const report = type => uri => {
       if (!sourceSuffixes.includes(path.extname(uri.fsPath).toLowerCase())) return;
+      outside++;
       synchronize(() => notify('workspace/didChangeWatchedFiles', { changes: [{ uri: uri.toString(), type }] }));
     };
     const items = registerOptions.watchers.flatMap(({ globPattern }) => {
@@ -119,7 +121,7 @@ function createWorkspaceIndex(context, { executable, timeout, output, onStatus }
         processId: null, clientInfo: { name: 'Racketeer' }, rootUri: null, workspaceFolders: folders,
         capabilities: { general: { positionEncodings: ['utf-16'] },
           textDocument: { rename: { prepareSupport: true } },
-          workspace: { configuration: true, workspaceFolders: true,
+          workspace: { configuration: true, workspaceFolders: true, workspaceEdit: { documentChanges: true },
             didChangeWatchedFiles: { dynamicRegistration: true, relativePatternSupport: true } },
           experimental: { racketeer: { indexStatus: true, sourceReferences: true } } }
       });
@@ -138,8 +140,8 @@ function createWorkspaceIndex(context, { executable, timeout, output, onStatus }
     return starting;
   }
   function refresh() {
+    outside++;
     synchronize(() => {
-      revision++;
       void connection.sendRequest('workspace/executeCommand', { command: 'racketeer.refreshWorkspaceIndex' }).catch(failure);
     });
   }
@@ -159,6 +161,7 @@ function createWorkspaceIndex(context, { executable, timeout, output, onStatus }
     vscode.workspace.onDidChangeWorkspaceFolders(() => synchronize(didChangeFolders)),
     vscode.workspace.onDidChangeConfiguration(event => {
       if (event.affectsConfiguration(settingsSection)) {
+        outside++;
         synchronize(() => notify('workspace/didChangeConfiguration', { settings: null }));
       }
     })
@@ -187,7 +190,7 @@ function createWorkspaceIndex(context, { executable, timeout, output, onStatus }
   async function renameRequest(method, document, position, token, newName) {
     if (!enabled()) throw new Error('Enable workspace analysis to rename safely across files.');
     if (disposed || token.isCancellationRequested) return;
-    const version = document.version, owned = documentIdentity(document);
+    const version = document.version, owned = documentIdentity(document), reported = outside;
     await start();
     if (disposed || token.isCancellationRequested) return;
     const response = await ask(method, {
@@ -199,12 +202,20 @@ function createWorkspaceIndex(context, { executable, timeout, output, onStatus }
     });
     if (disposed || token.isCancellationRequested) return;
     if (response === silent) throw new Error('The workspace index stopped answering. Run Racket: Restart Language Server.');
-    if (response.revision !== revision || version !== document.version ||
+    if (reported !== outside || version !== document.version ||
         identities.get(document) !== owned || document.isClosed ||
-        !vscode.workspace.textDocuments.includes(document)) {
+        !vscode.workspace.textDocuments.includes(document) ||
+        !(response.documentChanges || []).every(editable)) {
       throw new Error('Workspace changed during rename. Try Rename again.');
     }
     return response;
+  }
+  // An edit stands while each file holds what was analysed: an open document at
+  // the version named, or for the text on disk, no buffer that differs from it.
+  // A document that merely opened, unchanged, leaves the edit standing.
+  function editable({ textDocument: { uri, version } }) {
+    const open = vscode.workspace.textDocuments.find(document => document.uri.toString() === uri && !document.isClosed);
+    return version === null ? !open?.isDirty : open?.version === version;
   }
   // The process is ended either way, so a server slow to close its engine
   // holds up restarting language tools only briefly.
@@ -227,8 +238,8 @@ function createWorkspaceIndex(context, { executable, timeout, output, onStatus }
       const result = await renameRequest('textDocument/rename', document, position, token, newName);
       if (!result) return;
       const edit = new vscode.WorkspaceEdit();
-      for (const [uri, changes] of Object.entries(result.changes)) {
-        edit.set(vscode.Uri.parse(uri), changes.map(change => new vscode.TextEdit(range(change.range), change.newText)));
+      for (const { textDocument: { uri }, edits } of result.documentChanges) {
+        edit.set(vscode.Uri.parse(uri), edits.map(change => new vscode.TextEdit(range(change.range), change.newText)));
       }
       return edit;
     },
