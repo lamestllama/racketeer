@@ -199,9 +199,9 @@
          (append (list 'ok) (discover roots excluded limit)
                  (list (for/hash ([file (in-list files)]) (values file (disk-fingerprint file)))
                        (for/hash ([form (in-list forms)]) (values form (resolved-form form)))))]
-        [(list 'analyse path max-bytes buffer query buffers roots)
+        [(list 'analyse path max-bytes buffer query buffers roots before)
          (observe path)
-         (match-define (list contribution text count references record) (analyse path max-bytes buffer query buffers roots))
+         (match-define (list contribution text count references record) (analyse path max-bytes buffer query buffers roots before))
          (if contribution (list 'ok (contribution->datum contribution) text count references record) '(changed))]
         [(list 'rename sources roots excluded limit buffers path position name)
          (define (check-snapshot!)
@@ -414,7 +414,7 @@
                        (call-with-input-file* file
                          (lambda (in) (read-string (add1 (string-length text)) in)))))))))
 
-(define (analyse path max-bytes buffer query buffers roots)
+(define (analyse path max-bytes buffer query buffers roots before)
   (let/ec changed
     (define captured-text (and query (cadddr query)))
     (define bytes
@@ -433,7 +433,6 @@
     (define reads (make-hash))
     (define resolutions (make-hash))
     (define externals (make-log-receiver (current-logger) 'info 'cm-accomplice))
-    (define started (current-seconds))
     ;; Trace construction and queries use a fresh namespace as well as expansion.
     ;; A previously loaded dependency must not survive a watched change.
     (parameterize ([current-namespace (make-base-namespace)]
@@ -467,7 +466,7 @@
                               (and (Document-Reference-Result-module-binding result)
                                    (binding->datum (Document-Reference-Result-module-binding result)))))))
             (and (not query)
-                 (list (sha1-bytes bytes) (hash->list reads) (external-reads externals started)
+                 (list (sha1-bytes bytes) (hash->list reads) (external-reads externals before)
                        (hash->list resolutions)))))))))
 
 ;; What a file's analysis read is taken while it reads, so that a file changing
@@ -524,19 +523,22 @@
   (with-handlers ([exn:fail? (lambda (_) #f)])
     (resolved-module-path-name ((current-module-name-resolver) form #f #f #f))))
 
-;; Registered files are logged after the expansion read them, so a file changed
-;; since the analysis began cannot be matched to what it read: 'changing matches nothing.
-(define (external-reads receiver started)
+;; A registered file is logged once the expansion has read it, so what it holds now
+;; may not be what was read, whatever its date says. Only a file that holds the same at
+;; the start of the pass and at the end of the analysis can be matched to what was read:
+;; 'changing matches nothing. A file no earlier pass has seen is read again by the next.
+(define (external-reads receiver before)
   (let drain ([files (hash)])
     (match (sync/timeout 0 receiver)
       [#f (hash->list files)]
       [(vector _ _ (? prefab-struct-key dependency) _)
        (define file (vector-ref (struct->vector dependency) 1))
        (drain (if (path? file)
-                  (hash-set files file
-                            (if (>= (file-or-directory-modify-seconds file #f (lambda () 0)) started)
-                                'changing
-                                (disk-fingerprint file)))
+                  (let ([now (disk-fingerprint file)])
+                    (hash-set files file
+                              (if (and (hash-has-key? before file)
+                                       (equal? now (hash-ref before file)))
+                                  now 'changing)))
                   files))]
       [_ (drain files)])))
 
@@ -585,11 +587,15 @@
       (unless (cancelled? run)
         (set-WorkspaceAnalysis-results! engine (change (WorkspaceAnalysis-results engine)))))))
 
-(define (analyse-file engine run path)
+(define (analyse-file engine run path disk)
+  (define held (hash-ref (WorkspaceAnalysis-results engine) path #f))
+  (define before
+    (for/hash ([entry (in-list (if held (Result-externals held) '()))])
+      (values (car entry) (hash-ref disk (car entry) 'unknown))))
   (define config (Run-settings run))
   (match (compute engine run (Settings-timeout config)
                   (list 'analyse path (Settings-max-bytes config)
-                        (hash-ref (Run-buffers run) path #f) #f (Run-buffers run) (Run-roots run)))
+                        (hash-ref (Run-buffers run) path #f) #f (Run-buffers run) (Run-roots run) before))
     [(list 'ok contribution text count _ (list fingerprint reads externals resolutions))
      (define (shared entries)
        (for/list ([entry (in-list entries)])
@@ -634,7 +640,7 @@
              (define held (hash-ref (WorkspaceAnalysis-results engine) path #f))
              (match (if (and held (result-current? held run path view disk resolved))
                         held
-                        (analyse-file engine run path))
+                        (analyse-file engine run path disk))
                [(? Result? result)
                 (set! bytes (+ bytes (bytes-length (string->bytes/utf-8 (Result-text result)))))
                 (set! facts (+ facts (Result-facts result)))
@@ -876,7 +882,7 @@
             (compute engine run (Settings-timeout (Run-settings run))
                      (list 'analyse path (Settings-max-bytes (Run-settings run))
                            (hash-ref doc 'text) (list uri (hash-ref params 'position) include? captured-text)
-                           (Run-buffers run) (Run-roots run))
+                           (Run-buffers run) (Run-roots run) (hash))
                      (choice-evt cancel retired)))
           (or (and result
                    (settle run path

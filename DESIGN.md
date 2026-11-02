@@ -311,7 +311,7 @@ records, as it reads:
 | --- | --- |
 | The file's own text | Hash of its open buffer, or of the file |
 | Every module file loaded, however indirectly, including a `.rkt` found absent where a `.ss` was used | Hash of its open buffer, or of the file, or that it is absent |
-| Every file registered with the compiler, as `include` does | Hash of the file: these are read from the disk, whatever a buffer holds |
+| Every file registered with the compiler, as `include` does | Hash of the file: these are read from the disk, whatever a buffer holds. It stands only if the file held the same when the pass began, so the pass after the first sight of such a file reads it again |
 | Every collection module path | What the module name resolver answers now, which covers a link changed and a file added in an earlier root |
 
 The worker that discovers files takes these hashes and resolutions together at

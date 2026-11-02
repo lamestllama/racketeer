@@ -232,6 +232,54 @@ test('a library with only compiled code is compared by that code', { timeout: 18
   assert.equal(await count(), 0, 'Replaced compiled code is read afresh');
 });
 
+test('a registered file replaced during an analysis is not recorded with its later bytes', { timeout: 180000 }, async t => {
+  const p = await project(t);
+  const part = p.filename('part.txt'), gate = p.filename('entered'), release = p.filename('release');
+  fs.writeFileSync(part, '(define-syntax-rule (call f) (f 1))\n');
+  const past = new Date(Date.now() - 60000);
+  fs.utimesSync(part, past, past);
+  p.write('uses.rkt', `#lang racket/base
+(require racket/include "definition.rkt" (for-syntax racket/base))
+(include "part.txt")
+(begin-for-syntax
+  (unless (file-exists? ${JSON.stringify(release)})
+    (call-with-output-file ${JSON.stringify(gate)} #:exists 'truncate void)
+    (let wait () (unless (file-exists? ${JSON.stringify(release)}) (sleep 0.01) (wait)))))
+(call square)\n`);
+  await p.update();
+  const consumer = uri(p.filename('uses.rkt'));
+  const first = p.references(p.origin);
+  const deadline = Date.now() + 30000;
+  while (!fs.existsSync(gate)) {
+    assert.ok(Date.now() < deadline, p.diagnostics());
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  // A copy that keeps its date, while the analysis holds what it read before.
+  fs.writeFileSync(part, '(define-syntax-rule (call f) 1)\n');
+  fs.utimesSync(part, past, past);
+  fs.writeFileSync(release, '');
+  assert.equal(from(await first, consumer).length, 1, 'The analysis read the former text');
+  await p.diskChange('part.txt');
+  assert.equal(from(await p.references(p.origin), consumer).length, 0, 'The next pass reads what the file holds');
+});
+
+test('a registered file seen unchanged from one pass to the next keeps its reader\'s result', { timeout: 180000 }, async t => {
+  const p = await project(t);
+  p.write('part.txt', '(define-syntax-rule (call f) (f 1))\n');
+  const consumer = tracked(p, 'consumer', '(require racket/include "definition.rkt")\n(include "part.txt")\n(call square)');
+  p.write('consumer.rkt', consumer.text);
+  await p.update();
+  const count = async () => from(await p.references(p.origin), uri(p.filename('consumer.rkt'))).length;
+  assert.equal(await count(), 1, p.diagnostics());
+  // The first pass has no earlier sight of the file, so the second reads it again.
+  await p.update();
+  assert.equal(await count(), 1);
+  const expansions = consumer.expansions();
+  await p.update();
+  assert.equal(await count(), 1);
+  assert.equal(consumer.expansions(), expansions, 'Seen unchanged at both ends, the result stands');
+});
+
 test('a file deleted is dropped, its consumers fail as in a fresh pass, and the rest are reused', { timeout: 180000 }, async t => {
   const p = await workspace(t);
   const before = { other: p.other.expansions() };
