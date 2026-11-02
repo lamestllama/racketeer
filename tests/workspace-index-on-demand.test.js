@@ -186,7 +186,7 @@ test('a request refuses in words once sources have kept changing past the time l
   t.after(writer.stop);
   const started = Date.now();
   const answers = Promise.all([settled(p.references(p.origin)), settled(p.rename(p.origin, 'squared'))]);
-  const outcome = await Promise.race([answers, delay(30000, 'still waiting')]);
+  const outcome = await Promise.race([answers, delay(30000, 'still waiting', { ref: false })]);
   writer.stop();
   assert.notEqual(outcome, 'still waiting', `Pending after ${writer.count()} rewrites`);
   assert.ok(Date.now() - started >= 4000, 'It waits out the time limit first');

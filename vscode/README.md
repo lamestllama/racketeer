@@ -687,10 +687,12 @@ stale snapshots, and says which file and limit stopped a worker. Background diag
 Settings under `racket-langserver.workspaceAnalysis` control whether analysis
 is enabled, excluded directory names, file count, maximum source size and the
 time limit per file. Defaults are 1,000 files, 1 MiB per file and 20 seconds per
-file. A pass runs at most three workers at once and no more than half the number of
-processors, each in a process of its own, and gives the same answers as one at a time.
-Compile-time code in different files can therefore run at the same moment. Each
-worker adds about 260 MB to the index's memory, more with heavy libraries, and has a
+file. A request waiting while sources keep changing, as under a generator or a build,
+stops at that time limit and says so. A pass runs at most three workers at once and no
+more than half the number of processors, each in a process of its own, and gives the
+same answers as one at a time. Compile-time code in different files can therefore run at
+the same moment. Each worker adds about 260 MB to the index's memory, more with heavy
+libraries, and has a
 2 GiB limit on the memory its analysis adds to its own libraries. Analysing a
 file of 1 MiB can need about 1 GiB; the limit is there to stop compile-time code
 that never releases what it allocates, and it applies to each worker rather than

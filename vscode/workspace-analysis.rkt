@@ -952,13 +952,13 @@
       [(sync/timeout 0 cancel) (AnalysisFailure 'cancelled "Request cancelled")]
       [(WorkspaceAnalysis-closed? engine) (AnalysisFailure 'closed "Workspace analysis closed")]
       [(not doc) (AnalysisFailure 'changed "Document changed during analysis")]
+      [(not (Settings-enabled? (Run-settings run)))
+       (if (eq? operation 'references) (accepted run '())
+           (AnalysisFailure 'unavailable "Enable workspace analysis to rename safely across files."))]
       [(still-changing? run)
        (AnalysisFailure 'unsettled
                         (format "Workspace sources kept changing for ~a seconds. Try again when they settle."
                                 (Settings-timeout (Run-settings run))))]
-      [(not (Settings-enabled? (Run-settings run)))
-       (if (eq? operation 'references) (accepted run '())
-           (AnalysisFailure 'unavailable "Enable workspace analysis to rename safely across files."))]
       [else
        (define retired (retired-evt run path))
        (wait-for-pass engine run
