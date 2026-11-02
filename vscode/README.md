@@ -165,7 +165,9 @@ At a return stop the marker moves to the expression's closing parenthesis;
 open **Return values** to inspect its values. **Waiting for return** identifies a caller
 whose calculation is still pending. Stepping is by expression, so several stops
 can share a source line. Expanded forms can also share a larger source range,
-which currently makes some stops highlight a whole function.
+which currently makes some stops highlight a whole function. Code a macro generates
+has no stops at the location of an expression written there, so the value shown
+against that expression is its own.
 
 Captured debugger sources support hover, Go to Definition and Find References
 through the language server. Navigation opens current project files. These

@@ -40,6 +40,16 @@
        (run-module program #:language language
                    #:on-event (lambda (stop) (set! rows (cons (row stop) rows)))))
      (reverse rows))))
+;; What a program prints, run under the debugger or not.
+(define (printed text #:instrument? instrument?)
+  (with-program
+   text
+   (lambda (program)
+     (define output (open-output-string))
+     (parameterize ([current-output-port output])
+       (run-module program #:instrument? instrument?
+                   #:on-event (and instrument? void)))
+     (get-output-string output))))
 ;; The stop at which the first stop matching at is reached, then where each press in
 ;; presses lands, starting from it.
 (define (presses text at modes)
@@ -117,4 +127,135 @@
     ;; The language line holds no code, so the two read the same text from line two.
     (define as-file (stops body #:language 'racket/base))
     (check-equal? as-file as-module)
-    (check-false (findf (lambda (row) (string-prefix? (cadr row) "(define (")) as-file))))
+    (check-false (findf (lambda (row) (string-prefix? (cadr row) "(define (")) as-file)))
+  ;; Each row here is text the program holds and the value it has. Macros generate the
+  ;; rest, and give some of it the location of an expression they were handed.
+  (define f "#lang racket/base\n(define (f x) (* x 2))\n")
+  (define f-stops '((before "(* x 2)")))
+  ;; A for loop at module level is its loop followed by a separate (void), so it has no value.
+  (define (program . lines) (string-append f (string-join lines "\n") "\n"))
+  (test-case "the expression producing a for loop's sequence stops once, with its own value"
+    (check-equal?
+     (stops (program "(for ([i (list 1 2)])" "  (f i))"))
+     `((before "(for ([i (list 1 2)])\n  (f i))")
+       (before "(list 1 2)") (after "(list 1 2)" "(1 2)")
+       (before "(f i)") ,@f-stops (after "(f i)" "2")
+       (before "(f i)") ,@f-stops (after "(f i)" "4")
+       (after "(for ([i (list 1 2)])\n  (f i))"))))
+  (test-case "for/list stops at its name with the list it returns, not at the list it builds"
+    (check-equal?
+     (stops (program "(for/list ([i (list 1 2)])" "  (f i))"))
+     `((before "for/list")
+       (before "(list 1 2)") (after "(list 1 2)" "(1 2)")
+       (before "(f i)") ,@f-stops (after "(f i)" "2")
+       (before "(f i)") ,@f-stops (after "(f i)" "4")
+       (after "for/list" "(2 4)"))))
+  (test-case "for/fold stops for its accumulator's expressions and its result"
+    (check-equal?
+     (stops (program "(for/fold ([acc 0]) ([i (in-range 2)])" "  (+ acc (f i)))"))
+     `((before "(for/fold ([acc 0]) ([i (in-range 2)])\n  (+ acc (f i)))")
+       (before "(+ acc (f i))") (before "(f i)") ,@f-stops (after "(f i)" "0") (after "(+ acc (f i))" "0")
+       (before "(+ acc (f i))") (before "(f i)") ,@f-stops (after "(f i)" "2") (after "(+ acc (f i))" "2")
+       (after "(for/fold ([acc 0]) ([i (in-range 2)])\n  (+ acc (f i)))" "2"))))
+  (for ([clause '("(in-list '(1))" "(in-range 1)" "(in-vector (vector 1))" "'(1)" "1")])
+    (test-case (format "a for clause over ~a shows nothing that it does not evaluate" clause)
+      (define rows
+        (stops (program (format "(for ([i ~a]) (f i))" clause))))
+      (define loop (format "(for ([i ~a]) (f i))" clause))
+      (check-equal? (filter (lambda (row) (not (member (cadr row) (list loop "(f i)" "(* x 2)")))) rows)
+                    (if (equal? clause "(in-vector (vector 1))")
+                        '((before "(vector 1)") (after "(vector 1)" "#(1)"))
+                        '()))
+      (check-equal? (length (filter (lambda (row) (equal? (cadr row) loop)) rows)) 2)))
+  (test-case "a for clause over a variable stops once for the sequence built from it"
+    (define rows (stops (program "(define lst '(1 2))" "(for ([i lst]) (f i))")))
+    (check-equal? (map car (filter (lambda (row) (equal? (cadr row) "lst")) rows))
+                  '(before after)))
+  (test-case "a for loop's body keeps every stop of its own expressions"
+    (check-equal?
+     (stops (program "(for ([i (list 1)] #:when (f i))" "  (+ i 1)" "  (f i))"))
+     `((before "(for ([i (list 1)] #:when (f i))\n  (+ i 1)\n  (f i))")
+       (before "(list 1)") (after "(list 1)" "(1)")
+       (before "(f i)") ,@f-stops (after "(f i)" "2")
+       (before "(+ i 1)") (after "(+ i 1)" "2")
+       (before "(f i)") ,@f-stops (after "(f i)" "2")
+       (after "(for ([i (list 1)] #:when (f i))\n  (+ i 1)\n  (f i))"))))
+  (test-case "match stops for its expressions, not for the clauses it generates"
+    (check-equal?
+     (stops (program "(require racket/match)" "(match (list 1 2) [(list a b) (f a)] [_ (f 0)])"))
+     `((before "(match (list 1 2) [(list a b) (f a)] [_ (f 0)])")
+       (before "(list 1 2)") (after "(list 1 2)" "(1 2)")
+       (before "(f a)") ,@f-stops
+       (after "(match (list 1 2) [(list a b) (f a)] [_ (f 0)])" "2"))))
+  (test-case "cond stops for each clause it reaches"
+    (check-equal?
+     (stops (program "(cond [#f (f 1)] [(f 2) (f 3)] [else (f 4)])"))
+     `((before "(cond [#f (f 1)] [(f 2) (f 3)] [else (f 4)])")
+       (before "(f 2)") ,@f-stops (after "(f 2)" "4")
+       (before "(f 3)") ,@f-stops (after "(f 3)" "6")
+       (after "(cond [#f (f 1)] [(f 2) (f 3)] [else (f 4)])" "6"))))
+  (test-case "a keyword function's call stops for its arguments and body, not at its definition"
+    (define definition "(define (kw a #:k [k (f 3)]) (+ a k))")
+    (check-equal?
+     (stops (program definition "(kw 1)" "(kw 1 #:k (f 1))"))
+     `((before ,definition) (after ,definition "#<procedure>")
+       (before "(kw 1)") (before "(f 3)") ,@f-stops (after "(f 3)" "6") (before "(+ a k)")
+       (after "(kw 1)" "7")
+       (before "(kw 1 #:k (f 1))") (before "(f 1)") ,@f-stops (after "(f 1)" "2") (before "(+ a k)")
+       (after "(kw 1 #:k (f 1))" "3"))))
+  (test-case "a function whose name is a macro stops at its name and at the whole call"
+    (check-equal?
+     (stops (program "(sort (list 2 1) <)"))
+     '((before "sort") (before "(list 2 1)") (after "(list 2 1)" "(2 1)")
+       (before "(sort (list 2 1) <)") (after "(sort (list 2 1) <)" "(1 2)")
+       (after "sort" "(1 2)")))
+    (check-equal?
+     (map car (stops (program "(void (thread void))")))
+     '(before before before after after after)))
+  (test-case "a macro argument used twice stops at each use"
+    (check-equal?
+     (stops (program "(define-syntax-rule (twice e) (list e e))" "(twice (f 1))"))
+     `((before "(twice (f 1))")
+       (before "(f 1)") ,@f-stops (after "(f 1)" "2")
+       (before "(f 1)") ,@f-stops (after "(f 1)" "2")
+       (after "(twice (f 1))" "(2 2)"))))
+  (test-case "the code in a macro's template keeps its stops"
+    (check-equal?
+     (stops (program "(define-syntax-rule (tmpl e) (let ([t e]) (+ t (f t))))" "(tmpl (f 8))"))
+     `((before "(tmpl (f 8))")
+       (before "(f 8)") ,@f-stops (after "(f 8)" "16")
+       (before "(+ t (f t))") (before "(f t)") ,@f-stops (after "(f t)" "32") (after "(+ t (f t))" "48")
+       (after "(tmpl (f 8))" "48"))))
+  (test-case "a macro's generated call located at its argument leaves the range to the argument"
+    (check-equal?
+     (stops (program "(require (for-syntax racket/base))"
+                     "(define-syntax (located stx)"
+                     "  (syntax-case stx () [(_ e) (quasisyntax/loc #'e (f e))]))"
+                     "(void (located (f 7)))"))
+     `((before "(void (located (f 7)))")
+       (before "(f 7)") ,@f-stops (after "(f 7)" "14")
+       ,@f-stops
+       (after "(void (located (f 7)))" "#<void>"))))
+  (test-case "hiding generated stops changes nothing a program does"
+    (define text
+      (program
+       "(require racket/match)"
+       "(define lst '(1 2))"
+       "(define (kw a #:k [k (f 3)]) (+ a k))"
+       "(writeln (for/list ([i lst]) (f i)))"
+       "(writeln (for/fold ([acc 0]) ([i (in-range 3)]) (+ acc i)))"
+       "(for ([i (in-list lst)] [j '(3 4)]) (writeln (+ i j)))"
+       "(writeln (match lst [(list a b) (+ a b)]))"
+       "(writeln (cond [(assv 1 '((1 . 2))) => cdr] [else 0]))"
+       "(writeln (list (kw 1) (kw 1 #:k 2)))"
+       "(writeln (sort (list 2 1) <))"))
+    (check-equal? (printed text #:instrument? #t) (printed text #:instrument? #f))
+    (check-equal? (printed text #:instrument? #t)
+                  "(2 4)\n3\n4\n6\n3\n2\n(7 3)\n(1 2)\n"))
+  (test-case "a press from a stop inside generated code lands on a stop outside it"
+    (check-equal?
+     (presses (program "(for ([i (list 1)]) (f i))" "(void)")
+              '(before "(f i)") '(next next next))
+     '((after "(f i)" "2")
+       (after "(for ([i (list 1)]) (f i))")
+       (before "(void)")))))

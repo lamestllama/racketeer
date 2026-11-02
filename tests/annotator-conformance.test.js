@@ -332,6 +332,23 @@ test('both executions of a macro-duplicated source expression hit the breakpoint
   assert.equal(await finished(client), '1\n2\n');
 });
 
+test('a breakpoint on the expression producing a for sequence stops once, at its value', async t => {
+  const lines = [
+    '#lang racket/base',
+    '(for ([i (list 1 2)])',
+    '  (displayln i))'
+  ];
+  const column = lines[1].indexOf('(list 1 2)') + 1;
+  const { client, program } = await prepare(t, lines, [{ line: 2, column }]);
+  await ok(client.request('configurationDone'));
+  const { threadId, frame } = await stoppedFrame(client);
+  assert.deepEqual([frame.line, frame.column, frame.endColumn], [2, column, column + '(list 1 2)'.length]);
+  const { breakpoints } = await ok(client.request('breakpointLocations', { source: { path: program }, line: 2 }));
+  assert.equal(breakpoints.filter(location => location.column === column).length, 1);
+  await ok(client.request('continue', { threadId }));
+  assert.equal(await finished(client), '1\n2\n');
+});
+
 test('a paused main submodule can evaluate its initialized mutable module binding', async t => {
   const lines = [
     '#lang racket/base',

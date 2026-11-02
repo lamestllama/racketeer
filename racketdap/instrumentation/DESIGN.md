@@ -37,6 +37,14 @@ file or nowhere. The top of that expansion takes the location of the use's macro
 name, which the expander records in its origin, so the line that holds the use
 has a site. Code located anywhere in the source keeps that location, including
 a macro's chosen range within its use.
+Generated code can borrow the location of text it did not evaluate to, and a stop
+there would show a value that is not the text's. So a site is hidden when it is not
+authored and either expressions written in the same form hold its range, or its range
+takes in the visible site around it and its value is not that site's. An operation
+around an authored constant or variable stays, since that text cannot stop otherwise.
+A hidden site still notes itself in its frame for exceptions and Pause, but it has no
+completion that anything can wait for, so it reports itself as a tail site and contexts
+pass over it to the evaluation around it.
 Binding containers introduced for internal definitions have neither an operator
 source nor an expansion origin. Their inherited enclosing-body range is not a
 separate stop; their initialisers and body are still traversed and instrumented.

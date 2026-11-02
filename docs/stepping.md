@@ -74,6 +74,19 @@ and returned-value stops. When expansion metadata identifies the source
 expression inside a generated wrapper with the same range, that expression
 owns the stop. Step Over then completes one execution, not the whole wrapper.
 
+Expansion can also give generated code the location of source text it came from.
+A value shown against source text is that text's value, so generated code has no
+stops when expressions written in the same module-level form hold that range, or
+when its location takes in the stop around it and its value is not that stop's
+value. In `(for ([i (list 1 2)]) (f i))`, `(list 1 2)` stops once and returns
+`(1 2)`, a breakpoint on it stops once, and each iteration stops only at `(f i)`.
+Each use of a macro's argument keeps its stops, and so do a macro's template, the
+name of a macro such as `for/list`, and the whole of a call such as
+`(sort lst <)` that goes through a macro with the function's name. An operation
+generated around a constant or a variable is the only stop that text has, and
+stays: `(for ([i lst]) (f i))` stops once at `lst` and shows what the sequence is
+made of, not the value of `lst`.
+
 Standalone expressions in a module body or plain file also have stops when
 they are a literal, a variable reference, or a function expression. Atomic
 operands inside larger expressions and atomic definition initialisers remain

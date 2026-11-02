@@ -106,7 +106,38 @@
                      (regexp-match? #rx"^#%" (symbol->string module-name))
                      (not (port-constructor-name? (cadr binding)))))))))
 
-(struct boundary (range authored? [visible? #:mutable]))
+;; The expressions a core form evaluates, in no particular order.
+(define (runtime-subexpressions expression)
+  (syntax-case* expression (quote quote-syntax #%plain-lambda case-lambda if begin begin0
+                            let-values letrec-values set! with-continuation-mark
+                            #%plain-app #%expression)
+                free-identifier=?
+    [(quote . _) '()]
+    [(quote-syntax . _) '()]
+    [(#%plain-lambda formals body ...) (syntax->list #'(body ...))]
+    [(case-lambda [formals body ...] ...) (append-map syntax->list (syntax->list #'((body ...) ...)))]
+    [(if test consequent alternative) (list #'test #'consequent #'alternative)]
+    [(begin e ...) (syntax->list #'(e ...))]
+    [(begin0 e ...) (syntax->list #'(e ...))]
+    [(let-values ([ids rhs] ...) body ...) (syntax->list #'(rhs ... body ...))]
+    [(letrec-values ([ids rhs] ...) body ...) (syntax->list #'(rhs ... body ...))]
+    [(set! id rhs) (list #'rhs)]
+    [(with-continuation-mark key value result) (list #'key #'value #'result)]
+    [(#%plain-app e ...) (syntax->list #'(e ...))]
+    [(#%expression e) (list #'e)]
+    [_ '()]))
+;; The subexpressions whose values are a core form's value.
+(define (result-subexpressions expression)
+  (syntax-case* expression (if begin begin0 let-values letrec-values with-continuation-mark #%expression)
+                free-identifier=?
+    [(if test consequent alternative) (list #'consequent #'alternative)]
+    [(begin e ... last) (list #'last)]
+    [(begin0 first . rest) (list #'first)]
+    [(let-values bindings body ... last) (list #'last)]
+    [(letrec-values bindings body ... last) (list #'last)]
+    [(with-continuation-mark key value result) (list #'result)]
+    [(#%expression e) (list #'e)]
+    [_ '()]))
 ;; A call or module-level form being generated: the variable that will hold its frame,
 ;; and whether any site uses it.
 (struct activation (frame [used? #:mutable]))
@@ -320,10 +351,17 @@
                 [else #f]))))
   (define enclosing-site (make-parameter 0))
   (define next-slot 0)
-  ;; Source syntax or its expansion origin owns a range ahead of a generated
-  ;; wrapper that borrowed it. A child can relinquish the wrapper's boundary
-  ;; before its descriptor is emitted; sibling source executions stay distinct.
+  ;; The range of the nearest visible site around an expression in the same call, and
+  ;; in the same form whatever the call. Sibling source executions stay distinct.
   (define enclosing-boundary (make-parameter #f))
+  (define enclosing-owner (make-parameter #f))
+  (define owner-results (make-parameter '()))
+  ;; Whether a range takes in another. Source text inside a site is inside its range, so
+  ;; generated code whose location takes in the site around it has borrowed the location.
+  (define (range-holds? outer inner)
+    (and inner
+         (<= (car outer) (car inner))
+         (<= (+ (car inner) (cdr inner)) (+ (car outer) (cdr outer)))))
   (define (authored? expression range)
     (and range
          (or (original-syntax? expression)
@@ -335,6 +373,33 @@
                        (< (syntax-position origin) (+ (car range) (cdr range))))]
                  [(pair? origin) (or (walk (car origin)) (walk (cdr origin)))]
                  [else #f])))))
+  ;; Expansion can give generated code the source location of an expression it uses, as
+  ;; `for` does with the expression that produces its sequence. A value reported against
+  ;; that text has to be the text's value, so a range with authored code in this form
+  ;; belongs to it. This is decided before any code is written: a generated site can come
+  ;; before the authored code, or sit apart from it. A constant or a variable cannot stop,
+  ;; so an operation written around one is the only stop its text has, and keeps it.
+  (define authored-ranges (make-hash))
+  (define (range-of located)
+    (and located (cons (syntax-position located) (syntax-span located))))
+  (define (authored-here? expression)
+    (define range (range-of (location-of expression)))
+    (and range (not (binding-container? expression)) (authored? expression range) range))
+  (let note ([expression expanded])
+    (define range (authored-here? expression))
+    (when range
+      (hash-update! authored-ranges range
+                    (lambda (kind) (if (stoppable? expression) 'expression kind))
+                    'operand))
+    (for-each note (runtime-subexpressions expression)))
+  (define (range-belongs-to-authored? expression range)
+    (case (hash-ref authored-ranges range #f)
+      [(expression) #t]
+      [(operand)
+       (not (let holds-operand? ([e expression])
+              (or (equal? (authored-here? e) range)
+                  (ormap holds-operand? (runtime-subexpressions e)))))]
+      [else #f]))
   (define (body expressions environment act tail? [inferred-name #f])
     (for/list ([e (in-list expressions)] [i (in-naturals)])
       (define last? (= i (sub1 (length expressions))))
@@ -469,16 +534,18 @@
     #`(#%plain-app #,procedure #,@variables #,@arguments))
   (define (walk expression environment act tail? [context-name #f])
     (define located (location-of expression))
-    (define range (and located (cons (syntax-position located) (syntax-span located))))
+    (define range (range-of located))
     (define parent (enclosing-boundary))
-    (define current (boundary range (authored? expression range)
-                              (not (binding-container? expression))))
-    (when (and (boundary-visible? current) range parent
-               (equal? range (boundary-range parent)))
-      (if (and (stoppable? expression) (boundary-authored? current)
-               (not (boundary-authored? parent)))
-          (set-boundary-visible?! parent #f)
-          (set-boundary-visible?! current #f)))
+    (define gives-owner-value? (memq expression (owner-results)))
+    ;; A range an execution of authored code owns, once for each time it runs: not a copy
+    ;; of what encloses it, and not generated code that borrowed the location.
+    (define visible?
+      (not (or (binding-container? expression)
+               (and range (equal? range parent))
+               (and range (not (authored? expression range))
+                    (or (range-belongs-to-authored? expression range)
+                        (and (not gives-owner-value?)
+                             (range-holds? range (enclosing-owner))))))))
     (define inferred-name (or (syntax-property expression 'inferred-name) context-name))
     (define slot
       (and located
@@ -595,12 +662,14 @@
          #`(letrec-values #,(reverse (unbox parts)) #,first-part)]
         [else (rewrite-form)]))
     (define rewritten
-      (parameterize ([enclosing-boundary
-                      (if (and (boundary-visible? current) range (stoppable? expression))
-                          current parent)]
-                     [enclosing-site (or slot enclosing)])
-        (rewrite)))
-    (define visible? (boundary-visible? current))
+      (let ([owner? (and visible? range (stoppable? expression))])
+        (parameterize ([enclosing-boundary (if owner? range parent)]
+                       [enclosing-owner (if owner? range (enclosing-owner))]
+                       [owner-results (if (or owner? gives-owner-value?)
+                                          (result-subexpressions expression)
+                                          '())]
+                       [enclosing-site (or slot enclosing)])
+          (rewrite))))
     (cond
       [(not slot) rewritten]
       [else
@@ -608,8 +677,10 @@
          (site (fresh-id) (syntax-source located)
                (syntax-line located) (syntax-column located)
                (syntax-position located) (syntax-span located)
-               ;; A body's binding form holds all of the body after it.
-               tail? (and (not (binding-container? expression)) (syntax->datum expression)) enclosing))
+               ;; A site nothing stops at has no completion to wait for, as a tail site has
+               ;; none. A body's binding form holds all of the body after it.
+               (or tail? (not visible?))
+               (and (not (binding-container? expression)) (syntax->datum expression)) enclosing))
        (when visible? (set! descriptors (cons descriptor descriptors)))
        (set! table (cons (cons slot (cons descriptor visible?)) table))
        (unless coverage?
