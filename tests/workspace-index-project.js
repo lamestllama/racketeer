@@ -18,8 +18,10 @@ const addon = fs.mkdtempSync(path.join(os.tmpdir(), 'racketeer-index-addon-'));
 test.after(() => fs.rmSync(addon, { recursive: true, force: true }));
 
 
-async function project(t, env = {}) {
-  const directory = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'racketeer-index-')));
+// `shared` gives another server's `directory`, `documents` and `settings`, for a
+// server that starts with nothing over the same files and buffers.
+async function project(t, env = {}, shared) {
+  const directory = shared ? shared.directory : fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'racketeer-index-')));
   const documents = new Map(), notifications = [];
   let identity = 0, diagnostics = '';
   const child = spawn('racket', [path.join(root, 'vscode/workspace-index-server.rkt')], {
@@ -35,7 +37,7 @@ async function project(t, env = {}) {
     connection.dispose(); child.kill('SIGKILL');
     child.stdin.destroy(); child.stdout.destroy(); child.stderr.destroy();
     await closed;
-    fs.rmSync(directory, { recursive: true, force: true });
+    if (!shared) fs.rmSync(directory, { recursive: true, force: true });
   });
   const filename = name => path.join(directory, name);
   const write = (name, text) => fs.writeFileSync(filename(name), text);
@@ -44,7 +46,7 @@ async function project(t, env = {}) {
     documents.set(key, { uri: key, text, version, identity: ++identity });
     return key;
   };
-  const settings = { enabled: true, timeoutSeconds: 20 };
+  const settings = { enabled: true, timeoutSeconds: 20, ...shared?.settings };
   const roots = [uri(directory)];
   connection.onRequest('workspace/configuration', ({ items }) => items.map(() => settings));
   connection.onRequest('client/registerCapability', () => null);
@@ -91,8 +93,9 @@ async function project(t, env = {}) {
       textDocument: { uri: key }, position, ...(newName === undefined ? {} : { newName })
     }, token).then(result => !result.documentChanges ? result : { ...result,
       changes: Object.fromEntries(result.documentChanges.map(({ textDocument, edits }) => [textDocument.uri, edits])) });
-  write('definition.rkt', definition); write('uses.rkt', uses);
-  const origin = open('definition.rkt', definition);
+  if (shared) for (const [key, document] of shared.documents) documents.set(key, { ...document });
+  else { write('definition.rkt', definition); write('uses.rkt', uses); open('definition.rkt', definition); }
+  const origin = uri(filename('definition.rkt'));
   await connection.sendRequest('initialize', { processId: null, rootUri: null, workspaceFolders: roots.map(root => ({ uri: root, name: root })),
     capabilities: { textDocument: { rename: { prepareSupport: true } },
       workspace: { configuration: true, workspaceEdit: { documentChanges: true },

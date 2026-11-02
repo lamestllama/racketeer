@@ -274,6 +274,7 @@
        (cond
          [(equal? (hash-ref params 'command #f) refresh-command)
           (submit!)
+          (workspace-analysis-forget! engine)
           (reply (success-response id (json-null)))]
          [else (reply (error-response id invalid-params "Unknown index command"))])]
       ["shutdown"

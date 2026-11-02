@@ -30,12 +30,24 @@
 ;; closes documents over the same sources is adopted by the run; `revised` is
 ;; posted when it is, so waiting requests check their document again.
 (struct Run (generation cancel done revised state indexed failures workspace documents buffers settings roots sources reusable?) #:mutable)
-(struct WorkspaceAnalysis (lock slot notify current-run closed? active-runs) #:mutable)
+;; `results` holds each file's last successful analysis across runs, as an
+;; immutable table that a pass can read while a retired one finishes, and `interned`
+;; the entries that most of those analyses share, so they are held once.
+(struct WorkspaceAnalysis (lock slot notify current-run closed? active-runs results interned) #:mutable)
+;; A file's analysis stands while the file has the text it had and everything the
+;; analysis read still reads the same. `fingerprint` is the hash of its text.
+;; `reads` pairs each module file it loaded with the hash of what that holds,
+;; `externals` each file registered with the compiler, and `resolutions` each
+;; collection module path with what it resolved to. `basis` is what decided how
+;; the analysis ran: the roots, which load from source, and the size limit.
+(struct Result (basis text contribution facts fingerprint reads externals resolutions))
+(define (analysis-basis run)
+  (list (Run-roots run) (Settings-max-bytes (Run-settings run))))
 (struct AnalysisResult (revision value) #:transparent)
 (struct AnalysisFailure (reason message) #:transparent)
 
 (define (make-workspace-analysis #:on-status [notify void])
-  (WorkspaceAnalysis (make-semaphore 1) (make-semaphore 1) notify #f #f (make-hasheq)))
+  (WorkspaceAnalysis (make-semaphore 1) (make-semaphore 1) notify #f #f (make-hasheq) (hash) (make-hash)))
 
 (define (accepted run value)
   (AnalysisResult (Run-generation run) value))
@@ -157,11 +169,13 @@
                          [exit-handler (lambda (_) (error 'workspace-analysis "worker exited"))])
             (define request (place-channel-get channel))
             (match request
-              [(list 'discover roots excluded limit)
-               (cons 'ok (discover roots excluded limit))]
+              [(list 'discover roots excluded limit files forms)
+               (append (list 'ok) (discover roots excluded limit)
+                       (list (for/hash ([file (in-list files)]) (values file (disk-fingerprint file)))
+                             (for/hash ([form (in-list forms)]) (values form (resolved-form form)))))]
               [(list 'analyse path max-bytes buffer query buffers roots)
-               (match-define (list contribution text count references disk-current?) (analyse path max-bytes buffer query buffers roots))
-               (if contribution (list 'ok (contribution->datum contribution) text count references disk-current?) '(changed))]
+               (match-define (list contribution text count references disk-current? record) (analyse path max-bytes buffer query buffers roots))
+               (if contribution (list 'ok (contribution->datum contribution) text count references disk-current? record) '(changed))]
               [(list 'verify sources roots excluded limit buffers)
                (list 'ok (and (for/and ([(file text) (in-hash buffers)])
                                (and text (equal? text (hash-ref sources file #f))))
@@ -263,7 +277,7 @@
     (define captured-text (and query (cadddr query)))
     (define bytes
       (with-handlers ([exn:fail:filesystem?
-                       (lambda (e) (if captured-text (changed (list #f #f 0 #f #f)) (raise e)))])
+                       (lambda (e) (if captured-text (changed (list #f #f 0 #f #f #f)) (raise e)))])
         (if buffer (string->bytes/utf-8 buffer)
             (call-with-input-file* path (lambda (in) (read-bytes (add1 max-bytes) in))))))
     (unless (and (bytes? bytes) (<= (bytes-length bytes) max-bytes))
@@ -272,14 +286,23 @@
     (when (and captured-text
                (not (equal? (regexp-replace* #rx"\r\n" captured-text "\n")
                             (regexp-replace* #rx"\r\n" text "\n"))))
-      (changed (list #f text 0 #f #f)))
+      (changed (list #f text 0 #f #f #f)))
+    ;; A request's own analysis answers it and stays no longer, so only a pass records.
+    (define reads (make-hash))
+    (define resolutions (make-hash))
+    (define externals (make-log-receiver (current-logger) 'info 'cm-accomplice))
+    (define started (current-seconds))
     ;; Trace construction and queries use a fresh namespace as well as expansion.
     ;; A previously loaded dependency must not survive a watched change.
     (parameterize ([current-namespace (make-base-namespace)]
                    [current-directory (path-only path)]
-                   [current-load-relative-directory (path-only path)])
+                   [current-load-relative-directory (path-only path)]
+                   [current-module-name-resolver
+                    (if query (current-module-name-resolver)
+                        (recording-resolver (current-module-name-resolver) resolutions))])
     (call-with-source-snapshot buffers
       #:source? (lambda (file) (for/or ([root (in-list roots)]) (directory-contains? root file)))
+      #:on-load (if query void (lambda (file) (record-load! reads file buffers)))
       (lambda ()
       (define doc (make-doc (path->uri path) text 0))
       (unless (doc-expand! doc) (error 'workspace-analysis "analysis failed: ~a" path))
@@ -295,7 +318,7 @@
           (equal? bytes (call-with-input-file* path
                           (lambda (in) (read-bytes (add1 max-bytes) in))))))
       (unless (or buffer disk-current?)
-        (if captured-text (changed (list #f text 0 #f #f))
+        (if captured-text (changed (list #f text 0 #f #f #f))
             (error 'workspace-analysis "file changed during analysis: ~a" path)))
       (list contribution text facts
             (and query
@@ -304,7 +327,75 @@
                         (list (map ->jsexpr (Reference-Source-locations (Document-Reference-Result-source result)))
                               (and (Document-Reference-Result-module-binding result)
                                    (binding->datum (Document-Reference-Result-module-binding result)))))))
-            disk-current?))))))
+            disk-current?
+            (and (not query)
+                 (list (sha1-bytes bytes) (hash->list reads) (external-reads externals started)
+                       (hash->list resolutions)))))))))
+
+;; What a file's analysis read is taken while it reads, so that a file changing
+;; afterwards shows as changed. A buffer takes the place of its file only where
+;; the analysis read it as a module: `include` and its like read the disk.
+(define (disk-fingerprint file)
+  (with-handlers ([exn:fail:filesystem? (lambda (_) #f)])
+    (and (file-exists? file) (call-with-input-file* file sha1-bytes))))
+
+(define (buffer-fingerprint text)
+  (if text (sha1-bytes (string->bytes/utf-8 text)) 'conflict))
+
+;; A .ss file is loaded only while the .rkt beside it is absent, so that absence
+;; is read as well.
+(define (record-load! reads file buffers)
+  (define (record! file)
+    (hash-ref! reads file
+               (lambda ()
+                 (if (hash-has-key? buffers file)
+                     (buffer-fingerprint (hash-ref buffers file))
+                     (disk-fingerprint file)))))
+  (record! file)
+  (when (equal? (path-get-extension file) #".ss")
+    (record! (path-replace-extension file #".rkt"))))
+
+;; Where a collection path leads depends on the links and on which directories
+;; hold the file, so what it found is read as well. A relative path leads to one file.
+(define (collection-form? module)
+  (match module
+    [(? symbol?) #t]
+    [(list 'lib _ ...) #t]
+    [(list 'submod parent _ ...) (collection-form? parent)]
+    [_ #f]))
+
+(define (recording-resolver resolve resolutions)
+  (case-lambda
+    [(name namespace) (resolve name namespace)]
+    [(module relative-to stx load?)
+     (define form? (collection-form? module))
+     (define resolved
+       (with-handlers ([exn:fail? (lambda (e)
+                                    (when form? (hash-set! resolutions module #f))
+                                    (raise e))])
+         (resolve module relative-to stx load?)))
+     (when form? (hash-set! resolutions module (resolved-module-path-name resolved)))
+     resolved]))
+
+(define (resolved-form form)
+  (with-handlers ([exn:fail? (lambda (_) #f)])
+    (resolved-module-path-name ((current-module-name-resolver) form #f #f #f))))
+
+;; Registered files are logged after the expansion read them, so a file changed
+;; since the analysis began cannot be matched to what it read: 'changing matches nothing.
+(define (external-reads receiver started)
+  (let drain ([files (hash)])
+    (match (sync/timeout 0 receiver)
+      [#f (hash->list files)]
+      [(vector _ _ (? prefab-struct-key dependency) _)
+       (define file (vector-ref (struct->vector dependency) 1))
+       (drain (if (path? file)
+                  (hash-set files file
+                            (if (>= (file-or-directory-modify-seconds file #f (lambda () 0)) started)
+                                'changing
+                                (disk-fingerprint file)))
+                  files))]
+      [_ (drain files)])))
 
 (define (binding->datum binding)
   (list (Module-Binding-filepath binding) (Module-Binding-submods binding)
@@ -325,6 +416,48 @@
                     (for/hash ([entry (in-list definitions)])
                       (values (apply Module-Binding (car entry)) (jsexpr->Location (cdr entry))))))
 
+(define (known-reads results)
+  (define files (mutable-set))
+  (define forms (mutable-set))
+  (for ([(path result) (in-hash results)])
+    (set-add! files path)
+    (for ([entry (in-list (Result-reads result))]) (set-add! files (car entry)))
+    (for ([entry (in-list (Result-externals result))]) (set-add! files (car entry)))
+    (for ([entry (in-list (Result-resolutions result))]) (set-add! forms (car entry))))
+  (values (set->list files) (set->list forms)))
+
+(define (result-current? result run path view disk resolved)
+  (define (holds? entries table)
+    (for/and ([entry (in-list entries)]) (equal? (cdr entry) (hash-ref table (car entry) 'unknown))))
+  (and (equal? (Result-basis result) (analysis-basis run))
+       (equal? (Result-fingerprint result) (hash-ref view path 'unknown))
+       (holds? (Result-reads result) view)
+       (holds? (Result-externals result) disk)
+       (holds? (Result-resolutions result) resolved)))
+
+;; What a retired run still has in hand does not count, as after a refresh.
+(define (change-results! engine run change)
+  (call-with-semaphore (WorkspaceAnalysis-lock engine)
+    (lambda ()
+      (unless (cancelled? run)
+        (set-WorkspaceAnalysis-results! engine (change (WorkspaceAnalysis-results engine)))))))
+
+(define (analyse-file engine run path)
+  (define config (Run-settings run))
+  (match (compute engine run (Settings-timeout config)
+                  (list 'analyse path (Settings-max-bytes config)
+                        (hash-ref (Run-buffers run) path #f) #f (Run-buffers run) (Run-roots run)))
+    [(list 'ok contribution text count _ disk-current? (list fingerprint reads externals resolutions))
+     (unless disk-current? (set-Run-reusable?! run #f))
+     (define (shared entries)
+       (for/list ([entry (in-list entries)])
+         (hash-ref! (WorkspaceAnalysis-interned engine) entry entry)))
+     (define result (Result (analysis-basis run) text (datum->contribution contribution) count fingerprint
+                            (shared reads) (shared externals) (shared resolutions)))
+     (change-results! engine run (lambda (results) (hash-set results path result)))
+     result]
+    [failure failure]))
+
 (define (run-index engine run)
   (define config (Run-settings run))
   (define indexed 0)
@@ -335,9 +468,10 @@
     void
     (lambda ()
       (unless (sync/timeout 2 (semaphore-peek-evt (Run-cancel run)))
-        (match (compute engine run 10 (list 'discover (Run-roots run) (Settings-excluded config)
-                                     (Settings-max-files config)))
-          [(list 'ok paths incomplete?)
+        (define-values (files forms) (known-reads (WorkspaceAnalysis-results engine)))
+        (match (compute engine run 30 (list 'discover (Run-roots run) (Settings-excluded config)
+                                            (Settings-max-files config) files forms))
+          [(list 'ok paths incomplete? disk resolved)
            (when incomplete?
              (set! failures (add1 failures))
              (eprintf "Workspace discovery incomplete after finding ~a files under ~a\n"
@@ -346,28 +480,39 @@
              (append (for/list ([(path text) (in-hash (Run-buffers run))] #:when text) path)
                      (filter (lambda (path) (not (hash-has-key? (Run-buffers run) path))) paths)))
            (when (> (length sources) (Settings-max-files config)) (set! failures (add1 failures)))
+           ;; Reused and new contributions enter the store in the order of a fresh pass.
+           (define view
+             (for/fold ([view disk]) ([(path text) (in-hash (Run-buffers run))])
+               (hash-set view path (buffer-fingerprint text))))
            (for ([path (in-list sources)] [n (in-range (Settings-max-files config))]
                  #:break (or (cancelled? run) (> bytes (* 16 1024 1024)) (> facts 200000)))
-             (match (compute engine run (Settings-timeout config)
-                             (list 'analyse path (Settings-max-bytes config)
-                                   (hash-ref (Run-buffers run) path #f) #f (Run-buffers run) (Run-roots run)))
-               [(list 'ok contribution text count _ disk-current?)
-                (unless disk-current? (set-Run-reusable?! run #f))
-                (set! bytes (+ bytes (bytes-length (string->bytes/utf-8 text))))
-                (set! facts (+ facts count))
+             (define held (hash-ref (WorkspaceAnalysis-results engine) path #f))
+             (define reused (and held (result-current? held run path view disk resolved)))
+             ;; Reuse of the whole index requires a disk-consistent snapshot.
+             (when (and reused (not (equal? (Result-fingerprint held) (hash-ref disk path 'unknown))))
+               (set-Run-reusable?! run #f))
+             (match (if reused held (analyse-file engine run path))
+               [(? Result? result)
+                (set! bytes (+ bytes (bytes-length (string->bytes/utf-8 (Result-text result)))))
+                (set! facts (+ facts (Result-facts result)))
                 (cond
                   [(or (> bytes (* 16 1024 1024)) (> facts 200000)) (set! failures (add1 failures))]
                   [else
                    ;; Each run has its own store. A retired worker can never
                    ;; populate a replacement run, even if cancellation is late.
-                   (workspace-set-contribution! (Run-workspace run) (datum->contribution contribution))
-                   (hash-set! (Run-sources run) path text)
+                   (workspace-set-contribution! (Run-workspace run) (Result-contribution result))
+                   (hash-set! (Run-sources run) path (Result-text result))
                    (set! indexed (add1 indexed))])]
                [failure
                 (set! failures (add1 failures))
                 (unless (cancelled? run)
                   (eprintf "Workspace analysis incomplete: ~a (~a)\n" path (analysis-failure failure)))])
              (report! engine run "indexing" indexed failures))
+           (define kept (list->set sources))
+           (change-results! engine run
+             (lambda (results)
+               (for/hash ([(path result) (in-hash results)] #:when (set-member? kept path))
+                 (values path result))))
            (report! engine run (if (zero? failures) "ready" "partial") indexed failures)]
           [failure
            (unless (cancelled? run)
@@ -410,6 +555,11 @@
   (if (Settings-enabled? config)
       (start-worker! engine run (lambda () (run-index engine run)))
       (semaphore-post (Run-done run))))
+
+;; Forgets what earlier analyses found, as for a file no analysis registered.
+(define (workspace-analysis-forget! engine)
+  (call-with-semaphore (WorkspaceAnalysis-lock engine)
+    (lambda () (set-WorkspaceAnalysis-results! engine (hash)))))
 
 ;; A complete index stays in use only after the whole disk view is verified in
 ;; a cancellable worker, which also finds unreported additions and deletions.
@@ -584,8 +734,8 @@
                              (match result
                                ['(changed)
                                 (AnalysisFailure 'changed "Captured source differs from the current file")]
-                               [(list 'ok _ _ _ #f _) (accepted run '())]
-                               [(list 'ok _ _ _ (list locations binding) _)
+                               [(list 'ok _ _ _ #f _ _) (accepted run '())]
+                               [(list 'ok _ _ _ (list locations binding) _ _)
                                 (define live
                                   (Document-Reference-Result
                                     (Reference-Source (source-id (path->source path))
@@ -600,6 +750,7 @@
 (provide make-workspace-analysis
          workspace-analysis-update!
          workspace-analysis-query
+         workspace-analysis-forget!
          workspace-analysis-close!
          watch-analysis-timer
          (struct-out AnalysisResult)

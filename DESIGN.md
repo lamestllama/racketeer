@@ -282,6 +282,26 @@ requests instead supply the captured text. Results are `AnalysisResult` values
 containing the accepted revision and value, or `AnalysisFailure` values with a
 symbolic reason and message. Adapters choose their protocol's representation.
 
+A pass keeps a file's result unless something it read has changed. Each analysis
+records, as it reads:
+
+| What | Compared by |
+| --- | --- |
+| The file's own text | Hash of its open buffer, or of the file |
+| Every module file loaded, however indirectly, including a `.rkt` found absent where a `.ss` was used | Hash of its open buffer, or of the file, or that it is absent |
+| Every file registered with the compiler, as `include` does | Hash of the file: these are read from the disk, whatever a buffer holds |
+| Every collection module path | What the module name resolver answers now, which covers a link changed and a file added in an earlier root |
+
+The worker that discovers files takes these hashes and resolutions together at
+the start of the pass, and the pass compares them with each result. Reused and new
+contributions enter the store in the order of a fresh pass, so the answers are the
+same to the byte. A file that failed has no result and is analysed by every pass. Results last for one instance, are never written to disk, and are dropped by
+`workspace-analysis-forget!`, which the Refresh command calls.
+
+A macro that reads a file it does not register leaves no record of it. Such a file
+is seen only at the next change to the macro's file or to a file loaded with it,
+after a refresh, or after a restart. This is the limit the debugger's compiled cache has too.
+
 `workspace-analysis-close!` is idempotent. It cancels active runs, waits for
 their completion and reaps worker places. Further updates have no effect;
 queries return a closed-engine outcome. Closing one instance leaves other

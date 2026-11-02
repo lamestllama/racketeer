@@ -32,9 +32,9 @@ test('unchanged open and close reuse complete analysis while disk notifications 
   p.documents.delete(consumer);
   await p.update(true); assert.equal(await p.count(), 1);
   assert.equal(p.expansions(), before, 'Closing an unchanged buffer must reuse the completed index');
-  p.write('macro-input.txt', 'changed');
+  p.write('uses.rkt', p.consumerText + '; changed\n');
   await p.update(); assert.equal(await p.count(), 1);
-  assert.ok(p.expansions() > before, 'Non-source disk events can change macro expansion');
+  assert.ok(p.expansions() > before, 'A disk event about a changed file invalidates its analysis');
 });
 
 test('buffer changes and close after an unreported disk write require fresh analysis', { timeout: 120000 }, async t => {
@@ -161,6 +161,7 @@ test('a reported change in an excluded directory starts no pass, and one elsewhe
   await p.diskChange('node_modules/package/file.txt');
   assert.equal(await p.count(), 1);
   assert.equal(p.expansions(), before, 'Excluded directories are not watched for analysis');
+  p.write('uses.rkt', p.consumerText + '; changed\n');
   await p.diskChange('uses.rkt');
   assert.equal(await p.count(), 1);
   assert.ok(p.expansions() > before);
