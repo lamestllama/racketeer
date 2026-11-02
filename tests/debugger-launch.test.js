@@ -70,18 +70,21 @@ test('a launch runs from source and starts the build, and later launches load co
   const files = folder(t);
   const { racketdap, storage, program } = files;
   stamp(path.join(racketdap, 'main.rkt'), 'adapter', '(define input (current-input-port))');
+  // Imported, not named on any command line: both processes load it this way.
+  stamp(path.join(racketdap, 'protocol.rkt'), 'imported', '(define max-message');
   stamp(path.join(racketdap, 'worker/main.rkt'), 'worker', '(define bootstrap (read-message');
   stamp(path.join(racketdap, 'worker/expand.rkt'), 'expander', '(provide instrument-form');
   const run = async () => {
     const { output, stderr } = await session(launcherArgs(files), program);
     assert.match(output, /finished/);
-    return { adapter: stamps(stderr, 'adapter'), worker: stamps(output, 'worker'), expander: stamps(output, 'expander') };
+    return { adapter: stamps(stderr, 'adapter'), worker: stamps(output, 'worker'), expander: stamps(output, 'expander'),
+      adapterImport: stamps(stderr, 'imported'), workerImport: stamps(output, 'imported') };
   };
   const first = await run();
   await built(storage);
   const second = await run();
   const third = await run();
-  for (const part of ['adapter', 'worker', 'expander']) {
+  for (const part of ['adapter', 'worker', 'expander', 'adapterImport', 'workerImport']) {
     assert.equal(third[part].length, 1, part);
     assert.deepEqual(third[part], second[part], `${part} compiled once`);
     assert.notDeepEqual(second[part], first[part], `${part} left its source`);
@@ -214,15 +217,19 @@ test('another Racket setup gets a folder of its own and leaves the first', { tim
   assert.equal(both.length, 2);
 });
 
-test('the build waits until the worker has connected, or has failed to', { timeout: 300000 }, async t => {
+test('the build waits until the worker has connected, or has failed to', { timeout: 300000, skip: process.platform === 'win32' }, async t => {
   const files = folder(t);
-  const { storage, program } = files;
+  const { directory, storage, program } = files;
+  // A worker as slow to start as a slow machine's.
+  const slowRacket = path.join(directory, 'slow-racket');
+  fs.writeFileSync(slowRacket, '#!/bin/sh\nsleep 4\nexec racket "$@"\n', { mode: 0o755 });
   const client = new DapClient(undefined, { timeout: 120000,
     spawn: (command, _args, options) => spawn(command, launcherArgs(files), options) });
   t.after(() => client.close().catch(() => {}));
   await client.request('initialize', { adapterID: 'racketdap' });
-  assert.deepEqual(entries(storage), []);
-  const launched = client.request('launch', { program, cwd: path.dirname(program) });
+  const launched = client.request('launch', { program, cwd: path.dirname(program), racketExecutable: slowRacket });
+  await new Promise(resolve => setTimeout(resolve, 3000));
+  assert.deepEqual(entries(storage), [], 'Nothing compiles while the worker is starting');
   await client.event('initialized');
   await launched;
   await client.request('configurationDone');
@@ -236,7 +243,7 @@ test('the build waits until the worker has connected, or has failed to', { timeo
   t.after(() => failing.close().catch(() => {}));
   await failing.request('initialize', { adapterID: 'racketdap' });
   // A worker that never connects, as one too slow to start does not.
-  const refused = await failing.request('launch', { program: again.program, cwd: again.directory, racketExecutable: process.platform === 'win32' ? 'cmd' : 'false' });
+  const refused = await failing.request('launch', { program: again.program, cwd: again.directory, racketExecutable: 'false' });
   assert.equal(refused.success, false);
   await built(again.storage);
   await failing.close();
@@ -244,20 +251,28 @@ test('the build waits until the worker has connected, or has failed to', { timeo
 
 test('a building folder holds off a second build until it is abandoned', { timeout: 300000 }, async t => {
   const files = folder(t);
-  const { storage, program } = files;
+  const { directory, racketdap, storage, program } = files;
   await session(launcherArgs(files), program);
   const [build] = await built(storage);
   fs.rmSync(path.join(storage, build), { recursive: true });
   const building = path.join(storage, `${build}.building`);
   fs.mkdirSync(building);
   fs.writeFileSync(path.join(building, 'in progress'), '');
+  // A builder says that it started, so a second one is seen even before it finishes.
+  const started = path.join(directory, 'builder started');
+  const builder = path.join(racketdap, 'tools/compile-debugger.rkt');
+  fs.writeFileSync(builder, fs.readFileSync(builder, 'utf8').replace('(module+ main\n',
+    `(module+ main\n  (close-output-port (open-output-file ${JSON.stringify(started)} #:exists 'append))\n`));
   assert.match((await session(launcherArgs(files), program)).output, /finished/);
+  await new Promise(resolve => setTimeout(resolve, 5000));
+  assert.ok(!fs.existsSync(started), 'No second build started');
   assert.deepEqual(entries(storage), [`${build}.building`]);
   assert.ok(fs.existsSync(path.join(building, 'in progress')));
   const old = new Date(Date.now() - 3600000);
   fs.utimesSync(building, old, old);
   assert.match((await session(launcherArgs(files), program)).output, /finished/);
   await built(storage);
+  assert.ok(fs.existsSync(started));
   assert.deepEqual(finished(storage), [build]);
   assert.equal(entries(storage).length, 1, entries(storage).join());
 });
