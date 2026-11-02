@@ -45,9 +45,9 @@
   (and (identifier? identifier)
        (for/or ([form (in-list forms)]) (free-identifier=? identifier form))))
 
-;; An environment pairs source names with runtime identifiers in lexical order.
-;; Generated bindings never compete with these names merely because they print
-;; alike. Syntax identifiers retain the expander's binding scopes.
+;; A live binding pairs a source name with its runtime identifier. Generated
+;; bindings never compete with these names merely because they print alike.
+;; Syntax identifiers retain the expander's binding scopes.
 (define (source-name source)
   (cond [(path? source) (path->string (simplify-path source #f))]
         [(string? source) (path->string (simplify-path (string->path source) #f))]
@@ -149,23 +149,34 @@
       [else (void)]))
   (collect-bindings expanded)
   (define activation-id (car (generate-temporaries '(activation))))
+  ;; Every frame of this form shares one list of module binding identifiers.
+  (define module-bindings-id (car (generate-temporaries '(module-bindings))))
   (define (literal v) #`(quote #,v))
+  ;; An environment is the variable holding its scope's live bindings, in
+  ;; lexical order with the innermost first, or #f when none are visible. A
+  ;; scope that binds source names conses them onto its parent's list once, so
+  ;; each site refers to that list rather than rebuilding every visible binding.
+  ;; Returns the scope's environment and the clauses that bind its list.
   (define (extend ids environment)
-    (append (for/list ([id (in-list ids)]
-                       #:do [(define name (if (original-binding? id source)
-                                              (syntax-e id)
-                                              (free-id-table-ref lexical-aliases id #f)))]
-                       #:when name)
-              (cons name id))
-            environment))
+    (define live-bindings
+      (for/list ([id (in-list ids)]
+                 #:do [(define name (if (original-binding? id source)
+                                        (syntax-e id)
+                                        (free-id-table-ref lexical-aliases id #f)))]
+                 #:when name)
+        #`(make-live-binding '#,name (lambda () #,id)
+                             (lambda (replacement) (set! #,id replacement)))))
+    (if (null? live-bindings)
+        (values environment '())
+        (let ([variable (car (generate-temporaries '(bindings)))])
+          (values variable
+                  (list #`[(#,variable)
+                           (list* #,@live-bindings #,(bindings-expression environment))])))))
   (define (bindings-expression environment)
-    #`(list
-       #,@(for/list ([binding (in-list environment)])
-            (define id (cdr binding))
-            #`(make-live-binding
-               '#,(car binding)
-               (lambda () #,id)
-               (lambda (replacement) (set! #,id replacement))))))
+    (or environment #''()))
+  ;; Bind a scope's list around its body, which keeps its tail positions.
+  (define (in-scope clauses expressions)
+    (if (null? clauses) expressions (list #`(let-values #,clauses #,@expressions))))
   (define (stoppable? expression)
     (and (not (identifier? expression))
          (let ([parts (syntax->list expression)])
@@ -215,9 +226,9 @@
       (walk e environment act (and tail? last?) (and last? inferred-name))))
   (define (lambda-clause formals expressions environment)
     (define act (car (generate-temporaries '(activation))))
-    (define env (extend (formal-identifiers formals) environment))
+    (define-values (env clauses) (extend (formal-identifiers formals) environment))
     #`[#,formals
-       (let ([#,act (make-activation)])
+       (let-values ([(#,act) (make-activation)] #,@clauses)
          #,@(parameterize ([enclosing-boundary #f])
               (body expressions env act #t)))])
   (define (application operator expressions environment act)
@@ -292,19 +303,21 @@
          #`(begin0 #,(walk #'expression environment act #f inferred-name)
                    #,@(body (syntax->list #'(rest ...)) environment act #f))]
         [(let-values ([(id ...) rhs] ...) expression ...)
-         (let* ([groups (syntax->list #'((id ...) ...))]
-                [env (extend (apply append (map syntax->list groups)) environment)])
+         (let*-values ([(groups) (syntax->list #'((id ...) ...))]
+                       [(env clauses) (extend (apply append (map syntax->list groups)) environment)])
            #`(let-values
                  (#,@(for/list ([ids (in-list groups)] [rhs (in-list (syntax->list #'(rhs ...)))])
                         #`[#,ids #,(walk rhs environment act #f
                                          (and (= (length (syntax->list ids)) 1)
                                               (syntax-e (car (syntax->list ids)))))]))
-               #,@(body (syntax->list #'(expression ...)) env act tail? inferred-name)))]
+               #,@(in-scope clauses (body (syntax->list #'(expression ...)) env act tail? inferred-name))))]
         [(letrec-values ([(id ...) rhs] ...) expression ...)
-         (let* ([groups (syntax->list #'((id ...) ...))]
-                [env (extend (apply append (map syntax->list groups)) environment)])
+         (let*-values ([(groups) (syntax->list #'((id ...) ...))]
+                       [(env clauses) (extend (apply append (map syntax->list groups)) environment)])
+           ;; The scope's list comes first: its getters may run in any initializer.
            #`(letrec-values
-                 (#,@(for/list ([ids (in-list groups)] [rhs (in-list (syntax->list #'(rhs ...)))])
+                 (#,@clauses
+                  #,@(for/list ([ids (in-list groups)] [rhs (in-list (syntax->list #'(rhs ...)))])
                         #`[#,ids #,(walk rhs env act #f
                                          (and (= (length (syntax->list ids)) 1)
                                               (syntax-e (car (syntax->list ids)))))]))
@@ -345,7 +358,7 @@
                [frame-expression
                 #`(make-frame #,act (quote-syntax #,expression)
                               #,(bindings-expression environment)
-                              (list #,@(for/list ([id (in-list module-bindings)]) #`(quote-syntax #,id)))
+                              #,module-bindings-id
                               #,(literal (and module-context
                                              (lambda () (module-binding-context-owned module-context))))
                               (lambda ()
@@ -369,9 +382,11 @@
                            (announce-after #,(literal descriptor) #,token
                                            #,(literal callback) results)))))))))]))
   (define local-name (and (syntax-transforming?) (syntax-local-name)))
-  (define result (walk expanded '() activation-id initial-tail?
+  (define result (walk expanded #f activation-id initial-tail?
                        (if (identifier? local-name) (syntax-e local-name) local-name)))
-  (values #`(let ([#,activation-id (make-activation)])
+  (values #`(let ([#,activation-id (make-activation)]
+                  [#,module-bindings-id
+                   (list #,@(for/list ([id (in-list module-bindings)]) #`(quote-syntax #,id)))])
               #,@(if module-context
                      (list #`(register-module-context!
                                (quote #,module-context)

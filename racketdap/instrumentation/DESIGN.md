@@ -54,6 +54,11 @@ stops and decisions. Callback return values do not replace program results.
 Source-visible lexical bindings have live getter/setter closures over the real
 program cells. Inner scopes shadow outer names; generated macro bindings do not
 hide source-authored identifiers merely because their printed names coincide.
+Each scope that binds source names builds its live bindings once, in front of
+its parent's list, and every site in the scope refers to that list. Each
+instrumented form likewise builds its module binding identifiers once. Generated
+code therefore grows with the source, not with the number of sites times the
+visible bindings, which made long bodies slow to expand and compile.
 The ordinary-expansion hook's introduction scope is removed only for the
 syntax-original? source-classification check.
 

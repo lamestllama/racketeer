@@ -2,7 +2,7 @@
 ;; Copyright (c) 2026 Eric Parsonage
 ;; SPDX-License-Identifier: Apache-2.0 OR MIT
 
-(require rackunit racket/runtime-path
+(require rackunit racket/runtime-path racket/file
          "../racketdap/worker/load.rkt"
          "../racketdap/worker/stepping.rkt"
          "../racketdap/instrumentation/instrument.rkt")
@@ -155,4 +155,71 @@
           (check-equal? (stop-evaluate stop 'private-value) 11)
           (set! inspected? #t))))
      '(12))
-    (check-true inspected?)))
+    (check-true inspected?))
+
+  (test-case "instrumented code grows linearly with a function's local definitions"
+    ;; Racket expands and compiles the instrumented form, so its size sets the
+    ;; load time. Quoted data and syntax count as one node each.
+    (define (code-size value)
+      (cond [(syntax? value) (code-size (syntax-e value))]
+            [(pair? value)
+             (define head (if (syntax? (car value)) (syntax-e (car value)) (car value)))
+             (if (memq head '(quote quote-syntax)) 1
+                 (+ 1 (code-size (car value)) (code-size (cdr value))))]
+            [else 1]))
+    (define (instrumented definitions)
+      (define text
+        (string-append
+         "(module long racket/base\n  (define (run x)\n"
+         (apply string-append
+                (for/list ([i (in-range definitions)])
+                  (format "    (define v~a (+ x ~a (if (even? x) 1 2)))\n" i i)))
+         "    x))\n"))
+      (define expanded
+        (parameterize ([current-namespace (make-base-namespace)])
+          (expand (read-syntax 'long (open-input-string text)))))
+      (define body
+        (syntax-case expanded () [(_ _ _ (_ form ...)) (syntax->list #'(form ...))]))
+      (define rhs
+        (for/or ([form (in-list body)])
+          (syntax-case form (define-values) [(define-values (_) rhs) #'rhs] [_ #f])))
+      (define next 0)
+      (define-values (annotated sites)
+        (instrument-module rhs 'long (lambda () (set! next (add1 next)) next) void))
+      (values (length sites) (code-size annotated)))
+    (define-values (sites size) (instrumented 40))
+    (define-values (doubled-sites doubled-size) (instrumented 80))
+    (check-equal? doubled-sites (* 2 sites))
+    (check-true (< doubled-size (* 5/2 size))
+                (format "40 definitions: ~a nodes; 80 definitions: ~a nodes" size doubled-size)))
+
+  (test-case "a stop deep inside a long function sees every local, innermost first, and assigns them"
+    (define program (make-temporary-file "long-function-~a.rkt"))
+    (define definitions 200)
+    (dynamic-wind
+      (lambda ()
+        (call-with-output-file program #:exists 'truncate
+          (lambda (out)
+            (fprintf out "#lang racket/base\n(provide run)\n(define (long x)\n")
+            (for ([i (in-range definitions)])
+              (fprintf out "  (define v~a (+ x ~a))\n" i i))
+            (fprintf out "  (let ([x 'shadow])\n    (list x v0 v~a)))\n(define (run) (long 1))\n"
+                     (sub1 definitions)))))
+      (lambda ()
+        (define seen #f)
+        (define result
+          (run-module program #:entry 'run
+                      #:on-event
+                      (lambda (stop)
+                        (when (and (eq? (stop-kind stop) 'before) (not seen)
+                                   (equal? (site-expression (stop-site stop))
+                                           (list '#%app 'list 'x 'v0 (string->symbol (format "v~a" (sub1 definitions))))))
+                          (set! seen (stop-locals stop))
+                          (stop-evaluate stop '(set! v0 'assigned)))
+                        #f)))
+        (check-equal? seen
+                      (cons '(x . shadow)
+                            (for/list ([i (in-range (sub1 definitions) -1 -1)])
+                              (cons (string->symbol (format "v~a" i)) (+ 1 i)))))
+        (check-equal? result (list 'shadow 'assigned (sub1 (+ 1 definitions)))))
+      (lambda () (delete-file program)))))

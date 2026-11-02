@@ -20,7 +20,7 @@ exports.run = async function () {
     ['experiments/lexical-eval.rkt', 10],
     ['tests/attach.rkt', 28],
     ['tests/headless.rkt', 22],
-    ['tests/instrumentation-lifetime.rkt', 8],
+    ['tests/instrumentation-lifetime.rkt', 10],
     ['tests/loader-isolation.rkt', 14],
     ['tests/macro-stepper.rkt', 10],
     ['tests/packages.rkt', 3],
