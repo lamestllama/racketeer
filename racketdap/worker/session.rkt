@@ -5,7 +5,8 @@
 (require racket/async-channel racket/file racket/list racket/path racket/port
          racket/string
          "../protocol.rkt" "../commands.rkt" "../source.rkt" "../packages.rkt" "load.rkt" "../instrumentation/instrument.rkt"
-         "inspect.rkt" "stepping.rkt" "expressions.rkt" "cancel.rkt" "images.rkt" "plots.rkt" "coverage.rkt" "interactions.rkt" "logs.rkt" "error-locations.rkt")
+         "inspect.rkt" "stepping.rkt" "expressions.rkt" "cancel.rkt" "images.rkt" "plots.rkt" "coverage.rkt" "interactions.rkt" "logs.rkt" "error-locations.rkt"
+         (only-in "debug-cache.rkt" default-cache-directory))
 
 (provide serve-session (struct-out attach-hooks) (struct-out attached-controller))
 
@@ -668,6 +669,9 @@
                         #:main? (and (not (arg config 'testMode #f)) (not (hash-has-key? config 'submodule)))
                         #:test? (arg config 'testMode #f)
                         #:test-selection (arg config 'testSelection #f)
+                        #:cache-directory (and (arg config 'debugCache #t)
+                                               (or (arg config 'debugCacheDirectory #f)
+                                                   (default-cache-directory)))
                         #:on-test-event
                         (lambda (result)
                           (when (and (equal? (hash-ref result 'kind) "summary")

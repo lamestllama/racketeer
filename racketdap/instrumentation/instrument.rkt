@@ -4,7 +4,7 @@
 (require racket/list racket/path syntax/id-table "runtime.rkt")
 (provide instrument-module
          make-module-binding-context record-module-bindings!
-         module-binding-context-identifiers module-binding-context-child!
+         module-binding-context-identifiers module-binding-context-child! module-binding-context-key
          (all-from-out "runtime.rkt"))
 
 (define quoted-forms (syntax->list #'(quote quote-syntax)))

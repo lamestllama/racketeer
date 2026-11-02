@@ -3,14 +3,19 @@
 ;; SPDX-License-Identifier: Apache-2.0 OR MIT
 
 (require (only-in ffi/unsafe/global get-place-table)
+         compiler/cm
+         compiler/cm-accomplice
          file/convertible
+         file/sha1
+         racket/file
          racket/path
          racket/port
          racket/runtime-path
          syntax/modcode
          "../test-discovery.rkt"
          "../wxme-source.rkt"
-         "../instrumentation/instrument.rkt")
+         "../instrumentation/instrument.rkt"
+         "debug-cache.rkt")
 (provide run-module make-debug-loader make-debug-exception-handler)
 
 ;; Used both while loading a program and during later console interactions.
@@ -28,6 +33,7 @@
 (define-runtime-path instrumentation-runtime-path "../instrumentation/runtime.rkt")
 (define-runtime-path debugger-root "..")
 (define-runtime-path testing-path "testing.rkt")
+(define-logger debug-cache)
 
 ;; The worker loads this module before starting debuggee threads. Its first
 ;; instantiation establishes one parameter per place; later loader copies in
@@ -56,7 +62,8 @@
                            #:sources [additional-sources '()]
                            #:source-roots [source-roots '()]
                            #:test? [test? #f]
-                           #:test-selection [test-selection #f])
+                           #:test-selection [test-selection #f]
+                           #:cache-directory [cache-directory #f])
   (define selected-sources
     (cons source (map (lambda (path) (simplify-path (path->complete-path path)))
                       additional-sources)))
@@ -86,6 +93,9 @@
   (define ordinary-source-load (current-load))
   (define ordinary-eval (current-eval))
   (define compiled-paths (use-compiled-file-paths))
+  (define compiled-roots (current-compiled-file-roots))
+  (define compiled-check (use-compiled-file-check))
+  (define ordinary-compile (current-compile))
   (define enforce-module-constants? (compile-enforce-module-constants))
   (define selected-load-request (make-parameter #f))
   (define policy-owner (gensym 'compilation-policy))
@@ -103,6 +113,10 @@
     (if supplied-fresh-id (supplied-fresh-id)
         (begin0 next-id (set! next-id (add1 next-id)))))
   (define next-unit 0)
+  ;; The runtime's table holds a unit's forms only as long as its symbol lives,
+  ;; which code read lazily from a file does not ensure until it runs.
+  (define live-units '())
+  (define (hold-unit! unit) (set! live-units (cons unit live-units)) unit)
   ;; The callback a form's sites deliver to. It decides the automatic entry stop
   ;; from the form's module, so it is made for one file and module path.
   (define (form-callback selected-source module-path)
@@ -118,35 +132,42 @@
                   (on-entry stop)]
                  [else (on-event stop)]))
              on-event)))
-  (define (instrument-eval selected-source #:top-level? [top-level? language])
+  ;; Forms compiled for the cache keep what they tell the session in a record, and
+  ;; deliver it as they expand only when the session is loading them right now.
+  (struct recording (unit source-hash live? [events #:mutable]))
+  (define current-recording (make-parameter #f))
+  (define (record! rec event)
+    (when rec (set-recording-events! rec (cons event (recording-events rec)))))
+  (define (instrument-eval selected-source
+                           #:top-level? [top-level? language]
+                           #:recording [rec #f]
+                           #:finish [finish ordinary-eval])
     ;; A unit names this load's forms in the runtime's table.
     (define unit
-      (begin0 (string->symbol (format "~a#~a" selected-source next-unit))
-        (set! next-unit (add1 next-unit))))
+      (hold-unit!
+       (if rec
+           (recording-unit rec)
+           (begin0 (string->symbol (format "~a#~a" selected-source next-unit))
+             (set! next-unit (add1 next-unit))))))
+    (define live? (or (not rec) (recording-live? rec)))
     (define next-form 0)
     (lambda (form)
       (parameterize ([current-eval ordinary-eval])
         (define wrapper-name (gensym 'racketdap-form))
+        ;; This module's scope must not reach the program's module: compiled code
+        ;; would keep it, and with it this module's imports, which the program's
+        ;; namespace does not have.
+        (define (in-context-of form stx) (datum->syntax form (syntax-e stx) stx stx))
         (define (language-wrapper language context bindings)
-          (define name (gensym 'racketdap-language))
-          (define rewrite (make-transform bindings))
-          (parameterize ([current-module-declare-name #f]
-                         [current-namespace namespace])
-            (eval
-             (datum->syntax
-              #f
-              `(module ,name racket/base
-                 (require racket/provide (for-syntax racket/base)
-                          (prefix-in original: ,(syntax->datum language))
-                          (file ,(path->string expander-path)))
-                 (provide (filtered-out
-                           (lambda (name)
-                             (and (regexp-match? #rx"^original:" name)
-                                  (not (equal? name "original:#%module-begin"))
-                                  (substring name 9)))
-                           (all-from-out ,(syntax->datum language)))
-                          (rename-out [debug-module-begin #%module-begin]))
-                 (define-instrumented-module-begin debug-module-begin original:#%module-begin ,rewrite ,(path->string instrumentation-runtime-path))))))
+          (define name
+            (if rec
+                (string->symbol (format "racketdap-language:~a" (module-binding-context-key bindings)))
+                (gensym 'racketdap-language)))
+          (define module-path (syntax->datum language))
+          (declare-language-wrapper name module-path (make-transform bindings))
+          (when rec
+            (record-language-dependency! module-path)
+            (record! rec (list 'language name module-path)))
           (datum->syntax context `(quote ,name)))
         (define (annotate expanded [bindings #f] #:expression-boundary? [expression-boundary? #f])
           (define index (begin0 next-form (set! next-form (add1 next-form))))
@@ -155,10 +176,16 @@
                                #:form (cons unit index) #:module-context bindings
                                #:coverage? coverage?
                                #:expression-boundary? expression-boundary?))
-          (register-form-sites! unit index
-                                (form-callback selected-source (hash-ref module-paths bindings '()))
-                                (map car table))
-          (on-sites sites)
+          (define module-path (hash-ref module-paths bindings '()))
+          (when live?
+            (register-form-sites! unit index (form-callback selected-source module-path) (map car table))
+            (on-sites sites))
+          (when rec
+            (record! rec (list 'form module-path index
+                               (for/list ([entry (in-list table)])
+                                 (define s (car entry))
+                                 (vector (site-line s) (site-column s) (site-position s) (site-span s)
+                                         (site-tail? s) (cdr entry))))))
           annotated)
         (define (make-transform bindings)
           (lambda (kind stx)
@@ -186,10 +213,12 @@
                                                            (not (syntax-e #'language)))])
                   (hash-set! module-paths child
                              (append (hash-ref module-paths bindings '()) '(configure-runtime)))
-                  (if (syntax-e #'language)
-                      #`(head name #,(language-wrapper #'language item child) form ...)
-                      #`(head name language #,@(wrap-body (syntax->list #'(form ...)) item child))))]
-               [_ #`(#,wrapper #,transform #,item)]))))
+                  (in-context-of
+                   item
+                   (if (syntax-e #'language)
+                       #`(head name #,(language-wrapper #'language item child) form ...)
+                       #`(head name language #,@(wrap-body (syntax->list #'(form ...)) item child)))))]
+               [_ (in-context-of item #`(#,wrapper #,transform #,item))]))))
         (define (rewrite-submodule form [parent-bindings #f])
           (define (context-for name inherit?)
             (define context
@@ -211,7 +240,7 @@
              (and (memq (syntax-e #'language) '(racket/base racket))
                   (eq? (syntax-e #'mb) '#%module-begin))
              #`(#,(car (syntax-e form)) name language
-                 (mb #,@(wrap-body (syntax->list #'(body ...)) #'mb (context-for #'name #f))))]
+                 #,(in-context-of form #`(mb #,@(wrap-body (syntax->list #'(body ...)) #'mb (context-for #'name #f)))))]
             [(module name language body ...)
              (memq (syntax-e #'language) '(racket/base racket))
              #`(#,(car (syntax-e form)) name language #,@(wrap-body (syntax->list #'(body ...)) form (context-for #'name #f)))]
@@ -236,7 +265,7 @@
                               (syntax->list #'(body ...))))]
             [_ form]))
           (if (syntax? rewritten)
-              (datum->syntax rewritten (syntax-e rewritten) form form)
+              (datum->syntax form (syntax-e rewritten) form form)
               rewritten))
         (define (eval-top form)
           (define partial (expand-syntax-to-top-form form))
@@ -265,7 +294,209 @@
             [_ (ordinary-eval (annotate (expand-syntax partial) #:expression-boundary? #t))]))
         (if (and top-level? (not (compiled-expression? form)))
             (eval-top form)
-            (ordinary-eval (rewrite-submodule form))))))
+            (finish (rewrite-submodule form))))))
+  ;; A language other than racket/base or racket gets a wrapper module that
+  ;; instruments its module body. A cached module imports it by name, so its
+  ;; declaration is repeated before such a module is used. The repeat has no body
+  ;; to instrument, and a module path relative to the source still reads from
+  ;; the load's relative directory.
+  (define (declare-language-wrapper name module-path rewrite)
+    (parameterize ([current-module-declare-name #f]
+                   [current-namespace namespace])
+      (eval
+       (datum->syntax
+        #f
+        `(module ,name racket/base
+           (require racket/provide (for-syntax racket/base)
+                    (prefix-in original: ,module-path)
+                    (file ,(path->string expander-path)))
+           (provide (filtered-out
+                     (lambda (name)
+                       (and (regexp-match? #rx"^original:" name)
+                            (not (equal? name "original:#%module-begin"))
+                            (substring name 9)))
+                     (all-from-out ,module-path))
+                    (rename-out [debug-module-begin #%module-begin]))
+           (define-instrumented-module-begin debug-module-begin original:#%module-begin ,rewrite ,(path->string instrumentation-runtime-path)))))))
+  ;; The wrapper hides the language from the import list the manager reads.
+  (define (record-language-dependency! module-path)
+    (define resolved
+      (resolved-module-path-name
+       (module-path-index-resolve (module-path-index-join module-path #f))))
+    (define file (if (pair? resolved) (car resolved) resolved))
+    (when (path? file) (register-external-module file #:indirect? #t)))
+
+  ;; The compilation cache, when this session has one. A failure while using it
+  ;; ends its use for the session: what remains runs from source, as without it.
+  (define cache-usable?
+    (and cache-directory instrument? (not test?) (not language)
+         (with-handlers ([exn:fail? (lambda (_) #f)])
+           (make-directory* cache-directory)
+           (evict-cache! cache-directory)
+           #t)))
+  (define cache-root-path (and cache-usable? (cache-root cache-directory)))
+  (define cache-mode (string->path (if coverage? "compiled/coverage" "compiled/debug")))
+  (define plain-mode (string->path "compiled/plain"))
+  (define (mode-for path) (if (selected-source? path) cache-mode plain-mode))
+  ;; Bytes captured for files this session is loading now, by path.
+  (define captured-sources (make-hash))
+  ;; Source hash of the bytes the manager's reader hands out, awaiting compilation.
+  (define pending-compiles (make-hash))
+  ;; Files whose expansion already told the session everything.
+  (define delivered-units (make-hash))
+  (define build-manager #f)
+  (define compiled-unchecked '())
+  (define surfaced-failure #f)
+  (define current-build-output (make-parameter #f))
+  (struct abandoned-build (source code))
+  (define (cached-unit path) (string->symbol (path->string path)))
+  (define (skip-for-manager path)
+    (cond
+      [(selected-source? path) (age-entry! cache-root-path cache-mode path) #f]
+      [(debugger-source? path) (cons 0 "instrumenter")]
+      [(ordinary-compiled-stamp path compiled-paths compiled-roots compiled-check)]
+      [else (age-entry! cache-root-path plain-mode path) #f]))
+  ;; The manager's source reader goes through here: the bytes compiled are the
+  ;; bytes captured, and their hash goes with the code.
+  (define (open-for-manager path)
+    (define resolved (simplify-path (path->complete-path path)))
+    (define contents (or (hash-ref captured-sources resolved #f)
+                         (call-with-input-file resolved port->bytes)))
+    (hash-set! pending-compiles resolved (sha1 (open-input-bytes contents)))
+    (open-input-bytes contents resolved))
+  ;; Instruments the manager's compile of a selected file, as errortrace's handler
+  ;; does; expansion's own compiles and evals pass through.
+  (define (compile-for-manager form immediate?)
+    (define source (and (syntax? form) (syntax-source form)))
+    (define resolved (and (path? source) (simplify-path (path->complete-path source))))
+    (define hash (and resolved (hash-ref pending-compiles resolved #f)))
+    (cond
+      [(not hash) (ordinary-compile form immediate?)]
+      [else
+       (hash-remove! pending-compiles resolved)
+       (begin0
+        (parameterize ([current-load/use-compiled load-selected])
+         (cond
+           [(selected-source? resolved)
+            (define rec (recording (cached-unit resolved) hash
+                                   (hash-has-key? captured-sources resolved) '()))
+            (define code
+              (parameterize ([current-recording rec]
+                             [compile-enforce-module-constants #f])
+                ((instrument-eval resolved #:top-level? #f #:recording rec
+                                  #:finish (lambda (rewritten) (ordinary-compile rewritten immediate?)))
+                 form)))
+            (when (recording-live? rec) (hash-set! delivered-units resolved #t))
+            ;; A dependency fell back during this expansion, so this code cannot
+            ;; be recorded against it. It still runs: nothing need expand again.
+            (unless cache-usable? (raise (abandoned-build resolved code)))
+            (add-replay-log code hash (recording-unit rec) (reverse (recording-events rec))
+                            (lambda (holder) (ordinary-compile holder #f)))]
+           [else
+            (parameterize ([compile-enforce-module-constants enforce-module-constants?])
+              (ordinary-compile form immediate?))]))
+        (set! compiled-unchecked (cons (cons resolved hash) compiled-unchecked)))]))
+  (define (build-entry! resolved)
+    (parameterize ([current-compiled-file-roots (list cache-root-path)]
+                   [current-path->mode mode-for]
+                   [use-compiled-file-check 'exists]
+                   [manager-skip-file-handler skip-for-manager]
+                   [current-compile compile-for-manager]
+                   [moddep-current-open-input-file open-for-manager])
+      (unless build-manager (set! build-manager (make-caching-managed-compile-zo)))
+      (build-manager resolved))
+    ;; A record that describes a later save than the code would pass for current
+    ;; next time, and dependents would compile against the old code. Drop it.
+    (for ([compiled (in-list compiled-unchecked)])
+      (define mode (mode-for (car compiled)))
+      (unless (entry-records-hash? cache-root-path mode (car compiled) (cdr compiled))
+        (remove-entry! cache-root-path mode (car compiled))))
+    (set! compiled-unchecked '()))
+  ;; Read and declare the file's entry. Returns the replay log, or #f for plain code.
+  (define (declare-entry! resolved selected? contents)
+    (define mode (if selected? cache-mode plain-mode))
+    (define stored (or (read-entry-bytes cache-root-path mode resolved)
+                       (error 'debug-cache "damaged entry for ~a" resolved)))
+    (define-values (directory _name _dir?) (split-path resolved))
+    (define code
+      (parameterize ([read-accept-compiled #t]
+                     [read-on-demand-source #f]
+                     [current-load-relative-directory directory])
+        (read (open-input-bytes stored))))
+    ;; Compare before declaring: the code of a different source must not be seen.
+    (define-values (log program)
+      (if selected?
+          (take-replay-log code ordinary-eval)
+          (values #f code)))
+    (when (and log (not (equal? (replay-source-hash log) (sha1 (open-input-bytes contents)))))
+      (error 'debug-cache "entry for ~a does not match the source" resolved))
+    (parameterize ([current-load-relative-directory directory])
+      (ordinary-eval program))
+    (mark-entry-used! cache-root-path mode resolved)
+    log)
+  ;; Tell the session what expansion would have, in the order expansion did.
+  (define (replay! resolved log)
+    (define-values (directory _name _dir?) (split-path resolved))
+    (define unit (hold-unit! (replay-unit log)))
+    (for ([event (in-list (replay-events log))])
+      (case (car event)
+        [(language)
+         (parameterize ([current-load-relative-directory directory])
+           (declare-language-wrapper (cadr event) (caddr event) #f))]
+        [(load) (module-declared? (string->path (cadr event)) #t)]
+        [(form)
+         (define descriptors
+           (for/list ([entry (in-list (cadddr event))])
+             (define-values (line column position span tail? visible?) (vector->values entry))
+             (cons (site (fresh-id) resolved line column position span tail? #f) visible?)))
+         (register-form-sites! unit (caddr event) (form-callback resolved (cadr event))
+                               (map car descriptors))
+         (on-sites (for/list ([descriptor (in-list descriptors)] #:when (cdr descriptor))
+                     (car descriptor)))])))
+  ;; Load one file through the cache. Falls back to the ordinary path on failure
+  ;; of the cache; a failure of the program itself surfaces from that path.
+  (define (load-through-cache resolved selected? expected)
+    (define contents (and selected? (capture-source! resolved)))
+    (when selected? (hash-set! captured-sources resolved contents))
+    (define outermost? (not (current-build-output)))
+    (define output (or (current-build-output) (open-output-bytes)))
+    (define program-out (current-output-port))
+    (define (flush-output!)
+      (when outermost? (write-bytes (get-output-bytes output) program-out)))
+    (define (from-source reason)
+      (set! cache-usable? #f)
+      (log-debug-cache-warning "using source for ~a: ~a" resolved reason)
+      (when selected? (remove-entry! cache-root-path cache-mode resolved))
+      (with-handlers ([(lambda (_) #t) (lambda (raised) (set! surfaced-failure raised) (raise raised))])
+        (ordinary-load resolved expected)))
+    (define outcome
+      (with-handlers
+          ([(lambda (raised) (and (abandoned-build? raised)
+                                  (equal? (abandoned-build-source raised) resolved)))
+            (lambda (raised)
+              (flush-output!)
+              (lambda ()
+                (define-values (directory _name _dir?) (split-path resolved))
+                (parameterize ([current-load-relative-directory directory])
+                  (ordinary-eval (abandoned-build-code raised)))))]
+           [abandoned-build? (lambda (raised) (lambda () (from-source "a dependency uses source")))]
+           [(lambda (raised) (and (not (exn:break? raised)) (eq? raised surfaced-failure)))
+            (lambda (raised) (flush-output!) (lambda () (raise raised)))]
+           [exn:fail?
+            (lambda (raised) (lambda () (from-source (exn-message raised))))])
+        (parameterize ([current-build-output output]
+                       [current-output-port (if outermost? output (current-output-port))]
+                       [current-error-port (if outermost? output (current-error-port))])
+          (build-entry! resolved)
+          (define log (declare-entry! resolved selected? (or contents #"")))
+          (hash-remove! captured-sources resolved)
+          (define delivered? (hash-ref delivered-units resolved #f))
+          (hash-remove! delivered-units resolved)
+          (flush-output!)
+          (lambda ()
+            (when (and log (not delivered?)) (replay! resolved log))))))
+    (outcome)
+    (hash-remove! captured-sources resolved))
   (define (load-selected path expected)
     ;; Load handlers are dynamically inherited, including by a nested
     ;; run-module. Only this execution's module registry belongs to us. In
@@ -277,7 +508,11 @@
            ;; Expansion may create a foreign namespace and wrap the handler.
            ;; Restore only our own policy, preserving a nested loader's policy.
            (parameterize ([compile-enforce-module-constants enforce-module-constants?]
-                          [use-compiled-file-paths compiled-paths])
+                          [use-compiled-file-paths compiled-paths]
+                          [current-compiled-file-roots compiled-roots]
+                          [use-compiled-file-check compiled-check]
+                          [current-path->mode #f]
+                          [current-compile ordinary-compile])
              (ordinary-load path expected))
            (ordinary-load path expected))]
       [else
@@ -294,14 +529,38 @@
            (parameterize ([compile-enforce-module-constants
                            (if (and selected? instrument?) #f enforce-module-constants?)]
                           [use-compiled-file-paths (if selected? '() compiled-paths)]
+                          [current-compiled-file-roots compiled-roots]
+                          [use-compiled-file-check compiled-check]
+                          [current-path->mode #f]
+                          [current-compile ordinary-compile]
                           [selected-load-request (and selected? resolved)]
                           [current-compilation-policy-owner policy-owner]
                           [current-eval ordinary-eval])
-             (ordinary-load path expected)))]))
-  (define (open-source-snapshot resolved)
-    ;; Capture before either callback can edit the file. The reader consumes
-    ;; these same bytes, and source consumers never need to reopen the path.
+             (when (and selected? (current-recording))
+               (record! (current-recording) (list 'load (path->string resolved))))
+             (if (use-cache-for? resolved selected? expected)
+                 (load-through-cache resolved selected? expected)
+                 (ordinary-load path expected))))]))
+  (define (use-cache-for? resolved selected? expected)
+    (and cache-usable?
+         ;; A false leading name asks for an independently loadable submodule;
+         ;; nothing is read for that, and the real request follows.
+         expected (not (and (pair? expected) (not (car expected))))
+         (file-exists? resolved)
+         (or selected?
+             (and (not (debugger-source? resolved))
+                  (not (ordinary-compiled-stamp resolved compiled-paths compiled-roots compiled-check))))))
+  ;; Capture before either callback can edit the file. The reader consumes these
+  ;; same bytes, and source consumers never need to reopen the path.
+  (define (capture-source! resolved)
     (define contents (call-with-input-file resolved port->bytes))
+    (define text (string->immutable-string (source-text contents)))
+    (on-source resolved)
+    (on-source-snapshot resolved text)
+    contents)
+  (define (open-source-snapshot resolved)
+    (define contents (or (hash-ref captured-sources resolved #f)
+                         (capture-source! resolved)))
     (define text (string->immutable-string (source-text contents)))
     (when (and test? (equal? resolved source))
       (define tests (discover-tests text))
@@ -311,8 +570,6 @@
                              (hash-ref test-selection 'ids)))
           (error 'test "Test selection is out of date or this file requires a whole-file run.")))
       (set! discovered-tests (or tests '())))
-    (on-source resolved)
-    (on-source-snapshot resolved text)
     (open-input-bytes contents resolved))
   (define (evaluate-loaded-form form)
     ;; Match load's per-form prompt: an abort leaves the whole load, rather than
@@ -419,7 +676,8 @@
                     #:test-selection [test-selection #f]
                     #:on-test-event [on-test-event void]
                     #:on-ready [on-ready #f]
-                    #:entry [entry #f])
+                    #:entry [entry #f]
+                    #:cache-directory [cache-directory #f])
   (define source (simplify-path (path->complete-path path)))
   (unless (and (list? submodule) (andmap symbol? submodule))
     (raise-argument-error 'run-module "list of submodule symbols" submodule))
@@ -446,7 +704,8 @@
                        #:on-sites on-sites #:on-event on-event #:on-entry on-entry
                        #:on-source on-source #:on-source-snapshot on-source-snapshot
                        #:source-selected? source-selected? #:sources selected-sources
-                       #:source-roots roots #:test? test? #:test-selection test-selection))
+                       #:source-roots roots #:test? test? #:test-selection test-selection
+                       #:cache-directory cache-directory))
   (define program-custodian (make-custodian))
   (define ordinary-uncaught (uncaught-exception-handler))
   (define exception-handler-tag (make-continuation-prompt-tag 'module-exception-handler))
