@@ -30,7 +30,7 @@ function createMacroProcess(command, helper, request, { output, failure, finishe
       started = true;
       if (cancelled) { finish(0); return; }
       try {
-        child = spawn(command, [helper], { cwd: request.cwd, windowsHide: true, stdio: 'pipe' });
+        child = spawn(command, [].concat(helper), { cwd: request.cwd, windowsHide: true, stdio: 'pipe' });
       } catch (error) { spawnError = error; finish(1); return; }
       child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
       child.stdout.on('data', output);

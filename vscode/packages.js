@@ -5,6 +5,7 @@ const vscode = require('vscode');
 const { selectedEditor } = require('./selected-editor');
 const path = require('node:path');
 const { execFile } = require('node:child_process');
+const { debuggerArgs } = require('./language-process');
 const { promisify } = require('node:util');
 const { racoTask, runTask } = require('./raco-task');
 const execute = promisify(execFile);
@@ -30,7 +31,7 @@ function registerPackages(context) {
   }
   async function inventory(selected) {
     const { stdout } = await execute(selected.executable,
-      [context.asAbsolutePath('runtime/racketdap/packages.rkt'), 'list'],
+      [...debuggerArgs(context, 'packages.rkt'), 'list'],
       { cwd: selected.cwd, timeout: 15000, maxBuffer: 8 * 1024 * 1024, windowsHide: true });
     return JSON.parse(stdout);
   }

@@ -6,6 +6,7 @@ const { selectedEditor } = require('./selected-editor');
 const path = require('node:path');
 const os = require('node:os');
 const { createMacroProcess } = require('./macro-process');
+const { debuggerArgs } = require('./language-process');
 
 function macroTarget(editor, wholeFile) {
   const document = editor?.document;
@@ -54,7 +55,7 @@ function registerMacroStepper(context) {
     let opened = false;
     let ended;
     entry.process = createMacroProcess(target.executable,
-      context.asAbsolutePath('runtime/racketdap/tools/macro-stepper.rkt'), target.request, {
+      debuggerArgs(context, 'tools/macro-stepper.rkt'), target.request, {
         output: text => written.fire(text.replace(/\r?\n/g, '\r\n')),
         failure: message => { void vscode.window.showErrorMessage(message); },
         finished: code => {

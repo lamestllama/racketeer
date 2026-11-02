@@ -24,7 +24,7 @@ function requestWxme(command, helper, file, request, { signal, timeout = 60000, 
     };
     const cancelled = () => stop(signal.reason || new Error('WXME viewing cancelled.'));
     try {
-      child = spawn(command, [helper], { cwd: path.dirname(file), windowsHide: true, stdio: 'pipe' });
+      child = spawn(command, [].concat(helper), { cwd: path.dirname(file), windowsHide: true, stdio: 'pipe' });
     } catch (error) { reject(error); return; }
     child.on('error', error => { failure ||= new Error(`Cannot start WXME viewer: ${error.message}. Check racketdap.racketExecutable.`); });
     child.stdin.on('error', error => { if (error.code !== 'EPIPE') stop(error); });

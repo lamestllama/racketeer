@@ -5,6 +5,7 @@ const vscode = require('vscode');
 const { randomBytes } = require('node:crypto');
 const { isDeepStrictEqual } = require('node:util');
 const { requestWxme } = require('./wxme-process');
+const { debuggerArgs } = require('./language-process');
 const { WxmeDocument, normalize, hash, limit } = require('./wxme-document');
 const { renderEditor } = require('./wxme-editor-view');
 const { readBytes, currentHash, replaceFile } = require('./wxme-storage');
@@ -25,7 +26,7 @@ function registerWxmeEditor(context) {
     const subscription = token.onCancellationRequested(() => controller.abort(new vscode.CancellationError()));
     try {
       const result = await requestWxme(vscode.workspace.getConfiguration('racketdap', document.uri).get('racketExecutable', 'racket'),
-        context.asAbsolutePath('runtime/racketdap/tools/wxme-edit.rkt'), document.uri.fsPath,
+        debuggerArgs(context, 'tools/wxme-edit.rkt'), document.uri.fsPath,
         request, { signal: controller.signal, outputLimit: 96 * 1024 * 1024 });
       if (result.version !== 1) throw new Error('Unsupported WXME codec response version.');
       return result;

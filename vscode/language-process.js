@@ -78,7 +78,7 @@ function debuggerArgs(context, file) {
 // server ends, which it does when its input closes, including when the
 // extension host exits without warning.
 function ownedArgs(context, args) {
-  return [context.asAbsolutePath('runtime/racketdap/tools/owned-command.rkt'), ...args];
+  return [...debuggerArgs(context, 'tools/owned-command.rkt'), ...args];
 }
 
 module.exports = { createLanguageProcess, debuggerArgs, ownedArgs };

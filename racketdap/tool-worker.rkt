@@ -1,7 +1,7 @@
 #lang racket/base
 ;; Copyright (c) 2026 Eric Parsonage
 ;; SPDX-License-Identifier: Apache-2.0 OR MIT
-(require json racket/list "process-group.rkt")
+(require json racket/list "process-group.rkt" "launcher.rkt")
 (provide run-tool-worker)
 
 ;; The supervisor alone reads the editor's input lease. Readers and macros run
@@ -27,7 +27,7 @@
               (apply subprocess (current-output-port) #f (current-error-port) group executable
                      (append (append-map (lambda (p) (list "-S" (path->string p)))
                                          (current-library-collection-paths))
-                             (list (path->string self) "--worker")))))
+                             (debugger-command self) (list "--worker")))))
           (set! child process)
           (write-json (hash-set (string->jsexpr input) 'processGroup (process-group-name owner)) in)
           (newline in)

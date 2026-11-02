@@ -4,6 +4,7 @@
 const vscode = require('vscode');
 const path = require('node:path');
 const { execFile } = require('node:child_process');
+const { debuggerArgs } = require('./language-process');
 const { createHash } = require('node:crypto');
 const { targetFor, saveDocument } = require('./execution');
 const { selectTests } = require('./test-selection');
@@ -16,7 +17,7 @@ function registerTesting(context, sessions) {
   const files = new Map();
   const activeRuns = new Set();
   const discoveries = new Map(), cases = new WeakMap();
-  const discoveryPath = context.asAbsolutePath('runtime/racketdap/test-discovery.rkt');
+  const discoveryArgs = debuggerArgs(context, 'test-discovery.rkt');
   let disposed = false, refreshPending = Promise.resolve();
 
   function itemFor(uri) {
@@ -54,7 +55,7 @@ function registerTesting(context, sessions) {
     const target = targetFor(item.uri);
     const pending = { sourceHash };
     pending.done = new Promise(resolve => {
-      pending.child = execFile(target.racketExecutable, [discoveryPath],
+      pending.child = execFile(target.racketExecutable, discoveryArgs,
         { cwd: target.cwd, timeout: 10000, maxBuffer: 1024 * 1024, windowsHide: true }, (error, stdout) => {
           if (discoveries.get(item.id) !== pending || disposed) return resolve();
           item.busy = false;

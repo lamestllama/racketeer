@@ -7,7 +7,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { spawn } = require('node:child_process');
+const { spawn, spawnSync } = require('node:child_process');
 const test = require('./support/node-test');
 const { DapClient } = require('./dap-client');
 const { debuggerArgs } = require('../vscode/language-process');
@@ -260,6 +260,83 @@ test('a building folder holds off a second build until it is abandoned', { timeo
   await built(storage);
   assert.deepEqual(finished(storage), [build]);
   assert.equal(entries(storage).length, 1, entries(storage).join());
+});
+
+// A tool's supervisor and worker, given a request, until the worker has finished.
+function runTool(args, request) {
+  return new Promise((resolve, reject) => {
+    const child = spawn('racket', args, { stdio: ['pipe', 'pipe', 'pipe'] });
+    let stdout = '', stderr = '';
+    child.stdout.on('data', data => { stdout += data; });
+    child.stderr.on('data', data => { stderr += data; });
+    child.on('error', reject);
+    child.on('close', status => resolve({ status, stdout, stderr }));
+    child.stdin.write(`${JSON.stringify(request)}\n`);
+  });
+}
+
+test('tools run through the launcher as they do without it', { timeout: 300000 }, async t => {
+  const files = folder(t);
+  const { racketdap, storage } = files;
+  // A tool whose supervisor and worker are both debugger files.
+  fs.writeFileSync(path.join(racketdap, 'tools/stamp-worker.rkt'), `#lang racket/base
+(require (for-syntax racket/base) json racket/runtime-path "../tool-worker.rkt")
+(define-runtime-path self "stamp-worker.rkt")
+(define-syntax (compile-stamp stx) (datum->syntax #'here (current-inexact-milliseconds)))
+(module+ main
+  (run-tool-worker self
+    (lambda (request)
+      (write-json (hasheq 'stamp (compile-stamp) 'name (hash-ref request 'name)
+                          'arguments (vector->list (current-command-line-arguments))))
+      (flush-output))))
+`);
+  const owned = launcherArgs(files, 'tools/owned-command.rkt');
+  const result = spawnSync('racket', [...owned, '-l', 'racket/base', '-e', '(display "from the child") (exit 7)'], { encoding: 'utf8' });
+  assert.equal(result.stdout, 'from the child', result.stderr);
+  assert.equal(result.status, 7);
+  const [build] = await built(storage);
+  const again = spawnSync('racket', [...owned, '-l', 'racket/base', '-e', '(exit 7)'], { encoding: 'utf8' });
+  assert.equal(again.status, 7, again.stderr);
+  const run = async () => {
+    const { status, stdout, stderr } = await runTool(launcherArgs(files, 'tools/stamp-worker.rkt'), { name: 'a request' });
+    assert.equal(status, 0, stderr);
+    return JSON.parse(stdout);
+  };
+  const [first, second] = [await run(), await run()];
+  assert.deepEqual(first, second, 'The worker compiled once');
+  assert.deepEqual(first.arguments, ['--worker']);
+  assert.equal(first.name, 'a request');
+  assert.deepEqual(entries(storage), [build]);
+  assert.equal(compiledFiles(racketdap).length, 0);
+});
+
+test('a debugger file left out of the build loads from source, and its libraries as usual', { timeout: 300000 }, async t => {
+  const files = folder(t);
+  const { racketdap, storage, program, directory } = files;
+  fs.writeFileSync(path.join(racketdap, 'tools/no-library.rkt'), '#lang racket/base\n(require no-such-library/here)\n');
+  await session(launcherArgs(files), program);
+  const [build] = await built(storage);
+  assert.ok(!compiledFiles(path.join(storage, build)).some(name => name.endsWith('no-library_rkt.zo')));
+  const missing = spawnSync('racket', launcherArgs(files, 'tools/no-library.rkt'), { encoding: 'utf8' });
+  assert.equal(missing.status, 1);
+  assert.match(missing.stderr, /no-such-library/);
+  // This one needs the bundled libraries its command line names, so the build cannot
+  // compile it. Its libraries still come from their compiled files: reading them from
+  // source too takes the tool from about a second to half a minute.
+  assert.ok(!compiledFiles(path.join(storage, build)).some(name => name.endsWith('dependency-worker_rkt.zo')));
+  const request = { version: 1, path: program, buffers: [], roots: [directory] };
+  const collects = path.join(repository, 'vendor/collects');
+  const worker = path.join(racketdap, 'tools/dependency-worker.rkt');
+  const timed = async args => {
+    const started = Date.now();
+    const { status, stdout, stderr } = await runTool(['-S', collects, ...args], request);
+    assert.equal(status, 0, stderr);
+    return { result: JSON.parse(stdout), took: Date.now() - started };
+  };
+  const direct = await timed([worker]);
+  const launched = await timed([path.join(racketdap, 'launcher.rkt'), storage, worker]);
+  assert.deepEqual(launched.result, direct.result);
+  assert.ok(launched.took < direct.took * 6 + 5000, `${launched.took} ms against ${direct.took} ms`);
 });
 
 test('the extension starts debugger files through the launcher when it has storage', () => {

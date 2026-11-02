@@ -2,7 +2,7 @@
 ;; Copyright (c) 2026 Eric Parsonage
 ;; SPDX-License-Identifier: Apache-2.0 OR MIT
 
-(require "../process-group.rkt")
+(require "../process-group.rkt" "../launcher.rkt")
 
 ;; Runs `racket ARGUMENT ...` and owns its whole process tree: a new process
 ;; group on POSIX, a job object on Windows. Builds and the extension's servers
@@ -31,6 +31,8 @@
                      group executable (vector->list (current-command-line-arguments)))))
           (set! child process)
           (when input (close-output-port input))
+          ;; A window opening is the moment to prepare for a first debug session.
+          (start-debugger-build!)
           (subprocess-wait process)
           (let ([status (subprocess-status process)]) (if (integer? status) status 1)))
         (lambda ()

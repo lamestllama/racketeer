@@ -192,6 +192,15 @@ without the launcher. This is why it is not `PLTCOMPILEDROOTS`, which children i
 or `racket -R`, which the program would read. Starting `racketdap/main.rkt` directly
 runs from source or from ordinary compiled files, as other DAP clients do.
 
+The extension starts its other debugger files the same way: the supervisor of the
+language server and of the workspace index, test discovery, package listing, the WXME
+workers and the macro stepper. A build task's wrapper stays on source, since a build
+outlasts its cost many times over. A window opening starts the
+build through the language server's supervisor, so the first debug session usually
+finds it finished. The language server has its own compiled root in Racket's addon
+directory, which `vscode/racket-environment.rkt` installs. The dependency view's worker
+needs bundled libraries that only its command line supplies, so it stays on source.
+
 Use an ephemeral loopback TCP connection for private control traffic. The worker
 authenticates with a one-use token delivered through its bootstrap stdin pipe;
 the adapter then closes that bootstrap stream. Bind only to loopback and close

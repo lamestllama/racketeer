@@ -7,6 +7,7 @@ const fs = require('node:fs');
 const { createHash } = require('node:crypto');
 const { renderWxme } = require('./wxme-render');
 const { decodeWxme } = require('./wxme-process');
+const { debuggerArgs } = require('./language-process');
 
 const viewType = 'racketeer.wxme';
 async function fileHash(file, signal) {
@@ -66,7 +67,7 @@ function registerWxmeViewer(context) {
       const cancellation = token.onCancellationRequested(() => controller.abort(new vscode.CancellationError()));
       try {
         document.result = await decodeWxme(vscode.workspace.getConfiguration('racketdap', uri).get('racketExecutable', 'racket'),
-          context.asAbsolutePath('runtime/racketdap/tools/wxme-view.rkt'), uri.fsPath, { signal: controller.signal });
+          debuggerArgs(context, 'tools/wxme-view.rkt'), uri.fsPath, { signal: controller.signal });
         if (controller.signal.aborted) throw controller.signal.reason;
         if (dirty(uri)) throw new Error('The text editor changed while opening WXME. Save or revert it before reopening.');
         await checkFile();
