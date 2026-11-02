@@ -74,11 +74,57 @@
   (define protocol-out (current-output-port))
   (define reply (make-reply protocol-out))
   (define report-status? #f)
+  (define report-progress? #f)
+  ;; A pass in progress is standard work-done progress, begun once the client has
+  ;; accepted its token. Nothing standard keeps a state after a pass ends, so
+  ;; the final state stays private.
+  (define progress-lock (make-semaphore 1))
+  (define progress-token #f)
+  (define progress-created? #f)
+  (define progress-ended? #f)
+  (define progress-message #f)
+  (define tokens 0)
+  (define (send-progress! value)
+    (reply (hasheq 'jsonrpc "2.0" 'method "$/progress" 'params (hasheq 'token progress-token 'value value))))
+  (define (begin-progress!)
+    (send-progress! (hasheq 'kind "begin" 'title "Analysing workspace" 'message progress-message)))
+  (define (end-progress!)
+    (send-progress! (hasheq 'kind "end"))
+    (set! progress-token #f)
+    (set! progress-created? #f)
+    (set! progress-ended? #f))
+  (define (report-progress! message)
+    (set! progress-message message)
+    (set! progress-ended? #f)
+    (cond
+      [progress-created? (send-progress! (hasheq 'kind "report" 'message message))]
+      [(not progress-token)
+       (set! tokens (add1 tokens))
+       (set! progress-token (format "racketeer-index-~a" tokens))
+       (request! "window/workDoneProgress/create" (hasheq 'token progress-token)
+                 (lambda (_)
+                   (call-with-semaphore progress-lock
+                     (lambda ()
+                       (set! progress-created? #t)
+                       (begin-progress!)
+                       (when progress-ended? (end-progress!))))))]))
+  (define (finish-progress!)
+    (cond
+      [progress-created? (end-progress!)]
+      [progress-token (set! progress-ended? #t)]))
   (define engine
     (make-workspace-analysis
-      #:on-status (lambda (status)
-                    (when report-status?
-                      (reply (hasheq 'jsonrpc "2.0" 'method "racketeer/indexStatus" 'params status))))))
+      #:on-status
+      (lambda (status)
+        (define indexing? (equal? (hash-ref status 'state) "indexing"))
+        (when report-progress?
+          (call-with-semaphore progress-lock
+            (lambda ()
+              (if indexing?
+                  (report-progress! (format "~a files analysed" (hash-ref status 'indexed)))
+                  (finish-progress!)))))
+        (when (and report-status? (not indexing?))
+          (reply (hasheq 'jsonrpc "2.0" 'method "racketeer/indexStatus" 'params status))))))
   (define pending (make-hash))
   ;; 'starting until `initialize`, 'serving until `shutdown`, then 'stopped.
   (define state 'starting)
@@ -96,6 +142,7 @@
   (define settled always-evt)
   (define awaited (make-hash))
   (define requests 0)
+  (define requests-lock (make-semaphore 1))
   (define (submit! #:documents-only? [documents-only? #f])
     (when settings
       (set! submitted (cons (add1 (car submitted))
@@ -105,9 +152,10 @@
         (hasheq 'revision (car submitted) 'documentsOnly documents-only? 'settings settings
                 'roots roots 'documents (hash-values documents)))))
   (define (request! method params [on-answer void])
-    (set! requests (add1 requests))
-    (hash-set! awaited requests on-answer)
-    (reply (hasheq 'jsonrpc "2.0" 'id requests 'method method 'params params)))
+    ;; Status reports make requests from other threads.
+    (define id (call-with-semaphore requests-lock (lambda () (set! requests (add1 requests)) requests)))
+    (hash-set! awaited id on-answer)
+    (reply (hasheq 'jsonrpc "2.0" 'id id 'method method 'params params)))
   (define (answered! message)
     (define on-answer (hash-ref awaited (hash-ref message 'id #f) #f))
     (when on-answer
@@ -286,6 +334,7 @@
                  ;; Private messages are negotiated under this member, which a
                  ;; generic client never sets. Such a client sees a standard server.
                  (set! report-status? (eq? #t (capability client-capabilities 'experimental 'racketeer 'indexStatus)))
+                 (set! report-progress? (eq? #t (capability client-capabilities 'window 'workDoneProgress)))
                  (set! roots (workspace-roots params))
                  (set! state 'serving)
                  (reply (success-response id (initialize-result client-capabilities)))]

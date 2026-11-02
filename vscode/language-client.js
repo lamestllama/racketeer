@@ -161,7 +161,7 @@ function registerLanguageTools(context, debugSources) {
           `Workspace index: ${result.state}, ${result.indexed} files analysed, ${result.failures} failures.`);
         if (result.state === 'indexing') {
           showStatus('$(sync~spin) Racket: indexing',
-            `Finding workspace references: ${result.indexed} files analysed. Reference requests wait for this pass.`);
+            `Finding workspace references: ${result.message}. Reference requests wait for this pass.`);
         } else if (result.state === 'partial') {
           showStatus('$(warning) Racket: partial references',
             'Some files could not be analysed or an indexing limit was reached. References may be incomplete. See Language Server Output; run Racket: Refresh Workspace References to retry.');

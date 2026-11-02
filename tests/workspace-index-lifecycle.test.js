@@ -153,7 +153,45 @@ test('index status is sent only to a client that asked for it', { timeout: 12000
   await initialize(asked, asking, directory);
   const status = await asked.next();
   assert.equal(status.method, 'racketeer/indexStatus');
-  assert.equal(status.params.state, 'indexing');
+  assert.equal(status.params.state, 'ready', 'Status reports only the final state');
+});
+
+test('a pass reports progress only to a client that offers it, and only once its token is accepted', { timeout: 120000 }, async t => {
+  const directory = workspace(t), plain = rawServer(t);
+  await initialize(plain, asking, directory);
+  assert.equal((await plain.next()).method, 'racketeer/indexStatus', 'No progress without the offer');
+  const server = rawServer(t);
+  await initialize(server, { ...asking, window: { workDoneProgress: true } }, directory);
+  const create = await server.next();
+  assert.equal(create.method, 'window/workDoneProgress/create');
+  const following = server.next();
+  const held = await Promise.race([following, new Promise(resolve => setTimeout(resolve, 300, 'nothing'))]);
+  assert.equal(held, 'nothing', 'Nothing is sent on a token the client has not accepted');
+  server.send({ id: create.id, result: null });
+  const seen = [];
+  for (let message = await following; !seen.includes('status'); message = await server.next()) {
+    if (message.method === '$/progress') {
+      assert.equal(message.params.token, create.params.token);
+      seen.push(message.params.value.kind);
+      if (message.params.value.kind === 'begin') assert.equal(message.params.value.title, 'Analysing workspace');
+    } else if (message.method === 'racketeer/indexStatus') {
+      assert.equal(message.params.state, 'ready');
+      seen.push('status');
+      break;
+    }
+  }
+  assert.equal(seen[0], 'begin');
+  assert.deepEqual(seen.slice(-2), ['end', 'status']);
+});
+
+test('a pass that ends before its token is accepted still begins and ends', { timeout: 120000 }, async t => {
+  const directory = workspace(t), server = rawServer(t);
+  await initialize(server, { ...asking, window: { workDoneProgress: true } }, directory);
+  const create = await server.next();
+  assert.equal((await server.next()).params.state, 'ready', 'The final state does not wait for the token');
+  server.send({ id: create.id, result: null });
+  assert.equal((await server.next()).params.value.kind, 'begin');
+  assert.equal((await server.next()).params.value.kind, 'end');
 });
 
 const settingsAnd = { workspace: { configuration: true, didChangeWatchedFiles: { dynamicRegistration: true } } };

@@ -111,6 +111,11 @@ function createWorkspaceIndex(context, { executable, timeout, output, onStatus }
         connection.dispose();
         if (!disposed) failure(new Error('Process stopped. Run Racket: Restart Language Server to restart language tools.'));
       });
+      connection.onRequest('window/workDoneProgress/create', () => null);
+      connection.onUnhandledProgress(({ value }) => {
+        heard = Date.now();
+        if (value.kind !== 'end') onStatus({ state: 'indexing', message: value.message });
+      });
       connection.onRequest('workspace/configuration', ({ items }) =>
         items.map(item => item.section === settingsSection ? settings() : null));
       connection.onRequest('client/registerCapability', ({ registrations }) => { registrations.forEach(watch); });
@@ -120,6 +125,7 @@ function createWorkspaceIndex(context, { executable, timeout, output, onStatus }
       const { capabilities } = await connection.sendRequest('initialize', {
         processId: null, clientInfo: { name: 'Racketeer' }, rootUri: null, workspaceFolders: folders,
         capabilities: { general: { positionEncodings: ['utf-16'] },
+          window: { workDoneProgress: true },
           textDocument: { rename: { prepareSupport: true } },
           workspace: { configuration: true, workspaceFolders: true, workspaceEdit: { documentChanges: true },
             didChangeWatchedFiles: { dynamicRegistration: true, relativePatternSupport: true } },

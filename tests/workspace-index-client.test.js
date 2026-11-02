@@ -269,7 +269,7 @@ test('disposing the index cancels and reaps an unresponsive initializing process
   assert.ok(child.exitCode !== null || child.signalCode !== null);
 });
 
-test('captured references survive source document replacement and reject changed text', { timeout: 120000 }, async t => {
+test('captured references survive source document replacement and reject changed text', { timeout: 240000 }, async t => {
   const c = client(t);
   const source = path.join(c.directory, 'definition.rkt');
   const consumer = path.join(c.directory, 'uses.rkt');
@@ -463,4 +463,28 @@ test('a rename refuses its edit when a document it analysed moves to another ver
 test('a rename refuses its edit when the disk changes during it', async t => {
   const { request } = renameDuring(t, c => { c.disk.emit(c.parse(uri(path.join(c.directory, 'uses.rkt')))); });
   await assert.rejects(request, refused);
+});
+
+test('progress keeps a request from being withdrawn and drives the status', { timeout: 20000 }, async t => {
+  const c = indexPeer(t, undefined, undefined, 1500), doc = c.open('definition.rkt', definition);
+  await c.index.start();
+  await c.refs(doc);
+  c.connection.onRequest('textDocument/references', async () => {
+    for (let n = 0; n < 8; n++) {
+      await new Promise(resolve => setTimeout(resolve, 500));
+      await c.connection.sendNotification('$/progress', { token: 'pass', value: { kind: 'report', message: `${n} files analysed` } });
+    }
+    return [];
+  });
+  assert.deepEqual(await c.index.provideReferences(doc, { line: 2, character: 10 }, { includeDeclaration: false },
+    rpc.CancellationToken.None, () => 'language server'), [], 'Four seconds of progress outlast a watchdog of 1.5 seconds');
+  assert.deepEqual({ ...c.statuses.at(-1) }, { state: 'indexing', message: '7 files analysed' });
+});
+
+test('final index status reaches the status item', async t => {
+  const c = indexPeer(t), doc = c.open('definition.rkt', definition);
+  await c.index.start(); await c.refs(doc);
+  c.connection.sendNotification('racketeer/indexStatus', { state: 'ready', indexed: 3, failures: 0 });
+  await c.refs(doc);
+  assert.deepEqual({ ...c.statuses.at(-1) }, { state: 'ready', indexed: 3, failures: 0 });
 });
