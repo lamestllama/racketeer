@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.8.49 (unreleased)
+## 0.8.50 (unreleased)
 
 - Debug programs with long function bodies without waiting minutes for them to load. Each scope now builds its list of visible variables once and every expression in it shares that list, as does the list of module bindings in each definition, so the instrumented program grows in proportion to its source instead of with the square of a body's length. A 350-line program of two long functions that took nearly two minutes and over 4 GB now loads in about four seconds and 300 MB. Stops show the same variables, values and shadowing, and Set Value assigns them as before.
 - When the debug worker ends before the program finishes, while loading or running, the Debug Console names its exit code or signal and the session ends. A worker killed by signal 9 is reported as the way the system ends a process that runs out of memory.
