@@ -67,8 +67,23 @@ function project(t) {
   const source = path.join(directory, 'project');
   fs.mkdirSync(source);
   for (const [name, text] of Object.entries(files)) fs.writeFileSync(path.join(source, name), text);
-  return { source, cache: path.join(directory, 'cache'), main: path.join(source, 'main.rkt') };
+  return { source, cwd: source, cache: path.join(directory, 'cache'), main: path.join(source, 'main.rkt') };
 }
+// Module names keep the spelling of the program's path, and the worker's directory is
+// the system's own, which is the real path. The two differ whenever a session's folder
+// is not the program's, or is reached through a link: macOS's temporary folder always is.
+const arrangements = [
+  ['with the working directory elsewhere', p => {
+    const cwd = path.join(path.dirname(p.source), 'elsewhere');
+    fs.mkdirSync(cwd);
+    return { ...p, cwd };
+  }],
+  ['through a link to its folder', p => {
+    const source = path.join(path.dirname(p.source), 'link');
+    fs.symlinkSync(p.source, source, 'junction');
+    return { ...p, source, cwd: source, main: path.join(source, 'main.rkt') };
+  }]
+];
 // The scenario every comparison runs: breakpoints, stepping, variables, assignment,
 // evaluation with a macro, an exception stop, its location and captured source.
 async function scenario({ client, ok }) {
@@ -135,7 +150,7 @@ const entry = (p, name, extension = '.zo') => {
 // cached run is compared with must have the cache off.
 const uncachedOptions = options => ({ ...options, debugCache: false });
 const run = (p, cached) => session(
-  cached ? { program: p.main, cwd: p.source, debugCacheDirectory: p.cache } : uncachedOptions({ program: p.main, cwd: p.source }),
+  cached ? { program: p.main, cwd: p.cwd, debugCacheDirectory: p.cache } : uncachedOptions({ program: p.main, cwd: p.cwd }),
   breakpointsOf(p), scenario);
 function assertSameTrace(actual, expected, label, view = normalized) {
   const a = view(actual.messages);
@@ -164,6 +179,43 @@ test('a cached run sends the same messages as an uncached one, on the build and 
   assert.deepStrictEqual(written(), afterBuild, 'reuse wrote no entry');
   assert.deepStrictEqual(fs.readdirSync(p.source).sort(), Object.keys(files).sort());
 });
+
+for (const [where, arrange] of arrangements) {
+  test(`a project ${where} sends the same messages cached as uncached`, { timeout: 300000 }, async t => {
+    const p = arrange(project(t));
+    const uncached = await run(p, false);
+    assert.ok(!JSON.stringify(uncached.messages).includes('mismatch'));
+    assertSameTrace(await run(p, true), uncached, 'build');
+    assertSameTrace(await run(p, true), uncached, 'reuse');
+  });
+  // Nothing of the parent runs, so nothing of the parent can register its own definitions.
+  test(`a submodule of a parent with nothing to run evaluates its macros and imports ${where}`, { timeout: 300000 }, async t => {
+    const p = arrange(project(t));
+    fs.writeFileSync(path.join(p.source, 'only-syntax.rkt'), `#lang racket/base
+(require "macros.rkt")
+(define-syntax-rule (mine) 'my-macro)
+(module+ main
+  (displayln "in main"))
+`);
+    const program = path.join(p.source, 'only-syntax.rkt');
+    const evaluated = async ({ client, ok }) => {
+      const stopped = await client.event('stopped');
+      const threadId = stopped.body.threadId;
+      const { stackFrames } = await ok(client.request('stackTrace', { threadId }));
+      const results = [];
+      for (const expression of ['(mine)', '(helper 1)']) {
+        results.push((await ok(client.request('evaluate', { expression, frameId: stackFrames[0].id, context: 'repl' }))).result);
+      }
+      assert.deepStrictEqual(results, ['my-macro', '3']);
+      await ok(client.request('continue', { threadId }));
+    };
+    const options = { program, cwd: p.cwd };
+    const cached = { ...options, debugCacheDirectory: p.cache };
+    const uncached = await session(uncachedOptions(options), { [program]: [5] }, evaluated);
+    assertSameTrace(await session(cached, { [program]: [5] }, evaluated), uncached, 'build');
+    assertSameTrace(await session(cached, { [program]: [5] }, evaluated), uncached, 'reuse');
+  });
+}
 
 // One edit, then the cached session must equal an uncached session of the edited
 // sources, and the macro's new expansion must be what the program computed.

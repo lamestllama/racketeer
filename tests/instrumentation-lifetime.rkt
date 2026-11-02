@@ -37,7 +37,7 @@
   (define reference
     (parameterize ([current-namespace namespace])
       (dynamic-require ''registration 'reference)))
-  (register-module-context! context reference (lambda () '()))
+  (register-module-context! context reference '())
   (define module-namespace (variable-reference->namespace reference))
   (list (make-weak-box module-namespace)
         (make-weak-box (namespace-module-registry module-namespace))))

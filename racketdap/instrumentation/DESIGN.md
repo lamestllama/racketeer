@@ -184,8 +184,10 @@ For complete module binding visibility:
 A context has a symbol key, which is all generated code quotes. A module records
 its declarations in its first expansion pass and instruments in its second, and
 children expand after their parents, so the catalog is complete when the module's
-first form is instrumented. That form registers the identifiers as syntax literals,
-for the module and its inherited parents, and includes later module+ fragments.
+first form is instrumented. That form registers each identifier's source name and
+defined symbol, for the module and its inherited parents, and includes later module+
+fragments. A child holds names and not its parents' identifiers: their module path
+indexes belong to the parent as it expanded, and nothing shifts them with the child.
 It also registers the owning module namespace,
 separately per namespace registry and only at phase zero. Inherited parents
 with only transformer definitions are located through the actual runtime

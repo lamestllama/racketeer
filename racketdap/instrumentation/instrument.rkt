@@ -37,7 +37,7 @@
 ;; A module's declarations are all recorded in its first expansion pass, and its
 ;; runtime expressions wait for the second, so the identifiers are complete when
 ;; the module's first form is instrumented. Children expand after their parents.
-;; That first form hands them to the runtime as syntax literals under the key.
+;; That first form hands their names to the runtime under the key.
 (struct module-binding-context (key [own-identifiers #:mutable] parent children [registered? #:mutable])
   #:constructor-name new-module-binding-context)
 (define (make-module-binding-context [parent #f] [key (fresh-context-key)])
@@ -577,8 +577,17 @@
                        (if (identifier? local-name) (syntax-e local-name) local-name)))
   (define (identifiers-thunk identifiers)
     #`(#%plain-lambda () (#%plain-app list #,@(for/list ([id (in-list identifiers)]) #`(quote-syntax #,id)))))
-  ;; One registration per module: repeating the identifiers in each of its forms
-  ;; would grow with forms times declarations.
+  ;; A context's definitions as (source name . defined symbol). Names, not syntax: a
+  ;; parent's identifier in a child's code keeps the module path indexes of the parent
+  ;; as it expanded, which nothing shifts when the child is declared. Read back from a
+  ;; file, they resolve against the current directory instead of the module.
+  (define (defined-names identifiers)
+    (for*/list ([id (in-list identifiers)]
+                [binding (in-value (identifier-binding id))]
+                #:when (list? binding))
+      (cons (syntax-e id) (cadr binding))))
+  ;; One registration per module: repeating the names in each of its forms would
+  ;; grow with forms times declarations.
   (define register-context
     (if (and module-context (not (module-binding-context-registered? module-context)))
         (begin
@@ -586,10 +595,10 @@
           (list #`(#%plain-app register-module-context!
                    '#,(module-binding-context-key module-context)
                    #,(datum->syntax expanded (list #'#%variable-reference) expanded)
-                   #,(identifiers-thunk (module-binding-context-own-identifiers module-context))
-                   (#%plain-app list #,@(for/list ([ancestor (in-list (module-binding-context-ancestors module-context))])
-                              #`(#%plain-app cons '#,(module-binding-context-key ancestor)
-                                      #,(identifiers-thunk (module-binding-context-own-identifiers ancestor))))))))
+                   '#,(defined-names (module-binding-context-own-identifiers module-context))
+                   '#,(for/list ([ancestor (in-list (module-binding-context-ancestors module-context))])
+                        (cons (module-binding-context-key ancestor)
+                              (defined-names (module-binding-context-own-identifiers ancestor)))))))
         '()))
   (define framed (car (frame-around form-activation #f (list result))))
   (values (if (and (zero? next-slot) (null? register-context))

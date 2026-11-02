@@ -157,7 +157,7 @@
 (define (forget-noted-thread!) (set! noted-thread (make-weak-box #f)))
 ;; Module contexts are keyed by symbols. Each namespace registry gets the live
 ;; namespace of the owning module instance, registered before its source forms,
-;; and each context records the identifiers it owns and the context it inherits.
+;; and each context records the names it owns and the context it inherits.
 ;; Namespaces retain their registry and the symbols their code quotes.
 ;; Both associations need ephemerons so those backreferences do not root a
 ;; completed target, while a live target keeps all of its registrations usable.
@@ -166,14 +166,15 @@
 (define (owned-module-bindings context)
   (define owned (hash-ref module-context-owned context #f))
   (if owned
-      (append (for/list ([id (in-list ((car owned)))]) (cons context id))
+      (append (for/list ([names (in-list (car owned))]) (cons context names))
               (if (cdr owned) (owned-module-bindings (cdr owned)) '()))
       '()))
-;; ancestors lists the inherited contexts as (key . identifiers), nearest first.
-(define (register-module-context! context reference identifiers [ancestors '()])
+;; names lists a context's definitions as (source name . defined symbol), and
+;; ancestors the inherited contexts as (key . names), nearest first.
+(define (register-module-context! context reference names [ancestors '()])
   (when (zero? (variable-reference->module-base-phase reference))
-    (let loop ([key context] [thunk identifiers] [rest ancestors])
-      (hash-set! module-context-owned key (cons thunk (and (pair? rest) (caar rest))))
+    (let loop ([key context] [names names] [rest ancestors])
+      (hash-set! module-context-owned key (cons names (and (pair? rest) (caar rest))))
       (when (pair? rest) (loop (caar rest) (cdar rest) (cdr rest))))
     (define namespace (variable-reference->namespace reference))
     (define registry (namespace-module-registry namespace))
@@ -206,15 +207,6 @@
   (unless owner-namespace
     (error 'stop-evaluate "module binding context has not been registered"))
   owner-namespace)
-(define (context-binding-target owner id target-namespace)
-  (define owner-namespace (context-binding-namespace owner target-namespace))
-  (define binding (identifier-binding id))
-  (unless (and (list? binding) (>= (length binding) 2))
-    (error 'stop-evaluate "module binding has no resolved identity: ~a" (syntax-e id)))
-  ;; The binding symbol is supplied by the expander. Never infer it by stripping
-  ;; numeric suffixes or by matching similarly printed source identifiers.
-  (parameterize ([current-namespace owner-namespace])
-    (namespace-symbol->identifier (cadr binding))))
 
 (define make-live-binding live-binding)
 
@@ -351,6 +343,11 @@
   (define context (form-context (frame-form f)))
   (append (if context (owned-module-bindings context) '())
           (map (lambda (id) (cons #f id)) ((form-module-bindings (frame-form f))))))
+;; An entry is (owner source-name . defined-symbol), or (#f . identifier) for an
+;; identifier a form uses. The defined symbol comes from the expander. Never infer it
+;; by stripping numeric suffixes or by matching similarly printed source identifiers.
+(define (entry-name entry)
+  (if (car entry) (cadr entry) (syntax-e (cdr entry))))
 (define (binding-name name who)
   (cond [(symbol? name) name]
         [(string? name) (string->symbol name)]
@@ -362,13 +359,11 @@
    (findf (lambda (b) (eq? name (live-binding-name b))) (visible-bindings scoped))
    (and (eq? scope 'lexical) (error who "no lexical binding named ~a" name))
    (let* ([namespace ((form-namespace (frame-form (car scoped))))]
-          [entry (findf (lambda (entry) (eq? name (syntax-e (cdr entry))))
+          [entry (findf (lambda (entry) (eq? name (entry-name entry)))
                         (frame-module-entries (car scoped)))])
      (cond
        [(and entry (car entry))
-        (define owner-namespace (context-binding-namespace (car entry) namespace))
-        (define id (context-binding-target (car entry) (cdr entry) namespace))
-        (cons owner-namespace (syntax-e id))]
+        (cons (context-binding-namespace (car entry) namespace) (cddr entry))]
        [else
         (define mapped (namespace-identifier name namespace))
         (define internal-name
@@ -430,12 +425,14 @@
   (for ([b (in-list names)]) (hash-set! seen (live-binding-name b) #t))
   (define module-aliases
     (for/list ([entry (in-list (frame-module-entries f))]
-               #:unless (hash-ref seen (syntax-e (cdr entry)) #f))
-      (define id (cdr entry))
-      (hash-set! seen (syntax-e id) #t)
+               #:unless (hash-ref seen (entry-name entry) #f))
+      (define name (entry-name entry))
+      (hash-set! seen name #t)
       (define target
-        (if (car entry) (context-binding-target (car entry) id namespace) id))
-      #`[#,(datum->syntax #f (syntax-e id))
+        (if (car entry)
+            (namespace-identifier (cddr entry) (context-binding-namespace (car entry) namespace))
+            (cdr entry)))
+      #`[#,(datum->syntax #f name)
          (quote #,(make-rename-transformer target))]))
   (define expression
     #`(let-syntax
