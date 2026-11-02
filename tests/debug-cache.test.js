@@ -131,8 +131,11 @@ const entry = (p, name, extension = '.zo') => {
   assert.strictEqual(found.length, 1, `one entry for ${name}`);
   return found[0];
 };
+// With no folder named a session still caches, in Racket's addon directory. What a
+// cached run is compared with must have the cache off.
+const uncachedOptions = options => ({ ...options, debugCache: false });
 const run = (p, cached) => session(
-  { program: p.main, cwd: p.source, ...(cached ? { debugCacheDirectory: p.cache } : {}) },
+  cached ? { program: p.main, cwd: p.source, debugCacheDirectory: p.cache } : uncachedOptions({ program: p.main, cwd: p.source }),
   breakpointsOf(p), scenario);
 function assertSameTrace(actual, expected, label, view = normalized) {
   const a = view(actual.messages);
@@ -297,7 +300,7 @@ test('a cache location that cannot be used runs the program from source', async 
 test('a syntax error reads the same with and without the cache, on every run', { timeout: 300000 }, async t => {
   const p = project(t);
   edit(p, 'macros.rkt', '(define doubled (* n 2))', '(define doubled (* n 2) extra)');
-  const uncached = await session({ program: p.main, cwd: p.source }, {});
+  const uncached = await session(uncachedOptions({ program: p.main, cwd: p.source }), {});
   const cachedOptions = { program: p.main, cwd: p.source, debugCacheDirectory: p.cache };
   // The loader's own frames in the context lines differ, as they do between loaders.
   const withoutContext = messages => normalizedByFile(messages).map(line =>
@@ -315,7 +318,7 @@ test('code a compiled file cannot hold still runs, from source', { timeout: 3000
 )(define-syntax (embedded stx) (datum->syntax #'here (list 'quote (lambda () 'a-closure))))
 (provide`).replace('racket/include', 'racket/include'));
   edit(p, 'main.rkt', '(define total 0)', '(define total 0)\n(displayln (procedure? (embedded)))');
-  const uncached = await session({ program: p.main, cwd: p.source }, {});
+  const uncached = await session(uncachedOptions({ program: p.main, cwd: p.source }), {});
   assert.ok(JSON.parse(normalized(uncached.messages)[0]).stdout.includes('#t'));
   const cachedOptions = { program: p.main, cwd: p.source, debugCacheDirectory: p.cache };
   assertSameTrace(await session(cachedOptions, {}), uncached, 'first');
@@ -336,7 +339,7 @@ test('running without debugging uses no cache', async t => {
   assert.deepStrictEqual(entries(p, '.zo'), []);
 });
 
-test('without a cache folder nothing is written, beside the sources or anywhere else', async t => {
+test('with the cache off nothing is written, beside the sources or anywhere else', async t => {
   const p = project(t);
   await run(p, false);
   assert.deepStrictEqual(walk(path.dirname(p.source)).map(file => path.basename(file)).sort(), Object.keys(files).sort());
@@ -352,7 +355,7 @@ test('stopping on entry stops at the same place', { timeout: 300000 }, async t =
     }
   };
   const options = { program: p.main, cwd: p.source, stopOnEntry: true };
-  const uncached = await session(options, {}, stops);
+  const uncached = await session(uncachedOptions(options), {}, stops);
   const cached = { ...options, debugCacheDirectory: p.cache };
   assertSameTrace(await session(cached, {}, stops), uncached, 'build');
   assertSameTrace(await session(cached, {}, stops), uncached, 'reuse');
@@ -361,7 +364,7 @@ test('stopping on entry stops at the same place', { timeout: 300000 }, async t =
 test('an explicit submodule runs from the cache as it does from source', { timeout: 300000 }, async t => {
   const p = project(t);
   const options = { program: p.main, cwd: p.source, submodule: ['test'] };
-  const uncached = await session(options, {});
+  const uncached = await session(uncachedOptions(options), {});
   const cached = { ...options, debugCacheDirectory: p.cache };
   assertSameTrace(await session(cached, {}), uncached, 'build');
   assertSameTrace(await session(cached, {}), uncached, 'reuse');
@@ -415,7 +418,7 @@ test('choosing to debug a library rebuilds the code compiled against it', { time
   const options = { program: main, cwd: p.source, sourceRoots: [p.source] };
   const cached = { ...options, debugCacheDirectory: p.cache };
   // Unselected: no breakpoint and outside the source roots.
-  const plain = await session(options, {});
+  const plain = await session(uncachedOptions(options), {});
   assertSameTrace(await session(cached, {}), plain, 'library not selected');
   assertSameTrace(await session(cached, {}), plain, 'library not selected, reused');
   assert.ok(entries(p, '.zo').some(file => file.includes(`${path.sep}plain${path.sep}small_rkt.zo`)));
@@ -424,7 +427,7 @@ test('choosing to debug a library rebuilds the code compiled against it', { time
     const stopped = await client.event('stopped');
     await ok(client.request('continue', { threadId: stopped.body.threadId }));
   };
-  const selected = await session(options, { [small]: [4] }, stops);
+  const selected = await session(uncachedOptions(options), { [small]: [4] }, stops);
   assertSameTrace(await session(cached, { [small]: [4] }, stops), selected, 'library selected');
   assertSameTrace(await session(cached, { [small]: [4] }, stops), selected, 'library selected, reused');
   assertSameTrace(await session(cached, {}), plain, 'library not selected again');
@@ -455,13 +458,13 @@ for (const [name, language, setup] of [
       await ok(client.request('continue', { threadId }));
     };
     const options = { program: main, cwd: p.source };
-    const uncached = await session(options, { [main]: [3] }, stops);
+    const uncached = await session(uncachedOptions(options), { [main]: [3] }, stops);
     const cached = { ...options, debugCacheDirectory: p.cache };
     assertSameTrace(await session(cached, { [main]: [3] }, stops), uncached, 'build');
     assertSameTrace(await session(cached, { [main]: [3] }, stops), uncached, 'reuse');
     if (name.startsWith('a language')) {
       edit(p, 'my-language.rkt', 'marker-one', 'marker-two');
-      const edited = await session(options, { [main]: [3] }, stops);
+      const edited = await session(uncachedOptions(options), { [main]: [3] }, stops);
       assert.ok(JSON.parse(normalized(edited.messages)[0]).stdout.includes('marker-two'));
       assertSameTrace(await session(cached, { [main]: [3] }, stops), edited, 'language edited');
     }
@@ -475,7 +478,7 @@ test('compile-time effects run when building, once, and not when reusing', { tim
   const stdout = result => JSON.parse(normalized(result.messages)[0]).stdout || '';
   const cached = { ...options, debugCacheDirectory: p.cache };
   const count = text => text.split('at compile time').length - 1;
-  const uncached = await session(options, {});
+  const uncached = await session(uncachedOptions(options), {});
   const built = await session(cached, {});
   const reused = await session(cached, {});
   assert.ok(count(stdout(uncached)) >= 1);
