@@ -379,6 +379,7 @@ test('a method, an initialiser and a closure in a class show this, and it opens 
     const object = rows.find(row => row.name === 'this');
     assert.equal(object.value, '#<object:counter% 1 1 5>');
     assert.equal(object.type, 'object:counter%');
+    assert.equal(object.indexedVariables, 3);
     // Fields are numbered in the order of the object's structure: the program's inspector
     // gives their values, and the class alone knows their names.
     assert.deepEqual((await stop.open(object.variablesReference)).map(row => [row.name, row.value]),
@@ -493,6 +494,93 @@ test('an object seen before its fields are set is still shown, with the unset on
     const object = (await stop.rows()).find(row => row.name === 'this');
     const value = name === 'during-initialisation' ? '<uninitialized>' : '2';
     assert.equal(object.value, `#<object:early% ${value}>`);
+    assert.equal(object.indexedVariables, 1);
     assert.deepEqual((await stop.open(object.variablesReference)).map(row => row.value), [value]);
+  });
+});
+
+test('a scope with more names than a page returns them all, first and last', async t => {
+  const count = 251;
+  await eachStop(t, [
+    '#lang racket/base',
+    '(define (many first-argument second-argument)',
+    ...Array.from({ length: count - 2 }, (_, i) => `  (define v${i} ${i})`),
+    "  (void 'stop-many)",
+    '  first-argument)',
+    '(many 1 2)'
+  ], async (_, stop) => {
+    const rows = await stop.rows();
+    assert.equal(rows.length, count);
+    assert.deepEqual(rows.slice(-2).map(row => row.name), ['first-argument', 'second-argument']);
+    assert.ok(rows.some(row => row.name === 'v0') && rows.some(row => row.name === 'v248'));
+    assert.deepEqual((await stop.rows({ start: 250, count: 5 })).map(row => row.name), ['second-argument']);
+    assert.equal((await stop.rows({ start: 100, count: 100 }))[0].name, rows[100].name);
+    assert.deepEqual(await stop.rows({ filter: 'indexed' }), []);
+  });
+});
+
+test('containers report their sizes and page as they are asked', async t => {
+  await eachStop(t, [
+    '#lang racket/base',
+    '(struct triple (a b c))',
+    '(struct level0 (f0))',
+    ...Array.from({ length: 39 }, (_, i) => `(struct level${i + 1} level${i} (f${i + 1}))`),
+    '(define (containers v h l s b p deep)',
+    "  (void 'stop-containers)",
+    '  1)',
+    '(containers (build-vector 150 values) (for/hash ([i 150]) (values i i)) (build-list 150 values)',
+    `            (triple 1 2 3) (box 1) add1 (level39 ${Array.from({ length: 40 }, (_, i) => i).join(' ')}))`
+  ], async (_, stop) => {
+    const rows = Object.fromEntries((await stop.rows()).map(row => [row.name, row]));
+    const sizes = name => [rows[name].indexedVariables, rows[name].namedVariables];
+    assert.deepEqual(sizes('v'), [150, undefined]);
+    assert.deepEqual(sizes('h'), [150, undefined]);
+    assert.deepEqual(sizes('s'), [3, undefined]);
+    assert.deepEqual(sizes('l'), [undefined, 2]);
+    assert.deepEqual(sizes('b'), [undefined, 1]);
+    assert.deepEqual(sizes('p'), [undefined, 1]);
+    // A hierarchy past the preview's limit goes uncounted, and still opens in full.
+    assert.deepEqual(sizes('deep'), [undefined, undefined]);
+    assert.equal((await stop.open(rows.deep.variablesReference)).length, 40);
+    const vector = rows.v.variablesReference;
+    assert.equal((await stop.open(vector)).length, 150);
+    const page = await stop.open(vector, { start: 100, count: 100 });
+    assert.deepEqual([page.length, page[0].name, page[0].value, page.at(-1).name], [50, '100', '100', '149']);
+    assert.deepEqual((await stop.open(vector, { start: 100 })).length, 50);
+    assert.deepEqual((await stop.open(vector, { start: 149, count: 1, filter: 'indexed' })).map(row => row.value), ['149']);
+    assert.deepEqual(await stop.open(vector, { filter: 'named' }), []);
+    assert.deepEqual((await stop.open(vector, { count: 0 })).length, 150);
+    assert.deepEqual(await stop.open(rows.l.variablesReference, { filter: 'indexed' }), []);
+    assert.deepEqual((await stop.open(rows.l.variablesReference, { filter: 'named' })).map(row => row.name), ['car', 'cdr']);
+    assert.equal((await stop.open(rows.h.variablesReference, { start: 100, count: 100 })).length, 50);
+    // A watch and a hover carry the sizes too, so a client pages them the same way.
+    assert.equal((await ok(stop.watch('v'))).indexedVariables, 150);
+    assert.equal((await ok(stop.hover('v'))).indexedVariables, 150);
+  });
+});
+
+test('a vector of a million opens in pages at once, and an unpaged request says where it ended', async t => {
+  await eachStop(t, [
+    '#lang racket/base',
+    '(define (enormous million)',
+    "  (void 'stop-enormous)",
+    '  1)',
+    '(enormous (make-vector 1000000 7))'
+  ], async (_, stop) => {
+    const [row] = await stop.rows();
+    assert.equal(row.value, '#(7 7 7 7 7 7 …)');
+    assert.equal(row.indexedVariables, 1000000);
+    const page = await stop.open(row.variablesReference, { start: 999900, count: 100 });
+    assert.deepEqual([page.length, page[0].name, page.at(-1).name], [100, '999900', '999999']);
+    assert.equal((await stop.open(row.variablesReference, { start: 20000, count: 300 })).length, 300);
+    const unpaged = await stop.open(row.variablesReference);
+    assert.equal(unpaged.length, 10001);
+    assert.equal(unpaged[9999].name, '9999');
+    assert.equal(unpaged[10000].name, '…');
+    assert.equal(unpaged[10000].value, '990000 more rows: ask for them by start and count');
+    assert.equal(unpaged[10000].variablesReference, 0);
+    const later = await stop.open(row.variablesReference, { start: 995000 });
+    assert.equal(later.length, 5000);
+    assert.equal(later.at(-1).name, '999999');
   });
 });

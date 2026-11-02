@@ -321,7 +321,12 @@
               'type (if plot? "plot" (value-type value))
               'variablesReference (if (or image? plot? (expandable? value))
                                       (new-handle variables pause (cons 'value value)) 0)))
-    (define visual (if image? (hash-set result 'racketdapImage #t) result))
+    (define-values (indexed named) (child-counts value))
+    (define sized
+      (let* ([sized (if (positive? indexed) (hash-set result 'indexedVariables indexed) result)]
+             [sized (if (positive? named) (hash-set sized 'namedVariables named) sized)])
+        sized))
+    (define visual (if image? (hash-set sized 'racketdapImage #t) sized))
     (cond [plot? (hash-set (hash-set visual 'racketdapPlot #t) '__vscodeVariableMenuContext "racketdap.plot")]
           [image? (hash-set visual '__vscodeVariableMenuContext "racketdap.image")]
           [else visual]))
@@ -445,11 +450,12 @@
                                   (new-handle variables pause (cons 'results (stop-results stop))))) '())))]
       [(variables)
        (define descriptor (owned variables (hash-ref a 'variablesReference) pause))
-       (define start (min 10000 (max 0 (arg a 'start 0))))
-       (define count (min 200 (max 1 (let ([n (arg a 'count 100)]) (if (zero? n) 100 n)))))
-       (define pairs
+       (define start (max 0 (arg a 'start 0)))
+       ;; By the protocol, a count that is missing or zero asks for every row.
+       (define count (let ([n (arg a 'count 0)]) (and (positive? n) n)))
+       (define-values (pairs omitted)
          (case (car descriptor)
-           [(value) (children (cdr descriptor) start count)]
+           [(value) (value-rows (cdr descriptor) (arg a 'filter #f) start count)]
            [else
             (define all
               (if (eq? (car descriptor) 'locals)
@@ -457,8 +463,14 @@
                   (for/list ([v (in-list (if (eq? (car descriptor) 'return-results)
                                             (stop-results (cdr descriptor)) (cdr descriptor)))]
                              [i (in-naturals 1)]) (cons (format "value ~a" i) v))))
-            (take (drop all (min start (length all))) (min count (max 0 (- (length all) start))))]))
-       (hasheq 'variables (map (lambda (pair) (describe pause (car pair) (cdr pair))) pairs))]
+            ;; These rows are named, by a variable or by their position among values.
+            (values (if (equal? (arg a 'filter #f) "indexed") '() (page all start (or count (length all)))) 0)]))
+       (hasheq 'variables
+               (append (map (lambda (pair) (describe pause (car pair) (cdr pair))) pairs)
+                       (if (zero? omitted)
+                           '()
+                           (list (hasheq 'name "…" 'type "omitted rows" 'variablesReference 0
+                                         'value (format "~a more rows: ask for them by start and count" omitted))))))]
       [(evaluate)
        (define index (if (arg a 'frameId) (owned frames (arg a 'frameId) pause) 0))
        (define expression (hash-ref a 'expression))

@@ -787,8 +787,13 @@ Offer explicit console operations for users who want those effects. Respect
 use the target pause site's inspection authority, not a more privileged
 controller inspector, for automatic previews.
 
-Limits apply to depth, visited nodes, output length, and requested child count.
-Avoid walking an entire list or hash merely to populate a count field. Preserve
+Limits apply to depth, visited nodes and output length. A row reports its size through
+`indexedVariables` or `namedVariables` when knowing it takes no walk, so a client pages
+it by `start` and `count`, which are honoured as given; a list reports its two pair
+rows. A request with no count returns every row of a scope. For a container it stops
+at 10,000 rows, about 300 ms of work, with a last row giving the number left out, since a
+million rows would hold the session for half a minute. Avoid walking an entire list
+or hash merely to populate a count field. Preserve
 sharing and detect cycles using identity. Numeric display strings must not pass
 through JSON's numeric representation.
 

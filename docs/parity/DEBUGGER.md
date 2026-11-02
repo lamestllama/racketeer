@@ -42,7 +42,12 @@ names `this` is what the row shows. It opens to the object's fields as the progr
 inspector allows: numbered, because the object holds no field names, and shown as
 `<uninitialized>` until set. A field is no variable: its name in the source expands to
 a call on the object, so it has no row, and hover and the Debug Console refuse it.
-`(get-field count this)` in the Debug Console reads a public field. The Return values scope includes the number of returned
+`(get-field count this)` in the Debug Console reads a public field. A request with no
+count returns every row of a scope, however many, and Variables asks that way. A
+container reports its size as `indexedVariables` or `namedVariables`, so a client pages
+a long one by `start` and `count`, as the Variables panel does; a list opens to its
+`car` and `cdr`, so it reports two named rows. A container's reply to a request with
+no count stops at 10,000 rows, with a last row saying how many more there are. The Return values scope includes the number of returned
 values, including zero; assignment to a variable uses Racket's `set!` semantics.
 Racketeer deliberately retains the completion stop at a function's call site
 after it returns, so its return values can be inspected before advancing.

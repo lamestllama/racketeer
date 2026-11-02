@@ -217,6 +217,12 @@ and source coordinates; procedures expand to show arity. Procedure names appear
 when they can be obtained without invoking program callbacks; other procedures
 can remain `#<procedure>`.
 
+**Locals** lists every variable visible in the frame, however many. A long vector, hash
+or structure opens in groups of rows, which VS Code asks for as they are opened, so
+a vector of a million opens at once. A list opens to its `car` and `cdr`. A client that
+ignores the sizes the debugger reports and asks for a whole container gets 10,000 rows
+and a last row saying how many more there are.
+
 Automatic inspection does not force promises, call custom writers or invoke
 wrapped accessors. Wrapped values retain conservative previews; use explicit
 console evaluation to run their code. A stopped program's source

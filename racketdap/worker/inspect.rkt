@@ -3,7 +3,7 @@
 ;; SPDX-License-Identifier: Apache-2.0 OR MIT
 (require racket/keyword racket/list racket/promise racket/string racket/symbol racket/unsafe/undefined
          "../instrumentation/instrument.rkt")
-(provide value-preview value-type children expandable?)
+(provide value-preview value-type children expandable? child-counts value-rows page)
 ;; Retain the inspector above the debuggee's structure types.
 (define debugger-inspector (current-inspector))
 (define (visible-structure-type value)
@@ -75,6 +75,7 @@
 
 (define preview-items 6)
 (define preview-depth 3)
+(define preview-hierarchy 32)
 ;; An object's field before its initialiser has run holds the undefined value, and a guarded
 ;; object refuses to read it.
 (define (field-value ref value i)
@@ -199,7 +200,7 @@
              (define name (structure-name type))
              (container
               (lambda (seen)
-                (define fields (structure-children v 0 (add1 preview-items) 32))
+                (define fields (structure-children v 0 (add1 preview-items) preview-hierarchy))
                 (if fields
                     (string-append "#<" name
                                    (if (null? fields) ""
@@ -222,6 +223,43 @@
 (define (page items start count)
   (define length* (length items))
   (take (drop items (min start length*)) (max 0 (- (min (+ start count) length*) (min start length*)))))
+;; How many rows a value opens to, indexed and named, without visiting them. Only a hierarchy
+;; past the preview's limit goes uncounted: counting it is work on every row that shows it.
+(define (child-counts value)
+  (cond
+    [(or (unavailable? value) (wrapped? value)) (values 0 0)]
+    [(pair? value) (values 0 2)]
+    [(vector? value) (values (vector-length value) 0)]
+    [(box? value) (values 0 1)]
+    [(hash? value) (values (hash-count value) 0)]
+    [(syntax? value) (values 0 6)]
+    [(instrumented-port? value) (values 0 3)]
+    [(visible-structure-type value)
+     => (lambda (type)
+          (parameterize ([current-inspector debugger-inspector])
+            (let loop ([type type] [fields 0] [remaining preview-hierarchy])
+              (cond [(not type) (values fields 0)]
+                    [(zero? remaining) (values 0 0)]
+                    [else
+                     (define-values (name init auto ref set immutable super skipped?) (struct-type-info type))
+                     (loop super (+ fields init auto) (sub1 remaining))]))))]
+    [(procedure? value) (values 0 1)]
+    [else (values 0 0)]))
+;; A request with no count asks for every row. Past this many a reply stops being a page a
+;; client can hold, so it ends where it says it ends. The sizes a row reports tell a client
+;; to page instead.
+(define unpaged-row-limit 10000)
+;; The rows a variables request gets, and how many more an unpaged one left out.
+(define (value-rows value filter start count)
+  (define-values (indexed named) (child-counts value))
+  (cond
+    [(or (and (equal? filter "indexed") (zero? indexed))
+         (and (equal? filter "named") (zero? named)))
+     (values '() 0)]
+    [count (values (children value start count) 0)]
+    [else
+     (values (children value start unpaged-row-limit)
+             (max 0 (- (+ indexed named) start unpaged-row-limit)))]))
 (define (children value start count)
   (define end (+ start count))
   (cond
