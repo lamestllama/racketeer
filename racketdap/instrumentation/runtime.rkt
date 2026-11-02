@@ -1,7 +1,7 @@
 #lang racket/base
 ;; Copyright (c) 2026 Eric Parsonage
 ;; SPDX-License-Identifier: Apache-2.0 OR MIT
-(require racket/list '#%paramz (for-syntax racket/base))
+(require racket/list '#%paramz ffi/unsafe/vm (for-syntax racket/base))
 (provide (struct-out site) site-phases site-boundary-position arm-site! (struct-out unavailable)
          debug-stop? stop-site stop-kind stop-frame-count stop-frame-site
          stop-locals stop-evaluate stop-results
@@ -12,19 +12,15 @@
          make-live-binding frame-key context-key first-scope-slot note-thread
          announce-before announce-after leave-with-values announce-visit register-module-context!
          form-sites form-gate form-armed register-form-sites! forget-noted-thread!
-         remember-procedure instrumented-procedure-name
+         plain-procedure-name
          port-constructor-name? checked-operator instrumented-port?)
 
-;; Only the lambda/case-lambda rewrite can register a value. Keeping this
-;; operation private lets inspection trust these names without querying an
-;; arbitrary callable structure's prop:object-name. Weak keys do not retain
-;; closures (or their captured debuggee state) after the program drops them.
-(define procedure-names (make-weak-hasheq))
-(define (remember-procedure procedure)
-  (hash-set! procedure-names procedure (object-name procedure))
-  procedure)
-(define (instrumented-procedure-name value)
-  (hash-ref procedure-names value #f))
+;; An applicable structure is a procedure to Racket but a record to the machine, so the
+;; machine tells a real procedure from a structure, however opaque, whose prop:object-name
+;; could run program code. A real procedure's name is inert.
+(define machine-record? (vm-primitive 'record?))
+(define (plain-procedure-name value)
+  (and (procedure? value) (not (machine-record? value)) (object-name value)))
 
 ;; Port predicates also recognize user structures; object-name and port-closed?
 ;; cannot be queried safely until a real port constructor proves provenance.

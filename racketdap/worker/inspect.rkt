@@ -36,7 +36,7 @@
 (define (safe-procedure-name value)
   ;; Neither struct? nor struct-info can rule out an opaque callable structure.
   ;; Restrict object-name to procedure kinds that cannot have prop:object-name.
-  (or (instrumented-procedure-name value)
+  (or (plain-procedure-name value)
       (and (or (primitive? value) (struct-constructor-procedure? value)
                (struct-predicate-procedure? value) (struct-accessor-procedure? value)
                (struct-mutator-procedure? value))

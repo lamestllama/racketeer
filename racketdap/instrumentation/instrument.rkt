@@ -382,13 +382,12 @@
     (define container? (binding-container? expression))
     ;; The slot a binding container's scopes share, which its site reads too.
     (define container-slot (and container? (not coverage?) (fresh-scope-slot! act)))
-    (define (remember-lambda rewritten)
+    (define (named-lambda rewritten)
       ;; Preserve source/properties, notably method-arity-error and inferred-name.
-      ;; The registration call must not replace the compiler's contextual name
-      ;; with a temporary binding or the instrumentation source location.
+      ;; Generated bindings must not replace the compiler's contextual name with a
+      ;; temporary binding or the instrumentation source location.
       (define original (datum->syntax expression (syntax-e rewritten) expression expression))
-      (define named (if inferred-name (syntax-property original 'inferred-name inferred-name) original))
-      #`(#%plain-app remember-procedure #,named))
+      (if inferred-name (syntax-property original 'inferred-name inferred-name) original))
     (define (rewrite)
       (syntax-case* expression (quote quote-syntax #%datum #%top #%variable-reference
                                     #%plain-lambda case-lambda if begin begin0
@@ -403,13 +402,13 @@
         [(#%variable-reference . ignored) expression]
         [(#%plain-lambda formals expression ...)
          (with-syntax ([(new-formals new-body ...) (lambda-clause #'formals (syntax->list #'(expression ...)) environment)])
-           (remember-lambda #'(#%plain-lambda new-formals new-body ...)))]
+           (named-lambda #'(#%plain-lambda new-formals new-body ...)))]
         [(case-lambda [formals expression ...] ...)
          (with-syntax ([(clause ...)
                         (for/list ([f (in-list (syntax->list #'(formals ...)))]
                                    [es (in-list (syntax->list #'((expression ...) ...)))])
                           (lambda-clause f (syntax->list es) environment))])
-           (remember-lambda #'(case-lambda clause ...)))]
+           (named-lambda #'(case-lambda clause ...)))]
         [(if test consequent alternative)
          #`(if #,(walk #'test environment act #f)
                #,(walk #'consequent environment act tail? inferred-name)
