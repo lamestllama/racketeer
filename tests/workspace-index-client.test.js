@@ -411,6 +411,26 @@ test('a file event outside the source suffixes waits for the next request and ar
   assert.deepEqual(order, [['later.log', 'output.json'], 'request', 'request']);
 });
 
+test('moving in or deleting a folder with a dot in its name marks the index out of date', { timeout: 120000 }, async t => {
+  const c = client(t), elsewhere = fs.mkdtempSync(path.join(root, '.test-output', 'dotted-'));
+  t.after(() => fs.rmSync(elsewhere, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(c.directory, 'definition.rkt'), definition);
+  const doc = c.open('definition.rkt', definition);
+  const folder = path.join(c.directory, 'my.project'), inside = path.join(folder, 'uses.rkt');
+  const count = async () => (await c.refs(doc)).filter(location => location.uri.fsPath === inside).length;
+  assert.equal(await count(), 0);
+  // A watcher reports such a folder by its own name alone, and nothing else tells the index.
+  const prepared = path.join(elsewhere, 'my.project');
+  fs.mkdirSync(prepared);
+  fs.writeFileSync(path.join(prepared, 'uses.rkt'), uses.replace('"definition.rkt"', '"../definition.rkt"'));
+  fs.renameSync(prepared, folder);
+  c.disk.emit(c.parse(uri(folder)));
+  assert.equal(await count(), 1, 'A folder moved in is analysed');
+  fs.rmSync(folder, { recursive: true });
+  c.disk.emit(c.parse(uri(folder)));
+  assert.equal(await count(), 0, 'A folder deleted is gone');
+});
+
 test('a client leaves captured references to the language server unless the server offers them', async t => {
   const c = indexPeer(t), file = c.open('definition.rkt', definition);
   await c.index.start();
