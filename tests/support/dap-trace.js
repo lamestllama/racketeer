@@ -60,7 +60,8 @@ function normalized(messages) {
     if (message.event === 'output') text[message.body.category] = (text[message.body.category] || '') + message.body.output;
     else others.push(JSON.stringify(message));
   }
-  return [JSON.stringify(text), ...others];
+  // Streams arrive in either order, so their order is not part of the comparison.
+  return [JSON.stringify(Object.fromEntries(Object.entries(text).sort())), ...others];
 }
 // A partial rebuild checks and builds dependencies before it loads them, so files
 // are announced in another order and take other source reference numbers. Compare

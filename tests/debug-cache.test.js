@@ -546,6 +546,64 @@ for (const [where, arrange] of arrangements) {
   });
 }
 
+// The extension's default working directory is the workspace folder, so a program
+// in a subfolder runs with a working directory that is not its own.
+test('Evaluate in a submodule works from a working directory other than the program\'s', { timeout: 300000 }, async t => {
+  const p = project(t);
+  const line = lineIn(p.main, "(displayln (list 'main total))");
+  for (const options of [{}, { debugCacheDirectory: p.cache }, { debugCacheDirectory: p.cache }]) {
+    const results = [];
+    await session({ program: p.main, cwd: path.dirname(p.source), ...options }, { [p.main]: [line] }, async ({ client, ok }) => {
+      const stopped = await client.event('stopped');
+      const { stackFrames } = await ok(client.request('stackTrace', { threadId: stopped.body.threadId }));
+      for (const expression of ['(helper 1)', '(set! total 100)']) {
+        results.push(await client.request('evaluate', { expression, frameId: stackFrames[0].id, context: 'repl' }));
+      }
+      await ok(client.request('continue', { threadId: stopped.body.threadId }));
+      const failed = await client.event('stopped');
+      await ok(client.request('continue', { threadId: failed.body.threadId }));
+    });
+    assert.equal(results[0].body.result, '3');
+    assert.match(results[1].message, /cannot mutate module-required identifier/);
+  }
+});
+
+test('a module in a language defined in the project stops from another working directory', { timeout: 300000 }, async t => {
+  const p = project(t);
+  fs.writeFileSync(path.join(p.source, 'my-language.rkt'),
+    '#lang racket/base\n(provide (all-from-out racket/base) marker)\n(define (marker) (quote marker-one))\n');
+  const main = path.join(p.source, 'in-language.rkt');
+  fs.writeFileSync(main, '(module main "my-language.rkt"\n(define (f x)\n  (list x))\n(displayln (f (marker)))\n)\n');
+  for (const options of [{}, { debugCacheDirectory: p.cache }, { debugCacheDirectory: p.cache }]) {
+    const { messages } = await session({ program: main, cwd: path.dirname(p.source), ...options }, { [main]: [3] }, async ({ client, ok }) => {
+      const stopped = await client.event('stopped');
+      await ok(client.request('continue', { threadId: stopped.body.threadId }));
+    });
+    assert.ok(JSON.parse(normalized(messages)[0]).stdout.includes('marker-one'));
+  }
+});
+
+test('a language given as a submodule stops from another working directory', { timeout: 300000 }, async t => {
+  const p = project(t);
+  fs.writeFileSync(path.join(p.source, 'my-language.rkt'),
+    '#lang racket/base\n(module inner racket/base\n  (provide (all-from-out racket/base) marker)\n  (define (marker) (quote marker-two)))\n');
+  const main = path.join(p.source, 'in-submodule-language.rkt');
+  fs.writeFileSync(main, '(module main (submod "my-language.rkt" inner)\n(define (f x)\n  (list x))\n(displayln (f (marker)))\n)\n');
+  for (const options of [{}, { debugCacheDirectory: p.cache }, { debugCacheDirectory: p.cache }]) {
+    const { messages } = await session({ program: main, cwd: path.dirname(p.source), ...options }, { [main]: [3] }, async ({ client, ok }) => {
+      const stopped = await client.event('stopped');
+      await ok(client.request('continue', { threadId: stopped.body.threadId }));
+    });
+    assert.ok(JSON.parse(normalized(messages)[0]).stdout.includes('marker-two'));
+  }
+});
+
+test('standard output and error compare the same in either order', () => {
+  const output = (category, text) => ({ type: 'event', event: 'output', seq: 1, body: { category, output: text } });
+  assert.deepStrictEqual(normalized([output('stdout', 'a'), output('stderr', 'b')]),
+    normalized([output('stderr', 'b'), output('stdout', 'a')]));
+});
+
 test('compile-time effects run when building, once, and not when reusing', { timeout: 300000 }, async t => {
   const p = project(t);
   edit(p, 'macros.rkt', '(struct point', '(begin-for-syntax (displayln "at compile time"))\n(struct point');
