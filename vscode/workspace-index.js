@@ -26,6 +26,10 @@ function createWorkspaceIndex(context, { executable, timeout, output, onStatus }
   const watchers = new Map();
   // File events waiting for the next request: the latest in each folder.
   const held = new Map();
+  // When each URI last closed, counted by closes, so a rename can tell a document
+  // that was closed and reopened at the same version from one that stayed open.
+  const closes = new Map();
+  let closeCount = 0;
   const documentIdentity = document => {
     if (!identities.has(document)) identities.set(document, ++identity);
     return identities.get(document);
@@ -155,6 +159,7 @@ function createWorkspaceIndex(context, { executable, timeout, output, onStatus }
     }),
     vscode.workspace.onDidCloseTextDocument(document => {
       identities.delete(document);
+      closes.set(document.uri.toString(), ++closeCount);
       if (isSource(document)) synchronize(() => didClose(document));
     }),
     vscode.workspace.onDidChangeWorkspaceFolders(() => synchronize(didChangeFolders)),
@@ -192,7 +197,7 @@ function createWorkspaceIndex(context, { executable, timeout, output, onStatus }
   async function renameRequest(method, document, position, token, newName) {
     if (!enabled()) throw new Error('Enable workspace analysis to rename safely across files.');
     if (disposed || token.isCancellationRequested) return;
-    const version = document.version, owned = documentIdentity(document);
+    const version = document.version, owned = documentIdentity(document), began = closeCount;
     await start();
     if (disposed || token.isCancellationRequested) return;
     const response = await ask(method, {
@@ -207,19 +212,20 @@ function createWorkspaceIndex(context, { executable, timeout, output, onStatus }
     if (version !== document.version ||
         identities.get(document) !== owned || document.isClosed ||
         !vscode.workspace.textDocuments.includes(document) ||
-        !(response.documentChanges || []).every(editable)) {
+        !(response.documentChanges || []).every(change => editable(change, began))) {
       throw new Error('Workspace changed during rename. Try Rename again.');
     }
     return response;
   }
   // An edit stands while each file holds what was analysed: an open document at
-  // the version named, or for the text on disk, no buffer that differs from it.
+  // the version named and open since the rename began, or for the text on disk, no
+  // buffer that differs from it. A version number restarts when a document reopens.
   // A document that merely opened, unchanged, leaves the edit standing. Disk,
   // settings and folder events read before the answer are the server's to absorb:
   // it starts again, and answers from the new sources or refuses.
-  function editable({ textDocument: { uri, version } }) {
+  function editable({ textDocument: { uri, version } }, began) {
     const open = vscode.workspace.textDocuments.find(document => document.uri.toString() === uri && !document.isClosed);
-    return version === null ? !open?.isDirty : open?.version === version;
+    return version === null ? !open?.isDirty : open?.version === version && !(closes.get(uri) > began);
   }
   // The process is ended either way, so a server slow to close its engine
   // holds up restarting language tools only briefly.

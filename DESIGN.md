@@ -379,8 +379,9 @@ A client without that capability gets the defaults.
 ContentModified is not used for rename because LSP clients do not show it, and the user must
 try again. With `workspace.workspaceEdit.documentChanges`, a rename names the version
 of each buffer it analysed, or null for text on disk. A client refuses an edit if a
-document it names has moved on. Without the capability, the edit is a plain `changes`
-record.
+document it names has moved on, or has closed since the rename began: a reopened document
+can have the same version and other text. Without the capability, the edit is a plain
+`changes` record.
 
 Passes report work-done progress to a client that offers `window.workDoneProgress`:
 `window/workDoneProgress/create`, then `begin`, `report` after each file, and `end`

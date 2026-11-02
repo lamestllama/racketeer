@@ -507,6 +507,20 @@ test('a rename refuses its edit when an edited buffer it analysed closes during 
   await assert.rejects(c.index.provideRenameEdits(doc, { line: 2, character: 10 }, 'squared', rpc.CancellationToken.None), refused);
 });
 
+test('a rename refuses its edit when a buffer it names reopens at the same version with other text', async t => {
+  const c = indexPeer(t), doc = c.open('definition.rkt', definition), buffer = c.open('uses.rkt', uses);
+  buffer.isDirty = true;
+  c.connection.onRequest('textDocument/rename', async () => {
+    buffer.isClosed = true; c.closed.emit(buffer);
+    c.workspace.textDocuments.splice(c.workspace.textDocuments.indexOf(buffer), 1);
+    c.open('uses.rkt', uses.replace('(square 3)', '(string 3)')).isDirty = true;
+    return { documentChanges: [{ textDocument: { uri: buffer.uri.toString(), version: 1 }, edits: [
+      { range: { start: { line: 2, character: 1 }, end: { line: 2, character: 7 } }, newText: 'squared' }] }] };
+  });
+  await c.index.start();
+  await assert.rejects(c.index.provideRenameEdits(doc, { line: 2, character: 10 }, 'squared', rpc.CancellationToken.None), refused);
+});
+
 test('a rename refuses its edit when a document it analysed moves to another version', async t => {
   const { request } = renameDuring(t, () => {}, 5);
   await assert.rejects(request, refused);
