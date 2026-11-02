@@ -222,7 +222,8 @@
       [(AnalysisResult revision value)
        (define current submitted)
        (cond
-         [(not (= revision (car current))) stale]
+         ;; Overtaken by a message already read, or by settings not yet applied.
+         [(not (and (= revision (car current)) (sync/timeout 0 settled))) stale]
          [(eq? operation 'rename) (success-response id (workspace-edit value (cdr current)))]
          [else (success-response id value)])]
       [(AnalysisFailure 'changed _) #:when (not (eq? operation 'references)) stale]

@@ -19,9 +19,7 @@ const sourceSuffixes = ['.rkt', '.ss', '.scrbl', '.rhm', '.rktl', '.rktd', ''];
 // fake document opens to the language server or consumes the server's live traces.
 function createWorkspaceIndex(context, { executable, timeout, output, onStatus }) {
   let connection, starting, disposed = false, requested = false, synchronized = false;
-  // `outside` counts what was reported from outside the documents: disk, settings
-  // and folders. A rename refuses its edit if any arrived while it was asked.
-  let outside = 0, identity = 0, heard = Date.now(), extensions = {}, folders = [];
+  let identity = 0, heard = Date.now(), extensions = {}, folders = [];
   const identities = new WeakMap();
   // The documents the server holds, at the versions it has.
   const versions = new WeakMap();
@@ -72,15 +70,11 @@ function createWorkspaceIndex(context, { executable, timeout, output, onStatus }
     const absent = (list, other) => list.filter(folder => !other.some(item => item.uri === folder.uri));
     const added = absent(current, folders), removed = absent(folders, current);
     folders = current;
-    if (added.length || removed.length) {
-      outside++;
-      notify('workspace/didChangeWorkspaceFolders', { event: { added, removed } });
-    }
+    if (added.length || removed.length) notify('workspace/didChangeWorkspaceFolders', { event: { added, removed } });
   }
   function watch({ id, registerOptions }) {
     const report = type => uri => {
       if (!sourceSuffixes.includes(path.extname(uri.fsPath).toLowerCase())) return;
-      outside++;
       synchronize(() => notify('workspace/didChangeWatchedFiles', { changes: [{ uri: uri.toString(), type }] }));
     };
     const items = registerOptions.watchers.flatMap(({ globPattern }) => {
@@ -146,7 +140,6 @@ function createWorkspaceIndex(context, { executable, timeout, output, onStatus }
     return starting;
   }
   function refresh() {
-    outside++;
     synchronize(() => {
       void connection.sendRequest('workspace/executeCommand', { command: 'racketeer.refreshWorkspaceIndex' }).catch(failure);
     });
@@ -167,7 +160,6 @@ function createWorkspaceIndex(context, { executable, timeout, output, onStatus }
     vscode.workspace.onDidChangeWorkspaceFolders(() => synchronize(didChangeFolders)),
     vscode.workspace.onDidChangeConfiguration(event => {
       if (event.affectsConfiguration(settingsSection)) {
-        outside++;
         synchronize(() => notify('workspace/didChangeConfiguration', { settings: null }));
       }
     })
@@ -196,7 +188,7 @@ function createWorkspaceIndex(context, { executable, timeout, output, onStatus }
   async function renameRequest(method, document, position, token, newName) {
     if (!enabled()) throw new Error('Enable workspace analysis to rename safely across files.');
     if (disposed || token.isCancellationRequested) return;
-    const version = document.version, owned = documentIdentity(document), reported = outside;
+    const version = document.version, owned = documentIdentity(document);
     await start();
     if (disposed || token.isCancellationRequested) return;
     const response = await ask(method, {
@@ -208,7 +200,7 @@ function createWorkspaceIndex(context, { executable, timeout, output, onStatus }
     });
     if (disposed || token.isCancellationRequested) return;
     if (response === silent) throw new Error('The workspace index stopped answering. Run Racket: Restart Language Server.');
-    if (reported !== outside || version !== document.version ||
+    if (version !== document.version ||
         identities.get(document) !== owned || document.isClosed ||
         !vscode.workspace.textDocuments.includes(document) ||
         !(response.documentChanges || []).every(editable)) {
@@ -218,7 +210,9 @@ function createWorkspaceIndex(context, { executable, timeout, output, onStatus }
   }
   // An edit stands while each file holds what was analysed: an open document at
   // the version named, or for the text on disk, no buffer that differs from it.
-  // A document that merely opened, unchanged, leaves the edit standing.
+  // A document that merely opened, unchanged, leaves the edit standing. Disk,
+  // settings and folder events read before the answer are the server's to absorb:
+  // it starts again, and answers from the new sources or refuses.
   function editable({ textDocument: { uri, version } }) {
     const open = vscode.workspace.textDocuments.find(document => document.uri.toString() === uri && !document.isClosed);
     return version === null ? !open?.isDirty : open?.version === version;

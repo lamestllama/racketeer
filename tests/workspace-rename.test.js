@@ -143,3 +143,11 @@ test('rename names the version of each buffer it analysed, and null for text on 
   const after = await p.rename(p.origin, 'squared');
   assert.equal(after.documentChanges.find(({ textDocument }) => textDocument.uri === consumer).textDocument.version, null);
 });
+
+test('a rename pending while source files change answers from the new sources', { timeout: 120000 }, async t => {
+  const p = await project(t), consumer = uri(p.filename('uses.rkt'));
+  await p.references(p.origin);
+  const pending = p.rename(p.origin, 'squared');
+  p.write('uses.rkt', uses + '(square 4)\n'); await p.diskChange('uses.rkt');
+  assert.equal((await pending).changes[consumer].length, 2);
+});

@@ -460,9 +460,9 @@ test('a rename refuses its edit when a document it analysed moves to another ver
   await assert.rejects(request, refused);
 });
 
-test('a rename refuses its edit when the disk changes during it', async t => {
+test('a rename keeps its edit when the server answers after a disk change it has read', async t => {
   const { request } = renameDuring(t, c => { c.disk.emit(c.parse(uri(path.join(c.directory, 'uses.rkt')))); });
-  await assert.rejects(request, refused);
+  assert.equal((await request).size, 1);
 });
 
 test('progress keeps a request from being withdrawn and drives the status', { timeout: 20000 }, async t => {
