@@ -260,14 +260,40 @@ it, and a known primitive stays inline; any other operator goes through a check 
 constructors once, in a call that takes no copy of the arguments.
 
 The expander splits a body's internal definitions from one definition context into nested
-binding forms. Expanding those again adds one scope per definition, and every identifier
-below carries them all: quadratic in the length of the body, far more than any macro use.
-Generated code writes them back as one letrec-values, with one scope. The clauses run in
-definition order, the same scopes distinguish the same names, and a name that would repeat
-in one form starts a new one. Scopes in the chain share a frame slot, which always holds
-the variables of the definitions that have run. Racket's compile always expands its input,
-including fully expanded code, and offers no way to pass that step, so the input has to be
-cheap to expand.
+binding forms. Expanding those again adds a scope per definition to everything below it, and
+each identifier below carries them all: quadratic in the length of the body, far more than
+any macro use. Racket's compile always expands its input, including fully expanded code, and
+offers no way to pass that step, so the input has to be cheap to expand.
+
+The nesting cannot be flattened into one letrec-values. A non-recursive binding allocates its
+variable when its initialiser returns, once for each return. A composable or re-entered
+continuation captured in an initialiser returns again, and needs new variables for that
+definition and every one after it. A letrec-values allocates them all once, so the second
+return would overwrite the first one's variables and change what the program computes. Any
+initialiser that calls an unknown procedure can do this, which is nearly all of them.
+
+So the nesting stays, and is cut off: after every 16 definitions the rest of the body moves
+into a procedure, which the code before it tail-calls in the place the rest of the body was.
+The moved code is not inside those binding forms and carries none of their scopes, so nothing
+nests deeper than 16 definitions and the cost of expanding a body is linear in its length. A
+body of 16 or fewer definitions is written just as it was. The procedures sit in one
+letrec-values around the body, and nothing else about the body changes: a variable is still
+allocated where the expander put it, the call keeps the tail position and the continuation
+marks of what it replaced, and every return of an initialiser runs the rest again with new
+variables. An earlier part's variable is the same variable: code in a later part reaches it
+through a case-lambda, built where the variable is in scope, that reads it or assigns it, so
+assignments, use before definition and the debugger's own accessors are unchanged. Only
+variables a later part uses are passed, and a variable's own part reads it directly. A later
+part's reference to such a variable through #%variable-reference says it is not constant,
+which is what any variable a stop can assign already says.
+
+The worst case for this is a late expression using every earlier definition: each part then
+receives every variable before it, which is quadratic in the number of definitions with a
+small constant, since parts are only argument lists, not nested scopes.
+
+The program's own expansion to a syntax object has a quadratic term the instrumenter cannot
+touch: at 2800 definitions, plain `expand` takes most of the load time and most of the peak
+memory. Compiling the same module without asking for its expansion does not pay it.
 
 Compiled instrumented code is an ordinary module apart from three things. It imports
 runtime.rkt and worker/expand.rkt by absolute path, so the cache key includes

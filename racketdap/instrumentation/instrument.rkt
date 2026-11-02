@@ -281,82 +281,94 @@
     (if (primitive-operator? (car expressions))
         #`(#%plain-app #,@rewritten)
         #`(#%plain-app (#%plain-app checked-operator #,(car rewritten)) #,@(cdr rewritten))))
-  ;; The nested binding forms of one body's internal definitions, as a list of clause
-  ;; groups and the body they lead to. Each group says whether it refers to itself.
-  (define (container-chain expression)
-    (define bound (make-bound-id-table))
-    (define (fresh-names? ids)
-      (for/and ([id (in-list ids)]) (not (bound-id-table-ref bound id #f))))
-    (let loop ([expression expression] [groups '()])
-      (syntax-case* expression (let-values letrec-values) free-identifier=?
-        [(form ([(id ...) rhs] ...) inner ...)
-         (and (bound-form? #'form binding-forms) (binding-container? expression)
-              ;; One binding form cannot bind a name twice. Nest instead.
-              (or (null? groups) (fresh-names? (syntax->list #'(id ... ...)))))
-         (let ([groups (cons (cons (free-identifier=? #'form #'letrec-values)
-                                   (syntax->list #'([(id ...) rhs] ...)))
-                             groups)]
-               [bodies (syntax->list #'(inner ...))])
-           (for ([id (in-list (syntax->list #'(id ... ...)))]) (bound-id-table-set! bound id #t))
-           (if (null? (cdr bodies))
-               (loop (car bodies) groups)
-               (values (reverse groups) bodies)))]
-        [_ (values (reverse groups) (list expression))])))
-  ;; The expander split a body's definitions from one definition context, and its
-  ;; result nests them. Expanding that again would add a scope per definition, and a
-  ;; deeper scope set to every identifier below it, which is quadratic in the length
-  ;; of a body. Written as one letrec-values they share one scope again, and definition
-  ;; order is the order clauses run in. Their scopes share a frame slot, which always
-  ;; holds the variables of the definitions that have run.
-  (define (flat-container expression environment act tail? inferred-name shared-slot has-site?)
-    (define-values (groups expressions) (container-chain expression))
-    (define (clause-parts clause)
-      (syntax-case clause () [[(id ...) rhs] (values (syntax->list #'(id ...)) #'rhs)]))
-    (define (walk-clause clause clause-environment)
-      (define-values (ids rhs) (clause-parts clause))
-      #`[#,ids #,(walk rhs clause-environment act #f
-                       (and (= (length ids) 1) (syntax-e (car ids))))])
-    (define-values (entries final-environment)
-      (for/fold ([entries '()] [outer environment]) ([group (in-list groups)])
-        (define ids (append-map (lambda (clause) (let-values ([(ids _) (clause-parts clause)]) ids))
-                                (cdr group)))
-        (define this (new-scope ids outer (or shared-slot first-scope-slot)))
-        (when (and has-site? (own-scope? this outer))
-          ;; The container's own site reads the slot between definitions.
-          (set-scope-sited?! this #t)
-          (set-scope-reached?! this #t))
-        (define clauses
-          (for/list ([clause (in-list (cdr group))])
-            (walk-clause clause (if (car group) this outer))))
-        (values (cons (vector (car group) this outer clauses) entries) this)))
-    (define rewritten-body (body expressions final-environment act tail? inferred-name))
-    ;; Innermost first, since a scope's procedure reaches the scopes around it.
-    (define emitted
-      (for/fold ([emitted '()]) ([entry (in-list entries)])
-        (define-values (self-referring? this outer clauses) (vector->values entry))
-        (define scope-clauses
-          (if (and (own-scope? this outer) (scope-reached? this))
-              (cons #`[(#,(scope-variable this)) #,(scope-procedure this)]
-                    (if (scope-sited? this)
-                        (list #`[(#,(car (generate-temporaries '(stored)))) #,(store-scope this act)])
-                        '()))
-              '()))
-        (cons (if self-referring?
-                  ;; Its procedure comes first: its getters may run in any initializer.
-                  (append scope-clauses clauses)
-                  (append clauses scope-clauses))
-              emitted)))
-    (define starting
-      ;; Between definitions the container's site shows what came before the first.
-      (if (and has-site? shared-slot environment)
-          (begin
-            (set-scope-reached?! environment #t)
-            (list #`[(#,(car (generate-temporaries '(stored))))
-                     (#%plain-app unsafe-vector*-set! #,(activation-frame act) '#,shared-slot
-                                  #,(scope-variable environment))]))
-          '()))
-    #`(letrec-values (#,@starting #,@(apply append emitted))
-        #,@rewritten-body))
+  ;; The expander writes a body's definitions as nested binding forms. Each binding form
+  ;; adds a scope to everything below it when generated code is expanded again, which is
+  ;; quadratic in the length of the body, and each must stay: a definition's variable is
+  ;; allocated when its initialiser returns, once for each time it returns.
+  ;;
+  ;; So the nesting stays and stops at a limit. Every so many definitions, the rest of
+  ;; the body moves out of line into a procedure that its predecessor tail-calls. The
+  ;; procedure's code sits outside those binding forms and carries none of their scopes.
+  ;; It reaches an earlier variable it uses through a getter and setter over the variable
+  ;; itself, and the variables shown at a stop through the scope's procedure.
+  (define body-nesting-limit 16)
+  ;; The binding forms of one body, outermost first.
+  (define (body-containers expression)
+    (let loop ([expression expression] [containers '()])
+      (if (binding-container? expression)
+          (let ([bodies (cddr (syntax->list expression))])
+            (if (null? (cdr bodies))
+                (loop (car bodies) (cons expression containers))
+                (reverse (cons expression containers))))
+          (reverse containers))))
+  (define (container-ids container)
+    (syntax-case container ()
+      [(_ ([(id ...) rhs] ...) . _) (syntax->list #'(id ... ...))]))
+  (define (container-initializers container)
+    (syntax-case container ()
+      [(_ ([ids rhs] ...) . _) (syntax->list #'(rhs ...))]))
+  ;; Decides where a long body moves out of line: for each container that starts a part,
+  ;; the earlier variables that part or a later one uses.
+  (define out-of-line (make-hasheq))
+  (define planned-bodies (make-hasheq))
+  (define (plan-body! top)
+    (define containers (body-containers top))
+    (define final (last containers))
+    (define (part i) (quotient i body-nesting-limit))
+    (define bound (make-free-id-table))
+    (define last-used (make-free-id-table))
+    (for ([container (in-list containers)] [i (in-naturals)])
+      (hash-set! planned-bodies container #t)
+      (for ([id (in-list (container-ids container))]) (free-id-table-set! bound id #t))
+      ;; The body of all but the last container is the next container.
+      (let note-uses ([v (if (eq? container final)
+                             (append (container-initializers container) (cddr (syntax->list container)))
+                             (container-initializers container))])
+        (cond
+          [(identifier? v)
+           (when (free-id-table-ref bound v #f) (free-id-table-set! last-used v (part i)))]
+          [(syntax? v)
+           (define parts (syntax->list v))
+           (unless (and (pair? parts) (identifier? (car parts)) (bound-form? (car parts) quoted-forms))
+             (note-uses (syntax-e v)))]
+          [(pair? v) (note-uses (car v)) (note-uses (cdr v))])))
+    (for/fold ([earlier '()]) ([container (in-list containers)] [i (in-naturals)])
+      (define live
+        (cond
+          [(and (positive? i) (zero? (remainder i body-nesting-limit)))
+           (define used-later
+             (filter (lambda (id) (>= (free-id-table-ref last-used id -1) (part i))) earlier))
+           (hash-set! out-of-line container used-later)
+           used-later]
+          [else earlier]))
+      (append (container-ids container) live))
+    (> (length containers) body-nesting-limit))
+  ;; The clauses of the procedures a body in progress has moved out of line, and how to
+  ;; reach an earlier part's variables from the code being written.
+  (define body-parts (make-parameter #f))
+  (define accessors (make-parameter #f))
+  (define (accessor-of id)
+    (and (accessors) (free-id-table-ref (accessors) id #f)))
+  (define (move-out-of-line ids environment rewrite)
+    (define names (generate-temporaries ids))
+    (define arguments
+      (for/list ([id (in-list ids)])
+        (or (accessor-of id)
+            (let ([replacement (car (generate-temporaries '(replacement)))])
+              #`(case-lambda [() #,id] [(#,replacement) (set! #,id #,replacement)])))))
+    (define rewritten
+      (parameterize ([accessors (for/fold ([known (or (accessors) (make-immutable-free-id-table))])
+                                          ([id (in-list ids)] [name (in-list names)])
+                                  (free-id-table-set known id name))])
+        (rewrite)))
+    ;; Known only now: whether anything in the moved code shows the variables.
+    (define variables
+      (if (and environment (scope-reached? environment)) (list (scope-variable environment)) '()))
+    (define procedure (car (generate-temporaries '(rest-of-body))))
+    (set-box! (body-parts)
+              (cons #`[(#,procedure) (#%plain-lambda (#,@variables #,@names) #,rewritten)]
+                    (unbox (body-parts))))
+    #`(#%plain-app #,procedure #,@variables #,@arguments))
   (define (walk expression environment act tail? [context-name #f])
     (define located (location-of expression))
     (define range (and located (cons (syntax-position located) (syntax-span located))))
@@ -379,26 +391,30 @@
                (and expression-boundary? (eq? expression expanded)))
            (begin (set! next-slot (add1 next-slot)) next-slot)))
     (define enclosing (enclosing-site))
-    (define container? (binding-container? expression))
-    ;; The slot a binding container's scopes share, which its site reads too.
-    (define container-slot (and container? (not coverage?) (fresh-scope-slot! act)))
     (define (named-lambda rewritten)
       ;; Preserve source/properties, notably method-arity-error and inferred-name.
       ;; Generated bindings must not replace the compiler's contextual name with a
       ;; temporary binding or the instrumentation source location.
       (define original (datum->syntax expression (syntax-e rewritten) expression expression))
       (if inferred-name (syntax-property original 'inferred-name inferred-name) original))
-    (define (rewrite)
+    (define (rewrite-form)
       (syntax-case* expression (quote quote-syntax #%datum #%top #%variable-reference
                                     #%plain-lambda case-lambda if begin begin0
                                     let-values letrec-values set! with-continuation-mark
                                     #%plain-app #%expression)
                     free-identifier=?
-        [id (identifier? #'id) expression]
+        [id (identifier? #'id)
+         (let ([accessor (accessor-of #'id)])
+           (if accessor #`(#%plain-app #,accessor) expression))]
         [(quote . ignored) expression]
         [(quote-syntax . ignored) expression]
         [(#%datum . ignored) expression]
         [(#%top . ignored) expression]
+        ;; A variable the moved code reaches through an accessor is not a constant it can
+        ;; rely on. It has no variable here to refer to, so it refers to one that says so.
+        [(#%variable-reference id)
+         (and (identifier? #'id) (accessor-of #'id))
+         #`(let-values ([(id) '#f]) (set! id '#f) (#%variable-reference id))]
         [(#%variable-reference . ignored) expression]
         [(#%plain-lambda formals expression ...)
          (with-syntax ([(new-formals new-body ...) (lambda-clause #'formals (syntax->list #'(expression ...)) environment)])
@@ -420,9 +436,6 @@
         [(begin0 expression rest ...)
          #`(begin0 #,(walk #'expression environment act #f inferred-name)
                    #,@(body (syntax->list #'(rest ...)) environment act #f))]
-        [(form . _)
-         container?
-         (flat-container expression environment act tail? inferred-name container-slot (and slot #t))]
         [(let-values ([(id ...) rhs] ...) expression ...)
          (let* ([groups (syntax->list #'((id ...) ...))]
                 [this (new-scope (apply append (map syntax->list groups)) environment
@@ -451,7 +464,10 @@
                      '())])
            ;; The scope's procedure comes first: its getters may run in any initializer.
            #`(letrec-values (#,@scope-clauses #,@rhss) #,@bodies))]
-        [(set! id rhs) #`(set! id #,(walk #'rhs environment act #f (syntax-e #'id)))]
+        [(set! id rhs)
+         (let ([accessor (accessor-of #'id)]
+               [value (walk #'rhs environment act #f (syntax-e #'id))])
+           (if accessor #`(#%plain-app #,accessor #,value) #`(set! id #,value)))]
         [(with-continuation-mark key value result)
          #`(with-continuation-mark #,(walk #'key environment act #f)
                                    #,(walk #'value environment act #f)
@@ -464,6 +480,17 @@
         [(#%expression expression)
          #`(#%expression #,(walk #'expression environment act tail? inferred-name))]
         [_ (raise-syntax-error 'instrument-module "unsupported expanded runtime form" expression)]))
+    (define (rewrite)
+      (cond
+        [(hash-ref out-of-line expression #f)
+         => (lambda (ids) (move-out-of-line ids environment rewrite-form))]
+        [(and (binding-container? expression)
+              (not (hash-ref planned-bodies expression #f))
+              (plan-body! expression))
+         (define parts (box '()))
+         (define first-part (parameterize ([body-parts parts]) (rewrite-form)))
+         #`(letrec-values #,(reverse (unbox parts)) #,first-part)]
+        [else (rewrite-form)]))
     (define rewritten
       (parameterize ([enclosing-boundary
                       (if (and (boundary-visible? current) range (stoppable? expression))
@@ -478,8 +505,9 @@
          (site (fresh-id) (syntax-source located)
                (syntax-line located) (syntax-column located)
                (syntax-position located) (syntax-span located)
-               tail? (syntax->datum expression) enclosing
-               (or container-slot (if environment (scope-slot environment) first-scope-slot))))
+               ;; A body's binding form holds all of the body after it.
+               tail? (and (not (binding-container? expression)) (syntax->datum expression)) enclosing
+               (if environment (scope-slot environment) first-scope-slot)))
        (when visible? (set! descriptors (cons descriptor descriptors)))
        (set! table (cons (cons slot (cons descriptor visible?)) table))
        (unless coverage?

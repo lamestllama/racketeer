@@ -68,6 +68,14 @@
    (apply string-append
           (for/list ([j count]) (format "  (define v~a (+ x ~a (if (even? x) 1 2)))\n" j j)))
    (format "  (+ x v0 v~a))\n" (sub1 count))))
+(define (long-calling-function count)
+  (string-append
+   "(define (step a b) (+ a b))\n"
+   "(define (subject x)\n"
+   (apply string-append
+          (for/list ([j count])
+            (format "  (define v~a (step ~a ~a))\n" j (if (zero? j) "x" (format "v~a" (sub1 j))) j)))
+   (format "  (list x v0 v~a))\n" (sub1 count))))
 (define (nested-calls depth)
   (string-append
    "(define (f x) x)\n(define (subject y) "
@@ -75,14 +83,14 @@
    "y" (make-string depth #\)) ")\n"))
 
 ;; How many binding forms nest inside each other, each of which adds a scope that the
-;; expander pushes through everything below it.
+;; expander pushes through everything below it. A procedure's formals are bindings too.
 (define (binding-depth expression)
   (let loop ([v expression] [depth 0])
     (cond
       [(syntax? v) (loop (syntax-e v) depth)]
       [(pair? v)
        (define head (and (syntax? (car v)) (syntax-e (car v))))
-       (define inner (if (memq head '(let-values letrec-values)) (add1 depth) depth))
+       (define inner (if (memq head '(let-values letrec-values #%plain-lambda case-lambda)) (add1 depth) depth))
        (max (loop (car v) inner) (loop (cdr v) inner))]
       [else depth])))
 
@@ -95,10 +103,18 @@
   (test-case "code grows in proportion to the depth of nested applications"
     (define (size depth) (nodes (instrumented (nested-calls depth))))
     (check-true (< (size 20) (* 3 (size 10)))))
-  (test-case "a body's definitions do not nest scopes, however many it has"
-    (define (depth count) (binding-depth (instrumented (long-function count))))
-    (check-equal? (depth 400) (depth 10))
-    (check-true (< (depth 400) 12)))
+  (test-case "a body's definitions stop nesting scopes, however many it has"
+    (for ([generate (list long-function long-calling-function)])
+      (define (depth count) (binding-depth (instrumented (generate count))))
+      (check-equal? (depth 1600) (depth 400))
+      (check-true (< (depth 400) 70) (format "depth ~a" (depth 400)))))
+  (test-case "a short body keeps its binding forms where the expander put them"
+    (define text (long-calling-function 5))
+    (check-false (regexp-match? #rx"rest-of-body" (format "~s" (syntax->datum (instrumented text))))))
   (test-case "code grows in proportion to the length of a body"
-    (define (size count) (nodes (instrumented (long-function count))))
-    (check-true (< (size 200) (* 2.2 (size 100))))))
+    (for ([generate (list long-function long-calling-function)])
+      (define (size count) (nodes (instrumented (generate count))))
+      (check-true (< (size 200) (* 2.2 (size 100))))))
+  (test-case "a long body is written in core forms, in coverage runs too"
+    (for ([coverage? '(#f #t)])
+      (check-false (non-core (instrumented (long-calling-function 40) #:coverage? coverage?))))))
