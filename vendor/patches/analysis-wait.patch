@@ -615,10 +615,10 @@ index 210afeb..4f1f1a0 100644
        (lambda (scheduler events started release)
 diff --git a/tests/lsp/analysis-wait-test.rkt b/tests/lsp/analysis-wait-test.rkt
 new file mode 100644
-index 0000000..ea36291
+index 0000000..4bd3de4
 --- /dev/null
 +++ b/tests/lsp/analysis-wait-test.rkt
-@@ -0,0 +1,340 @@
+@@ -0,0 +1,392 @@
 +#lang racket/base
 +
 +;; The analysis of an edit waits for a pause in editing, and a request a person
@@ -849,7 +849,10 @@ index 0000000..ea36291
 +          (define sent (current-deadline-milliseconds))
 +          (change! session path (program id) id)
 +          (request! session id method path (hasheq 'range whole-range))
-+          (check-false (hash-ref (response session id 20) 'error #f) method)
++          (define result (response session id 20))
++          (check-false (hash-ref result 'error #f) method)
++          (when (equal? method "textDocument/semanticTokens/range")
++            (check-true (positive? (token-count result))))
 +          (define start (await starts 20))
 +          (check-equal? (Started-text start) (program id) method)
 +          (check-true (>= (Started-at start) (+ sent the-wait)) method))
@@ -858,6 +861,55 @@ index 0000000..ea36291
 +        (change! session path (program 4) 4)
 +        (check-error (response session 3 20) ErrorCode-ContentModified)
 +        (check-equal? (Started-text (await starts 20)) (program 4)))))
++
++  (test-case "ranged tokens after the wait describe the edited declarations"
++    (define-values (starts analyze) (make-recorder))
++    (with-session
++      (make-source-controller #:resyntax #f #:analyze analyze)
++      (lambda (session)
++        (define path (build-path scratch "wait-range-content.rkt"))
++        (define params (hasheq 'range whole-range))
++        (open-and-settle! session starts path (program 0))
++        (request! session 1 "textDocument/semanticTokens/range" path params)
++        (define before (token-count (response session 1 20)))
++        (check-true (positive? before))
++        (define after
++          "#lang racket/base\n(define-values (x y) (values 1 2))\n(list x y)\n")
++        (define sent (current-deadline-milliseconds))
++        (change! session path after 1)
++        (request! session 2 "textDocument/semanticTokens/range" path params)
++        (check-true (> (token-count (response session 2 20)) before))
++        (define start (await starts 20))
++        (check-equal? (Started-text start) after)
++        (check-true (>= (Started-at start) (+ sent the-wait))))))
++
++  (test-case "inlay hints after the wait describe the edited declarations"
++    (define-values (starts analyze) (make-recorder))
++    (define before
++      "#lang typed/racket\n(struct point ([x : Integer] [y : Integer]))\n(define p (point 1 2))\np\n")
++    (define after
++      "#lang typed/racket\n(struct box ([s : String]))\n(define b (box \"x\"))\nb\n")
++    (define range
++      (hasheq 'range (hasheq 'start (hasheq 'line 0 'character 0)
++                             'end (hasheq 'line 4 'character 0))))
++    (with-session
++      (make-source-controller #:resyntax #f #:analyze analyze)
++      (lambda (session)
++        (define path (build-path scratch "wait-hint-content.rkt"))
++        (open-and-settle! session starts path before)
++        (request! session 1 "textDocument/inlayHint" path range)
++        (check-equal? (map (lambda (hint) (hash-ref hint 'label))
++                           (hash-ref (response session 1 60) 'result))
++                      '(" : point" "x " "y "))
++        (define sent (current-deadline-milliseconds))
++        (change! session path after 1)
++        (request! session 2 "textDocument/inlayHint" path range)
++        (check-equal? (map (lambda (hint) (hash-ref hint 'label))
++                           (hash-ref (response session 2 60) 'result))
++                      '(" : box" "s "))
++        (define start (await starts 60))
++        (check-equal? (Started-text start) after)
++        (check-true (>= (Started-at start) (+ sent the-wait))))))
 +
 +  (test-case "dependents wait too, for the last edit of their import"
 +    (define-values (starts analyze) (make-recorder))
