@@ -149,7 +149,10 @@
   (set! noted-thread (make-weak-box thread))
   (hash-ref! thread-parameterizations thread current-parameterization)
   (define on-thread (form-on-thread f))
-  (when (and on-thread (debugging-enabled?)) (on-thread)))
+  ;; Reporting takes the protocol's lock, which a thread stop must not suspend it holding.
+  (when (and on-thread (debugging-enabled?))
+    (with-continuation-mark debugger-active-key #t
+      (begin (on-thread) (void)))))
 (define (forget-noted-thread!) (set! noted-thread (make-weak-box #f)))
 ;; Module contexts are keyed by symbols. Each namespace registry gets the live
 ;; namespace of the owning module instance, registered before its source forms,
