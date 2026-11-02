@@ -89,6 +89,30 @@
       (Source doc (delay (standard-imports doc original contexts path)) arrows
               (expansion-bindings doc (ExpandResult-post-syntax result) path)))))
 
+;; The core form a fully expanded form is: what its head is bound to at this phase.
+;; Its spelling alone would misread quoted data, a variable in a list of formals, and
+;; a core form imported under another name.
+(define (core-form value phase)
+  (define parts (syntax->list value))
+  (define head (and (pair? parts) (car parts)))
+  (define binding (and (identifier? head) (identifier-binding head phase)))
+  (and (list? binding)
+       (eq? '#%core (resolved-module-path-name (module-path-index-resolve (car binding))))
+       (cadr binding)))
+
+;; What in a fully expanded form is code, each part with its phase. A submodule
+;; that names no language shares the phase numbering of the module around it.
+(define (code-parts value phase)
+  (define parts (syntax->list value))
+  (case (core-form value phase)
+    [(quote quote-syntax) '()]
+    [(module module*)
+     (define inner (if (syntax-e (caddr parts)) 0 phase))
+     (for/list ([part (in-list (cdddr parts))]) (cons part inner))]
+    [(begin-for-syntax) (for/list ([part (in-list (cdr parts))]) (cons part (add1 phase)))]
+    [(define-syntaxes) (list (cons (cadr parts) phase) (cons (caddr parts) (add1 phase)))]
+    [else (list (cons (syntax-e value) phase))]))
+
 ;; Source identifiers in the expansion retain their defining module and phase,
 ;; including references that Check Syntax cannot attach to relative imports.
 ;; One written name can carry several bindings, as when Rhombus's fun binds the
@@ -116,15 +140,10 @@
                    (if (pair? export-phase) (cons (list-ref binding 4) (cdr export-phase)) (list-ref binding 4))
                    (cadr binding)))
                (hash-update! bindings range (lambda (old) (set-add old normalized)) (set)))))
-         (define parts (syntax->list value))
-         (define head (and (pair? parts) (syntax-e (car parts))))
-         (case head
-           [(quote quote-syntax #%require) (void)]
-           [(#%provide) (for-each (lambda (part) (walk-provide part phase)) (cdr parts))]
-           [(module module*) (for-each (lambda (part) (walk part 0)) (cdddr parts))]
-           [(begin-for-syntax) (for-each (lambda (part) (walk part (add1 phase))) (cdr parts))]
-           [(define-syntaxes) (walk (cadr parts) phase) (walk (caddr parts) (add1 phase))]
-           [else (walk (syntax-e value) phase)]))]
+         (case (core-form value phase)
+           [(#%require) (void)]
+           [(#%provide) (for-each (lambda (part) (walk-provide part phase)) (cdr (syntax->list value)))]
+           [else (for ([part (in-list (code-parts value phase))]) (walk (car part) (cdr part)))]))]
       [(pair? value) (walk (car value) phase) (walk (cdr value) phase)]))
   (define (walk-provide spec phase)
     (cond
@@ -225,19 +244,19 @@
                       (equal? module (ExpansionContext-module prior))
                       (bound-identifier=? (ExpansionContext-identifier prior) value)) prior 'ambiguous)) context))]
       [(pair? value) (origin (car value) module) (origin (cdr value) module)]))
-  (define (origins value modules [root? #f])
+  (define (origins value modules phase [root? #f])
     (cond
       [(syntax? value)
        (unless (hash-ref seen value #f)
          (hash-set! seen value #t)
          (origin (syntax-property value 'origin) (if (null? modules) file `(submod ,file ,@modules)))
-         (define parts (syntax->list value))
-         (if (and (pair? parts) (memq (syntax-e (car parts)) '(module module*)))
-             (for-each (lambda (part) (origins part (if root? modules (append modules (list (syntax-e (cadr parts)))))))
-                       (cdddr parts))
-             (origins (syntax-e value) modules)))]
-      [(pair? value) (origins (car value) modules) (origins (cdr value) modules)]))
-  (origins expanded '() #t)
+         (define within
+           (if (and (not root?) (memq (core-form value phase) '(module module*)))
+               (append modules (list (syntax-e (cadr (syntax->list value)))))
+               modules))
+         (for ([part (in-list (code-parts value phase))]) (origins (car part) within (cdr part))))]
+      [(pair? value) (origins (car value) modules phase) (origins (cdr value) modules phase)]))
+  (origins expanded '() 0 #t)
   contexts)
 
 ;; Retain original import syntax only for an actual expansion of a standard
