@@ -178,10 +178,14 @@ from source. `racketdap/tools/compile-debugger.rkt` runs as a process of its own
 started after the worker has connected or has failed to, so the worker's 15 second
 start limit is never spent on it: a machine too slow to start from source succeeds on
 the attempt after the build finishes. It builds in a `.building` folder and renames
-that into place, which is how readers see a whole build or none. The building folder
-is also the lock, so two windows start one build, and one abandoned for 10 minutes is
-taken over. A storage folder that refuses the building folder ends the attempt before
-any process starts.
+that into place, which is how readers see a whole build or none. It reads each
+debugger source once, compiles those bytes and records their hashes, so a file replaced
+during the build cannot certify code compiled from what it replaced, and a build that
+sees such a change is not published. The building folder is also the lock, so two
+windows start one build, and one abandoned for 10 minutes is taken over. Each builder
+works in a folder of its own under the lock, so one that resumes after being taken over
+neither publishes nor removes its successor's work. A storage folder that refuses the
+building folder ends the attempt before any process starts.
 
 The compiled folder is a root only while debugger files load. The launcher declares
 the debugger's own modules under it, then runs them under the ordinary settings, and

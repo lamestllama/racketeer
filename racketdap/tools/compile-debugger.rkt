@@ -7,7 +7,7 @@
 ;; visible, so a reader sees all of a build or none of it. Nothing depends on this
 ;; finishing: until it does, debugger files load from source.
 
-(require compiler/cm racket/file racket/list racket/path racket/runtime-path
+(require compiler/cm racket/file racket/list racket/path racket/runtime-path syntax/modcode
          "../launcher.rkt" "../worker/debug-cache.rkt")
 
 (define-runtime-path debugger-root "..")
@@ -24,14 +24,24 @@
              #:when (equal? (path-get-extension file) #".rkt"))
     file))
 
-(define (compile-all! building sources root)
+;; Read each debugger source once. The manifest must certify precisely the bytes
+;; handed to the compiler, even if an installation is replaced during the build.
+(define (source-snapshot sources)
+  (for/hash ([source (in-list sources)]) (values source (file->bytes source))))
+
+(define (compile-all! building sources root snapshots)
   (define check (use-compiled-file-check))
   (define ordinary-load (current-load/use-compiled))
+  (define ordinary-open (moddep-current-open-input-file))
   (define (library? file) (not (under? (simplify-path file) root)))
   ;; The building folder is the only root for the debugger's files, so a compiled
   ;; folder left in a checkout cannot pass for one. Libraries load as they always do.
   (parameterize ([current-namespace (make-base-empty-namespace)]
                  [current-compiled-file-roots (list building)]
+                 [moddep-current-open-input-file
+                  (lambda (file)
+                    (define bytes (hash-ref snapshots (simplify-path (path->complete-path file)) #f))
+                    (if bytes (open-input-bytes bytes file) (ordinary-open file)))]
                  [current-load/use-compiled
                   (lambda (file name)
                     (if (library? file)
@@ -49,13 +59,14 @@
       (with-handlers ([exn:fail? void])
         (compile-file source)))))
 
-(define (write-manifest! building sources root)
+(define (write-manifest! building sources root snapshots)
   (define compiled
     (for/list ([file (in-directory building)] #:when (equal? (path-get-extension file) #".zo"))
       (manifest-entry file (find-relative-path building file))))
   (write-to-file
    (list (for/list ([source (in-list sources)])
-           (manifest-entry source (find-relative-path root source)))
+           (cons (path->string (find-relative-path root source))
+                 (sha1-bytes (open-input-bytes (hash-ref snapshots source)))))
          compiled)
    (build-path building manifest-name)))
 
@@ -83,13 +94,35 @@
 (module+ main
   (define building (string->path (vector-ref (current-command-line-arguments) 0)))
   (define folder (string->path (vector-ref (current-command-line-arguments) 1)))
+  (define marker-identity (file-or-directory-identity building))
+  (define work #f)
+  (define (clean-up!)
+    (when work
+      (with-handlers ([exn:fail:filesystem? void]) (delete-directory/files work)))
+    ;; A launcher may have taken over an old marker. Never remove its successor.
+    (when (and (directory-exists? building)
+               (equal? marker-identity (file-or-directory-identity building)))
+      (delete-directory/files building)))
   (with-handlers ([void (lambda (_)
-                          (with-handlers ([void void]) (delete-directory/files building))
+                          (with-handlers ([void void]) (clean-up!))
                           (exit 0))])
+    ;; A marker is also a lease and may be renamed after its time limit. Each
+    ;; compiler writes a distinct child, so a resumed compiler cannot certify or
+    ;; publish another compiler's files at the replacement marker's path.
+    (set! work (make-temporary-file "work~a" 'directory building))
     (define root (simplify-path debugger-root))
     (define sources (debugger-sources root))
-    (compile-all! building sources root)
-    (write-manifest! building sources root)
+    (define snapshots (source-snapshot sources))
+    (compile-all! work sources root snapshots)
+    ;; Avoid publishing a known obsolete build. The recorded hashes still describe
+    ;; the snapshot if a later replacement crosses this check.
+    (unless (equal? snapshots (source-snapshot (debugger-sources root)))
+      (error 'compile-debugger "debugger sources changed during compilation"))
+    (write-manifest! work sources root snapshots)
+    (unless (equal? marker-identity (file-or-directory-identity building))
+      (error 'compile-debugger "another builder has taken over"))
     (when (directory-exists? folder) (set-aside! folder))
-    (rename-file-or-directory building folder)
+    (rename-file-or-directory work folder)
+    (set! work #f)
+    (clean-up!)
     (tidy! (path-only folder) folder)))

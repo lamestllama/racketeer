@@ -206,6 +206,78 @@ test('changed sources are compiled again under the same folder', { timeout: 3000
   assert.deepEqual(await stamped(), await stamped());
 });
 
+// The name the launcher gives its folder under these settings.
+function folderName(launcher, env) {
+  const modulePath = `(file ${JSON.stringify(launcher)})`;
+  const key = spawnSync('racket', ['-e', `(begin
+    (dynamic-require '${modulePath} #f)
+    (parameterize ([current-namespace (module->namespace '${modulePath})])
+      (display (eval '(folder-name)))))`], { encoding: 'utf8', env });
+  assert.equal(key.status, 0, key.stderr);
+  return key.stdout;
+}
+// Runs the builder directly, as a launch starts it, and returns the folder it publishes to.
+function build({ racketdap, storage }, env) {
+  const name = folderName(path.join(racketdap, 'launcher.rkt'), env);
+  const building = path.join(storage, `${name}.building`), destination = path.join(storage, name);
+  fs.mkdirSync(building, { recursive: true });
+  const finishedBuild = spawnSync('racket', [path.join(racketdap, 'tools/compile-debugger.rkt'), building, destination],
+    { encoding: 'utf8', env, timeout: 240000 });
+  assert.equal(finishedBuild.status, 0, finishedBuild.stderr);
+  return destination;
+}
+
+test('a source replaced during the build cannot certify the code compiled from what it replaced', { timeout: 300000 }, async t => {
+  const files = folder(t);
+  const target = path.join(files.racketdap, 'snapshot-probe.rkt');
+  const replacement = '#lang racket/base\n(displayln "CURRENT")\n';
+  // What an installer does when it replaces a file the compiler has already read.
+  fs.writeFileSync(target, `#lang racket/base
+(require (for-syntax racket/base))
+(begin-for-syntax
+  (call-with-output-file ${JSON.stringify(target)} #:exists 'truncate
+    (lambda (out) (display ${JSON.stringify(replacement)} out))))
+(displayln "FORMER")
+`);
+  build(files);
+  const launched = spawnSync('racket', [path.join(files.racketdap, 'launcher.rkt'), files.storage, target], { encoding: 'utf8', timeout: 30000 });
+  assert.equal(launched.status, 0, launched.stderr);
+  assert.equal(launched.stdout, 'CURRENT\n');
+});
+
+test('a builder resuming after its folder was taken over leaves its successor alone', { timeout: 300000 }, async t => {
+  const files = folder(t);
+  const { racketdap, storage } = files;
+  const entered = path.join(storage, 'entered'), release = path.join(storage, 'release');
+  fs.mkdirSync(storage, { recursive: true });
+  fs.writeFileSync(path.join(racketdap, 'takeover-probe.rkt'), `#lang racket/base
+(require (for-syntax racket/base))
+(begin-for-syntax
+  (call-with-output-file ${JSON.stringify(entered)} #:exists 'truncate void)
+  (let wait () (unless (file-exists? ${JSON.stringify(release)}) (sleep 0.05) (wait))))
+`);
+  const name = folderName(path.join(racketdap, 'launcher.rkt'));
+  const building = path.join(storage, `${name}.building`), destination = path.join(storage, name);
+  fs.mkdirSync(building);
+  const builder = spawn('racket', [path.join(racketdap, 'tools/compile-debugger.rkt'), building, destination], { stdio: 'ignore' });
+  const ended = new Promise(resolve => builder.once('close', resolve));
+  t.after(() => { builder.kill('SIGKILL'); return ended; });
+  const deadline = Date.now() + 240000;
+  while (!fs.existsSync(entered)) {
+    assert.ok(Date.now() < deadline, 'The builder never reached the probe');
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+  // What a later launch does to a folder it takes for abandoned.
+  fs.renameSync(building, `${destination}.stale-1`);
+  fs.mkdirSync(building);
+  const successor = path.join(building, 'successor');
+  fs.writeFileSync(successor, '');
+  fs.writeFileSync(release, '');
+  await ended;
+  assert.ok(fs.existsSync(successor), 'The successor keeps its folder');
+  assert.ok(!fs.existsSync(destination), 'Nothing is published from a folder that was taken over');
+});
+
 test('another Racket setup gets a folder of its own and leaves the first', { timeout: 300000 }, async t => {
   const files = folder(t);
   const { directory, storage, program } = files;
