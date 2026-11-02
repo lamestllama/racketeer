@@ -35,11 +35,20 @@ async function project(t, env = {}, shared) {
   connection.onRequest('window/workDoneProgress/create', () => null);
   connection.onUnhandledProgress(({ value }) => progress.push(value));
   connection.listen();
-  t.after(async () => {
+  const stop = async () => {
     connection.dispose(); child.kill('SIGKILL');
     child.stdin.destroy(); child.stdout.destroy(); child.stderr.destroy();
     await closed;
-    if (!shared) fs.rmSync(directory, { recursive: true, force: true });
+  };
+  // Windows refuses to remove a running process's working directory, and a hook
+  // that fails skips the hooks after it, which would leave the other servers
+  // running. So the folder's first server stops them all before removing it, and
+  // retries while the workers it had see their input end and exit.
+  const servers = shared ? shared.servers : [];
+  servers.push(stop);
+  if (!shared) t.after(async () => {
+    await Promise.all(servers.map(stop => stop()));
+    fs.rmSync(directory, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
   });
   const filename = name => path.join(directory, name);
   const write = (name, text) => fs.writeFileSync(filename(name), text);
@@ -105,7 +114,7 @@ async function project(t, env = {}, shared) {
       experimental: { racketeer: { indexStatus: true, sourceReferences: true } } } });
   await notify('initialized', {});
   await update();
-  return { child, directory, documents, notifications, progress, filename, write, open, origin, update, references, rename, settings, roots, notify,
+  return { child, servers, directory, documents, notifications, progress, filename, write, open, origin, update, references, rename, settings, roots, notify,
     request: (method, params) => connection.sendRequest(method, params),
     diskChange: name => notify('workspace/didChangeWatchedFiles', { changes: [{ uri: uri(filename(name)), type: 2 }] }),
     diagnostics: () => diagnostics };
