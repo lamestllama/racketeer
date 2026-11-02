@@ -8,6 +8,7 @@
 (require compiler/compilation-path
          compiler/module-suffix
          racket/file
+         racket/future
          racket/list
          racket/match
          racket/path
@@ -39,7 +40,7 @@
 ;; `results` holds each file's last successful analysis across runs, as an
 ;; immutable table that a pass can read while a retired one finishes, and `interned`
 ;; the entries that most of those analyses share, so they are held once.
-(struct WorkspaceAnalysis (lock slot notify current-run closed? active-runs results interned) #:mutable)
+(struct WorkspaceAnalysis (lock slots notify current-run closed? active-runs results interned) #:mutable)
 ;; A file's analysis stands while the file has the text it had and everything the
 ;; analysis read still reads the same. `fingerprint` is the hash of its text.
 ;; `reads` pairs each module file it loaded with the hash of what that holds,
@@ -53,7 +54,17 @@
 (struct AnalysisFailure (reason message) #:transparent)
 
 (define (make-workspace-analysis #:on-status [notify void])
-  (WorkspaceAnalysis (make-semaphore 1) (make-semaphore 1) notify #f #f (make-hasheq) (hash) (make-hash)))
+  (WorkspaceAnalysis (make-semaphore 1) (for/list ([_ (in-range (worker-limit))]) (make-semaphore 1))
+                     notify #f #f (make-hasheq) (hash) (make-hash)))
+
+;; How many worker processes an instance runs at once: half the processors, which
+;; leaves room for the editor and the language server, and at most three. On 52 files
+;; a pass took 62 s with one, 34 s with two, 26 s with three and 21 s with four, and
+;; each worker added about 260 MB at the peak, so a fourth costs more than it saves.
+(define (default-workers processors) (max 1 (min 3 (quotient processors 2))))
+(define (worker-limit)
+  (define configured (string->number (or (getenv "RACKETEER_INDEX_WORKERS") "")))
+  (if (exact-positive-integer? configured) configured (default-workers (processor-count))))
 
 (define (accepted run value)
   (AnalysisResult (Run-generation run) value))
@@ -71,8 +82,9 @@
         (map car active))))
   (for ([done (in-list runs)]) (sync (semaphore-peek-evt done)))
   ;; Queries belong to their callers, but their worker processes belong here.
-  ;; Waiting for the slot guarantees that cancellation has reaped those workers.
-  (call-with-semaphore (WorkspaceAnalysis-slot engine) void))
+  ;; Every run is now cancelled, so no worker can start. A slot that has been free
+  ;; since then held no worker, so one look at each shows that all were reaped.
+  (for ([slot (in-list (WorkspaceAnalysis-slots engine))]) (call-with-semaphore slot void)))
 
 (define (bounded config key fallback low high)
   (define value (hash-ref config key fallback))
@@ -106,6 +118,12 @@
 ;; Why a worker of this run did not finish, for a rename the partial index then
 ;; refuses: a limit is not an error in the file that its author could resolve.
 (define worker-stops (make-weak-hasheq))
+(define (note-stop! run request result)
+  (match result
+    [(cons 'stopped reason) (hash-ref! worker-stops run reason)]
+    [(cons 'timeout _)
+     (hash-ref! worker-stops run (format "~a: ~a" (request-label request) (analysis-failure result)))]
+    [_ (void)]))
 (define (incomplete-index run)
   (match (hash-ref worker-stops run #f)
     [#f "Workspace analysis is incomplete. Resolve its errors before renaming."]
@@ -123,12 +141,18 @@
                            (set-Run-failures! run failures)
                            ((WorkspaceAnalysis-notify engine) (status run))))))
 
-(define (compute engine run seconds request [cancel never-evt])
+(define (compute engine run seconds request [cancel never-evt] #:note-stop? [note-stop? #t])
+  (define slots (WorkspaceAnalysis-slots engine))
+  (define taken (apply sync (semaphore-peek-evt (Run-cancel run)) cancel slots))
   (cond
-    [(eq? (WorkspaceAnalysis-slot engine) (sync (WorkspaceAnalysis-slot engine) (semaphore-peek-evt (Run-cancel run)) cancel))
+    [(memq taken slots)
      (dynamic-wind void
-                   (lambda () (and (not (cancelled? run)) (not (sync/timeout 0 cancel)) (compute/slot run seconds request cancel)))
-                   (lambda () (semaphore-post (WorkspaceAnalysis-slot engine))))]
+                   (lambda ()
+                     (define result
+                       (and (not (cancelled? run)) (not (sync/timeout 0 cancel)) (compute/slot run seconds request cancel)))
+                     (when note-stop? (note-stop! run request result))
+                     result)
+                   (lambda () (semaphore-post taken)))]
     [else #f]))
 
 ;; Diagnostics for a stalled index. Each line is written before the next wait
@@ -179,7 +203,10 @@
 ;; It counts what the analysis adds to the worker's own libraries, and it is set to
 ;; stop only a runaway: analysing a file of 1 MiB, the largest indexed by default,
 ;; was measured at about 1 GB. Collections are when it is checked, so a worker's
-;; resident size can pass it for a moment, to about 3 GB.
+;; resident size can pass it for a moment, to about 3 GB. Workers run at once and each
+;; has this limit, so compile-time code running away in several files at the same time
+;; can reach that many times as much. It is not shared out between them: what a file
+;; may use, and so whether it fails, does not depend on how many workers there are.
 (define default-worker-megabytes 2048)
 (define (worker-megabytes)
   (define configured (string->number (or (getenv "RACKETEER_INDEX_WORKER_MEGABYTES") "")))
@@ -359,10 +386,7 @@
             (custodian-shutdown-all owner))))))
   (match result
     [(cons 'stopped reason)
-     (log-diagnostic "worker" (monotonic) (format "~a: ~a" label reason))
-     (hash-ref! worker-stops run reason)]
-    [(cons 'timeout _)
-     (hash-ref! worker-stops run (format "~a: ~a" label (analysis-failure result)))]
+     (log-diagnostic "worker" (monotonic) (format "~a: ~a" label reason))]
     [_ (void)])
   result)
 
@@ -599,7 +623,7 @@
       (unless (cancelled? run)
         (set-WorkspaceAnalysis-results! engine (change (WorkspaceAnalysis-results engine)))))))
 
-(define (analyse-file engine run path disk)
+(define (analyse-file engine run path disk stop)
   (define held (hash-ref (WorkspaceAnalysis-results engine) path #f))
   (define before
     (for/hash ([entry (in-list (if held (Result-externals held) '()))])
@@ -607,7 +631,8 @@
   (define config (Run-settings run))
   (match (compute engine run (Settings-timeout config)
                   (list 'analyse path (Settings-max-bytes config)
-                        (hash-ref (Run-buffers run) path #f) #f (Run-buffers run) (Run-roots run) before))
+                        (hash-ref (Run-buffers run) path #f) #f (Run-buffers run) (Run-roots run) before)
+                  stop #:note-stop? #f)
     [(list 'ok contribution text count _ (list fingerprint reads externals resolutions))
      (define (shared entries)
        (for/list ([entry (in-list entries)])
@@ -617,6 +642,41 @@
      (change-results! engine run (lambda (results) (hash-set results path result)))
      result]
     [failure failure]))
+
+;; Analyses a pass's files in as many workers as the engine has, earliest file
+;; first. What a worker finds counts as finished when it finishes, so cancelling
+;; keeps it, but the pass reads each file's outcome in its own order, whichever
+;; worker ended first. Returns how to read one, which waits for it, and how to
+;; stop the rest, which returns once their workers have gone.
+(define (start-analyses engine run paths disk)
+  (define waiting paths)
+  (define (next-path!)
+    (call-with-semaphore (WorkspaceAnalysis-lock engine)
+      (lambda ()
+        (and (pair? waiting) (begin0 (car waiting) (set! waiting (cdr waiting)))))))
+  (define stop (make-semaphore))
+  (define stopped (semaphore-peek-evt stop))
+  (define outcomes (make-hash))
+  (define finished (for/hash ([path (in-list paths)]) (values path (make-semaphore))))
+  ;; Once stopped, each remaining file comes back at once with no outcome.
+  (define (work)
+    (define path (next-path!))
+    (when path
+      (hash-set! outcomes path
+                 (with-handlers ([exn:fail? values]) (analyse-file engine run path disk stopped)))
+      (semaphore-post (hash-ref finished path))
+      (work)))
+  (define threads
+    (for/list ([_ (in-range (min (length paths) (length (WorkspaceAnalysis-slots engine))))])
+      (thread work)))
+  (values
+    (lambda (path)
+      (semaphore-wait (hash-ref finished path))
+      (define outcome (hash-ref outcomes path))
+      (if (exn? outcome) (raise outcome) outcome))
+    (lambda ()
+      (semaphore-post stop)
+      (for-each thread-wait threads))))
 
 (define (run-index engine run)
   (define config (Run-settings run))
@@ -647,28 +707,50 @@
            (define view
              (for/fold ([view disk]) ([(path text) (in-hash (Run-buffers run))])
                (hash-set view path (buffer-fingerprint text))))
-           (for ([path (in-list sources)] [n (in-range (Settings-max-files config))]
-                 #:break (or (cancelled? run) (> bytes (* 16 1024 1024)) (> facts 200000)))
-             (define held (hash-ref (WorkspaceAnalysis-results engine) path #f))
-             (match (if (and held (result-current? held run path view disk resolved))
-                        held
-                        (analyse-file engine run path disk))
-               [(? Result? result)
-                (set! bytes (+ bytes (bytes-length (string->bytes/utf-8 (Result-text result)))))
-                (set! facts (+ facts (Result-facts result)))
-                (cond
-                  [(or (> bytes (* 16 1024 1024)) (> facts 200000)) (set! failures (add1 failures))]
-                  [else
-                   ;; Each run has its own store. A retired worker can never
-                   ;; populate a replacement run, even if cancellation is late.
-                   (workspace-set-contribution! (Run-workspace run) (Result-contribution result))
-                   (hash-set! (Run-sources run) path (Result-text result))
-                   (set! indexed (add1 indexed))])]
-               [failure
-                (set! failures (add1 failures))
-                (unless (cancelled? run)
-                  (eprintf "Workspace analysis incomplete: ~a (~a)\n" path (analysis-failure failure)))])
-             (report! engine run "indexing" indexed failures))
+           (define planned (for/list ([path (in-list sources)] [n (in-range (Settings-max-files config))]) path))
+           (define found (WorkspaceAnalysis-results engine))
+           (define reused
+             (for*/hash ([path (in-list planned)]
+                         [held (in-value (hash-ref found path #f))]
+                         #:when (and held (result-current? held run path view disk resolved)))
+               (values path held)))
+           (define-values (outcome-of stop-analyses!)
+             (start-analyses engine run (filter (lambda (path) (not (hash-has-key? reused path))) planned) disk))
+           (define unread planned)
+           (dynamic-wind
+             void
+             (lambda ()
+               (for ([path (in-list planned)]
+                     #:break (or (cancelled? run) (> bytes (* 16 1024 1024)) (> facts 200000)))
+                 (set! unread (cdr unread))
+                 (match (or (hash-ref reused path #f) (outcome-of path))
+                   [(? Result? result)
+                    (set! bytes (+ bytes (bytes-length (string->bytes/utf-8 (Result-text result)))))
+                    (set! facts (+ facts (Result-facts result)))
+                    (cond
+                      [(or (> bytes (* 16 1024 1024)) (> facts 200000)) (set! failures (add1 failures))]
+                      [else
+                       ;; Each run has its own store. A retired worker can never
+                       ;; populate a replacement run, even if cancellation is late.
+                       (workspace-set-contribution! (Run-workspace run) (Result-contribution result))
+                       (hash-set! (Run-sources run) path (Result-text result))
+                       (set! indexed (add1 indexed))])]
+                   [failure
+                    (set! failures (add1 failures))
+                    (note-stop! run (list 'analyse path) failure)
+                    (unless (cancelled? run)
+                      (eprintf "Workspace analysis incomplete: ~a (~a)\n" path (analysis-failure failure)))])
+                 (report! engine run "indexing" indexed failures)))
+             (lambda ()
+               (stop-analyses!)
+               ;; A pass that stops at a limit never reached these files, so what
+               ;; workers found ahead of it is not kept: the next pass finds what
+               ;; this one found.
+               (change-results! engine run
+                 (lambda (results)
+                   (for/fold ([results results]) ([path (in-list unread)])
+                     (define held (hash-ref found path #f))
+                     (if held (hash-set results path held) (hash-remove results path)))))))
            (define kept (list->set sources))
            (change-results! engine run
              (lambda (results)
@@ -938,5 +1020,6 @@
          workspace-analysis-forget!
          workspace-analysis-close!
          watch-analysis-timer
+         default-workers
          (struct-out AnalysisResult)
          (struct-out AnalysisFailure))

@@ -91,7 +91,15 @@ async function blockingProject(t, env) {
       await delay(25);
     }
   };
-  return { ...p, reached, expansions: () => fs.readFileSync(log, 'utf8').trim().split('\n').length,
+  // Workers run at once, so reaching one file does not mean that the one before it ended.
+  const finished = async name => {
+    const deadline = Date.now() + 60000;
+    while (!new RegExp(`analyse \\S*${name.replace('.', '\\.')}: reaped`).test(p.diagnostics())) {
+      assert.ok(Date.now() < deadline, p.diagnostics());
+      await delay(25);
+    }
+  };
+  return { ...p, reached, finished, expansions: () => fs.readFileSync(log, 'utf8').trim().split('\n').length,
     release: () => fs.unlinkSync(gate), entered };
 }
 
@@ -100,6 +108,7 @@ test('cancelling the only request stops its pass, and the next request keeps wha
   const cancel = new rpc.CancellationTokenSource();
   const request = p.references(p.origin, undefined, false, cancel.token);
   await p.reached();
+  await p.finished('a.rkt');
   const expansions = p.expansions();
   assert.equal(expansions, 1, 'a.rkt comes first');
   cancel.cancel();

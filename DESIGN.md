@@ -270,7 +270,7 @@ Workspace analysis runs in a separate service with three ownership boundaries:
 | --- | --- |
 | `vscode/workspace-index.js` | Report VS Code document lifetimes, settings and file events over standard LSP synchronisation; convert results to editor locations and edit previews. |
 | `vscode/workspace-index.rkt` | Frame requests, keep the document registry and build each source view, map request IDs and cancellation messages, translate domain outcomes, and close the engine at shutdown or when the connection ends. |
-| `vscode/workspace-analysis.rkt` and `vscode/workspace-rename.rkt` | Discover files, analyse immutable source views, combine binding references, validate rename, and own bounded worker processes. |
+| `vscode/workspace-analysis.rkt` and `vscode/workspace-rename.rkt` | Discover files, analyse immutable source views, combine binding references, validate rename, and own a bounded number of worker processes. |
 
 The engine has no editor connection, request IDs or wire-protocol errors.
 `make-workspace-analysis` creates an independent instance. Its optional
@@ -303,6 +303,43 @@ after a change starts a pass and waits for it, and the status records give its
 pass stops and the status becomes `outdated`. A change while a pass runs replaces
 it, and the replacement starts no sooner than 2 seconds after the change, so that
 a run of changes does not start and stop a worker each time.
+
+An instance runs as many worker processes at once as it has slots: half the processors,
+at most three. A query's own worker takes a slot as a file's does. Measured on 52
+files, one at a time, on 9 processors with a load of about 2 from other work:
+
+| Workers | First Find References (s) | CPU (s) | Peak of the process tree (MB) |
+| ---: | ---: | ---: | ---: |
+| 1 | 62 | 62 | 636 |
+| 2 | 34 | 66 | 914 |
+| 3 | 26 | 71 | 1,146 |
+| 4 | 21 | 74 | 1,420 |
+| 6 | 20 | 95 | 1,921 |
+
+The pass starts a file's worker as a slot comes free, earliest file first, and
+reads the outcomes in the order of a fresh pass, so one that ends early waits for
+those before it. Everything a client or a later pass can see is decided in that reading:
+the store's order, the progress counts, the failures and their reasons, and the size
+and fact limits. A limit stops the pass at the same file whichever worker ended first, and any
+workers still running are stopped. What workers found beyond that file goes back to
+what the pass found on arrival, so the next pass analyses those files as it would have.
+A result counts as finished when its worker ends, whatever came before it, so
+cancelling keeps it. The results of a pass are the same to the byte for any number of workers,
+given compile-time code that does not depend on other files' compile-time code running at the same moment.
+
+Each worker keeps its own memory limit, so the machine's total rises with the
+number of workers, by about 260 MB each for small files and up to about 530 MB with
+heavy libraries. Compile-time code running away is the larger case: with a limit of
+512 MB, the tree peaked at 1.4 GB with one worker and 2.9 GB with three, and with the
+2 GiB limit at 3.4 GB with one, so three running away at once could reach about 9 GB
+for a moment. The limit is not divided between workers, since whether a file fails
+must not depend on how many there are.
+
+Rename validation does not run this way. One worker expands every file with the
+current names and again with the proposed ones and compares them, holding each file's
+syntax and document between the two, which cannot pass between processes. A
+rename is faster by the pass before it, and its own worker takes as long as before,
+against its limit of 90 seconds.
 
 A pass keeps a file's result unless something it read has changed. Each analysis
 records, as it reads:
