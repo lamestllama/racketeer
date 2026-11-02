@@ -6,7 +6,7 @@
          (for-syntax racket/base))
 (provide (struct-out site) site-phases site-boundary-position arm-site! (struct-out unavailable)
          debug-stop? stop-site stop-kind stop-frame-count stop-frame-site
-         stop-locals stop-evaluate stop-results
+         stop-locals stop-evaluate stop-results stop-value-shown?
          stop-binding-value stop-set-binding!
          stop-skip! stop-replace-results! stop-approximate?
          stop-token stop-contexts stop-enclosing-evaluation stop-within? stop-return-token
@@ -51,9 +51,10 @@
 (define (instrumented-port? value) (hash-ref ports value #f))
 
 ;; parent is the slot of the enclosing site in the same activation (0 for none). visible?
-;; says whether anything can stop at the site. armed is where a registered site's flag
-;; lives, as (vector . index).
-(struct site (id source line column position span tail? expression parent visible? [armed #:auto #:mutable])
+;; says whether anything can stop at the site, and value-shown? whether its value is that
+;; of the text it is located at. armed is where a registered site's flag lives, as
+;; (vector . index).
+(struct site (id source line column position span tail? expression parent visible? value-shown? [armed #:auto #:mutable])
   #:auto-value #f #:transparent)
 (define (arm-site! descriptor on?)
   (define armed (site-armed descriptor))
@@ -250,6 +251,9 @@
 (define (stop-approximate? s) (check-stop s 'stop-approximate?) (eq? (debug-stop-kind s) 'pause))
 (define (stop-frame-count s) (check-stop s 'stop-frame-count) (length (stop-frames s)))
 (define (stop-frame-site s [i 0]) (frame-site (car (selected-frame s i 'stop-frame-site))))
+(define (stop-value-shown? s)
+  (check-stop s 'stop-value-shown?)
+  (site-value-shown? (debug-stop-site s)))
 (define (stop-results s)
   (check-stop s 'stop-results)
   (if (eq? (debug-stop-kind s) 'after)
@@ -267,6 +271,8 @@
 (define (stop-skip! s supplied)
   (request-values! s supplied 'before 'stop-skip!))
 (define (stop-replace-results! s supplied)
+  (unless (stop-value-shown? s)
+    (error 'stop-replace-results! "this stop shows no value to replace"))
   (request-values! s supplied 'after 'stop-replace-results!))
 (define (stop-token s)
   (check-stop s 'stop-token)

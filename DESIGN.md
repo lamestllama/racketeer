@@ -696,7 +696,7 @@ be proved by the semantic fixtures before its interface is treated as stable.
 | --- | --- |
 | Step In | Stop at the next visible expression event, including entry to an instrumented callee. |
 | Step Over | At a non-tail expression entry, run to that occurrence's completion, or a user breakpoint/exception/control transfer encountered first. |
-| Step Out | Run to the selected active computation's enclosing return context, or an intervening breakpoint/exception/control transfer. With no return context, as at module level, run to the completion of the nearest enclosing evaluation, or at an outermost expression its own. |
+| Step Out | Run to the selected active computation's enclosing return context, or an intervening breakpoint/exception/control transfer. With no return context, as at module level, run to the completion of the nearest enclosing evaluation, or at an outermost expression its own; with neither, stop at the next source boundary. |
 | Continue | Run until a user breakpoint, requested pause, supported exception stop, or session completion. |
 
 For a tail expression there is no separate local return boundary. Step Over

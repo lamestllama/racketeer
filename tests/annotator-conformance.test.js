@@ -270,6 +270,31 @@ test('a generated operation keeps its stop when it borrows an atomic argument ra
   assert.equal(await finished(client), '5\n');
 });
 
+test('a generated operation around an atomic argument shows no value at that argument', async t => {
+  const lines = [
+    '#lang racket/base',
+    '(require (for-syntax racket/base))',
+    '(define-syntax (increment stx)',
+    '  (syntax-case stx ()',
+    '    [(_ value) (syntax/loc #\'value (+ 1 value))]))',
+    '(displayln (increment 4))'
+  ];
+  const { client } = await prepare(t, lines, [{ line: 6, column: lines[5].indexOf('4') + 1 }]);
+  await ok(client.request('configurationDone'));
+  const { threadId } = await stoppedFrame(client);
+  const stepped = client.event('stopped', event => event.body.reason === 'step');
+  await ok(client.request('stepIn', { threadId }));
+  await stepped;
+  const { stackFrames: [frame] } = await ok(client.request('stackTrace', { threadId }));
+  assert.match(frame.name, /^Returned, value not shown/);
+  const { scopes } = await ok(client.request('scopes', { frameId: frame.id }));
+  assert.deepEqual(scopes.map(scope => scope.name), ['Locals']);
+  assert.equal((await client.request('racketdap/replaceResults', { threadId, expression: '9' })).success, false);
+  assert.equal((await client.request('racketdap/printResults', { threadId })).success, false);
+  await ok(client.request('continue', { threadId }));
+  assert.equal(await finished(client), '5\n');
+});
+
 for (const expression of ['(set! counter (add1 counter))', '(tick)', '(when #t (set! counter (add1 counter)))']) {
   for (const phase of ['before', 'after']) {
     test(`a macro borrowing ${expression}'s range preserves each ${phase} boundary`, async t => {

@@ -160,7 +160,9 @@ values (0)**, **Return values (1)** or **Return values (2)**; zero values and on
 return boundary: stepping over a tail expression follows the enclosing return
 context and can finish the program. Step Out leaves the current function; with
 no caller to return to, as at module level, it finishes the evaluation around the
-stop and does not enter a function. Continuation transfers outside a step target
+stop and does not enter a function. With no caller and nothing around the stop, as at
+a tail expression in a thread's function or a callback, it goes to the next source
+boundary, which can be inside a function. Continuation transfers outside a step target
 are identified in the stop description.
 
 Call Stack distinguishes **Before evaluation** from **Returned N values**.

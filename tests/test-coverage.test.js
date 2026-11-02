@@ -104,6 +104,18 @@ test('coverage preserves multiple values, quoted data, evaluation order and tail
 
 // Coverage records only whether each expression ran. Recording a visit must not
 // inspect the continuation, whose cost grows with the depth of the stack.
+test('a range holding written code is covered only if that code ran, not generated code located at it', async t => {
+  const source = '#lang racket/base\n(require rackunit (for-syntax racket/base))\n' +
+    '(define-syntax (guarded stx)\n' +
+    '  (syntax-case stx ()\n' +
+    "    [(_ e) #`(begin #,(syntax/loc #'e (void)) (if #f e 0))]))\n" +
+    '(define (use) (guarded (list 1)))\n' +
+    '(check-equal? (use) 0)\n';
+  const { client, program } = await fixture(t, source);
+  const [report] = await run(client, program);
+  assert.equal(expression(report, source, '(list 1)').executed, false);
+});
+
 test('coverage cost does not grow with recursion depth', { timeout: 30000 }, async t => {
   const source = '#lang racket/base\n(require rackunit)\n' +
     '(define (depth n) (if (zero? n) 0 (add1 (depth (sub1 n)))))\n' +

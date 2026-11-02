@@ -47,8 +47,11 @@ expression. This completion stop lets you inspect or change the return values.
 With no caller to return to, as at module level or in the function a thread runs,
 it finishes the evaluation around the stop: from `(g 3)` in `(f 1 v (g 3))` it stops
 when `(f 1 v (g 3))` has returned, without entering `f`. At a whole module-level
-expression it stops when that expression has returned. **F5 / Continue** runs until
-a breakpoint, exception, or completion.
+expression it stops when that expression has returned. With no caller and nothing
+around the stop, as at a tail expression in a thread's function or a callback, Step
+Out goes to the next source boundary, which can be inside a function, so the press
+always ends in a stop. **F5 / Continue** runs until a breakpoint, exception, or
+completion.
 You can set `stopOnEntry` to `false` to run directly to your first breakpoint.
 
 **Call Stack**, **Variables**, and **Watch**
@@ -88,8 +91,9 @@ Each use of a macro's argument keeps its stops, and so do a macro's template, th
 name of a macro such as `for/list`, and the whole of a call such as
 `(sort lst <)` that goes through a macro with the function's name. An operation
 generated around a constant or a variable is the only stop that text has, and
-stays: `(for ([i lst]) (f i))` stops once at `lst` and shows what the sequence is
-made of, not the value of `lst`.
+stays, but what it returns is not the text's value: `(for ([i lst]) (f i))` stops
+once at `lst`, before and after, and Call Stack says **Returned, value not shown**,
+with no **Return values** scope.
 
 Standalone expressions in a module body or plain file also have stops when
 they are a literal, a variable reference, or a function expression. Atomic

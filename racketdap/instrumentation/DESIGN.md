@@ -41,7 +41,11 @@ Generated code can borrow the location of text it did not evaluate to, and a sto
 there would show a value that is not the text's. So a site is hidden when it is not
 authored and either expressions written in the same form hold its range, or its range
 takes in the visible site around it and its value is not that site's. An operation
-around an authored constant or variable stays, since that text cannot stop otherwise.
+around an authored constant or variable stays, since that text cannot stop otherwise,
+and its site says its value is not shown, unless the operation hands on the operand's.
+Its completion stop still passes on the value the program goes on with, and refuses a
+replacement, since nothing shows what would be replaced. The same hiding applies to
+coverage, so a range holding authored code counts as covered only if that code ran.
 A hidden site still notes itself in its frame for exceptions and Pause, and it stays in
 contexts: a function called from generated code returns to that code, so a step out of
 the function stops at the next stop after it, not at the end of whatever encloses it.

@@ -25,7 +25,7 @@
                (+ (sub1 (site-position descriptor)) (site-span descriptor))))
   (case (stop-kind stop)
     [(before) (list 'before source)]
-    [else (list* 'after source (map shown (stop-results stop)))]))
+    [else (list* 'after source (if (stop-value-shown? stop) (map shown (stop-results stop)) '()))]))
 ;; A procedure's printed name holds the temporary file's path.
 (define (shown value) (if (procedure? value) "#<procedure>" (~s value)))
 
@@ -168,10 +168,33 @@
                         '((before "(vector 1)") (after "(vector 1)" "#(1)"))
                         '()))
       (check-equal? (length (filter (lambda (row) (equal? (cadr row) loop)) rows)) 2)))
-  (test-case "a for clause over a variable stops once for the sequence built from it"
+  (test-case "a for clause over a variable stops once, and shows no value that is not the variable's"
     (define rows (stops (program "(define lst '(1 2))" "(for ([i lst]) (f i))")))
-    (check-equal? (map car (filter (lambda (row) (equal? (cadr row) "lst")) rows))
-                  '(before after)))
+    (check-equal? (filter (lambda (row) (equal? (cadr row) "lst")) rows)
+                  '((before "lst") (after "lst"))))
+  (define increment
+    (string-append "(require (for-syntax racket/base))\n"
+                   "(define-syntax (increment stx)\n"
+                   "  (syntax-case stx () [(_ value) (syntax/loc #'value (+ 1 value))]))\n"))
+  (test-case "an operation generated around a constant or a variable shows no value at that text"
+    (check-equal?
+     (stops (string-append f increment "(define n 4)\n(void (increment 4) (increment n))\n"))
+     '((before "(void (increment 4) (increment n))")
+       (before "4") (after "4") (before "n") (after "n")
+       (after "(void (increment 4) (increment n))" "#<void>"))))
+  (test-case "an operation that hands on its operand's value shows it"
+    (check-equal?
+     (stops (string-append "#lang racket/base\n(require (for-syntax racket/base))\n"
+                           "(define-syntax (same stx)\n"
+                           "  (syntax-case stx () [(_ value) (syntax/loc #'value (let-values () value))]))\n"
+                           "(void (same 4))\n"))
+     '((before "(void (same 4))") (before "4") (after "4" "4") (after "(void (same 4))" "#<void>"))))
+  (test-case "a value not shown is still the value the program goes on with"
+    (check-equal?
+     (printed (string-append f increment "(writeln (increment 4))\n(for ([i '(1 2)]) (writeln i))\n"
+                             "(define lst '(5))\n(for ([i lst]) (writeln i))\n")
+              #:instrument? #t)
+     "5\n1\n2\n5\n"))
   (test-case "a for loop's body keeps every stop of its own expressions"
     (check-equal?
      (stops (program "(for ([i (list 1)] #:when (f i))" "  (+ i 1)" "  (f i))"))

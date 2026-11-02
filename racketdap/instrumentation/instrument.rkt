@@ -392,6 +392,14 @@
                     (lambda (kind) (if (stoppable? expression) 'expression kind))
                     'operand))
     (for-each note (runtime-subexpressions expression)))
+  ;; A stop kept for an operation around a constant or variable does not show the operation's
+  ;; value against that text, unless the operation's value is the operand's.
+  (define (shows-other-value? expression range)
+    (and (not (authored? expression range))
+         (eq? (hash-ref authored-ranges range #f) 'operand)
+         (not (let gives-operand? ([e expression])
+                (or (equal? (authored-here? e) range)
+                    (ormap gives-operand? (result-subexpressions e)))))))
   (define (range-belongs-to-authored? expression range)
     (case (hash-ref authored-ranges range #f)
       [(expression) #t]
@@ -679,7 +687,7 @@
                (syntax-position located) (syntax-span located)
                ;; A body's binding form holds all of the body after it.
                tail? (and (not (binding-container? expression)) (syntax->datum expression)) enclosing
-               visible?))
+               visible? (not (and range (shows-other-value? expression range)))))
        (when visible? (set! descriptors (cons descriptor descriptors)))
        (set! table (cons (cons slot (cons descriptor visible?)) table))
        (unless coverage?

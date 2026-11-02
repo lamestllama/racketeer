@@ -394,6 +394,8 @@
            (event "invalidated" (hasheq 'areas '("variables") 'threadId (state-id (paused-state pause)))))
        (describe-results pause (list value))]
       [(racketdap/printResults)
+       (unless (or (not (eq? (stop-kind stop) 'after)) (stop-value-shown? stop))
+         (error 'printResults "This stop shows no value."))
        (define result (describe-results pause (stop-results stop)))
        (define output (open-output-string))
        (parameterize ([print-graph #t])
@@ -424,6 +426,7 @@
                  (define label
                    (cond
                      [(positive? i) "Waiting for return"]
+                     [(and returned? (not (stop-value-shown? stop))) "Returned, value not shown"]
                      [returned?
                       (define count (length (stop-results stop)))
                       (format "Returned ~a ~a" count (if (= count 1) "value" "values"))]
@@ -441,7 +444,7 @@
                (append
                 (list (hasheq 'name "Locals" 'presentationHint "locals" 'expensive #f
                               'variablesReference (new-handle variables pause (cons 'locals index))))
-                (if (and (zero? index) (eq? (stop-kind stop) 'after))
+                (if (and (zero? index) (eq? (stop-kind stop) 'after) (stop-value-shown? stop))
                     (list (hasheq 'name (format "Return values (~a)" (length (stop-results stop)))
                                   'expensive #f 'variablesReference
                                   (new-handle variables pause (cons 'return-results stop)))) '())
