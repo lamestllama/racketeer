@@ -52,7 +52,7 @@
      (get-output-string output))))
 ;; The stop at which the first stop matching at is reached, then where each press in
 ;; presses lands, starting from it.
-(define (presses text at modes)
+(define (presses text at modes #:reasons? [reasons? #f])
   (with-program
    text
    (lambda (program)
@@ -78,7 +78,7 @@
                (set! started? #t)
                (press! stop))]
             [(and command (step-reason command stop))
-             (set! rows (cons (row stop) rows))
+             (set! rows (cons (if reasons? (step-reason command stop) (row stop)) rows))
              (press! stop)]))))
      (check-true started? (format "never reached ~s" at))
      (reverse rows))))
@@ -299,6 +299,15 @@
      (presses (string-append f "(for ([i (list 1 2)]) (f i))\n")
               '(before "(f i)") '(stepOut))
      '((after "(for ([i (list 1 2)]) (f i))"))))
+  (test-case "generated code that nothing stops at is not what a press waits for"
+    (check-equal?
+     (presses (string-append f "(for ([i (list 1 2)]) (f i))\n")
+              '(before "(f i)") '(stepOut) #:reasons? #t)
+     '("Expression returned"))
+    (check-equal?
+     (presses (string-append f "(for ([i (list 1 2)]) (f i))\n")
+              '(before "(* x 2)") '(stepOut stepOut) #:reasons? #t)
+     '("Expression returned" "Expression returned")))
   (test-case "Out in a thread's own function finishes the evaluation around it"
     (check-equal?
      (presses (string-append f "(thread-wait (thread (lambda () (list (list (f 1) 2) 3))))\n")
