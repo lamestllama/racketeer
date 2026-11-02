@@ -31,6 +31,7 @@
 - A relative `program` in a launch configuration is relative to its `cwd`, or without one to the workspace folder. The debugger looked for it in the folder the adapter started in, and the extension refused it unless it happened to exist there.
 - A breakpoint added in a captured source tab no longer replaces the breakpoints set in the file's own tab, which stayed displayed but stopped nothing, and clearing one tab's breakpoints leaves the other's.
 - A variable a macro binds is listed in **Variables**, and reached by hover, **Watch**, the Debug Console and Set Value, when the source refers to it: `it` from an anaphoric macro, a name made by `format-id`, `local-pt-x` from a local structure. The console called these undefined and hover refused them. A macro's own temporaries stay hidden, and the row is always the binding the source refers to, never another of the same name.
+- Inside a class, **Variables** has a row named `this` in methods and initialisers, and hover, **Watch** and the Debug Console read `this`. The row opens to the object's fields, numbered, with a field not yet set shown as `<uninitialized>`. An object whose class guards its unset fields no longer shows as a wrapped value that cannot be opened. Field names are not variables and stay refused: `(get-field count this)` in the console reads a public field.
 
 ## 0.8.48
 

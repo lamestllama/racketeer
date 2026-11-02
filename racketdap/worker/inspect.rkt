@@ -1,7 +1,7 @@
 #lang racket/base
 ;; Copyright (c) 2026 Eric Parsonage
 ;; SPDX-License-Identifier: Apache-2.0 OR MIT
-(require racket/keyword racket/list racket/promise racket/string racket/symbol
+(require racket/keyword racket/list racket/promise racket/string racket/symbol racket/unsafe/undefined
          "../instrumentation/instrument.rkt")
 (provide value-preview value-type children expandable?)
 ;; Retain the inspector above the debuggee's structure types.
@@ -10,6 +10,20 @@
   (parameterize ([current-inspector debugger-inspector])
     (define-values (type skipped?) (struct-info value))
     (and (not (unavailable? value)) (not skipped?) type)))
+;; A class whose object may be seen before its fields are set makes each object a chaperone,
+;; whose only effect is to refuse to read an unset field. That guard runs no program code,
+;; so such an object is shown as any other. A chaperone that could run program code needs
+;; the object's own field accessors, which the class form keeps to itself.
+(define (object-structure-type? type)
+  (let loop ([type type])
+    (define-values (name init auto ref set immutable super skipped?) (struct-type-info type))
+    (if super (loop super) (and (eq? name 'object) (zero? (+ init auto))))))
+(define (guarded-object? value)
+  (parameterize ([current-inspector debugger-inspector])
+    (define-values (type skipped?) (struct-info value))
+    (and type (not skipped?) (object-structure-type? type)
+         (regexp-match? #rx"^object:" (symbol->string (object-name type))))))
+(define (wrapped? value) (and (impersonator? value) (not (guarded-object? value))))
 (define (clip s [limit 160])
   (if (> (string-length s) limit) (string-append (substring s 0 limit) "…") s))
 (define (name-atom-preview value)
@@ -42,7 +56,7 @@
                (struct-mutator-procedure? value))
            (object-name value))))
 (define (value-type v)
-  (cond [(unavailable? v) "unavailable"] [(impersonator? v) "wrapped value"]
+  (cond [(unavailable? v) "unavailable"] [(wrapped? v) "wrapped value"]
         [(null? v) "null"] [(pair? v) "pair"] [(vector? v) "vector"]
         [(box? v) "box"] [(hash? v) "hash"] [(string? v) "string"]
         [(bytes? v) "bytes"] [(number? v) "number"] [(boolean? v) "boolean"]
@@ -61,6 +75,13 @@
 
 (define preview-items 6)
 (define preview-depth 3)
+;; An object's field before its initialiser has run holds the undefined value, and a guarded
+;; object refuses to read it.
+(define (field-value ref value i)
+  (define field
+    (with-handlers ([exn:fail:contract:variable? (lambda (_) unsafe-undefined)])
+      (ref value i)))
+  (if (eq? field unsafe-undefined) (unavailable 'uninitialized) field))
 ;; Fetch only the requested fields. The optional hierarchy limit is used for
 ;; previews: an unusually deep hierarchy must not defeat their work budget.
 ;; Returning #f means the hierarchy limit was reached, not an opaque field.
@@ -80,7 +101,7 @@
                             (append fields
                                     (for/list ([i (in-range (max 0 (- start offset))
                                                            (max 0 (min (+ init auto) (- end offset))))])
-                                      (cons (number->string (+ offset i)) (ref value i))))))])))
+                                      (cons (number->string (+ offset i)) (field-value ref value i))))))])))
     fields))
 
 (define (value-preview value [initial-depth 0])
@@ -102,7 +123,7 @@
      (cond
        [(not (visit!)) "…"]
        [(unavailable? v) "<uninitialized>"]
-       [(impersonator? v) "<wrapped value; inspect explicitly in the console>"]
+       [(wrapped? v) "<wrapped value; inspect explicitly in the console>"]
        [(string? v) (format "~s" (clip v))]
        [(bytes? v) (string-append (format "~s" (subbytes v 0 (min 80 (bytes-length v))))
                                  (if (> (bytes-length v) 80) "…" ""))]
@@ -195,7 +216,7 @@
   (preview value initial-depth (hasheq)))
 
 (define (expandable? v)
-  (and (not (unavailable? v)) (not (impersonator? v))
+  (and (not (unavailable? v)) (not (wrapped? v))
        (or (pair? v) (vector? v) (box? v) (hash? v) (syntax? v) (procedure? v) (instrumented-port? v)
            (and (visible-structure-type v) #t))))
 (define (page items start count)
@@ -204,7 +225,7 @@
 (define (children value start count)
   (define end (+ start count))
   (cond
-    [(or (unavailable? value) (impersonator? value) (zero? count)) '()]
+    [(or (unavailable? value) (wrapped? value) (zero? count)) '()]
     [(pair? value) (page (list (cons "car" (car value)) (cons "cdr" (cdr value))) start count)]
     [(vector? value)
      (for/list ([i (in-range (min start (vector-length value)) (min end (vector-length value)))])

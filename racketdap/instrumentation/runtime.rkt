@@ -335,6 +335,8 @@
   (with-handlers ([exn:fail:contract:variable?
                    (lambda (e) (unavailable 'uninitialized))])
     ((live-binding-access b))))
+;; A binding with no setter can only be read, as a class's object can.
+(define (assignable? b) (procedure-arity-includes? (live-binding-access b) 1))
 (define (stop-locals s [i 0])
   (for/list ([b (in-list (visible-bindings (selected-frame s i 'stop-locals)))])
     (cons (live-binding-name b) (read-binding b))))
@@ -400,6 +402,7 @@
   (source-binding-value binding symbol 'stop-set-binding!)
   (cond
     [(live-binding? binding)
+     (unless (assignable? binding) (error 'stop-set-binding! "~a cannot be assigned" symbol))
      ((live-binding-access binding) (evaluate-in-frame scoped datum))]
     [else
      ;; Retain the core assignment form even when a source binding is named set!.
@@ -415,7 +418,10 @@
      (define access #`(quote #,(live-binding-access b)))
      (syntax-case use (set!)
        [id (identifier? #'id) #`(#,access)]
-       [(set! id rhs) #`(#,access rhs)]
+       [(set! id rhs)
+        (begin
+          (unless (assignable? b) (raise-syntax-error #f "cannot be assigned" use #'id))
+          #`(#,access rhs))]
        [(id . arguments) #`((#,access) . arguments)]))))
 (define (evaluate-in-frame scoped datum)
   (define names (visible-bindings scoped))

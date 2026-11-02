@@ -323,3 +323,176 @@ test('a warm cache lists the same names as the run that compiled them', async t 
     }, { debugCacheDirectory: cache });
   }
 });
+
+const classes = [
+  '#lang racket/base',
+  '(require racket/class)',
+  '(define counter%',
+  '  (class object%',
+  '    (init-field start)',
+  '    (field [count start])',
+  '    (define hidden 5)',
+  '    (super-new)',
+  "    (void 'stop-class-body)",
+  '    (define/public (bump step)',
+  '      (define next (+ count step hidden))',
+  "      (void 'stop-method)",
+  '      (set! count next)',
+  '      next)',
+  '    (define/public (read) (map (lambda (x)',
+  "                                 (void 'stop-closure)",
+  '                                 (+ x count)) (list 1)))',
+  '    (define/public (no-arguments)',
+  "      (void 'stop-no-arguments)",
+  '      count)',
+  '    (define/public (by-tail-send) (send this no-arguments))',
+  '    (define/public (with-keyword #:k [k 1] [o 2])',
+  "      (void 'stop-keyword)",
+  '      (list k o))))',
+];
+
+test('a method, an initialiser and a closure in a class show this, and it opens to the fields', async t => {
+  const { seen, output } = await eachStop(t, [
+    ...classes,
+    '(define obj (new counter% [start 1]))',
+    '(send obj bump 2)',
+    '(send obj read)',
+    '(send obj by-tail-send)',
+    '(send obj with-keyword #:k 3)',
+    '(define (not-a-class self1)',
+    "  (void 'stop-not-a-class)",
+    '  self1)',
+    '(not-a-class 4)'
+  ], async (name, stop) => {
+    const rows = await stop.rows();
+    const expected = {
+      'class-body': ['this'], method: ['next', 'step', 'this'], closure: ['this', 'x'],
+      'no-arguments': ['this'], keyword: ['k', 'o', 'this'], 'not-a-class': ['self1']
+    };
+    assert.deepEqual(names(rows), expected[name].sort(), name);
+    if (name === 'not-a-class') {
+      assert.equal(shown(rows).self1, '4');
+      return;
+    }
+    if (name === 'class-body') assert.equal(shown(rows).this, '#<object:counter% 1 1 5>');
+    if (name !== 'method') return;
+    const object = rows.find(row => row.name === 'this');
+    assert.equal(object.value, '#<object:counter% 1 1 5>');
+    assert.equal(object.type, 'object:counter%');
+    // Fields are numbered in the order of the object's structure: the program's inspector
+    // gives their values, and the class alone knows their names.
+    assert.deepEqual((await stop.open(object.variablesReference)).map(row => [row.name, row.value]),
+      [['0', '1'], ['1', '1'], ['2', '5']]);
+    for (const read of [stop.hover, stop.watch, stop.console]) {
+      assert.equal((await ok(read('this'))).result, '#<object:counter% 1 1 5>');
+    }
+    assert.equal((await ok(stop.console('(get-field count this)'))).result, '1');
+    // The object cannot be assigned here any more than in the class.
+    const assigned = await stop.set('this', '1');
+    assert.equal(assigned.success, false);
+    assert.match(assigned.message, /this cannot be assigned/);
+    const fromConsole = await stop.console('(set! this 1)');
+    assert.equal(fromConsole.success, false);
+    assert.match(fromConsole.message, /cannot be assigned/);
+    assert.equal(shown(await stop.rows()).this, '#<object:counter% 1 1 5>');
+    // A field is no variable: its source name expands to a call on the object.
+    for (const field of ['count', 'hidden', 'start']) {
+      const hovered = await stop.hover(field);
+      assert.equal(hovered.success, false, field);
+      assert.match(hovered.message, new RegExp(`no source-visible variable named ${field}`));
+      assert.equal((await stop.console(field)).success, false, field);
+    }
+    assert.ok(!(await stop.rows()).some(row => ['count', 'hidden', 'start'].includes(row.name)));
+  });
+  assert.deepEqual(seen, ['class-body', 'method', 'closure', 'no-arguments', 'keyword', 'not-a-class']);
+  assert.equal(output, "8\n'(9)\n8\n'(3 2)\n4\n");
+});
+
+test('a subclass, super, a mixin and a class in a method each show their own object', async t => {
+  const { seen, output } = await eachStop(t, [
+    ...classes,
+    '(define sub%',
+    '  (class counter%',
+    '    (field [extra',
+    "            (begin (void 'stop-field-initialiser)",
+    '                   7)])',
+    '    (super-new)',
+    '    (define/override (bump step)',
+    "      (void 'stop-override)",
+    '      (super bump (+ step extra)))',
+    '    (define/public (make-inner)',
+    '      (new (class object%',
+    '             (super-new)',
+    '             (define/public (inside)',
+    "               (void 'stop-inner)",
+    '               1))))))',
+    '(define (mixin %)',
+    '  (class %',
+    '    (field [m 9])',
+    '    (super-new)',
+    '    (define/public (mixed)',
+    "      (void 'stop-mixin)",
+    '      (+ m 1))))',
+    '(define own-this%',
+    '  (class object%',
+    '    (super-new)',
+    '    (define/public (take this)',
+    "      (void 'stop-own-this)",
+    '      this)))',
+    '(define s (new sub% [start 1]))',
+    '(send s bump 2)',
+    '(send (send s make-inner) inside)',
+    '(send (new (mixin counter%) [start 4]) mixed)',
+    "(send (new own-this%) take 'mine)"
+  ], async (name, stop) => {
+    const object = (await stop.rows()).find(row => row.name === 'this');
+    assert.ok(object, name);
+    if (name === 'field-initialiser') {
+      // Reads what is there: nothing has been stored in any field yet.
+      assert.equal(object.value, '#<object:sub% <uninitialized> <uninitialized> <uninitialized> <uninitialized>>');
+      assert.deepEqual((await stop.open(object.variablesReference)).map(row => row.value),
+        Array(4).fill('<uninitialized>'));
+    } else if (name === 'override' || name === 'method') {
+      assert.match(object.value, /^#<object:sub% \d+ 1 5 7>$/, name);
+      assert.equal((await stop.open(object.variablesReference)).at(-1).value, '7');
+    } else if (name === 'inner') {
+      assert.match(object.value, /^#<object:.*>$/);
+      assert.doesNotMatch(object.value, /sub%/);
+    } else if (name === 'mixin') {
+      assert.match(object.value, / 4 4 5 9>$/);
+    } else if (name === 'own-this') {
+      // A parameter the source names this is what the source reads.
+      assert.equal(object.value, 'mine');
+      assert.equal((await ok(stop.hover('this'))).result, 'mine');
+    }
+  });
+  assert.ok(seen.includes('field-initialiser') && seen.includes('override') && seen.includes('method') &&
+    seen.includes('inner') && seen.includes('mixin') && seen.includes('own-this'), seen.join());
+  assert.equal(output, "15\n1\n10\n'mine\n");
+});
+
+test('an object seen before its fields are set is still shown, with the unset ones as such', async t => {
+  await eachStop(t, [
+    '#lang racket/base',
+    '(require racket/class)',
+    ';; Calling a method in the body lets this be seen before late is set, so the class makes',
+    ';; each object a chaperone that refuses to read an unset field.',
+    '(define early%',
+    '  (class object%',
+    '    (super-new)',
+    '    (define/public (peek)',
+    "      (void 'stop-during-initialisation)",
+    '      1)',
+    '    (send this peek)',
+    '    (field [late 2])',
+    '    (define/public (read)',
+    "      (void 'stop-after-initialisation)",
+    '      late)))',
+    '(send (new early%) read)'
+  ], async (name, stop) => {
+    const object = (await stop.rows()).find(row => row.name === 'this');
+    const value = name === 'during-initialisation' ? '<uninitialized>' : '2';
+    assert.equal(object.value, `#<object:early% ${value}>`);
+    assert.deepEqual((await stop.open(object.variablesReference)).map(row => row.value), [value]);
+  });
+});

@@ -123,7 +123,10 @@ identifiers merely because their printed names coincide. A generated binding is
 source-visible when an original identifier of the file refers to it, found by binding
 identity in one walk of the form before instrumenting it, so a reference after a stop
 counts and a generated binding of the same name without a reference stays hidden.
-Each scope that binds source
+The class form's object variable is shown as `this` whether or not the source reads it,
+known by its gensym in the lexical context of the class implementation. Its binding has
+no setter, so the variable stays immutable, and it follows the source's names in its
+scope, so a parameter the source names `this` wins. Each scope that binds source
 names has one procedure returning its live bindings, in front of its parent's, and
 every site in the scope finds it through the scope's mark. Each instrumented form likewise
 holds its module binding identifiers once, in a thunk that a stop calls, so syntax

@@ -35,7 +35,14 @@ an anaphoric macro, a name made by `format-id`, `local-pt-x` from a local struct
 whose accessor the source reads. It is the binding that identifier refers to, not
 another of the same name. Hover, Watch, the Debug Console and assignment reach it as
 they reach any variable. Names no source identifier refers to, such as `tmp`,
-`or-part` and `for-loop`, stay hidden. The Return values scope includes the number of returned
+`or-part` and `for-loop`, stay hidden. In a class's methods and initialisers, and in
+closures made there, Locals has a row named `this` for the object, read by hover,
+Watch and the Debug Console too. It cannot be assigned, and a parameter the source
+names `this` is what the row shows. It opens to the object's fields as the program's
+inspector allows: numbered, because the object holds no field names, and shown as
+`<uninitialized>` until set. A field is no variable: its name in the source expands to
+a call on the object, so it has no row, and hover and the Debug Console refuse it.
+`(get-field count this)` in the Debug Console reads a public field. The Return values scope includes the number of returned
 values, including zero; assignment to a variable uses Racket's `set!` semantics.
 Racketeer deliberately retains the completion stop at a function's call site
 after it returns, so its return values can be inspected before advancing.

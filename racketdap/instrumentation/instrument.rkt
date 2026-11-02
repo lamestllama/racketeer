@@ -77,6 +77,15 @@
      (for ([form (in-list (syntax->list #'(form ...)))])
        (record-module-bindings! context form source))]
     [_ (void)]))
+;; The variable holding the object in a class's methods and initialisers, whichever way
+;; the source reaches it. The class form names it with a gensym in its own lexical
+;; context, so no program's identifier can be taken for it.
+(define (class-object? identifier)
+  (and (regexp-match? #rx"^self[0-9]+$" (symbol->string (syntax-e identifier)))
+       (let ([module-source (syntax-source-module identifier #t)])
+         (and (path? module-source)
+              (let-values ([(base name directory?) (split-path module-source)])
+                (equal? name (string->path "class-internal.rkt")))))))
 (define (formal-identifiers stx)
   (let walk ([v stx])
     (cond [(identifier? v) (list v)]
@@ -160,13 +169,18 @@
     (define live-bindings
       (if coverage?
           '()
-          (for/list ([id (in-list ids)]
-                     #:do [(define name (if (original-binding? id source)
-                                            (syntax-e id)
-                                            (free-id-table-ref lexical-aliases id #f)))]
-                     #:when name)
-            #`(#%plain-app make-live-binding '#,name
-                           (case-lambda [() #,id] [(replacement) (set! #,id replacement)])))))
+          (append
+           (for*/list ([id (in-list ids)]
+                       [name (in-value (if (original-binding? id source)
+                                           (syntax-e id)
+                                           (free-id-table-ref lexical-aliases id #f)))]
+                       #:when name)
+             #`(#%plain-app make-live-binding '#,name
+                            (case-lambda [() #,id] [(replacement) (set! #,id replacement)])))
+           ;; After the source's names, one of which may be this. A class cannot assign
+           ;; its object, so this code does not either and the variable stays immutable.
+           (for/list ([id (in-list ids)] #:when (class-object? id))
+             #`(#%plain-app make-live-binding 'this (case-lambda [() #,id]))))))
     (if (null? live-bindings)
         parent
         (scope (car (generate-temporaries '(variables))) parent live-bindings #f #f)))

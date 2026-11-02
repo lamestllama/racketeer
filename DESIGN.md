@@ -771,6 +771,7 @@ thread. The adapter must remain responsive enough to terminate the worker.
 | Pairs and lists | Bounded sequence preview; expandable `car`/`cdr` preserves improper or cyclic shape |
 | Vectors, boxes, hashes | Bounded contents previews; lazy children with indexing/entry paging and mutability information |
 | Structures | Bounded type/field preview where permitted; numbered expandable fields |
+| Objects | As structures, with fields not yet set shown as unavailable; `this` is a read-only row in a class's methods and initialisers |
 | Procedures | Name when available without program callbacks; expandable arity, without an invented list of closure captures |
 | Syntax objects | Bounded datum preview; expandable datum and source coordinates |
 | Promises, ports, threads, continuations | Descriptive handles; no implicit forcing, reading, execution, or resumption |
@@ -779,6 +780,8 @@ thread. The adapter must remain responsive enough to terminate the worker.
 Implement a bounded structural renderer. Default preview must not call arbitrary
 custom writers, force promises, or invoke object methods. Treat impersonated or
 chaperoned values conservatively where reading children could execute user code.
+The chaperone a class puts on its objects when they may be seen before their fields
+are set only refuses to read an unset field, so such an object is shown as any other.
 Offer explicit console operations for users who want those effects. Respect
 [structure inspectors](https://docs.racket-lang.org/reference/inspectors.html):
 use the target pause site's inspection authority, not a more privileged
