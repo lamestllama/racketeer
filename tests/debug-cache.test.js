@@ -523,6 +523,29 @@ for (const [name, language, setup] of [
   });
 }
 
+for (const [where, arrange] of arrangements) {
+  test(`a module in a language defined in the project runs from the cache ${where}`, { timeout: 300000 }, async t => {
+    const p = arrange(project(t));
+    fs.writeFileSync(path.join(p.source, 'my-language.rkt'),
+      '#lang racket/base\n(provide (all-from-out racket/base) marker)\n(define (marker) (quote marker-one))\n');
+    const main = path.join(p.source, 'in-language.rkt');
+    fs.writeFileSync(main, '(module main "my-language.rkt"\n(define (f x)\n  (list x))\n(displayln (f (marker)))\n)\n');
+    const stops = async ({ client, ok }) => {
+      const stopped = await client.event('stopped');
+      const threadId = stopped.body.threadId;
+      const { stackFrames } = await ok(client.request('stackTrace', { threadId }));
+      const { result } = await ok(client.request('evaluate', { expression: '(marker)', frameId: stackFrames[0].id, context: 'repl' }));
+      assert.strictEqual(result, 'marker-one');
+      await ok(client.request('continue', { threadId }));
+    };
+    const options = { program: main, cwd: p.cwd };
+    const cached = { ...options, debugCacheDirectory: p.cache };
+    const uncached = await session(uncachedOptions(options), { [main]: [3] }, stops);
+    assertSameTrace(await session(cached, { [main]: [3] }, stops), uncached, 'build');
+    assertSameTrace(await session(cached, { [main]: [3] }, stops), uncached, 'reuse');
+  });
+}
+
 test('compile-time effects run when building, once, and not when reusing', { timeout: 300000 }, async t => {
   const p = project(t);
   edit(p, 'macros.rkt', '(struct point', '(begin-for-syntax (displayln "at compile time"))\n(struct point');

@@ -165,7 +165,7 @@
             (if rec
                 (string->symbol (format "racketdap-language:~a" (module-binding-context-key bindings)))
                 (gensym 'racketdap-language)))
-          (define module-path (syntax->datum language))
+          (define module-path (anchored-module-path (syntax->datum language)))
           (declare-language-wrapper name module-path (make-transform bindings))
           (when rec
             (record-language-dependency! module-path)
@@ -301,8 +301,7 @@
   ;; A language other than racket/base or racket gets a wrapper module that
   ;; instruments its module body. A cached module imports it by name, so its
   ;; declaration is repeated before such a module is used. The repeat has no body
-  ;; to instrument, and a module path relative to the source still reads from
-  ;; the load's relative directory.
+  ;; to instrument.
   (define (declare-language-wrapper name module-path rewrite)
     (parameterize ([current-module-declare-name #f]
                    [current-namespace namespace])
@@ -321,6 +320,18 @@
                      (all-from-out ,module-path))
                     (rename-out [debug-module-begin #%module-begin]))
            (define-instrumented-module-begin debug-module-begin original:#%module-begin ,rewrite ,(path->string instrumentation-runtime-path)))))))
+  ;; A wrapper is named by a symbol, which gives a relative path nothing to be relative
+  ;; to. Compiled code that reaches the language through the wrapper would resolve it
+  ;; against the current directory, so the wrapper names the file the path means now,
+  ;; while the source's directory is the load's.
+  (define (anchored-module-path module-path)
+    (define name
+      (resolved-module-path-name
+       (module-path-index-resolve (module-path-index-join module-path #f))))
+    (cond
+      [(path? name) `(file ,(path->string name))]
+      [(and (pair? name) (path? (car name))) `(submod (file ,(path->string (car name))) ,@(cdr name))]
+      [else module-path]))
   ;; The wrapper hides the language from the import list the manager reads.
   (define (record-language-dependency! module-path)
     (define resolved
@@ -439,13 +450,11 @@
     log)
   ;; Tell the session what expansion would have, in the order expansion did.
   (define (replay! resolved log)
-    (define-values (directory _name _dir?) (split-path resolved))
     (define unit (hold-unit! (replay-unit log)))
     (for ([event (in-list (replay-events log))])
       (case (car event)
         [(language)
-         (parameterize ([current-load-relative-directory directory])
-           (declare-language-wrapper (cadr event) (caddr event) #f))]
+         (declare-language-wrapper (cadr event) (caddr event) #f)]
         [(load) (module-declared? (string->path (cadr event)) #t)]
         [(form)
          (define descriptors
