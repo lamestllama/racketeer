@@ -330,3 +330,21 @@ test('captured references survive source document replacement and reject changed
   assert.equal(await ending, undefined, 'Ending the session discards pending source references');
   assert.equal(await refs(), undefined, 'Completed sessions cannot supply source references');
 });
+
+test('a file event starts a pass only for a source file or a name with no suffix', { timeout: 10000 }, async t => {
+  const c = indexPeer(t);
+  c.open('definition.rkt', definition);
+  await c.index.start();
+  const updated = async expected => {
+    await new Promise(resolve => setTimeout(resolve, 100));
+    assert.equal(c.snapshots.length, expected);
+  };
+  const event = name => c.disk.emit(c.parse(`file://${path.join(c.directory, name)}`));
+  await updated(1);
+  for (const name of ['program.log', 'output.json', 'picture.png']) event(name);
+  await updated(1);
+  event('uses.rkt');
+  await updated(2);
+  event('removed-folder');
+  await updated(3);
+});

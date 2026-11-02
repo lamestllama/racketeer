@@ -87,7 +87,13 @@ function createWorkspaceIndex(context, { executable, timeout, output, onStatus }
     });
   }
   const watcher = vscode.workspace.createFileSystemWatcher('**/*');
-  const changedFile = uri => { if (relevant(uri)) refresh(); };
+  // A file event outside these suffixes starts no pass. A name with no suffix can
+  // be a folder, whose deletion is reported by its own name alone. A macro reading
+  // another kind of file is caught up by the next source change or a restart.
+  const sourceSuffixes = ['.rkt', '.ss', '.scrbl', '.rhm', '.rktl', '.rktd', ''];
+  const changedFile = uri => {
+    if (relevant(uri) && sourceSuffixes.includes(path.extname(uri.fsPath).toLowerCase())) refresh();
+  };
   const subscriptions = [watcher,
     watcher.onDidCreate(changedFile), watcher.onDidChange(changedFile), watcher.onDidDelete(changedFile),
     vscode.workspace.onDidOpenTextDocument(document => { if (isSource(document)) refresh(true); }),

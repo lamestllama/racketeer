@@ -334,7 +334,7 @@
   (dynamic-wind
     void
     (lambda ()
-      (unless (sync/timeout 0.3 (semaphore-peek-evt (Run-cancel run)))
+      (unless (sync/timeout 2 (semaphore-peek-evt (Run-cancel run)))
         (match (compute engine run 10 (list 'discover (Run-roots run) (Settings-excluded config)
                                      (Settings-max-files config)))
           [(list 'ok paths incomplete?)

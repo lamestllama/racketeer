@@ -2,6 +2,7 @@
 
 ## 0.8.50 (unreleased)
 
+- The workspace index restarts only for changes to source files, and waits 2 seconds after the last change before starting a pass. A macro that reads another kind of file is caught up by the next source change or a restart.
 - Commands act on the editor showing the active tab in the active group. While the window had no focus, they could use another group's editor or cursor.
 - Continuous integration uses Node.js 22 and current GitHub actions.
 - Keep instrumented compiled code between debug sessions, so a program that has not changed starts without being expanded and compiled again. The code lives in the extension's storage, never beside sources. A hash of each source and of everything it depends on, including macros in other files and files registered with the compiler, decides what is reused, and the Racket version, the library paths, what each collection link says and the debugger's own files form part of the key. Stepping, variables, assignment, exception stops and captured source behave as they do without it. `racketdap.debug.compiledCache` and the `debugCache` launch attribute turn it off. Test runs, coverage, plain-file languages and attached hosts run as before.
