@@ -64,7 +64,35 @@ async function project(t, env = {}) {
   const origin = open('definition.rkt', definition);
   await connection.sendRequest('initialize', snapshot());
   return { child, directory, documents, notifications, filename, write, open, origin, update, references, rename, settings, roots,
+    request: (method, params) => connection.sendRequest(method, params),
     diagnostics: () => diagnostics };
 }
 
-module.exports = { root, definition, uses, uri, addon, edited, project };
+// The server with no JSON-RPC library in between, for frames a library would
+// refuse to send or to match to a request.
+function rawServer(t, env = {}) {
+  const child = spawn('racket', [path.join(root, 'vscode/workspace-index-server.rkt')], {
+    stdio: 'pipe', env: { ...process.env, PLTADDONDIR: addon, ...env }
+  });
+  const closed = once(child, 'close');
+  t.after(async () => { child.kill('SIGKILL'); await closed; });
+  const received = [], waiting = [];
+  let buffer = Buffer.alloc(0);
+  child.stdout.on('data', chunk => {
+    buffer = Buffer.concat([buffer, chunk]);
+    for (;;) {
+      const end = buffer.indexOf('\r\n\r\n');
+      if (end < 0) return;
+      const start = end + 4, length = Number(/Content-Length: (\d+)/.exec(buffer.subarray(0, end))[1]);
+      if (buffer.length < start + length) return;
+      const message = JSON.parse(buffer.subarray(start, start + length));
+      buffer = buffer.subarray(start + length);
+      if (waiting.length) waiting.shift()(message); else received.push(message);
+    }
+  });
+  const writeFrame = text => child.stdin.write(`Content-Length: ${Buffer.byteLength(text)}\r\n\r\n${text}`);
+  return { child, closed, writeFrame, send: message => writeFrame(JSON.stringify({ jsonrpc: '2.0', ...message })),
+    next: () => received.length ? Promise.resolve(received.shift()) : new Promise(resolve => waiting.push(resolve)) };
+}
+
+module.exports = { root, definition, uses, uri, addon, edited, project, rawServer };

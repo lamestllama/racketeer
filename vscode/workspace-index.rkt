@@ -2,7 +2,8 @@
 ;; Copyright (c) 2026 Eric Parsonage
 ;; SPDX-License-Identifier: Apache-2.0 OR MIT
 
-(require racket/match
+(require json
+         racket/match
          racket/port
          racket-langserver/lsp/msg-io
          racket-langserver/lsp/responses
@@ -15,6 +16,9 @@
   (define writing (make-semaphore 1))
   (lambda (message)
     (call-with-semaphore writing (lambda () (display-message/flush message out)))))
+
+;; LSP 3.17 RequestFailed: a valid request that could not be answered.
+(define request-failed -32803)
 
 ;; This adapter owns framing, request identifiers, cancellation subscriptions,
 ;; and the connection lifetime. The analysis engine has no wire-protocol state.
@@ -36,19 +40,19 @@
        (error-response id (case reason
                             [(cancelled closed) -32800]
                             [(changed) -32801]
-                            [(unavailable) -32803]
-                            [else -32603]) message)]))
+                            [else request-failed]) message)]))
   (dynamic-wind
     void
     (lambda ()
       (for ([message (in-port read-message)])
         (define id (and (hash? message) (hash-ref message 'id #f)))
         (with-handlers ([exn:fail? (lambda (e)
-                                     (if id (reply (error-response id -32603 (exn-message e)))
+                                     (if id (reply (error-response id request-failed (exn-message e)))
                                          (eprintf "Index message failed: ~a\n" (exn-message e))))])
           (parameterize ([current-output-port (open-output-nowhere)])
-            (define params (hash-ref message 'params (hasheq)))
-            (match (hash-ref message 'method)
+            (define params (if (hash? message) (hash-ref message 'params (hasheq)) (hasheq)))
+            (match (if (eq? message 'parse-json-error) message (hash-ref message 'method))
+              ['parse-json-error (reply (error-response (json-null) -32700 "Malformed JSON"))]
               [(or "initialize" "update")
                (workspace-analysis-update! engine params)
                (when id (reply (success-response id (hasheq))))]
@@ -61,7 +65,7 @@
                    (dynamic-wind
                      void
                      (lambda ()
-                       (reply (with-handlers ([exn:fail? (lambda (e) (error-response id -32603 (exn-message e)))])
+                       (reply (with-handlers ([exn:fail? (lambda (e) (error-response id request-failed (exn-message e)))])
                                 (response id operation
                                           (workspace-analysis-query engine operation params (semaphore-peek-evt cancel))))))
                      (lambda () (hash-remove! pending id)))))]
