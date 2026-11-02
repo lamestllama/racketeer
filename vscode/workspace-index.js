@@ -118,6 +118,7 @@ function createWorkspaceIndex(context, { executable, timeout, output, onStatus }
       const { capabilities } = await connection.sendRequest('initialize', {
         processId: null, clientInfo: { name: 'Racketeer' }, rootUri: null, workspaceFolders: folders,
         capabilities: { general: { positionEncodings: ['utf-16'] },
+          textDocument: { rename: { prepareSupport: true } },
           workspace: { configuration: true, workspaceFolders: true,
             didChangeWatchedFiles: { dynamicRegistration: true, relativePatternSupport: true } },
           experimental: { racketeer: { indexStatus: true, sourceReferences: true } } }
@@ -190,7 +191,7 @@ function createWorkspaceIndex(context, { executable, timeout, output, onStatus }
     await start();
     if (disposed || token.isCancellationRequested) return;
     const response = await ask(method, {
-      uri: document.uri.toString(), version,
+      textDocument: { uri: document.uri.toString() },
       position: { line: position.line, character: position.character },
       ...(newName === undefined ? {} : { newName })
     }, token).catch(error => {
@@ -203,7 +204,7 @@ function createWorkspaceIndex(context, { executable, timeout, output, onStatus }
         !vscode.workspace.textDocuments.includes(document)) {
       throw new Error('Workspace changed during rename. Try Rename again.');
     }
-    return response.result;
+    return response;
   }
   // The process is ended either way, so a server slow to close its engine
   // holds up restarting language tools only briefly.
@@ -218,12 +219,12 @@ function createWorkspaceIndex(context, { executable, timeout, output, onStatus }
     cancelStart: () => process.cancelStart(),
     async prepareRename(document, position, token, next) {
       if (!isSource(document)) return next(document, position, token);
-      const result = await renameRequest('racketeer/prepareRename', document, position, token);
+      const result = await renameRequest('textDocument/prepareRename', document, position, token);
       return result && range(result);
     },
     async provideRenameEdits(document, position, newName, token, next) {
       if (!isSource(document)) return next(document, position, newName, token);
-      const result = await renameRequest('racketeer/rename', document, position, token, newName);
+      const result = await renameRequest('textDocument/rename', document, position, token, newName);
       if (!result) return;
       const edit = new vscode.WorkspaceEdit();
       for (const [uri, changes] of Object.entries(result.changes)) {
@@ -242,11 +243,11 @@ function createWorkspaceIndex(context, { executable, timeout, output, onStatus }
         await start();
         if (disposed || token.isCancellationRequested) return [];
         if (sourceUri && !extensions.sourceReferences) return next(document, position, options, token);
-        const locations = await ask(sourceUri ? 'racketeer/sourceReferences' : 'racketeer/references', {
-          uri: (sourceUri || document.uri).toString(),
-          ...(sourceUri ? { text } : { version }),
+        const locations = await ask(sourceUri ? 'racketeer/sourceReferences' : 'textDocument/references', {
+          textDocument: { uri: (sourceUri || document.uri).toString() },
           position: { line: position.line, character: position.character },
-          includeDeclaration: options.includeDeclaration
+          context: { includeDeclaration: options.includeDeclaration },
+          ...(sourceUri ? { text } : {})
         }, token);
         if (locations === silent) return next(document, position, options, token);
         if (disposed || token.isCancellationRequested || version !== document.version ||

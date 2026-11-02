@@ -74,7 +74,7 @@ test('a failed analysis and a failing request answer RequestFailed', { timeout: 
   p.write('broken.rkt', broken);
   const source = p.open('broken.rkt', broken); await p.update();
   await assert.rejects(p.references(source, { line: 0, character: 0 }), error => error.code === -32803);
-  await assert.rejects(p.request('racketeer/references', {}), error => error.code === -32803);
+  await assert.rejects(p.request('textDocument/references', {}), error => error.code === -32803);
 });
 
 test('malformed JSON answers ParseError with a null id, and the server reads on', { timeout: 120000 }, async t => {

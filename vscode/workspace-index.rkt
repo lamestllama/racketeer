@@ -32,10 +32,10 @@
 (define request-cancelled -32800)
 
 (define operations
-  (hash "racketeer/references" 'references
+  (hash "textDocument/references" 'references
         "racketeer/sourceReferences" 'references
-        "racketeer/prepareRename" 'prepare-rename
-        "racketeer/rename" 'rename))
+        "textDocument/prepareRename" 'prepare-rename
+        "textDocument/rename" 'rename))
 
 (define refresh-command "racketeer.refreshWorkspaceIndex")
 (define settings-section "racket-langserver.workspaceAnalysis")
@@ -44,10 +44,18 @@
 ;; settings are known, and discovery applies the same names.
 (define default-excluded '(".git" "compiled" "node_modules" ".test-output" "dist" "build"))
 
-(define initialize-result
+(define (capability capabilities . path)
+  (for/fold ([value capabilities]) ([key (in-list path)])
+    (and (hash? value) (hash-ref value key #f))))
+
+(define (initialize-result client-capabilities)
   (hasheq 'capabilities
           (hasheq 'positionEncoding "utf-16"
                   'textDocumentSync (hasheq 'openClose #t 'change 1)
+                  'referencesProvider #t
+                  'renameProvider (if (capability client-capabilities 'textDocument 'rename 'prepareSupport)
+                                      (hasheq 'prepareProvider #t)
+                                      #t)
                   'executeCommandProvider (hasheq 'commands (list refresh-command))
                   'workspace (hasheq 'workspaceFolders (hasheq 'supported #t 'changeNotifications #t))
                   'experimental (hasheq 'racketeer (hasheq 'version 1 'indexStatus #t 'sourceReferences #t)))
@@ -57,10 +65,6 @@
 (define synchronizing
   '("textDocument/didOpen" "textDocument/didChange" "textDocument/didClose" "workspace/didChangeWatchedFiles"
     "workspace/didChangeWorkspaceFolders" "workspace/didChangeConfiguration" "workspace/executeCommand"))
-
-(define (capability capabilities . path)
-  (for/fold ([value capabilities]) ([key (in-list path)])
-    (and (hash? value) (hash-ref value key #f))))
 
 (define (workspace-roots params)
   (match* ((hash-ref params 'workspaceFolders #f) (hash-ref params 'rootUri #f))
@@ -163,8 +167,7 @@
        ;; The client compares `revision` with the messages it has sent. Null
        ;; refuses a result that a message already read has overtaken.
        (success-response id (if (eq? operation 'references) value
-                                (hasheq 'revision (if (and (= revision generation) (zero? pulling)) received (json-null))
-                                        'result value)))]
+                                (hash-set value 'revision (if (and (= revision generation) (zero? pulling)) received (json-null)))))]
       [(AnalysisFailure reason message)
        (error-response id (case reason
                             [(cancelled) request-cancelled]
@@ -226,9 +229,18 @@
        ;; A request belongs to the document lifetime current when it is read,
        ;; since everything the client sent before it has been read too. A
        ;; captured source supplies its own text and belongs to no lifetime.
-       (define document (hash-ref documents (hash-ref params 'uri) #f))
-       (define bound (if (hash-has-key? params 'text) params
-                         (hash-set params 'identity (and document (hash-ref document 'identity)))))
+       (define uri (hash-ref (hash-ref params 'textDocument) 'uri))
+       (define document (hash-ref documents uri #f))
+       (define common
+         (hasheq 'uri uri 'position (hash-ref params 'position)
+                 'includeDeclaration (capability params 'context 'includeDeclaration)
+                 'newName (hash-ref params 'newName #f)))
+       (define bound
+         (if (equal? method "racketeer/sourceReferences")
+             (hash-set common 'text (hash-ref params 'text))
+             (hash-set* common
+                        'identity (and document (hash-ref document 'identity))
+                        'version (and document (hash-ref document 'version)))))
        (define applied settled)
        (define cancel (make-semaphore))
        (hash-set! pending id cancel)
@@ -267,7 +279,7 @@
                  (set! report-status? (eq? #t (capability client-capabilities 'experimental 'racketeer 'indexStatus)))
                  (set! roots (workspace-roots params))
                  (set! state 'serving)
-                 (reply (success-response id initialize-result))]
+                 (reply (success-response id (initialize-result client-capabilities)))]
                 [(_ 'starting)
                  (when id (reply (error-response id server-not-initialized "The index server is not initialized")))]
                 [(_ 'stopped)

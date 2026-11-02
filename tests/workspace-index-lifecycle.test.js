@@ -27,9 +27,9 @@ async function initialize(server, capabilities = {}, directory) {
 }
 const open = (server, directory) => server.send({ method: 'textDocument/didOpen', params: { textDocument: {
   uri: uri(path.join(directory, 'definition.rkt')), languageId: 'racket', version: 1, text: definition } } });
-const references = (directory, id) => ({ id, method: 'racketeer/references', params: {
-  uri: uri(path.join(directory, 'definition.rkt')), version: 1,
-  position: { line: 2, character: 10 }, includeDeclaration: false } });
+const references = (directory, id) => ({ id, method: 'textDocument/references', params: {
+  textDocument: { uri: uri(path.join(directory, 'definition.rkt')) },
+  position: { line: 2, character: 10 }, context: { includeDeclaration: false } } });
 
 test('initialize answers the standard capabilities and the private extensions', { timeout: 120000 }, async t => {
   const server = rawServer(t);
@@ -37,8 +37,16 @@ test('initialize answers the standard capabilities and the private extensions', 
   assert.equal(capabilities.positionEncoding, 'utf-16');
   assert.deepEqual(capabilities.textDocumentSync, { openClose: true, change: 1 });
   assert.deepEqual(capabilities.executeCommandProvider.commands, ['racketeer.refreshWorkspaceIndex']);
+  assert.equal(capabilities.referencesProvider, true);
+  assert.equal(capabilities.renameProvider, true, 'This client did not offer prepareSupport');
   assert.deepEqual(capabilities.workspace.workspaceFolders, { supported: true, changeNotifications: true });
   assert.deepEqual(capabilities.experimental.racketeer, { version: 1, indexStatus: true, sourceReferences: true });
+});
+
+test('prepareProvider is offered only to a client with prepareSupport', { timeout: 120000 }, async t => {
+  const server = rawServer(t);
+  const { capabilities } = await initialize(server, { textDocument: { rename: { prepareSupport: true } } });
+  assert.deepEqual(capabilities.renameProvider, { prepareProvider: true });
 });
 
 test('requests before initialize answer ServerNotInitialized and notifications are dropped', { timeout: 120000 }, async t => {
@@ -109,6 +117,19 @@ test('shutdown answers a request it interrupts with InvalidRequest, not a cancel
   const answers = [await server.next(), await server.next()];
   assert.equal(answers.find(answer => answer.id === 1).error.code, invalidRequest);
   assert.equal(answers.find(answer => answer.id === 2).result, null);
+});
+
+test('a captured source answers references privately while its text is the file\'s', { timeout: 120000 }, async t => {
+  const directory = workspace(t), server = rawServer(t);
+  await initialize(server, {}, directory);
+  const request = (id, text) => ({ id, method: 'racketeer/sourceReferences', params: {
+    textDocument: { uri: uri(path.join(directory, 'definition.rkt')) },
+    position: { line: 2, character: 10 }, context: { includeDeclaration: true }, text } });
+  server.send(request(1, definition));
+  const same = await server.next();
+  assert.ok(same.result.length, 'The file holds this text');
+  server.send(request(2, definition + '; changed\n'));
+  assert.equal((await server.next()).error.code, -32801);
 });
 
 test('index status is sent only to a client that asked for it', { timeout: 120000 }, async t => {
@@ -184,8 +205,8 @@ test('a request waits for settings already asked for', { timeout: 120000 }, asyn
   };
   assert.ok((await answer('first')).result, 'The first pass answers');
   server.send({ method: 'workspace/didChangeConfiguration', params: { settings: null } });
-  server.send({ id: 'rename', method: 'racketeer/prepareRename', params: {
-    uri: uri(path.join(directory, 'definition.rkt')), version: 1, position: { line: 2, character: 10 } } });
+  server.send({ id: 'rename', method: 'textDocument/prepareRename', params: {
+    textDocument: { uri: uri(path.join(directory, 'definition.rkt')) }, position: { line: 2, character: 10 } } });
   assert.match((await answer('rename')).error.message, /Enable workspace analysis/);
   assert.equal(asked.filter(message => message.method === 'workspace/configuration').length, 2);
 });

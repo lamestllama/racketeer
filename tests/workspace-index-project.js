@@ -84,15 +84,17 @@ async function project(t, env = {}) {
     await Promise.all(sent);
   };
   const references = (key, position = { line: 2, character: 10 }, includeDeclaration = false, token = rpc.CancellationToken.None) =>
-    connection.sendRequest('racketeer/references', { uri: key, version: documents.get(key).version, position, includeDeclaration }, token);
+    connection.sendRequest('textDocument/references', { textDocument: { uri: key }, position,
+      context: { includeDeclaration } }, token);
   const rename = (key, newName, position = { line: 2, character: 10 }, token = rpc.CancellationToken.None) =>
-    connection.sendRequest(newName === undefined ? 'racketeer/prepareRename' : 'racketeer/rename', {
-      uri: key, version: documents.get(key).version, position, ...(newName === undefined ? {} : { newName })
-    }, token).then(response => response.result);
+    connection.sendRequest(newName === undefined ? 'textDocument/prepareRename' : 'textDocument/rename', {
+      textDocument: { uri: key }, position, ...(newName === undefined ? {} : { newName })
+    }, token).then(({ revision, ...result }) => result);
   write('definition.rkt', definition); write('uses.rkt', uses);
   const origin = open('definition.rkt', definition);
   await connection.sendRequest('initialize', { processId: null, rootUri: null, workspaceFolders: roots.map(root => ({ uri: root, name: root })),
-    capabilities: { workspace: { configuration: true, didChangeWatchedFiles: { dynamicRegistration: true } },
+    capabilities: { textDocument: { rename: { prepareSupport: true } },
+      workspace: { configuration: true, didChangeWatchedFiles: { dynamicRegistration: true } },
       experimental: { racketeer: { indexStatus: true, sourceReferences: true } } } });
   await notify('initialized', {});
   await update();

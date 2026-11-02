@@ -90,7 +90,7 @@ function indexPeer(t, initialize = () => ({}), starting = Promise.resolve(), tim
   });
   connection.onNotification('workspace/didChangeWatchedFiles', () => snapshot());
   connection.onRequest('workspace/executeCommand', () => { snapshot(); return null; });
-  connection.onRequest('racketeer/references', () => []);
+  connection.onRequest('textDocument/references', () => []);
   connection.listen();
   const c = client(t, () => ({
     async start() { await starting; return child; }, ready() {}, cancelStart() {},
@@ -103,7 +103,7 @@ function indexPeer(t, initialize = () => ({}), starting = Promise.resolve(), tim
   }), timeout);
   return { ...c, snapshots, connection, disconnect: () => child.stdout.destroy() };
 }
-const wire = method => method === 'initialize' ? method : `racketeer/${method}`;
+const wire = method => method === 'initialize' ? method : `textDocument/${method}`;
 
 for (const method of ['initialize', 'references', 'prepareRename', 'rename']) {
   test(`index rejects pending ${method} when its transport closes`, { timeout: 5000 }, async t => {
