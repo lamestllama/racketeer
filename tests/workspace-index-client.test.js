@@ -231,6 +231,9 @@ test('extension index client watches relative to roots and sends authoritative b
   await c.index.start();
   const count = async () => (await c.refs(doc)).filter(location => location.uri.fsPath === consumer).length;
   assert.equal(await count(), 1);
+  const passing = c.statuses.filter(status => status.state === 'indexing');
+  assert.ok(passing.some(status => status.message === '2/2'), 'What the status bar counts comes from standard progress');
+  assert.equal(c.statuses.at(-1).state, 'ready');
   fs.appendFileSync(consumer, '(square 4)\n'); c.disk.emit(c.parse(uri(consumer)));
   assert.equal(await count(), 2, 'A .test-output ancestor does not exclude the workspace');
   const buffer = c.open('uses.rkt', uses + '(square 4)\n(square 5)\n');
