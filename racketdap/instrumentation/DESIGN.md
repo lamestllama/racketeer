@@ -258,6 +258,16 @@ Generated code is written only in core forms, so the expander has no macro to ap
 it, and a known primitive stays inline; any other operator goes through a check for port
 constructors once, in a call that takes no copy of the arguments.
 
+The expander splits a body's internal definitions from one definition context into nested
+binding forms. Expanding those again adds one scope per definition, and every identifier
+below carries them all: quadratic in the length of the body, far more than any macro use.
+Generated code writes them back as one letrec-values, with one scope. The clauses run in
+definition order, the same scopes distinguish the same names, and a name that would repeat
+in one form starts a new one. Scopes in the chain share a frame slot, which always holds
+the variables of the definitions that have run. Racket's compile always expands its input,
+including fully expanded code, and offers no way to pass that step, so the input has to be
+cheap to expand.
+
 Compiled instrumented code is an ordinary module apart from three things. It imports
 runtime.rkt and worker/expand.rkt by absolute path, so the cache key includes
 their location. Its identifiers must not carry the loader's scope, whose imports do

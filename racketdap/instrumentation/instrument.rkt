@@ -281,6 +281,82 @@
     (if (primitive-operator? (car expressions))
         #`(#%plain-app #,@rewritten)
         #`(#%plain-app (#%plain-app checked-operator #,(car rewritten)) #,@(cdr rewritten))))
+  ;; The nested binding forms of one body's internal definitions, as a list of clause
+  ;; groups and the body they lead to. Each group says whether it refers to itself.
+  (define (container-chain expression)
+    (define bound (make-bound-id-table))
+    (define (fresh-names? ids)
+      (for/and ([id (in-list ids)]) (not (bound-id-table-ref bound id #f))))
+    (let loop ([expression expression] [groups '()])
+      (syntax-case* expression (let-values letrec-values) free-identifier=?
+        [(form ([(id ...) rhs] ...) inner ...)
+         (and (bound-form? #'form binding-forms) (binding-container? expression)
+              ;; One binding form cannot bind a name twice. Nest instead.
+              (or (null? groups) (fresh-names? (syntax->list #'(id ... ...)))))
+         (let ([groups (cons (cons (free-identifier=? #'form #'letrec-values)
+                                   (syntax->list #'([(id ...) rhs] ...)))
+                             groups)]
+               [bodies (syntax->list #'(inner ...))])
+           (for ([id (in-list (syntax->list #'(id ... ...)))]) (bound-id-table-set! bound id #t))
+           (if (null? (cdr bodies))
+               (loop (car bodies) groups)
+               (values (reverse groups) bodies)))]
+        [_ (values (reverse groups) (list expression))])))
+  ;; The expander split a body's definitions from one definition context, and its
+  ;; result nests them. Expanding that again would add a scope per definition, and a
+  ;; deeper scope set to every identifier below it, which is quadratic in the length
+  ;; of a body. Written as one letrec-values they share one scope again, and definition
+  ;; order is the order clauses run in. Their scopes share a frame slot, which always
+  ;; holds the variables of the definitions that have run.
+  (define (flat-container expression environment act tail? inferred-name shared-slot has-site?)
+    (define-values (groups expressions) (container-chain expression))
+    (define (clause-parts clause)
+      (syntax-case clause () [[(id ...) rhs] (values (syntax->list #'(id ...)) #'rhs)]))
+    (define (walk-clause clause clause-environment)
+      (define-values (ids rhs) (clause-parts clause))
+      #`[#,ids #,(walk rhs clause-environment act #f
+                       (and (= (length ids) 1) (syntax-e (car ids))))])
+    (define-values (entries final-environment)
+      (for/fold ([entries '()] [outer environment]) ([group (in-list groups)])
+        (define ids (append-map (lambda (clause) (let-values ([(ids _) (clause-parts clause)]) ids))
+                                (cdr group)))
+        (define this (new-scope ids outer (or shared-slot first-scope-slot)))
+        (when (and has-site? (own-scope? this outer))
+          ;; The container's own site reads the slot between definitions.
+          (set-scope-sited?! this #t)
+          (set-scope-reached?! this #t))
+        (define clauses
+          (for/list ([clause (in-list (cdr group))])
+            (walk-clause clause (if (car group) this outer))))
+        (values (cons (vector (car group) this outer clauses) entries) this)))
+    (define rewritten-body (body expressions final-environment act tail? inferred-name))
+    ;; Innermost first, since a scope's procedure reaches the scopes around it.
+    (define emitted
+      (for/fold ([emitted '()]) ([entry (in-list entries)])
+        (define-values (self-referring? this outer clauses) (vector->values entry))
+        (define scope-clauses
+          (if (and (own-scope? this outer) (scope-reached? this))
+              (cons #`[(#,(scope-variable this)) #,(scope-procedure this)]
+                    (if (scope-sited? this)
+                        (list #`[(#,(car (generate-temporaries '(stored)))) #,(store-scope this act)])
+                        '()))
+              '()))
+        (cons (if self-referring?
+                  ;; Its procedure comes first: its getters may run in any initializer.
+                  (append scope-clauses clauses)
+                  (append clauses scope-clauses))
+              emitted)))
+    (define starting
+      ;; Between definitions the container's site shows what came before the first.
+      (if (and has-site? shared-slot environment)
+          (begin
+            (set-scope-reached?! environment #t)
+            (list #`[(#,(car (generate-temporaries '(stored))))
+                     (#%plain-app unsafe-vector*-set! #,(activation-frame act) '#,shared-slot
+                                  #,(scope-variable environment))]))
+          '()))
+    #`(letrec-values (#,@starting #,@(apply append emitted))
+        #,@rewritten-body))
   (define (walk expression environment act tail? [context-name #f])
     (define located (location-of expression))
     (define range (and located (cons (syntax-position located) (syntax-span located))))
@@ -303,6 +379,9 @@
                (and expression-boundary? (eq? expression expanded)))
            (begin (set! next-slot (add1 next-slot)) next-slot)))
     (define enclosing (enclosing-site))
+    (define container? (binding-container? expression))
+    ;; The slot a binding container's scopes share, which its site reads too.
+    (define container-slot (and container? (not coverage?) (fresh-scope-slot! act)))
     (define (remember-lambda rewritten)
       ;; Preserve source/properties, notably method-arity-error and inferred-name.
       ;; The registration call must not replace the compiler's contextual name
@@ -342,6 +421,9 @@
         [(begin0 expression rest ...)
          #`(begin0 #,(walk #'expression environment act #f inferred-name)
                    #,@(body (syntax->list #'(rest ...)) environment act #f))]
+        [(form . _)
+         container?
+         (flat-container expression environment act tail? inferred-name container-slot (and slot #t))]
         [(let-values ([(id ...) rhs] ...) expression ...)
          (let* ([groups (syntax->list #'((id ...) ...))]
                 [this (new-scope (apply append (map syntax->list groups)) environment
@@ -398,7 +480,7 @@
                (syntax-line located) (syntax-column located)
                (syntax-position located) (syntax-span located)
                tail? (syntax->datum expression) enclosing
-               (if environment (scope-slot environment) first-scope-slot)))
+               (or container-slot (if environment (scope-slot environment) first-scope-slot))))
        (when visible? (set! descriptors (cons descriptor descriptors)))
        (set! table (cons (cons slot (cons descriptor visible?)) table))
        (unless coverage?

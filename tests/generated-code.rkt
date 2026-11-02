@@ -74,6 +74,18 @@
    (apply string-append (make-list depth "(f "))
    "y" (make-string depth #\)) ")\n"))
 
+;; How many binding forms nest inside each other, each of which adds a scope that the
+;; expander pushes through everything below it.
+(define (binding-depth expression)
+  (let loop ([v expression] [depth 0])
+    (cond
+      [(syntax? v) (loop (syntax-e v) depth)]
+      [(pair? v)
+       (define head (and (syntax? (car v)) (syntax-e (car v))))
+       (define inner (if (memq head '(let-values letrec-values)) (add1 depth) depth))
+       (max (loop (car v) inner) (loop (cdr v) inner))]
+      [else depth])))
+
 (module+ test
   (test-case "generated code is written in core forms, so it has no macro to expand"
     (for ([text (list (long-function 5) (nested-calls 3)
@@ -83,6 +95,10 @@
   (test-case "code grows in proportion to the depth of nested applications"
     (define (size depth) (nodes (instrumented (nested-calls depth))))
     (check-true (< (size 20) (* 3 (size 10)))))
+  (test-case "a body's definitions do not nest scopes, however many it has"
+    (define (depth count) (binding-depth (instrumented (long-function count))))
+    (check-equal? (depth 400) (depth 10))
+    (check-true (< (depth 400) 12)))
   (test-case "code grows in proportion to the length of a body"
     (define (size count) (nodes (instrumented (long-function count))))
     (check-true (< (size 200) (* 2.2 (size 100))))))
