@@ -86,7 +86,9 @@
 ;; file's date as zero. A dependency that is always newer sends each check on to
 ;; its comparison of source and dependency hashes, external files included.
 (define always-newer +inf.0)
-(define (instrumenter-stamp) (cons always-newer "instrumenter"))
+;; The manager sorts a file's dependencies by hash before combining them, so two
+;; with the same hash combine in the order it happened to list them.
+(define (instrumenter-stamp path) (cons always-newer (format "instrumenter:~a" path)))
 ;; What a file's dependents should record when the debugger loads it from its
 ;; ordinary compiled file, or #f if it has none the ordinary loader would use.
 (define (ordinary-compiled-stamp source modes roots check)

@@ -148,10 +148,17 @@ test('a cached run sends the same messages as an uncached one, on the build and 
   const built = await run(p, true);
   assertSameTrace(built, uncached, 'build');
   assert.strictEqual(entries(p, '.zo').filter(file => file.includes(`${path.sep}debug${path.sep}`)).length, 5);
+  // Writing an entry gives it a new date and inode; reusing one does neither.
+  const written = () => entries(p, '.zo').map(file => {
+    const { ino, mtimeMs } = fs.statSync(file);
+    return `${file} ${ino} ${mtimeMs}`;
+  }).sort();
+  const afterBuild = written();
   const reused = await run(p, true);
   assertSameTrace(reused, uncached, 'reuse');
   const again = await run(p, true);
   assertSameTrace(again, uncached, 'second reuse');
+  assert.deepStrictEqual(written(), afterBuild, 'reuse wrote no entry');
   assert.deepStrictEqual(fs.readdirSync(p.source).sort(), Object.keys(files).sort());
 });
 

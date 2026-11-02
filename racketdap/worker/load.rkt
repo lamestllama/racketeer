@@ -328,13 +328,13 @@
 
   ;; The compilation cache, when this session has one. A failure while using it
   ;; ends its use for the session: what remains runs from source, as without it.
-  (define cache-usable?
+  (define cache-root-path
     (and cache-directory instrument? (not test?) (not language)
          (with-handlers ([exn:fail? (lambda (_) #f)])
            (make-directory* cache-directory)
            (evict-cache! cache-directory)
-           #t)))
-  (define cache-root-path (and cache-usable? (cache-root cache-directory)))
+           (cache-root cache-directory))))
+  (define cache-usable? (and cache-root-path #t))
   (define cache-mode (string->path (if coverage? "compiled/coverage" "compiled/debug")))
   (define plain-mode (string->path "compiled/plain"))
   (define (mode-for path) (if (selected-source? path) cache-mode plain-mode))
@@ -352,7 +352,7 @@
   (define (skip-for-manager path)
     (cond
       [(selected-source? path) #f]
-      [(debugger-source? path) (instrumenter-stamp)]
+      [(debugger-source? path) (instrumenter-stamp path)]
       [else (ordinary-compiled-stamp path compiled-paths compiled-roots compiled-check)]))
   ;; The manager's source reader goes through here: the bytes compiled are the
   ;; bytes captured, and their hash goes with the code.
