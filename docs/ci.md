@@ -14,7 +14,7 @@ branch; failures in one matrix entry do not cancel the other entries.
 | Installed extension, Test Explorer Run/Debug, GUI and language server | Linux x64 | Stable | Stable |
 | Installed extension, Test Explorer Run/Debug and GUI | Windows x64, macOS ARM64 | 9.1 | Stable |
 
-Each entry installs the full Racket distribution, Node.js 20, Python 3.12 and
+Each entry installs the full Racket distribution, Node.js 22, Python 3.12 and
 locked npm dependencies. On macOS, the installer preserves the distribution's
 file timestamps so bundled bytecode remains valid. The core jobs run `scripts/test-headless.js`, the same
 entry point used by the local npm and editor tasks. Platform-specific tests
