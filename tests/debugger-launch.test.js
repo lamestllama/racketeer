@@ -451,10 +451,18 @@ test('tools run through the launcher as they do without it', { timeout: 300000 }
       (flush-output))))
 `);
   const owned = launcherArgs(files, 'tools/owned-command.rkt');
-  const result = spawnSync('racket', [...owned, '-l', 'racket/base', '-e', '(display "from the child") (exit 7)'], { encoding: 'utf8' });
-  assert.equal(result.stdout, 'from the child', result.stderr);
-  assert.equal(result.status, 7);
+  // Everything an owned command starts ends with it, on Windows its builder too,
+  // so this one stays until the build has finished, as a window's server does.
+  const child = spawn('racket', [...owned, '-l', 'racket/base', '-e', '(void (read-byte)) (display "from the child") (exit 7)']);
+  t.after(() => child.kill('SIGKILL'));
+  let said = '', complaint = '';
+  child.stdout.on('data', data => { said += data; });
+  child.stderr.on('data', data => { complaint += data; });
+  const ended = new Promise(resolve => child.on('close', resolve));
   const [build] = await built(storage);
+  child.stdin.end();
+  assert.equal(await ended, 7, complaint);
+  assert.equal(said, 'from the child');
   const again = spawnSync('racket', [...owned, '-l', 'racket/base', '-e', '(exit 7)'], { encoding: 'utf8' });
   assert.equal(again.status, 7, again.stderr);
   const run = async () => {
