@@ -220,8 +220,18 @@
 
 (define (resolved-import spec file base)
   (define datum (syntax->datum spec))
+  (define (resolved path) (resolve-module-path (collapse-module-path path base) file))
+  ;; A quoted name in a file's module is a primitive module, or else its own submodule.
+  (define (quoted name submods)
+    (cond
+      [(not (module-declared? `(quote ,name) #f)) (resolved `(submod "." ,name ,@submods))]
+      [(null? submods) `(quote ,name)]
+      [else `(submod (quote ,name) ,@submods)]))
   (and (module-path? datum)
-       (resolve-module-path (collapse-module-path datum base) file)))
+       (match datum
+         [`(quote ,name) (quoted name '())]
+         [`(submod (quote ,name) ,submods ...) (quoted name submods)]
+         [_ (resolved datum)])))
 
 (define (target-module target)
   (if (null? (Module-Binding-submods target)) (Module-Binding-filepath target)

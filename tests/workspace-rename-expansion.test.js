@@ -72,3 +72,45 @@ test('a submodule that shares its enclosing phase is read at that phase', { time
 `;
   assert.equal(await renamed(t, consumer), wholeWord(consumer));
 });
+
+test('an import selecting from a primitive module leaves a rename whole', { timeout: 120000 }, async t => {
+  const consumer = `#lang racket/base
+(require "definition.rkt"
+         (only-in '#%kernel [cons kons])
+         (except-in '#%paramz exception-handler-key)
+         (prefix-in k: (only-in '#%kernel car)))
+(square (k:car (kons 3 4)))
+`;
+  assert.equal(await renamed(t, consumer), wholeWord(consumer));
+});
+
+test('a quoted name in an import is the file\'s own submodule', { timeout: 120000 }, async t => {
+  const p = await project(t);
+  const source = `#lang racket/base
+(module inner racket/base
+  (provide helper)
+  (define (helper x) x))
+(require (only-in 'inner helper))
+(helper 3)
+`;
+  const key = p.open('quoted.rkt', source);
+  p.write('quoted.rkt', source);
+  await p.update();
+  const { changes } = await p.rename(key, 'assist', { line: 3, character: 11 });
+  assert.equal(edited(source, changes[key]), source.replaceAll('helper', 'assist'));
+});
+
+test('a selector over a quoted submodule name stays independent of another binding', { timeout: 120000 }, async t => {
+  const consumer = `#lang racket/base
+(module inner racket/base
+  (provide square)
+  (define (square x) x))
+(module nested racket/base
+  (require "definition.rkt")
+  (square 1))
+(require (only-in (submod 'inner) square))
+(square 3)
+`;
+  const edited = await renamed(t, consumer);
+  assert.equal(edited, consumer.replace('(square 1)', '(squared 1)'));
+});
