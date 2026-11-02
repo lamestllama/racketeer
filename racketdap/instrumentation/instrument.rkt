@@ -677,10 +677,9 @@
          (site (fresh-id) (syntax-source located)
                (syntax-line located) (syntax-column located)
                (syntax-position located) (syntax-span located)
-               ;; A site nothing stops at has no completion to wait for, as a tail site has
-               ;; none. A body's binding form holds all of the body after it.
-               (or tail? (not visible?))
-               (and (not (binding-container? expression)) (syntax->datum expression)) enclosing))
+               ;; A body's binding form holds all of the body after it.
+               tail? (and (not (binding-container? expression)) (syntax->datum expression)) enclosing
+               visible?))
        (when visible? (set! descriptors (cons descriptor descriptors)))
        (set! table (cons (cons slot (cons descriptor visible?)) table))
        (unless coverage?

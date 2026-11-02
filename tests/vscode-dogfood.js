@@ -36,7 +36,7 @@ exports.run = async function () {
     ['tests/predicted-bindings.rkt', 7],
     ['tests/protocol-inspection.rkt', 25],
     ['tests/source-positions.rkt', 5],
-    ['tests/step-stops.rkt', 36],
+    ['tests/step-stops.rkt', 39],
     ['tests/stepping.rkt', 12],
     ['tests/source-loading.rkt', 10],
     ['tests/thread-pause.rkt', 10],

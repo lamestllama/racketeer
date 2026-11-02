@@ -23,11 +23,8 @@
 ;; finishes the evaluation around the stop, or the expression about to run when nothing
 ;; is around it. Going on to the next stop could enter a function.
 (define (enclosing-evaluation stop)
-  (define contexts (stop-contexts stop))
-  (cond
-    [(pair? contexts) (car contexts)]
-    [(eq? (stop-kind stop) 'before) (stop-token stop)]
-    [else #f]))
+  (or (stop-enclosing-evaluation stop)
+      (and (eq? (stop-kind stop) 'before) (stop-token stop))))
 
 ;; Context identity survives continuation capture/re-entry. Each thread owns
 ;; its own command; a continuation cannot carry a command to another thread.

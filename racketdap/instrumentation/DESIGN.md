@@ -42,9 +42,10 @@ there would show a value that is not the text's. So a site is hidden when it is 
 authored and either expressions written in the same form hold its range, or its range
 takes in the visible site around it and its value is not that site's. An operation
 around an authored constant or variable stays, since that text cannot stop otherwise.
-A hidden site still notes itself in its frame for exceptions and Pause, but it has no
-completion that anything can wait for, so it reports itself as a tail site and contexts
-pass over it to the evaluation around it.
+A hidden site still notes itself in its frame for exceptions and Pause, and it stays in
+contexts: a function called from generated code returns to that code, so a step out of
+the function stops at the next stop after it, not at the end of whatever encloses it.
+Only Step Out with no caller looks past hidden sites, to an evaluation it can finish at.
 Binding containers introduced for internal definitions have neither an operator
 source nor an expansion origin. Their inherited enclosing-body range is not a
 separate stop; their initialisers and body are still traversed and instrumented.

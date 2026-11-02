@@ -454,7 +454,7 @@
          (define descriptors
            (for/list ([entry (in-list (cadddr event))])
              (define-values (line column position span tail? parent visible?) (vector->values entry))
-             (cons (site (fresh-id) resolved line column position span tail? #f parent) visible?)))
+             (cons (site (fresh-id) resolved line column position span tail? #f parent visible?) visible?)))
          (register-form-sites! unit (caddr event) (form-callback resolved (cadr event))
                                (map car descriptors)
                                #:gate gate #:on-thread on-thread #:armed? coverage?)

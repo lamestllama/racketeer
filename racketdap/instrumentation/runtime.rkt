@@ -9,7 +9,8 @@
          stop-locals stop-evaluate stop-results
          stop-binding-value stop-set-binding!
          stop-skip! stop-replace-results! stop-approximate?
-         stop-token stop-contexts stop-within? stop-return-token call-with-exception-stop call-with-pause-stop
+         stop-token stop-contexts stop-enclosing-evaluation stop-within? stop-return-token
+         call-with-exception-stop call-with-pause-stop
          call-with-thread-stop debugger-active-key
          make-live-binding make-field-binding program-wrapped? frame-key context-key note-thread
          announce-before announce-after leave-with-values announce-visit register-module-context!
@@ -49,9 +50,10 @@
       operator))
 (define (instrumented-port? value) (hash-ref ports value #f))
 
-;; parent is the slot of the enclosing site in the same activation (0 for none). armed
-;; is where a registered site's flag lives, as (vector . index).
-(struct site (id source line column position span tail? expression parent [armed #:auto #:mutable])
+;; parent is the slot of the enclosing site in the same activation (0 for none). visible?
+;; says whether anything can stop at the site. armed is where a registered site's flag
+;; lives, as (vector . index).
+(struct site (id source line column position span tail? expression parent visible? [armed #:auto #:mutable])
   #:auto-value #f #:transparent)
 (define (arm-site! descriptor on?)
   (define armed (site-armed descriptor))
@@ -322,6 +324,13 @@
               [(eqv? slot (evaluation-slot token)) #t]
               [else (loop (site-parent (vector-ref (form-descriptors (frame-form f)) slot)))])))]
     [else (and (memq token (continuation-mark-set->list (debug-stop-marks s) context-key)) #t)]))
+;; The nearest evaluation around a stop that has a stop of its own to finish at.
+(define (stop-enclosing-evaluation s)
+  (findf (lambda (token)
+           (or (not (evaluation? token))
+               (site-visible? (vector-ref (form-descriptors (frame-form (evaluation-frame token)))
+                                          (evaluation-slot token)))))
+         (stop-contexts s)))
 ;; What the innermost activation returns to: the first evaluation outside it.
 (define (stop-return-token s)
   (check-stop s 'stop-return-token)

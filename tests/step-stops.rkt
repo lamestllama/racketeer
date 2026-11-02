@@ -299,15 +299,36 @@
      (presses (string-append f "(for ([i (list 1 2)]) (f i))\n")
               '(before "(f i)") '(stepOut))
      '((after "(for ([i (list 1 2)]) (f i))"))))
-  (test-case "generated code that nothing stops at is not what a press waits for"
+  (define located
+    (string-append "(require (for-syntax racket/base))\n"
+                   "(define-syntax (located stx)\n"
+                   "  (syntax-case stx () [(_ e) (quasisyntax/loc #'e (f e))]))\n"))
+  (define (out-from-called-by-hidden-code at)
+    (presses (string-append f g located "(list (located (g 1)) (g 2))\n(void)\n") at '(stepOut)))
+  (test-case "Out of a function called from hidden code stops at the next stop, not further out"
+    (check-equal? (out-from-called-by-hidden-code '(before "(* x 2)")) '((before "(g 2)"))))
+  (test-case "Out of a function that hidden code calls in a loop stops within the loop"
     (check-equal?
-     (presses (string-append f "(for ([i (list 1 2)]) (f i))\n")
-              '(before "(f i)") '(stepOut) #:reasons? #t)
-     '("Expression returned"))
+     (presses (string-append
+               f
+               "(require (for-syntax racket/base))\n"
+               "(define-syntax (located stx)\n"
+               "  (syntax-case stx () [(_ e) (quasisyntax/loc #'e (f e))]))\n"
+               "(for ([i (list 1 2)]) (list (located (+ i 1)) (add1 i)))\n")
+              '(before "(* x 2)") '(stepOut))
+     '((before "(add1 i)"))))
+  (test-case "Over at the tail of a function called from hidden code stops at the next stop"
     (check-equal?
-     (presses (string-append f "(for ([i (list 1 2)]) (f i))\n")
-              '(before "(* x 2)") '(stepOut stepOut) #:reasons? #t)
-     '("Expression returned" "Expression returned")))
+     (presses (string-append f g located "(list (located (g 1)) (g 2))\n(void)\n")
+              '(before "(* x 2)") '(next))
+     '((before "(g 2)"))))
+  (test-case "Out of an argument at module level looks past hidden code to what it can finish"
+    (check-equal? (out-from-called-by-hidden-code '(before "(g 1)"))
+                  '((after "(list (located (g 1)) (g 2))" "(4 3)")))
+    (check-equal?
+     (presses (string-append f g located "(list (located (g 1)) (g 2))\n")
+              '(before "(g 1)") '(stepOut) #:reasons? #t)
+     '("Expression returned")))
   (test-case "Out in a thread's own function finishes the evaluation around it"
     (check-equal?
      (presses (string-append f "(thread-wait (thread (lambda () (list (list (f 1) 2) 3))))\n")
