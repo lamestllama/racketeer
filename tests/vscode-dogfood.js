@@ -20,7 +20,8 @@ exports.run = async function () {
     ['experiments/lexical-eval.rkt', 10],
     ['tests/attach.rkt', 28],
     ['tests/breakpoint-rearming.rkt', 2],
-    ['tests/breakpoint-spelling.rkt', 1],
+    // Its second case needs a link, which can take a privilege on Windows.
+    ['tests/breakpoint-spelling.rkt', process.platform === 'win32' ? 1 : 2],
     ['tests/continuation-reentry.rkt', 5],
     ['tests/debug-cache-links.rkt', 3],
     ['tests/definition-allocation.rkt', 14],
