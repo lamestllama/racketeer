@@ -18,37 +18,39 @@ function workspace(t) {
   fs.writeFileSync(path.join(directory, 'definition.rkt'), definition);
   return directory;
 }
-async function initialize(server, capabilities = {}) {
-  server.send({ id: 'init', method: 'initialize', params: { processId: null, rootUri: null, workspaceFolders: null, capabilities } });
+async function initialize(server, capabilities = {}, directory) {
+  server.send({ id: 'init', method: 'initialize', params: { processId: null, rootUri: null,
+    workspaceFolders: directory ? [{ uri: uri(directory), name: 'project' }] : null, capabilities } });
   const { result } = await server.next();
   server.send({ method: 'initialized', params: {} });
   return result;
 }
-function update(server, directory) {
-  server.send({ method: 'racketeer/update', params: { revision: 1, documentsOnly: false, settings: { enabled: true },
-    roots: [uri(directory)], documents: [{ uri: uri(path.join(directory, 'definition.rkt')), identity: 1, version: 1, text: definition }] } });
-}
+const open = (server, directory) => server.send({ method: 'textDocument/didOpen', params: { textDocument: {
+  uri: uri(path.join(directory, 'definition.rkt')), languageId: 'racket', version: 1, text: definition } } });
 const references = (directory, id) => ({ id, method: 'racketeer/references', params: {
-  uri: uri(path.join(directory, 'definition.rkt')), identity: 1, version: 1,
+  uri: uri(path.join(directory, 'definition.rkt')), version: 1,
   position: { line: 2, character: 10 }, includeDeclaration: false } });
 
 test('initialize answers the standard capabilities and the private extensions', { timeout: 120000 }, async t => {
   const server = rawServer(t);
   const { capabilities } = await initialize(server, asking);
   assert.equal(capabilities.positionEncoding, 'utf-16');
+  assert.deepEqual(capabilities.textDocumentSync, { openClose: true, change: 1 });
+  assert.deepEqual(capabilities.executeCommandProvider.commands, ['racketeer.refreshWorkspaceIndex']);
+  assert.deepEqual(capabilities.workspace.workspaceFolders, { supported: true, changeNotifications: true });
   assert.deepEqual(capabilities.experimental.racketeer, { version: 1, indexStatus: true, sourceReferences: true });
 });
 
 test('requests before initialize answer ServerNotInitialized and notifications are dropped', { timeout: 120000 }, async t => {
   const directory = workspace(t), server = rawServer(t);
-  update(server, directory);
+  open(server, directory);
   server.send({ id: 1, method: 'shutdown' });
   assert.equal((await server.next()).error.code, serverNotInitialized);
-  await initialize(server, asking);
+  await initialize(server, {}, directory);
   server.send(references(directory, 2));
   const answer = await server.next();
   assert.equal(answer.id, 2);
-  assert.equal(answer.error.code, -32801, 'The dropped update left no document to answer for');
+  assert.equal(answer.error.code, -32801, 'The dropped open left no document to answer for');
 });
 
 test('a second initialize answers InvalidRequest', { timeout: 120000 }, async t => {
@@ -65,7 +67,7 @@ test('after shutdown requests answer InvalidRequest and exit ends the process wi
   const shutdown = await server.next();
   assert.equal(shutdown.id, 1);
   assert.equal(shutdown.result, null);
-  update(server, directory);
+  open(server, directory);
   server.send(references(directory, 2));
   assert.equal((await server.next()).error.code, invalidRequest);
   server.send({ method: 'exit' });
@@ -95,8 +97,8 @@ test('shutdown answers a request it interrupts with InvalidRequest, not a cancel
   (call-with-output-file ${JSON.stringify(entered)} #:exists 'truncate
     (lambda (out) (display "entered" out)))
   (sync never-evt))\n`);
-  await initialize(server);
-  update(server, directory);
+  await initialize(server, {}, directory);
+  open(server, directory);
   server.send(references(directory, 1));
   const deadline = Date.now() + 60000;
   while (!fs.existsSync(entered)) {
@@ -112,13 +114,94 @@ test('shutdown answers a request it interrupts with InvalidRequest, not a cancel
 test('index status is sent only to a client that asked for it', { timeout: 120000 }, async t => {
   const directory = workspace(t);
   const plain = rawServer(t);
-  await initialize(plain);
-  update(plain, directory); plain.send(references(directory, 1));
+  await initialize(plain, {}, directory);
+  open(plain, directory); plain.send(references(directory, 1));
   assert.equal((await plain.next()).id, 1, 'The first message is the answer');
   const asked = rawServer(t);
-  await initialize(asked, asking);
-  update(asked, directory);
+  await initialize(asked, asking, directory);
   const status = await asked.next();
   assert.equal(status.method, 'racketeer/indexStatus');
   assert.equal(status.params.state, 'indexing');
+});
+
+const settingsAnd = { workspace: { configuration: true, didChangeWatchedFiles: { dynamicRegistration: true } } };
+// Answers the server's requests with `answer`, returning what it asked.
+function answering(server, answer) {
+  const asked = [];
+  void (async () => {
+    for (;;) {
+      const message = await server.next();
+      if (message.method && message.id !== undefined) {
+        asked.push(message);
+        await answer(message);
+      } else server.others.push(message);
+    }
+  })();
+  return asked;
+}
+
+test('settings are pulled after initialized and again when they change, and each folder is watched', { timeout: 120000 }, async t => {
+  const directory = workspace(t), other = workspace(t), server = rawServer(t);
+  server.others = [];
+  await initialize(server, settingsAnd, directory);
+  const asked = answering(server, message => server.send({ id: message.id,
+    result: message.method === 'workspace/configuration' ? [{ enabled: false }] : null }));
+  const until = async condition => { while (!condition()) await new Promise(resolve => setTimeout(resolve, 10)); };
+  await until(() => asked.length === 2);
+  assert.deepEqual(asked.map(message => message.method), ['client/registerCapability', 'workspace/configuration']);
+  assert.deepEqual(asked[0].params.registrations.map(item => item.registerOptions.watchers[0].globPattern),
+    [{ baseUri: uri(directory), pattern: '**/*' }]);
+  assert.equal(asked[1].params.items[0].section, 'racket-langserver.workspaceAnalysis');
+  server.send({ method: 'workspace/didChangeConfiguration', params: { settings: null } });
+  await until(() => asked.length === 3);
+  assert.equal(asked[2].method, 'workspace/configuration');
+  server.send({ method: 'workspace/didChangeWorkspaceFolders', params: { event: {
+    added: [{ uri: uri(other), name: 'other' }], removed: [{ uri: uri(directory), name: 'project' }] } } });
+  await until(() => asked.length === 5);
+  assert.deepEqual(asked[3].params.unregisterations.map(item => item.id), [uri(directory)]);
+  assert.deepEqual(asked[4].params.registrations.map(item => item.id), [uri(other)]);
+});
+
+test('a request waits for settings already asked for', { timeout: 120000 }, async t => {
+  const directory = workspace(t), server = rawServer(t);
+  server.others = [];
+  await initialize(server, settingsAnd, directory);
+  open(server, directory);
+  let pulls = 0;
+  const asked = answering(server, async message => {
+    if (message.method !== 'workspace/configuration') return server.send({ id: message.id, result: null });
+    // The second answer disables analysis, which a later request must see.
+    if (++pulls === 2) await new Promise(resolve => setTimeout(resolve, 300));
+    server.send({ id: message.id, result: [{ enabled: pulls === 1 }] });
+  });
+  server.send(references(directory, 'first'));
+  const answer = async id => {
+    for (;;) {
+      const found = server.others.find(message => message.id === id);
+      if (found) return found;
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+  };
+  assert.ok((await answer('first')).result, 'The first pass answers');
+  server.send({ method: 'workspace/didChangeConfiguration', params: { settings: null } });
+  server.send({ id: 'rename', method: 'racketeer/prepareRename', params: {
+    uri: uri(path.join(directory, 'definition.rkt')), version: 1, position: { line: 2, character: 10 } } });
+  assert.match((await answer('rename')).error.message, /Enable workspace analysis/);
+  assert.equal(asked.filter(message => message.method === 'workspace/configuration').length, 2);
+});
+
+test('the refresh command starts a pass and an unknown command is refused', { timeout: 120000 }, async t => {
+  const directory = workspace(t), server = rawServer(t);
+  await initialize(server, asking, directory);
+  server.send({ id: 'unknown', method: 'workspace/executeCommand', params: { command: 'no.such.command' } });
+  server.send({ id: 'refresh', method: 'workspace/executeCommand', params: { command: 'racketeer.refreshWorkspaceIndex' } });
+  const seen = new Map();
+  let indexing = 0;
+  while (!seen.has('refresh') || indexing < 2) {
+    const message = await server.next();
+    if (message.id) seen.set(message.id, message);
+    if (message.params?.state === 'indexing' && message.params.indexed === 0) indexing++;
+  }
+  assert.equal(seen.get('unknown').error.code, -32602);
+  assert.equal(seen.get('refresh').result, null);
 });

@@ -21,7 +21,7 @@ test.after(() => fs.rmSync(addon, { recursive: true, force: true }));
 async function project(t, env = {}) {
   const directory = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'racketeer-index-')));
   const documents = new Map(), notifications = [];
-  let revision = 0, identity = 0, diagnostics = '';
+  let identity = 0, diagnostics = '';
   const child = spawn('racket', [path.join(root, 'vscode/workspace-index-server.rkt')], {
     cwd: directory, stdio: 'pipe', env: { ...process.env, PLTADDONDIR: addon, ...env }
   });
@@ -46,28 +46,59 @@ async function project(t, env = {}) {
   };
   const settings = { enabled: true, timeoutSeconds: 20 };
   const roots = [uri(directory)];
-  const snapshot = () => ({ revision: ++revision, roots, documents: [...documents.values()], settings });
-  const update = (documentsOnly = false) => connection.sendNotification('racketeer/update', { ...snapshot(), documentsOnly });
-  const references = (key, position = { line: 2, character: 10 }, includeDeclaration = false, token = rpc.CancellationToken.None) => {
-    const document = documents.get(key);
-    return connection.sendRequest('racketeer/references', { uri: key, identity: document.identity,
-      version: document.version, position, includeDeclaration }, token);
+  connection.onRequest('workspace/configuration', ({ items }) => items.map(() => settings));
+  connection.onRequest('client/registerCapability', () => null);
+  const notify = (method, params) => connection.sendNotification(method, params);
+  const didOpen = document => notify('textDocument/didOpen', { textDocument: { uri: document.uri,
+    languageId: 'racket', version: document.version, text: document.text } });
+  const didClose = key => notify('textDocument/didClose', { textDocument: { uri: key } });
+  // What a test changed reaches the server as an editor would send it. Without
+  // `documentsOnly`, the test has also changed something on disk.
+  const held = new Map();
+  let configuration = JSON.stringify(settings);
+  const update = async (documentsOnly = false) => {
+    const sent = [];
+    for (const [key, document] of held) {
+      if (documents.get(key)?.identity !== document.identity) { sent.push(didClose(key)); held.delete(key); }
+    }
+    for (const [key, document] of documents) {
+      const previous = held.get(key);
+      if (!previous) sent.push(didOpen(document));
+      else if (previous.version !== document.version || previous.text !== document.text) {
+        sent.push(notify('textDocument/didChange', { textDocument: { uri: key, version: document.version },
+          contentChanges: [{ text: document.text }] }));
+      }
+      held.set(key, { ...document });
+    }
+    if (JSON.stringify(settings) !== configuration) {
+      configuration = JSON.stringify(settings);
+      sent.push(notify('workspace/didChangeConfiguration', { settings: null }));
+    }
+    if (!documentsOnly) {
+      sent.push(notify('workspace/didChangeWatchedFiles', { changes: [{ uri: uri(filename('changed-on-disk')), type: 2 }] }));
+    } else if (!sent.length) {
+      // An unchanged document reopening is what asks for the disk to be verified.
+      const [document] = documents.values();
+      sent.push(didClose(document.uri), didOpen(document));
+    }
+    await Promise.all(sent);
   };
-  const rename = (key, newName, position = { line: 2, character: 10 }, token = rpc.CancellationToken.None) => {
-    const document = documents.get(key);
-    return connection.sendRequest(newName === undefined ? 'racketeer/prepareRename' : 'racketeer/rename', {
-      uri: key, identity: document.identity, version: document.version, position,
-      ...(newName === undefined ? {} : { newName })
+  const references = (key, position = { line: 2, character: 10 }, includeDeclaration = false, token = rpc.CancellationToken.None) =>
+    connection.sendRequest('racketeer/references', { uri: key, version: documents.get(key).version, position, includeDeclaration }, token);
+  const rename = (key, newName, position = { line: 2, character: 10 }, token = rpc.CancellationToken.None) =>
+    connection.sendRequest(newName === undefined ? 'racketeer/prepareRename' : 'racketeer/rename', {
+      uri: key, version: documents.get(key).version, position, ...(newName === undefined ? {} : { newName })
     }, token).then(response => response.result);
-  };
   write('definition.rkt', definition); write('uses.rkt', uses);
   const origin = open('definition.rkt', definition);
   await connection.sendRequest('initialize', { processId: null, rootUri: null, workspaceFolders: roots.map(root => ({ uri: root, name: root })),
-    capabilities: { experimental: { racketeer: { indexStatus: true, sourceReferences: true } } } });
-  await connection.sendNotification('initialized', {});
+    capabilities: { workspace: { configuration: true, didChangeWatchedFiles: { dynamicRegistration: true } },
+      experimental: { racketeer: { indexStatus: true, sourceReferences: true } } } });
+  await notify('initialized', {});
   await update();
   return { child, directory, documents, notifications, filename, write, open, origin, update, references, rename, settings, roots,
     request: (method, params) => connection.sendRequest(method, params),
+    diskChange: name => notify('workspace/didChangeWatchedFiles', { changes: [{ uri: uri(filename(name)), type: 2 }] }),
     diagnostics: () => diagnostics };
 }
 

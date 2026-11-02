@@ -27,12 +27,12 @@ function client(t, processFactory, timeout = 60000) {
     getConfiguration: () => ({ get: () => ({ enabled: true, timeoutSeconds: 20 }) }),
     onDidOpenTextDocument: opened.listen, onDidCloseTextDocument: closed.listen,
     onDidChangeTextDocument: changed.listen, onDidChangeWorkspaceFolders: event().listen,
-    onDidRenameFiles: event().listen, onDidChangeConfiguration: event().listen,
-    createFileSystemWatcher: () => ({ dispose() {}, onDidCreate: disk.listen,
-      onDidChange: disk.listen, onDidDelete: disk.listen })
+    onDidChangeConfiguration: event().listen,
+    createFileSystemWatcher: () => ({ dispose() {}, onDidCreate: event().listen,
+      onDidChange: disk.listen, onDidDelete: event().listen })
   };
   const dependencies = {
-    vscode: { workspace, Uri: { parse }, Location: class { constructor(uri, range) { this.uri = uri; this.range = range; } },
+    vscode: { workspace, Uri: { parse }, RelativePattern: class { constructor(base, pattern) { this.baseUri = base; this.pattern = pattern; } }, Location: class { constructor(uri, range) { this.uri = uri; this.range = range; } },
       Range: class { constructor(a, b, c, d) { this.start = { line: a, character: b }; this.end = { line: c, character: d }; } },
       TextEdit: class { constructor(range, newText) { this.range = range; this.newText = newText; } },
       WorkspaceEdit: class extends Map { set(uri, edits) { return super.set(uri.toString(), edits); } } },
@@ -61,9 +61,35 @@ function indexPeer(t, initialize = () => ({}), starting = Promise.resolve(), tim
   const { PassThrough } = require('node:stream');
   const child = { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough() };
   const connection = rpc.createMessageConnection(new rpc.StreamMessageReader(child.stdin), new rpc.StreamMessageWriter(child.stdout));
-  const snapshots = [];
+  // The assertions read the wire as snapshots: one for each message that changes
+  // the source view, with the documents as a server's registry then holds them.
+  const snapshots = [], documents = new Map();
+  let lifetimes = 0, opened = false;
+  const snapshot = (documentsOnly = false) => {
+    snapshots.push({ revision: snapshots.length + 1, documentsOnly: documentsOnly && opened,
+      documents: [...documents.values()].map(document => ({ ...document })) });
+    // The opens that follow initialized belong to the first pass.
+    opened = true;
+  };
   connection.onRequest('initialize', () => initialize());
-  connection.onNotification('racketeer/update', params => snapshots.push(params));
+  connection.onNotification('initialized', () => {
+    void connection.sendRequest('client/registerCapability', { registrations: [{ id: 'folder', method: 'workspace/didChangeWatchedFiles',
+      registerOptions: { watchers: [{ globPattern: { baseUri: uri(c.directory), pattern: '**/*' } }] } }] });
+  });
+  connection.onNotification('textDocument/didOpen', ({ textDocument: { uri: key, version, text } }) => {
+    documents.set(key, { uri: key, identity: ++lifetimes, version, text });
+    snapshot(true);
+  });
+  connection.onNotification('textDocument/didChange', ({ textDocument: { uri: key, version }, contentChanges }) => {
+    Object.assign(documents.get(key), { version, text: contentChanges.at(-1).text });
+    snapshot();
+  });
+  connection.onNotification('textDocument/didClose', ({ textDocument: { uri: key } }) => {
+    documents.delete(key);
+    snapshot(true);
+  });
+  connection.onNotification('workspace/didChangeWatchedFiles', () => snapshot());
+  connection.onRequest('workspace/executeCommand', () => { snapshot(); return null; });
   connection.onRequest('racketeer/references', () => []);
   connection.listen();
   const c = client(t, () => ({
@@ -350,6 +376,7 @@ test('a file event starts a pass only for a source file or a name with no suffix
   await updated(2);
   event('removed-folder');
   await updated(3);
+});
 
 test('a client leaves captured references to the language server unless the server offers them', async t => {
   const c = indexPeer(t), file = c.open('definition.rkt', definition);

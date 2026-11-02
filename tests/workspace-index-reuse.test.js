@@ -154,3 +154,14 @@ test('unchanged documents opening and closing during a pass neither restart it n
   assert.equal((await request).filter(location => location.uri === consumer).length, 1);
   assert.equal(fs.readFileSync(marker, 'utf8').trim().split('\n').length, 1, 'Unchanged documents must not restart the pass');
 });
+
+test('a reported change in an excluded directory starts no pass, and one elsewhere does', { timeout: 120000 }, async t => {
+  const p = await trackedProject(t), before = p.expansions();
+  await p.diskChange('compiled/definition_rkt.zo');
+  await p.diskChange('node_modules/package/file.txt');
+  assert.equal(await p.count(), 1);
+  assert.equal(p.expansions(), before, 'Excluded directories are not watched for analysis');
+  await p.diskChange('uses.rkt');
+  assert.equal(await p.count(), 1);
+  assert.ok(p.expansions() > before);
+});

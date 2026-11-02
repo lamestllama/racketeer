@@ -256,8 +256,8 @@ Workspace analysis runs in a separate service with three ownership boundaries:
 
 | Layer | Responsibility |
 | --- | --- |
-| `vscode/workspace-index.js` | Observe VS Code document lifetimes, settings and file events; submit source views; convert results to editor locations and edit previews. |
-| `vscode/workspace-index.rkt` | Frame private requests, map request IDs and cancellation messages, translate domain outcomes, and close the engine when the connection ends. |
+| `vscode/workspace-index.js` | Report VS Code document lifetimes, settings and file events over standard LSP synchronisation; convert results to editor locations and edit previews. |
+| `vscode/workspace-index.rkt` | Frame requests, keep the document registry and build each source view, map request IDs and cancellation messages, translate domain outcomes, and close the engine at shutdown or when the connection ends. |
 | `vscode/workspace-analysis.rkt` and `vscode/workspace-rename.rkt` | Discover files, analyse immutable source views, combine binding references, validate rename, and own bounded worker places. |
 
 The engine has no editor connection, request IDs or wire-protocol errors.
