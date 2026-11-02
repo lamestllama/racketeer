@@ -65,6 +65,8 @@ function activate(context) {
       config.sourceRoots ||= folder ? [folder.uri.fsPath] : config.request === 'launch' ? [path.dirname(config.program)] : [];
       config.debugPackages ??= vscode.workspace.getConfiguration('racketdap', folder?.uri).get('debug.packages', []);
       config.logFilter ??= vscode.workspace.getConfiguration('racketdap', folder?.uri).get('logs.filter', 'error');
+      config.debugCache ??= vscode.workspace.getConfiguration('racketdap', folder?.uri).get('debug.compiledCache', true);
+      if (context.globalStorageUri) config.debugCacheDirectory ??= path.join(context.globalStorageUri.fsPath, 'debug-cache');
       const invalidFilter = filterError(config.logFilter);
       if (invalidFilter) { void vscode.window.showErrorMessage(invalidFilter); return undefined; }
       config.args ||= [];

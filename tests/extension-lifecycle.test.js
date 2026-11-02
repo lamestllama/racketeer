@@ -501,7 +501,7 @@ for (const mode of ['cancel', 'reject', 'timeout']) test({
   assert.ok(children.every(child => child.exitCode !== null || child.signalCode !== null));
 });
 
-function configurationProvider(version = 'Welcome to Racket v9.1 [cs].') {
+function configurationProvider(version = 'Welcome to Racket v9.1 [cs].', context = {}) {
   let provider;
   const errors = [];
   const vscode = { workspace: { isTrusted: true, getConfiguration: () => ({ get: (_key, fallback) => fallback }) },
@@ -521,7 +521,7 @@ function configurationProvider(version = 'Welcome to Racket v9.1 [cs].') {
     'wxme-viewer': ['registerWxmeViewer'], 'wxme-editor': ['registerWxmeEditor'], dependencies: ['registerDependencies']
   })) dependencies[`./${name}`] = Object.fromEntries(methods.map(method => [method, () => ({})]));
   dependencies['./application-logs'].filterError = () => undefined;
-  load('extension.js', dependencies).activate({ subscriptions: [] });
+  load('extension.js', dependencies).activate({ subscriptions: [], ...context });
   return { provider, errors, vscode };
 }
 
@@ -548,6 +548,20 @@ test('launch still requires an existing program and resolves its directory', asy
   assert.equal(result.cwd, path.dirname(program));
   assert.deepEqual(Array.from(result.sourceRoots), [path.dirname(program)]);
   assert.equal(errors.length, 1);
+});
+
+test('launch keeps compiled code in the extension storage, as the setting and attribute say', async () => {
+  const storage = path.join(path.sep, 'storage');
+  const { provider, vscode } = configurationProvider(undefined, { globalStorageUri: { fsPath: storage } });
+  const program = path.resolve(__dirname, '../examples/demo.rkt');
+  const resolve = extra => provider.resolveDebugConfigurationWithSubstitutedVariables(undefined, { request: 'launch', program, ...extra });
+  const defaults = await resolve({});
+  assert.equal(defaults.debugCache, true);
+  assert.equal(defaults.debugCacheDirectory, path.join(storage, 'debug-cache'));
+  assert.equal((await resolve({ debugCache: false })).debugCache, false);
+  vscode.workspace.getConfiguration = () => ({ get: (key, fallback) => key === 'debug.compiledCache' ? false : fallback });
+  assert.equal((await resolve({})).debugCache, false);
+  assert.equal((await resolve({ debugCache: true })).debugCache, true);
 });
 
 test('attach keeps the Racket version and workspace trust checks', async () => {

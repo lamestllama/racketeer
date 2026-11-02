@@ -472,6 +472,12 @@
           "default": [],
           "description": "Installed package names whose sources should be instrumented for debugging, including linked packages outside the workspace. Applies to Debug, Debug Tests, and Debug REPL; restart sessions after changing it."
         },
+        "racketdap.debug.compiledCache": {
+          "scope": "resource",
+          "type": "boolean",
+          "default": true,
+          "description": "Keep instrumented compiled code between debug sessions, in the extension's storage, so a program that has not changed starts without being expanded and compiled again. A hash of each source and of everything it depends on decides what is reused. Like raco make, a macro's output is reused until a file it depends on changes: a macro that reads a file should register it with register-external-file. Applies to new debug sessions."
+        },
         "racketdap.logs.filter": {
           "scope": "resource",
           "type": "string",
@@ -594,6 +600,10 @@
               "logFilter": {
                 "type": "string",
                 "description": "Initial application log capture filter, overriding racketdap.logs.filter. For example: warning debug@network."
+              },
+              "debugCache": {
+                "type": "boolean",
+                "description": "Keep instrumented compiled code between sessions. Defaults to racketdap.debug.compiledCache."
               }
             }
           },
