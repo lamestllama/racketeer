@@ -102,7 +102,28 @@
   (define (fresh-id)
     (if supplied-fresh-id (supplied-fresh-id)
         (begin0 next-id (set! next-id (add1 next-id)))))
+  (define next-unit 0)
+  ;; The callback a form's sites deliver to. It decides the automatic entry stop
+  ;; from the form's module, so it is made for one file and module path.
+  (define (form-callback selected-source module-path)
+    (and on-event
+         (if on-entry
+             (lambda (stop)
+               (cond
+                 [(and (not entry-announced?)
+                       (eq? (stop-kind stop) 'before)
+                       (equal? selected-source source)
+                       (equal? module-path entry-submodule))
+                  (set! entry-announced? #t)
+                  (on-entry stop)]
+                 [else (on-event stop)]))
+             on-event)))
   (define (instrument-eval selected-source #:top-level? [top-level? language])
+    ;; A unit names this load's forms in the runtime's table.
+    (define unit
+      (begin0 (string->symbol (format "~a#~a" selected-source next-unit))
+        (set! next-unit (add1 next-unit))))
+    (define next-form 0)
     (lambda (form)
       (parameterize ([current-eval ordinary-eval])
         (define wrapper-name (gensym 'racketdap-form))
@@ -128,23 +149,15 @@
                  (define-instrumented-module-begin debug-module-begin original:#%module-begin ,rewrite ,(path->string instrumentation-runtime-path))))))
           (datum->syntax context `(quote ,name)))
         (define (annotate expanded [bindings #f] #:expression-boundary? [expression-boundary? #f])
-          (define events
-            (and on-event
-                 (if on-entry
-                     (lambda (stop)
-                       (cond
-                         [(and (not entry-announced?)
-                               (eq? (stop-kind stop) 'before)
-                               (equal? selected-source source)
-                               (equal? (hash-ref module-paths bindings '()) entry-submodule))
-                          (set! entry-announced? #t)
-                          (on-entry stop)]
-                         [else (on-event stop)]))
-                     on-event)))
-          (define-values (annotated sites)
-            (instrument-module expanded selected-source fresh-id events #:module-context bindings
+          (define index (begin0 next-form (set! next-form (add1 next-form))))
+          (define-values (annotated sites table)
+            (instrument-module expanded selected-source fresh-id
+                               #:form (cons unit index) #:module-context bindings
                                #:coverage? coverage?
                                #:expression-boundary? expression-boundary?))
+          (register-form-sites! unit index
+                                (form-callback selected-source (hash-ref module-paths bindings '()))
+                                (map car table))
           (on-sites sites)
           annotated)
         (define (make-transform bindings)
@@ -182,7 +195,8 @@
             (define context
               (if parent-bindings
                   (module-binding-context-child! parent-bindings (syntax-e name) inherit?)
-                  (make-module-binding-context)))
+                  (make-module-binding-context
+                   #f (string->symbol (format "~a:~a" unit (syntax-e name))))))
             (hash-set! module-paths context
                        (if parent-bindings
                            (append (hash-ref module-paths parent-bindings) (list (syntax-e name)))

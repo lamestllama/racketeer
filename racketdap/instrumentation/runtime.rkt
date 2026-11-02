@@ -10,7 +10,39 @@
          stop-token stop-contexts stop-return-token call-with-exception-stop call-with-pause-stop
          call-with-thread-stop debugger-active-key
          make-activation make-live-binding make-frame frame-key context-key
-         announce-before announce-after announce-visit current-expression-token register-module-context!)
+         announce-before announce-after announce-visit current-expression-token register-module-context!
+         form-sites register-form-sites!
+         remember-procedure instrumented-procedure-name
+         port-constructor? remember-ports instrumented-port?)
+
+;; Only the lambda/case-lambda rewrite can register a value. Keeping this
+;; operation private lets inspection trust these names without querying an
+;; arbitrary callable structure's prop:object-name. Weak keys do not retain
+;; closures (or their captured debuggee state) after the program drops them.
+(define procedure-names (make-weak-hasheq))
+(define (remember-procedure procedure)
+  (hash-set! procedure-names procedure (object-name procedure))
+  procedure)
+(define (instrumented-procedure-name value)
+  (hash-ref procedure-names value #f))
+
+;; Port predicates also recognize user structures; object-name and port-closed?
+;; cannot be queried safely until a real port constructor proves provenance.
+;; Compare the actual operator by identity, so aliases work and shadowed or
+;; wrapped constructors never enroll arbitrary return values. Keep registration
+;; private and weak, as with procedure names.
+(define port-constructors
+  (for/hasheq ([constructor (in-list (list open-input-string open-input-bytes
+                                         open-output-string open-output-bytes
+                                         open-input-file open-output-file open-input-output-file
+                                         make-pipe make-input-port make-output-port))])
+    (values constructor #t)))
+(define ports (make-weak-hasheq))
+(define (port-constructor? value) (hash-ref port-constructors value #f))
+(define (remember-ports . results)
+  (for ([value (in-list results)]) (hash-set! ports value #t))
+  (apply values results))
+(define (instrumented-port? value) (hash-ref ports value #f))
 
 (struct site (id source line column position span tail? expression) #:transparent)
 (define (site-phases descriptor)
@@ -38,14 +70,39 @@
 ;; A helper instance imported at transformer phase must not invoke callbacks.
 (define runtime-phase-zero?
   (zero? (variable-reference->module-base-phase (#%variable-reference))))
-;; Expansion contexts are opaque keys. Each namespace registry gets the live
-;; namespace of the owning module instance, registered before its source forms.
-;; Namespaces retain their registry and instrumented module context constants.
+;; Generated code holds no debugger state: it names its form by a unit symbol and
+;; an index, and reads its descriptors and the callback from this table when the
+;; form is instantiated. Slot 0 is the callback; the descriptors follow. An
+;; instance with no registration delivers nothing, which is what an instance
+;; above phase zero needs. A key's symbol lives as long as code that quotes it.
+(define form-tables (make-ephemeron-hasheq))
+(define (register-form-sites! unit index callback descriptors)
+  (hash-set! (hash-ref! form-tables unit make-hasheqv) index
+             (list->vector (cons callback descriptors))))
+(define (form-sites unit index size)
+  (define forms (and runtime-phase-zero? (hash-ref form-tables unit #f)))
+  (or (and forms (hash-ref forms index #f))
+      (make-vector (add1 size) #f)))
+;; Module contexts are keyed by symbols. Each namespace registry gets the live
+;; namespace of the owning module instance, registered before its source forms,
+;; and each context records the identifiers it owns and the context it inherits.
+;; Namespaces retain their registry and the symbols their code quotes.
 ;; Both associations need ephemerons so those backreferences do not root a
 ;; completed target, while a live target keeps all of its registrations usable.
 (define module-context-instances (make-ephemeron-hasheq))
-(define (register-module-context! context reference [ancestors '()])
+(define module-context-owned (make-ephemeron-hasheq))
+(define (owned-module-bindings context)
+  (define owned (hash-ref module-context-owned context #f))
+  (if owned
+      (append (for/list ([id (in-list ((car owned)))]) (cons context id))
+              (if (cdr owned) (owned-module-bindings (cdr owned)) '()))
+      '()))
+;; ancestors lists the inherited contexts as (key . identifiers), nearest first.
+(define (register-module-context! context reference identifiers [ancestors '()])
   (when (zero? (variable-reference->module-base-phase reference))
+    (let loop ([key context] [thunk identifiers] [rest ancestors])
+      (hash-set! module-context-owned key (cons thunk (and (pair? rest) (caar rest))))
+      (when (pair? rest) (loop (caar rest) (cdar rest) (cdr rest))))
     (define namespace (variable-reference->namespace reference))
     (define registry (namespace-module-registry namespace))
     (define (register owner instance-namespace)
@@ -56,7 +113,7 @@
     ;; A parent consisting solely of transformer definitions has no runtime
     ;; initializer. An inherited child nevertheless has its instantiated parent
     ;; in the same registry; use actual module ancestry to locate that instance.
-    (let loop ([owners ancestors]
+    (let loop ([owners (map car ancestors)]
                [name (resolved-module-path-name
                       (variable-reference->resolved-module-path reference))])
       (when (pair? owners)
@@ -154,8 +211,8 @@
     (cons (live-binding-name b) (read-binding b))))
 
 (define (frame-module-entries f)
-  (append (if (frame-context-bindings f) ((frame-context-bindings f)) '())
-          (map (lambda (id) (cons #f id)) (frame-module-bindings f))))
+  (append (if (frame-context-bindings f) (owned-module-bindings (frame-context-bindings f)) '())
+          (map (lambda (id) (cons #f id)) ((frame-module-bindings f)))))
 (define (binding-name name who)
   (cond [(symbol? name) name]
         [(string? name) (string->symbol name)]

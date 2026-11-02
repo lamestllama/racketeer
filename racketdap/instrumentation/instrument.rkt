@@ -2,39 +2,10 @@
 ;; Copyright (c) 2026 Eric Parsonage
 ;; SPDX-License-Identifier: Apache-2.0 OR MIT
 (require racket/list racket/path syntax/id-table "runtime.rkt")
-(provide instrument-module instrumented-procedure-name instrumented-port?
+(provide instrument-module
          make-module-binding-context record-module-bindings!
          module-binding-context-identifiers module-binding-context-child!
          (all-from-out "runtime.rkt"))
-
-;; Only the lambda/case-lambda rewrite below can register a value. Keeping this
-;; operation private lets inspection trust these names without querying an
-;; arbitrary callable structure's prop:object-name. Weak keys do not retain
-;; closures (or their captured debuggee state) after the program drops them.
-(define procedure-names (make-weak-hasheq))
-(define (remember-procedure procedure)
-  (hash-set! procedure-names procedure (object-name procedure))
-  procedure)
-(define (instrumented-procedure-name value)
-  (hash-ref procedure-names value #f))
-
-;; Port predicates also recognize user structures; object-name and port-closed?
-;; cannot be queried safely until a real port constructor proves provenance.
-;; Compare the actual operator by identity, so aliases work and shadowed or
-;; wrapped constructors never enroll arbitrary return values. Keep registration
-;; private and weak, as with procedure names.
-(define port-constructors
-  (for/hasheq ([constructor (in-list (list open-input-string open-input-bytes
-                                         open-output-string open-output-bytes
-                                         open-input-file open-output-file open-input-output-file
-                                         make-pipe make-input-port make-output-port))])
-    (values constructor #t)))
-(define ports (make-weak-hasheq))
-(define (port-constructor? value) (hash-ref port-constructors value #f))
-(define (remember-ports . results)
-  (for ([value (in-list results)]) (hash-set! ports value #t))
-  (apply values results))
-(define (instrumented-port? value) (hash-ref ports value #f))
 
 (define quoted-forms (syntax->list #'(quote quote-syntax)))
 (define atomic-forms
@@ -60,29 +31,31 @@
   (and (identifier? identifier)
        (original-syntax? identifier)
        (equal? (source-name (syntax-source identifier)) (source-name source))))
- ;; Metadata is shared across one module expansion, including module+ fragments.
-;; Parent links remain live so a later parent declaration becomes visible.
-(struct module-binding-context ([own-identifiers #:mutable] parent children)
+;; Metadata is shared across one module expansion, including module+ fragments.
+;; A module's declarations are all recorded in its first expansion pass, and its
+;; runtime expressions wait for the second, so the identifiers are complete when
+;; the module's first form is instrumented. Children expand after their parents.
+;; That first form hands them to the runtime as syntax literals under the key.
+(struct module-binding-context (key [own-identifiers #:mutable] parent children [registered? #:mutable])
   #:constructor-name new-module-binding-context)
-(define (make-module-binding-context [parent #f])
-  (new-module-binding-context '() parent (make-hasheq)))
+(define (make-module-binding-context [parent #f] [key (fresh-context-key)])
+  (new-module-binding-context key '() parent (make-hasheq) #f))
+(define (fresh-context-key)
+  (string->symbol (symbol->string (gensym 'module-context))))
 (define (module-binding-context-child! parent name [inherit? #t])
   (hash-ref! (module-binding-context-children parent) name
-             (lambda () (make-module-binding-context (and inherit? parent)))))
-(define (module-binding-context-owned context)
-  (append
-   (for/list ([id (in-list (module-binding-context-own-identifiers context))])
-     (cons context id))
-   (if (module-binding-context-parent context)
-       (module-binding-context-owned (module-binding-context-parent context))
-       '())))
+             (lambda ()
+               (make-module-binding-context
+                (and inherit? parent)
+                (string->symbol (format "~a/~a" (module-binding-context-key parent) name))))))
 (define (module-binding-context-ancestors context)
   (if (module-binding-context-parent context)
       (cons (module-binding-context-parent context)
             (module-binding-context-ancestors (module-binding-context-parent context)))
       '()))
 (define (module-binding-context-identifiers context)
-  (map cdr (module-binding-context-owned context)))
+  (append-map module-binding-context-own-identifiers
+              (cons context (module-binding-context-ancestors context))))
 (define (record-module-bindings! context declaration source)
   (syntax-case* declaration (define-values define-syntaxes begin)
                 free-identifier=?
@@ -111,13 +84,21 @@
 
 (struct boundary (range authored? [visible? #:mutable]))
 
-(define (instrument-module expanded source fresh-id on-event
+;; Returns the rewritten expression, the visible site descriptors, and every
+;; descriptor in slot order paired with whether it is visible. form names the
+;; form's entry in the runtime's table as (unit . index).
+(define (instrument-module expanded source fresh-id
+                           #:form [form (cons (fresh-context-key) 0)]
                            #:module-bindings [known-module-bindings '()]
                            #:module-context [module-context #f]
                            #:expression-boundary? [expression-boundary? #f]
                            #:coverage? [coverage? #f]
                            #:tail? [initial-tail? #f])
   (define descriptors '())
+  (define table '())
+  (define table-size 0)
+  (define sites-id (car (generate-temporaries '(sites))))
+  (define callback-expression #`(vector-ref #,sites-id 0))
   ;; Retain source-facing aliases for module bindings that expansion may rename.
   ;; Lexical evaluation alone cannot reconstruct these names from namespace maps.
   (define module-bindings known-module-bindings)
@@ -151,7 +132,6 @@
   (define activation-id (car (generate-temporaries '(activation))))
   ;; Every frame of this form shares one list of module binding identifiers.
   (define module-bindings-id (car (generate-temporaries '(module-bindings))))
-  (define (literal v) #`(quote #,v))
   ;; An environment is the variable holding its scope's live bindings, in
   ;; lexical order with the innermost first, or #f when none are visible. A
   ;; scope that binds source names conses them onto its parent's list once, so
@@ -217,7 +197,9 @@
                         (syntax-position located) (syntax-span located)
                         tail? (syntax->datum expression))])
            (when visible? (set! descriptors (cons s descriptors)))
-           s)))
+           (set! table (cons (cons s visible?) table))
+           (set! table-size (add1 table-size))
+           #`(vector-ref #,sites-id #,table-size))))
   ;; Source syntax or its expansion origin owns a range ahead of a generated
   ;; wrapper that borrowed it. A child can relinquish the wrapper's boundary
   ;; before its descriptor is emitted; sibling source executions stay distinct.
@@ -255,8 +237,8 @@
        ;; Ordinary calls remain tail calls; only known primitive constructors
        ;; need a receiver to record their one or more unchanged port results.
        #`(let ([#,function #,(car rewritten)])
-           (if (#%plain-app #,(literal port-constructor?) #,function)
-               (call-with-values (lambda () #,call) #,(literal remember-ports))
+           (if (#%plain-app port-constructor? #,function)
+               (call-with-values (lambda () #,call) remember-ports)
                #,call))]))
   (define (walk expression environment act tail? [context-name #f])
     (define located (location-of expression))
@@ -277,7 +259,7 @@
       ;; with a temporary binding or the instrumentation source location.
       (define original (datum->syntax expression (syntax-e rewritten) expression expression))
       (define named (if inferred-name (syntax-property original 'inferred-name inferred-name) original))
-      #`(#%plain-app #,(literal remember-procedure) #,named))
+      #`(#%plain-app remember-procedure #,named))
     (define (rewrite)
       (syntax-case* expression (quote quote-syntax #%datum #%top #%variable-reference
                                     lambda #%plain-lambda case-lambda if begin begin0
@@ -355,13 +337,13 @@
         (rewrite)))
     (define visible? (boundary-visible? current))
     (define descriptor (site-for expression located tail? visible?))
-    (define callback (and visible? on-event))
+    (define callback (and visible? callback-expression))
     (cond
       [(not descriptor) rewritten]
       ;; Coverage runs without debugging, so a visit is the only event.
       [coverage?
        (if callback
-           #`(begin (announce-visit #,(literal descriptor) #,(literal callback)) #,rewritten)
+           #`(begin (announce-visit #,descriptor #,callback) #,rewritten)
            rewritten)]
       [else
         (let* ([token (car (generate-temporaries '(token)))]
@@ -370,14 +352,12 @@
                 #`(make-frame #,act
                               #,(bindings-expression environment)
                               #,module-bindings-id
-                              #,(literal (and module-context
-                                             (lambda () (module-binding-context-owned module-context))))
+                              '#,(and module-context (module-binding-context-key module-context))
                               (lambda ()
                                 (variable-reference->namespace
                                  #,(datum->syntax expression (list #'#%variable-reference) expression)))
-                              #,(literal descriptor))]
-               [before #`(announce-before #,(literal descriptor) #,(if tail? #'#f token)
-                                           #,(literal callback))])
+                              #,descriptor)]
+               [before #`(announce-before #,descriptor #,(if tail? #'#f token) #,callback)])
           (if tail?
               #`(with-continuation-mark frame-key #,frame-expression
                   (let ([#,decision #,before])
@@ -390,19 +370,30 @@
                          (lambda ()
                            (if #,decision (apply values #,decision) #,rewritten))
                          (lambda results
-                           (announce-after #,(literal descriptor) #,token
-                                           #,(literal callback) results)))))))))]))
+                           (announce-after #,descriptor #,token #,callback results)))))))))]))
   (define local-name (and (syntax-transforming?) (syntax-local-name)))
   (define result (walk expanded #f activation-id initial-tail?
                        (if (identifier? local-name) (syntax-e local-name) local-name)))
+  (define (identifiers-thunk identifiers)
+    #`(lambda () (list #,@(for/list ([id (in-list identifiers)]) #`(quote-syntax #,id)))))
+  ;; One registration per module: repeating the identifiers in each of its forms
+  ;; would grow with forms times declarations.
+  (define register-context
+    (if (and module-context (not (module-binding-context-registered? module-context)))
+        (begin
+          (set-module-binding-context-registered?! module-context #t)
+          (list #`(register-module-context!
+                   '#,(module-binding-context-key module-context)
+                   #,(datum->syntax expanded (list #'#%variable-reference) expanded)
+                   #,(identifiers-thunk (module-binding-context-own-identifiers module-context))
+                   (list #,@(for/list ([ancestor (in-list (module-binding-context-ancestors module-context))])
+                              #`(cons '#,(module-binding-context-key ancestor)
+                                      #,(identifiers-thunk (module-binding-context-own-identifiers ancestor))))))))
+        '()))
   (values #`(let ([#,activation-id (make-activation)]
-                  [#,module-bindings-id
-                   (list #,@(for/list ([id (in-list module-bindings)]) #`(quote-syntax #,id)))])
-              #,@(if module-context
-                     (list #`(register-module-context!
-                               (quote #,module-context)
-                               #,(datum->syntax expanded (list #'#%variable-reference) expanded)
-                               (quote #,(module-binding-context-ancestors module-context))))
-                     '())
+                  [#,module-bindings-id #,(identifiers-thunk module-bindings)]
+                  [#,sites-id (form-sites '#,(car form) #,(cdr form) #,table-size)])
+              #,@register-context
               #,result)
-          (reverse descriptors)))
+          (reverse descriptors)
+          (reverse table)))
