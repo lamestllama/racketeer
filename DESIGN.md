@@ -339,10 +339,11 @@ The saved source hash is compared with the file read for this run before the cod
 declared. The manager can also record a hash of a file saved while it compiled older
 bytes; such an entry is dropped when the build ends. A `.zo` that fails its embedded
 hashes is deleted and read from source. Anything raised while building turns the cache
-off for the session and loads from source, dropping output of the failed attempt so a
-syntax error reads as it does without the cache; expansion effects other than output
-happen twice in that case. Module code that a `.zo` cannot hold, such as a
-macro embedding a closure, stays uncached the same way on each run.
+off for the session and loads from source. The failing file then expands twice, with its
+transformer effects, output included, twice as well: this is the one case where
+expansion repeats. A syntax error is reported once, by the second attempt, in the same
+words. Module code that a `.zo` cannot hold, such as a macro embedding a closure, goes
+the same way on each run.
 
 Concurrent sessions rely on the manager's atomic renames. Both may build; a mismatch
 of dependency hashes then causes one more rebuild, never a wrong read. At session start,
