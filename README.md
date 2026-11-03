@@ -8,7 +8,8 @@ By [Eric Parsonage](https://github.com/lamestllama).
 - **See results beside the code:** text, images and picts as a program runs, and plots to zoom and rotate.
 - **Test** from VS Code's Testing view: run, debug or measure coverage, down to a single RackUnit case.
 - **Work interactively** in an Interactions window or a REPL, with pictures inline and errors that link to their source.
-- **Navigate** with hover documentation, completion, go to definition, and references and rename across a whole project.
+- **Navigate** with hover documentation, completion, go to definition and live diagnostics, from the bundled [racket-langserver](https://github.com/jeapostrophe/racket-langserver) that waits for a pause in typing before it analyses.
+- **Find and rename across a whole project:** a workspace index follows references through every file, including ones that are not open. It uses no CPU until asked, analyses files in parallel, and reuses what has not changed.
 - **Expand and build** with the macro stepper, package management, executables and distributions.
 - **Edit Rhombus** and WXME documents with embedded boxes.
 
