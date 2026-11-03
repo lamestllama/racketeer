@@ -45,9 +45,15 @@ async function project(t, env = {}, shared) {
       if (child.exitCode === null && child.signalCode === null) {
         // Shutdown reaps analyses, including a worker in a native call. Killing
         // only the server leaves such a worker unable to read its pipe's EOF.
-        const shutdown = connection.sendRequest('shutdown').catch(error => {
-          if (error.code !== -32600) throw error; // Already shut down by the test.
-        }).then(() => connection.sendNotification('exit')).then(() => closed);
+        // The connection can end before the process does, as when a test killed the server.
+        const ended = error => error.code === 1 || error.code === 2;
+        const shutdown = (async () => {
+          try { await connection.sendRequest('shutdown'); } catch (error) {
+            if (error.code !== -32600 && !ended(error)) throw error; // -32600: already shut down by the test.
+          }
+          try { await connection.sendNotification('exit'); } catch (error) { if (!ended(error)) throw error; }
+          await closed;
+        })();
         await Promise.race([shutdown, new Promise((_, reject) => {
           deadline = setTimeout(() => reject(new Error('Index server did not shut down during cleanup')), 10000);
         })]);
