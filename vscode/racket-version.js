@@ -16,7 +16,11 @@ function racketPath(executable, env = process.env) {
   for (const directory of (key ? env[key] : '').split(path.delimiter)) {
     for (const suffix of suffixes) {
       const candidate = path.join(directory || '.', executable + suffix);
-      try { if (fs.statSync(candidate).isFile()) return path.resolve(candidate); } catch { /* Not in this directory. */ }
+      try {
+        if (!fs.statSync(candidate).isFile()) continue;
+        if (process.platform !== 'win32') fs.accessSync(candidate, fs.constants.X_OK);
+        return path.resolve(candidate);
+      } catch { /* Not an executable file in this directory. */ }
     }
   }
   return executable;
