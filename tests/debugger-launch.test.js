@@ -426,6 +426,9 @@ test('a building folder holds off a second build until it is abandoned', { timeo
   await built(storage);
   assert.ok(fs.existsSync(started));
   assert.deepEqual(finished(storage), [build]);
+  // The builder publishes its folder first, then clears the abandoned one.
+  const cleared = Date.now() + 60000;
+  while (entries(storage).length > 1 && Date.now() < cleared) await new Promise(resolve => setTimeout(resolve, 100));
   assert.equal(entries(storage).length, 1, entries(storage).join());
 });
 

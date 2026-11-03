@@ -3,7 +3,7 @@
 ## 0.8.51
 
 - When Magic Racket's language server is what keeps Racketeer's language tools off, Racketeer offers to turn off only that server and reload the window. Magic Racket stays installed. The notice waits in the notification list until it is answered or dismissed, and is not shown again after that. A workspace's own value of the setting is changed there, so that it does not override the choice.
-- Three tests read a process number from a file as soon as the file existed, and could read it empty. Each now waits for the number, which removes an intermittent failure.
+- Three tests read a process number from a file as soon as the file existed, and could read it empty. Each now waits for the number, which removes an intermittent failure. A fourth counted build folders before the builder had cleared an abandoned one, and now waits for that too.
 - Linux CI runs on every push, and macOS and Windows on demand.
 
 ## 0.8.50
