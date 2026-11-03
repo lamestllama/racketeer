@@ -69,8 +69,8 @@ assignments can change their definitions. This uses Racket's documented
 Unselected dependencies retain normal loading and assignment protections.
 
 This is a tested feature list, not a guarantee for every third-party language
-or platform. Validation uses Linux ARM64, Racket 9.1 CS, and VS Code 1.98.1. Text
-sources are the current editor input. A WXME document is debugged through a read-only
+or platform. Validation uses Racket 9.1 CS on Linux ARM64 and x64 with VS Code 1.91.0 and
+1.144.1, and on Windows x64 and macOS ARM64 with VS Code 1.144.1. Text sources are the current editor input. A WXME document is debugged through a read-only
 text snapshot. Graphical syntax and inline rich Interactions rendering remain
 outstanding. Static image previews support choosing among multiple returned values;
 interactive plots and embedded editor objects remain outside that slice.

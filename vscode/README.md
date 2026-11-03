@@ -17,8 +17,8 @@ naming its version, its path and the setting `racketdap.racketExecutable`. Minim
 does not include all the standard libraries and documentation used by the
 language server. No separate `raco pkg install racket-langserver`, Magic Racket,
 Node.js or npm is needed. The extension does not automatically install packages into the
-Racket environment. Tested on Linux ARM64 with Racket 9.1 CS and
-VS Code 1.98.1; other operating systems are not yet verified.
+Racket environment. Tested with Racket 9.1 CS on Linux ARM64 and x64 with VS Code 1.91.0
+and 1.144.1, and on Windows x64 and macOS ARM64 with VS Code 1.144.1.
 
 ## Install and start
 
