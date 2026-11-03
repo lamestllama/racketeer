@@ -73,6 +73,23 @@ function fixture(initialDocuments = [], source = 'bundled') {
     setEnabled(value) { enabled = value; changed.emit({ affectsConfiguration: key => key === 'racketdap.languageServer' }); } };
 }
 
+test('the analysis wait is declared as the server reads it, and reaches it in the synchronised section', async t => {
+  const instance = fixture([{ languageId: 'rhombus' }], 'bundled');
+  t.after(() => instance.language.dispose());
+  await instance.language.whenReady();
+  const section = instance.clients[0].options.synchronize.configurationSection;
+  const manifest = require('../vscode/package.json');
+  const setting = manifest.contributes.configuration.properties[`${section}.analysisWaitMilliseconds`];
+  assert.ok(setting, 'The setting belongs to the section the client sends');
+  assert.equal(setting.type, 'integer');
+  assert.equal(setting.minimum, 0);
+  const server = path.join(__dirname, '../vendor/collects/racket-langserver');
+  const settings = fs.readFileSync(path.join(server, 'common/settings.rkt'), 'utf8');
+  assert.equal(setting.default, Number(/default-analysis-wait-milliseconds (\d+)\)/.exec(settings)[1]));
+  assert.equal(setting.maximum, Number(/maximum-analysis-wait-milliseconds (\d+)\)/.exec(settings)[1]));
+  assert.match(fs.readFileSync(path.join(server, 'common/interfaces.rkt'), 'utf8'), /#:json analysisWaitMilliseconds\]/);
+});
+
 for (const source of ['bundled', 'installed']) test(`Rhombus-only startup registers language analysis, leaves its index to the first request and shows status (${source})`, async t => {
   const instance = fixture([{ languageId: 'rhombus' }], source);
   t.after(() => instance.language.dispose());

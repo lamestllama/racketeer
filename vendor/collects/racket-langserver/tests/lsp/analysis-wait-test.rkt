@@ -4,18 +4,22 @@
 ;; makes does not sit out that wait. These tests run the production consumer
 ;; and speak LSP to it, except where they own the controller to look at a
 ;; completion. Timing assertions are lower bounds, which a slow machine cannot
-;; break; where a request must not wait, the wait is far longer than the test.
+;; break; where a request must not wait, the wait is far longer than the test,
+;; and where an edit must not wait, one quick start out of several is enough.
 (require rackunit
          racket/async-channel
          racket/file
+         (only-in json json-null)
          "../../common/path-util.rkt"
          "../../common/source.rkt"
          "../../common/interfaces.rkt"
+         "../../common/settings.rkt"
          "../../common/time.rkt"
          "../../lsp/analysis.rkt"
          "../../lsp/safedoc.rkt"
          "../../lsp/source-controller.rkt"
          (submod "../../lsp/source-controller.rkt" owner)
+         (only-in "../../lsp/workspace.rkt" update-configuration)
          "../../workspace/source-store.rkt"
          "controller-support.rkt")
 
@@ -71,13 +75,40 @@
 (define (long-wait-controller analyze)
   (make-source-controller #:resyntax #f #:analyze analyze #:analysis-wait 30))
 
-(define (no-start-yet starts)
-  (sleep 0.05)
+(define (no-start-yet starts [seconds 0.05])
+  (sleep seconds)
   (check-equal? (map Started-text (drain starts)) '() "analysis started during the wait"))
+
+;; A session whose controller reads the wait from the setting. The setting is
+;; process-wide, so it goes back to the default afterwards.
+(define (with-configured-session analyze proc)
+  (dynamic-wind
+    void
+    (lambda ()
+      (with-session (make-source-controller #:resyntax #f #:analyze analyze) proc))
+    (lambda () (set-analysis-wait-milliseconds! default-analysis-wait-milliseconds))))
+
+;; What a client sends when the setting changes: the whole section.
+(define (configure! session wait)
+  (notify session "workspace/didChangeConfiguration"
+          (hasheq 'settings
+                  (hasheq 'racket-langserver (hasheq 'analysisWaitMilliseconds wait)))))
 
 (define position (hasheq 'position (hasheq 'line 1 'character 8)))
 (define whole-range
   (hasheq 'start (hasheq 'line 0 'character 0) 'end (hasheq 'line 2 'character 0)))
+
+;; The requests that end the wait, with the parameters each needs.
+(define person-requests
+  `(("textDocument/hover" ,position)
+    ("textDocument/definition" ,position)
+    ("textDocument/references"
+     ,(hash-set position 'context (hasheq 'includeDeclaration #t)))
+    ("textDocument/documentHighlight" ,position)
+    ("textDocument/prepareRename" ,position)
+    ("textDocument/rename" ,(hash-set position 'newName "y"))
+    ("textDocument/codeAction"
+     ,(hasheq 'range whole-range 'context (hasheq 'diagnostics '())))))
 
 (define (token-count response)
   (length (hash-ref (hash-ref response 'result) 'data)))
@@ -171,16 +202,7 @@
           (barrier session)
           text)
         (open-and-settle! session starts path (program 0))
-        (for ([request (in-list
-                         `(("textDocument/hover" ,position)
-                           ("textDocument/definition" ,position)
-                           ("textDocument/references"
-                            ,(hash-set position 'context (hasheq 'includeDeclaration #t)))
-                           ("textDocument/documentHighlight" ,position)
-                           ("textDocument/prepareRename" ,position)
-                           ("textDocument/rename" ,(hash-set position 'newName "y"))
-                           ("textDocument/codeAction"
-                            ,(hasheq 'range whole-range 'context (hasheq 'diagnostics '())))))]
+        (for ([request (in-list person-requests)]
               [id (in-naturals 1000)])
           (define text (edit!))
           (no-start-yet starts)
@@ -368,6 +390,115 @@
             (check-equal? (map Started-text (drain starts)) '() "analysis started after the wait ended")
             (check-true (<= (session-threads parent) threads) "threads remain after the wait ended"))))
       (custodian-shutdown-all parent)))
+
+  (test-case "the configured wait applies from the next edit"
+    (define-values (starts analyze) (make-recorder))
+    (with-configured-session
+      analyze
+      (lambda (session)
+        (define path (build-path scratch "wait-configured.rkt"))
+        (open-and-settle! session starts path (program 0))
+        (for ([wait (in-list '(600 900))]
+              [version (in-naturals 1)])
+          (configure! session wait)
+          (define sent (current-deadline-milliseconds))
+          (change! session path (program version) version)
+          (define start (start-of starts (program version)))
+          (check-true (>= (Started-at start) (+ sent wait))
+                      (format "analysis started before a wait of ~a passed" wait))))))
+
+  (test-case "a wait of zero starts each edit at once"
+    ;; Each analysis but the first runs until the next edit cancels it, as upstream.
+    (define-values (starts analyze)
+      (make-recorder (lambda (start) (not (equal? (Started-text start) (program 0))))))
+    (with-configured-session
+      analyze
+      (lambda (session)
+        (define path (build-path scratch "wait-zero.rkt"))
+        (open-and-settle! session starts path (program 0))
+        (configure! session 0)
+        (define taken
+          (for/list ([version (in-range 1 6)])
+            (define sent (current-deadline-milliseconds))
+            (change! session path (program version) version)
+            (- (Started-at (start-of starts (program version))) sent)))
+        ;; Any wait delays every start; a busy machine delays all five only by chance.
+        (check-true (< (apply min taken) the-wait)
+                    (format "every edit waited: ~a" taken)))))
+
+  (test-case "a bad wait is the default, whatever was set before"
+    (define-values (starts analyze) (make-recorder))
+    (define longer 5000)
+    (with-configured-session
+      analyze
+      (lambda (session)
+        (define path (build-path scratch "wait-bad.rkt"))
+        (open-and-settle! session starts path (program 0))
+        (for ([bad (in-list (list -1 10001 1.5 "soon" #t (json-null) '(600) (hasheq)))]
+              [version (in-naturals 1)])
+          (configure! session longer)
+          (configure! session bad)
+          (define sent (current-deadline-milliseconds))
+          (change! session path (program version) version)
+          (define start (start-of starts (program version)))
+          (check-true (>= (Started-at start) (+ sent the-wait))
+                      (format "~v waited less than the default" bad))
+          (check-true (< (Started-at start) (+ sent longer))
+                      (format "~v kept the wait set before" bad)))
+        (barrier session))))
+
+  (test-case "a bad wait leaves the rest of the section alone, and an omitted one is the default"
+    (dynamic-wind
+      void
+      (lambda ()
+        (update-configuration
+          (hasheq 'analysisWaitMilliseconds "soon" 'resyntax (hasheq 'enable #f)))
+        (check-false (get-resyntax-enabled))
+        (check-equal? (get-analysis-wait) 1/4)
+        (update-configuration (list (hasheq 'analysisWaitMilliseconds 600)))
+        (check-equal? (get-analysis-wait) 3/5)
+        (update-configuration (hasheq))
+        (check-equal? (get-analysis-wait) 1/4)
+        (check-true (get-resyntax-enabled)))
+      (lambda ()
+        (set-resyntax-enabled! default-resyntax-enabled)
+        (set-analysis-wait-milliseconds! default-analysis-wait-milliseconds))))
+
+  (test-case "requests end the wait, whatever its value"
+    (define-values (starts analyze) (make-recorder))
+    (define longest 10000)
+    (with-configured-session
+      analyze
+      (lambda (session)
+        (define path (build-path scratch "wait-configured-requests.rkt"))
+        (define version 0)
+        (define (edit!)
+          (set! version (add1 version))
+          (define text (program version))
+          (define sent (current-deadline-milliseconds))
+          (change! session path text version)
+          (barrier session)
+          (values text sent))
+        (open-and-settle! session starts path (program 0))
+        (configure! session longest)
+        (for ([request (in-list person-requests)]
+              [id (in-naturals 1000)])
+          (define-values (text sent) (edit!))
+          ;; Longer than the default wait, so this is the configured one.
+          (no-start-yet starts 0.4)
+          (request! session id (car request) path (cadr request))
+          (check-false (hash-ref (response session id 20) 'error #f) (car request))
+          (define start (await starts 20))
+          (check-equal? (Started-text start) text (car request))
+          (check-true (< (Started-at start) (+ sent longest))
+                      (format "~a sat out the wait" (car request))))
+        (configure! session 0)
+        (for ([request (in-list person-requests)]
+              [id (in-naturals 2000)])
+          (define-values (text _sent) (edit!))
+          (request! session id (car request) path (cadr request))
+          (check-false (hash-ref (response session id 20) 'error #f) (car request))
+          (check-equal? (Started-text (start-of starts text)) text (car request))))))
 
   (test-case "a further edit, close or shutdown settles what a waiter holds"
     (define-values (starts analyze) (make-recorder))

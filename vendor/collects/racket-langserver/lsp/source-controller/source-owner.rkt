@@ -96,14 +96,14 @@
 ;; seconds. The workspace
 ;; supplies publication only, not session isolation for request-layer workspace
 ;; access. Zero cache capacity disables closed-file retention; #f Resyntax disables
-;; its follow-on work.
+;; its follow-on work. #f analysis-wait reads the setting at each edit.
 (define (make-source-controller #:workspace [workspace current-workspace]
                                 #:read [read read-source-text]
                                 #:read-timeout [read-timeout 3]
                                 #:analyze [analyze analyze-source]
                                 #:analysis-slots [slots 4]
                                 #:analysis-timeout [analysis-timeout 90]
-                                #:analysis-wait [analysis-wait 1/4]
+                                #:analysis-wait [analysis-wait #f]
                                 #:closed-analysis-limit [closed-analysis-limit 64]
                                 #:resyntax [resyntax (and (resyntax-available?) run-resyntax/in-place)])
   (define events (make-async-channel))

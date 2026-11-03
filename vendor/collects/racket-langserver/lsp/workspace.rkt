@@ -68,8 +68,10 @@
   (void))
 
 (define (apply-langserver-settings settings)
-  (match-define (Langserver-Settings #:resyntax resyntax #:formatting formatting)
+  (match-define (Langserver-Settings #:resyntax resyntax #:formatting formatting
+                                     #:analysis-wait-milliseconds analysis-wait)
     settings)
+  (set-analysis-wait-milliseconds! analysis-wait)
   (set-resyntax-enabled!
     (match resyntax
       [(Resyntax-Settings #:enable (and enable (not (? Nothing?)))) enable]

@@ -67,7 +67,11 @@ Racketeer's own patches follow:
   as hover or references, starts it at once; semantic tokens and inlay hints, which
   a client sends by itself, join the wait and answer from the current text after it.
   An edit still cancels a running analysis at once. The wait is a time in the attempt, not a timer, and is described in
-  `lsp/analysis-lifecycle.md`. Meant for upstream, as a pull request not yet made.
+  `lsp/analysis-lifecycle.md`. The `racket-langserver.analysisWaitMilliseconds` setting
+  changes it, through the `racket-langserver` section the other settings use: an integer
+  from 0 to 10000 read at each edit, where 0 starts each analysis at once, as upstream
+  does, and any other value is the default of 250. Meant for upstream, as a pull request
+  not yet made.
 
 Workspace indexing belongs to Racketeer, in `vscode/workspace-analysis.rkt`,
 its request adapter `vscode/workspace-index.rkt` and the VS Code client. The

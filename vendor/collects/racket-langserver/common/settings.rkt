@@ -6,6 +6,9 @@
 (provide get-resyntax-enabled
          set-resyntax-enabled!
          default-resyntax-enabled
+         get-analysis-wait
+         set-analysis-wait-milliseconds!
+         default-analysis-wait-milliseconds
          (struct-out Formatting-Settings)
          default-formatting-settings
          current-formatting-settings
@@ -20,6 +23,24 @@
 
 (define (set-resyntax-enabled! val)
   (set! resyntax-enabled? val))
+
+;; The pause after an edit before analysing it. Process-wide, like
+;; `resyntax-enabled?`. Anything but an integer in range is the default, as an
+;; omitted setting is, so a bad value can neither stop the server nor stop analysis.
+(define default-analysis-wait-milliseconds 250)
+(define maximum-analysis-wait-milliseconds 10000)
+
+(define analysis-wait-milliseconds default-analysis-wait-milliseconds)
+
+(define (set-analysis-wait-milliseconds! value)
+  (set! analysis-wait-milliseconds
+        (if (and (exact-integer? value) (<= 0 value maximum-analysis-wait-milliseconds))
+            value
+            default-analysis-wait-milliseconds)))
+
+;; In seconds, as the scheduler keeps its times.
+(define (get-analysis-wait)
+  (/ analysis-wait-milliseconds 1000))
 
 ;; Document formatting may reflow a complete buffer, while indentation
 ;; formatting must remain safe for ranges and on-type requests. Keep the two

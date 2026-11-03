@@ -4,6 +4,7 @@
 ;; and worker handles stay private; callers hold only completion events.
 (require racket/async-channel
          racket/contract
+         "../../common/settings.rkt"
          "../../common/source.rkt"
          "../../common/time.rkt"
          "../../workspace/source-store.rkt"
@@ -49,7 +50,7 @@
    [resyntax (or/c #f (-> string? string? list?))]
    [timeout (and/c real? (>=/c 0))]
    [slots exact-positive-integer?]
-   [wait (and/c real? (>=/c 0))]
+   [wait (or/c #f (and/c real? (>=/c 0)))]
    [attempts (hash/c (cons/c Source-Id? (or/c 'analysis 'resyntax))
                      Analysis-Attempt? #:immutable #f)]
    [(queue #:mutable) (listof Analysis-Attempt?)]
@@ -63,9 +64,9 @@
 ;; every dispatch queues whatever is due.
 (struct Analysis-Wait-Over ())
 
-;; wait is in seconds, as is timeout.
+;; wait is in seconds, as is timeout, or #f to read the setting at each edit.
 (define (make-analysis-scheduler events #:analyze analyze #:resyntax resyntax
-                                 #:timeout [timeout 90] #:slots [slots 4] #:wait [wait 1/4])
+                                 #:timeout [timeout 90] #:slots [slots 4] #:wait [wait #f])
   (Analysis-Scheduler events analyze resyntax timeout slots wait (make-hash) '() #f))
 
 (define (attempt-key attempt)
@@ -124,7 +125,7 @@
      (define attempt
        (Analysis-Attempt snapshot #f 'analysis #f (make-completion-event)
                          (+ (current-deadline-milliseconds)
-                            (* 1000 (Analysis-Scheduler-wait scheduler)))
+                            (* 1000 (or (Analysis-Scheduler-wait scheduler) (get-analysis-wait))))
                          'waiting #f))
      (hash-set! (Analysis-Scheduler-attempts scheduler) (attempt-key attempt) attempt)
      (Analysis-Attempt-completion attempt)]))

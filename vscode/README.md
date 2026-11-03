@@ -254,6 +254,14 @@ Formatting uses bundled `fixw`; choose the other value through the
 Basic syntax highlighting, bracket pairing and commenting also work before
 the server is ready. Save new files to enable semantic language tools.
 
+The language server analyses a document 250 ms after its last edit, so typing does
+not start an analysis at every keystroke. Hover, definition, references and the other
+requests a person makes start it at once, whatever the wait. Set
+`racket-langserver.analysisWaitMilliseconds` to an integer from 0 to 10000 to change the
+wait; a change applies from the next edit. 0 starts each analysis at once, as the
+unpatched server does, and invalid values use the default. The setting applies to the
+bundled language server.
+
 Cold startup loads the bundled source packages and can take longer on a busy
 machine. Startup has a three-minute deadline by default; set
 `racketdap.languageServer.startupTimeoutSeconds` to an integer from 1 to 3600

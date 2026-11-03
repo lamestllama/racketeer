@@ -439,6 +439,13 @@
           "default": false,
           "description": "Enable optional Resyntax suggestions. Requires the separate resyntax Racket package; it is not bundled."
         },
+        "racket-langserver.analysisWaitMilliseconds": {
+          "type": "integer",
+          "default": 250,
+          "minimum": 0,
+          "maximum": 10000,
+          "description": "Milliseconds the language server waits after an edit before analysing the document. 0 starts each analysis at once, as the unpatched server does. A change takes effect from the next edit. Applies to the bundled language server."
+        },
         "racketdap.testing.include": {
           "scope": "resource",
           "type": "string",

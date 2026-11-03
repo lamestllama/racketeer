@@ -267,6 +267,20 @@ debugger-backend plugin framework, a second expression interpreter, or an
 editor-specific core. Introduce further abstractions when a second concrete
 use requires them.
 
+### The wait before analysis
+
+The bundled language server analyses a document only after a pause in its edits, so
+typing does not start a whole-file analysis at each keystroke. The mechanism is
+`vendor/patches/analysis-wait.patch`, and `lsp/analysis-lifecycle.md` beside the server
+describes it. The pause is `racket-langserver.analysisWaitMilliseconds`, 250 by default.
+It reaches the server in the `racket-langserver` section that the language client sends
+at startup and after each change, the one route for the server's settings. The server
+reads it at each edit, so a change needs no restart. The server judges the value itself:
+anything but an integer from 0 to 10000 is the default, because the manifest's limits only
+warn in the editor and a settings file can hold anything. A wait of 0 starts each analysis
+at once, as the unpatched server does. Requests a person makes end the wait whatever its
+length.
+
 ### Workspace analysis boundaries
 
 Workspace analysis runs in a separate service with three ownership boundaries:

@@ -274,9 +274,12 @@
   [indentation-formatter (optional Indentation-Formatter) #:json indentationFormatter]
   [fmt-settings (optional Fmt-Settings) #:json fmtSettings])
 
+;; Any value decodes as the wait, so that a bad one falls back by itself rather
+;; than losing the whole section. `set-analysis-wait-milliseconds!` judges it.
 (define-json-struct Langserver-Settings
   [resyntax (optional Resyntax-Settings)]
-  [formatting (optional Formatting-Configuration)])
+  [formatting (optional Formatting-Configuration)]
+  [analysis-wait-milliseconds (optional (contract any/c)) #:json analysisWaitMilliseconds])
 
 (define-json-union Langserver-Settings-Update
   Langserver-Settings

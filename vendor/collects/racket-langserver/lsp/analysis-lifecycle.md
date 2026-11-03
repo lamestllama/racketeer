@@ -125,7 +125,7 @@ Its folders are also project roots for imported modules, as described below.
 ## The wait after an edit
 
 An edit cancels any running analysis of its document at once, since that text is
-gone, and then waits 250 ms before starting another; each further edit restarts
+gone, and then waits 250 ms, or as set below, before starting another; each further edit restarts
 the wait. So a burst of edits analyses its last text once. This wait
 treats running and pending checks the same way, with the same 250 ms. The wait
 belongs to the attempt: edit installs an attempt in the `waiting` state with the
@@ -134,6 +134,11 @@ a waiter has an event from the moment of the edit and the attempt obeys every ru
 below for attempts. Revisions certify it as they do any other: its snapshot is the
 edited text, and a further edit, close, invalidation or shutdown settles it like
 a running attempt.
+
+The setting is `analysisWaitMilliseconds` in the `racket-langserver` section, which
+reaches the server as its other settings do. It is read at each edit, so a change
+applies from the next edit and a wait already running keeps its time. It is an integer
+from 0 to 10000; any other value, like an omitted one, is the default.
 
 Other open documents that load the edited file wait the same way, each restarted by
 each edit of its import, and so do those of a file that opened, closed or was
@@ -147,8 +152,8 @@ Only the consumer changes attempts and it syncs afresh after every dispatch, so
 settling an attempt is all it takes to end its wait, and nothing is left to cancel
 at close or shutdown. The pump that follows every dispatch moves due attempts to the
 back of the queue, oldest first, and takes each one's import context at that moment,
-so it reads the buffers as the wait left them. A wait of zero, which
-`#:analysis-wait` allows, starts at the pump that ends the edit.
+so it reads the buffers as the wait left them. A wait of zero, which the setting and
+`#:analysis-wait` allow, starts at the pump that ends the edit, as if there were no wait.
 
 A request a person makes does not sit out the wait. The dispatcher ends it before
 handling hover, definition, references, document highlight, rename, prepare rename
@@ -161,8 +166,8 @@ start analyses during typing.
 What a client sends by itself during typing leaves the wait running, or every
 keystroke would start an analysis. Semantic tokens and inlay hints are exact
 queries: they join the waiting attempt through `SafeDoc-analysis-completion` and
-answer when it finishes, from the current text, about 250 ms later than a request
-that ended the wait. A further edit ends such a request with ContentModified as it
+answer when it finishes, from the current text, about the length of the wait later
+than a request that ended it. A further edit ends such a request with ContentModified as it
 always has. Completion and signature help answer from the adjusted trace. Document
 symbols and formatting read the text and use no analysis.
 
