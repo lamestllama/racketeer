@@ -10,6 +10,9 @@ const { racketTooOld } = require('./racket-version');
 
 const languageIds = ['racket', 'rhombus'];
 const isLanguageDocument = document => languageIds.includes(document?.languageId);
+const magicRacketNoticeAnswered = 'racketdap.magicRacketNoticeAnswered';
+const useRacketeerTools = 'Use Racketeer\u2019s Tools';
+const keepMagicRacket = 'Keep Magic Racket';
 // The server's formatter selection is shared by both languages. Its default
 // S-expression formatter is unsafe for indentation-sensitive shrubbery. Keep
 // Rhombus on the declarative indentation rules until a reader-aware formatter
@@ -36,6 +39,7 @@ function registerLanguageTools(context, debugSources) {
   const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 10);
   status.command = 'racketdap.showLanguageServerOutput';
   let client;
+  let offeringLanguageTools = false;
   let index;
   let stateListener;
   let server;
@@ -64,6 +68,25 @@ function registerLanguageTools(context, debugSources) {
     }
   }
 
+  // Offered until answered or dismissed, then never again: a notice can sit unseen
+  // under others, and the status bar goes on saying why the tools are off. Magic
+  // Racket stays installed; only its language server is turned off, where it was
+  // turned on, so a workspace's own setting does not override the choice.
+  async function offerLanguageTools() {
+    if (offeringLanguageTools || context.globalState.get(magicRacketNoticeAnswered)) return;
+    offeringLanguageTools = true;
+    const choice = await vscode.window.showInformationMessage(
+      'Magic Racket\u2019s language server is on, so Racketeer\u2019s language tools and its find and rename across a project are off. Use Racketeer\u2019s instead? Magic Racket stays installed, and the window reloads.',
+      useRacketeerTools, keepMagicRacket);
+    await context.globalState.update(magicRacketNoticeAnswered, true);
+    if (choice !== useRacketeerTools) return;
+    const magicRacket = vscode.workspace.getConfiguration('magicRacket');
+    const inWorkspace = magicRacket.inspect('languageServer.enabled')?.workspaceValue !== undefined;
+    await magicRacket.update('languageServer.enabled', false,
+      inWorkspace ? vscode.ConfigurationTarget.Workspace : vscode.ConfigurationTarget.Global);
+    await vscode.commands.executeCommand('workbench.action.reloadWindow');
+  }
+
   async function restart() {
     await stopClient();
     if (disposed || !vscode.workspace.isTrusted) return;
@@ -79,6 +102,7 @@ function registerLanguageTools(context, debugSources) {
         vscode.workspace.getConfiguration('magicRacket').get('languageServer.enabled', true)) {
       output.appendLine('Magic Racket is enabled. Disable it to use this extension’s bundled language server.');
       showStatus('Racket: external LSP', 'Magic Racket is enabled. Disable it and reload to use the bundled language server.');
+      offerLanguageTools().catch(error => output.appendLine(`Could not change the Magic Racket setting: ${error.message}`));
       return;
     }
     const installed = config.get('languageServer.source', 'bundled') === 'installed';

@@ -15,7 +15,7 @@ function event() {
   return { subscribe: callback => { listeners.add(callback); return { dispose: () => listeners.delete(callback) }; },
     emit: value => { for (const callback of listeners) callback(value); } };
 }
-function fixture(initialDocuments = [], source = 'bundled') {
+function fixture(initialDocuments = [], source = 'bundled', magic) {
   const opened = event(), active = event(), changed = event();
   const clients = [], indexes = [], processes = [], commands = new Map();
   let enabled = true, settings = {};
@@ -28,19 +28,28 @@ function fixture(initialDocuments = [], source = 'bundled') {
       createStatusBarItem: () => status,
       createOutputChannel: () => ({ ...disposable(), appendLine() {}, show() {} }),
       onDidChangeActiveTextEditor: active.subscribe,
-      showErrorMessage: async error => { throw new Error(error); }
+      showErrorMessage: async error => { throw new Error(error); },
+      showInformationMessage: async (message, ...choices) => { magic.notices.push({ message, choices }); return magic.showInformationMessage ? magic.showInformationMessage() : magic.answer; }
     },
     workspace: {
       isTrusted: true, textDocuments: initialDocuments,
-      getConfiguration: section => ({ get(key, fallback) {
+      getConfiguration: section => section === 'magicRacket' ? {
+        get: () => magic.enabled,
+        inspect: () => ({ workspaceValue: magic.workspaceValue }),
+        async update(key, value, target) { magic.updates.push({ key, value, target }); }
+      } : ({ get(key, fallback) {
         if (section === undefined && key === 'racket-langserver') return settings;
         return ({ 'languageServer.enabled': enabled, 'languageServer.source': source })[key] ?? fallback;
       } }),
       onDidOpenTextDocument: opened.subscribe,
       onDidChangeConfiguration: changed.subscribe
     },
-    extensions: { getExtension() {} },
-    commands: { registerCommand: (name, callback) => { commands.set(name, callback); return disposable(); } }
+    extensions: { getExtension: id => magic && id === 'evzen-wybitul.magic-racket' ? {} : undefined },
+    ConfigurationTarget: { Global: 1, Workspace: 2 },
+    commands: {
+      registerCommand: (name, callback) => { commands.set(name, callback); return disposable(); },
+      executeCommand: async name => { magic.commands.push(name); }
+    }
   };
   class Client {
     constructor(_id, _name, factory, options) { this.factory = factory; this.options = options; this.state = event(); this.notifications = []; clients.push(this); }
@@ -53,7 +62,8 @@ function fixture(initialDocuments = [], source = 'bundled') {
     async sendNotification(method, params) { this.notifications.push({ method, params }); }
     dispose() { return this.stop(); }
   }
-  const context = { subscriptions: [], asAbsolutePath: file => `/extension/${file}` };
+  const context = { subscriptions: [], asAbsolutePath: file => `/extension/${file}`,
+    globalState: { get: key => magic?.state.get(key), update: async (key, value) => { magic.state.set(key, value); } } };
   const module = { exports: {} };
   const filename = path.join(__dirname, '../vscode/language-client.js');
   const dependencies = {
@@ -76,6 +86,69 @@ function fixture(initialDocuments = [], source = 'bundled') {
     setSettings(value) { settings = value; },
     setEnabled(value) { enabled = value; changed.emit({ affectsConfiguration: key => key === 'racketdap.languageServer' }); } };
 }
+
+const magicRacket = values => ({ enabled: true, state: new Map(), notices: [], updates: [], commands: [], ...values });
+const offer = async magic => {
+  const instance = fixture([{ languageId: 'racket' }], 'bundled', magic);
+  await instance.language.whenReady();
+  await new Promise(resolve => setImmediate(resolve));
+  await instance.language.dispose();
+  return instance;
+};
+
+test('Magic Racket\u2019s server keeps the bundled one off, and the choice is offered once whatever the answer', async () => {
+  for (const answer of ['Use Racketeer\u2019s Tools', 'Keep Magic Racket', undefined]) {
+    const magic = magicRacket({ answer });
+    const first = await offer(magic);
+    assert.equal(first.clients.length, 0);
+    assert.equal(first.status.text, 'Racket: external LSP');
+    assert.equal(magic.notices.length, 1);
+    assert.match(magic.notices[0].message, /find and rename across a project are off/);
+    assert.deepEqual(magic.notices[0].choices, ['Use Racketeer\u2019s Tools', 'Keep Magic Racket']);
+    await offer(magic);
+    assert.equal(magic.notices.length, 1, 'A later window does not ask again');
+  }
+});
+
+test('a notice still unanswered when the window goes is offered again, and only once in a window', async () => {
+  const magic = magicRacket({ showInformationMessage: () => new Promise(() => {}) });
+  const instance = fixture([{ languageId: 'racket' }], 'bundled', magic);
+  await instance.language.whenReady();
+  await new Promise(resolve => setImmediate(resolve));
+  instance.changed.emit({ affectsConfiguration: key => key === 'magicRacket.languageServer.enabled' });
+  await instance.language.whenReady();
+  await new Promise(resolve => setImmediate(resolve));
+  await instance.language.dispose();
+  assert.equal(magic.notices.length, 1, 'A restart in the same window does not ask twice');
+  await offer(magic);
+  assert.equal(magic.notices.length, 2, 'A new window asks again while no answer was given');
+});
+
+test('choosing Racketeer turns off only Magic Racket\u2019s server, where it was on, and reloads', async () => {
+  const global = magicRacket({ answer: 'Use Racketeer\u2019s Tools' });
+  await offer(global);
+  assert.deepEqual(global.updates, [{ key: 'languageServer.enabled', value: false, target: 1 }]);
+  assert.deepEqual(global.commands, ['workbench.action.reloadWindow']);
+  const workspace = magicRacket({ answer: 'Use Racketeer\u2019s Tools', workspaceValue: true });
+  await offer(workspace);
+  assert.deepEqual(workspace.updates, [{ key: 'languageServer.enabled', value: false, target: 2 }]);
+});
+
+test('keeping Magic Racket or dismissing the notice changes no setting and does not reload', async () => {
+  for (const answer of ['Keep Magic Racket', undefined]) {
+    const magic = magicRacket({ answer });
+    await offer(magic);
+    assert.deepEqual(magic.updates, []);
+    assert.deepEqual(magic.commands, []);
+  }
+});
+
+test('nothing is offered when Magic Racket\u2019s server is already off', async () => {
+  const magic = magicRacket({ enabled: false });
+  const instance = await offer(magic);
+  assert.equal(magic.notices.length, 0);
+  assert.equal(instance.clients.length, 1, 'The bundled server starts');
+});
 
 test('the analysis wait is declared as the server reads it, and reaches it in the synchronised section', async t => {
   const instance = fixture([{ languageId: 'rhombus' }], 'bundled');

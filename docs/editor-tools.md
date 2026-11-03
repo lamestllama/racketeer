@@ -240,7 +240,8 @@ Optional Resyntax suggestions require a separately installed `resyntax` package 
 `racket-langserver.resyntax.enable`; they are off by default.
 
 Magic Racket is not required. If its language client is enabled, Racketeer defers
-language-server startup to it to avoid duplicate providers. Disable Magic Racket and reload
+language-server startup to it to avoid duplicate providers. Racketeer then offers, until answered or dismissed, to turn
+off only Magic Racket's language server and reload the window. Disable Magic Racket and reload
 the window to use Racketeer alone. No other extensions or global Racket packages are disabled
 or changed automatically.
 
