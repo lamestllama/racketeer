@@ -1,19 +1,18 @@
 # Racketeer: Organised Racket
 
-*Racket source debugging and editing for VS Code.*
+**The Racket IDE for VS Code.** Debug, run, test, navigate and package Racket in one extension, with nothing else to install.
 
 By [Eric Parsonage](https://github.com/lamestllama).
 
-Racketeer's DAP server brings source-level Racket debugging to VS Code:
-set breakpoints, step across modules and packages, and inspect or evaluate
-live lexical variables. The extension also bundles `racket-langserver`, REPL
-workflows, Test Explorer integration, and package management.
+- **Debug** with breakpoints on any expression, stepping across files and packages, and live variables.
+- **See results beside the code:** text, images and picts as a program runs, and plots to zoom and rotate.
+- **Test** from VS Code's Testing view: run, debug or measure coverage, down to a single RackUnit case.
+- **Work interactively** in an Interactions window or a REPL, with pictures inline and errors that link to their source.
+- **Navigate** with hover documentation, completion, go to definition, and references and rename across a whole project.
+- **Expand and build** with the macro stepper, package management, executables and distributions.
+- **Edit Rhombus** and WXME documents with embedded boxes.
 
-**Status:** development release, version 0.8.50. Tested with Racket 9.1 CS on Linux
-ARM64 and x64 with VS Code 1.91.0 and 1.144.1, and on Windows x64 and macOS ARM64 with
-VS Code 1.144.1. Requires **VS Code 1.91 or newer** and the
-**full Racket 9.1 or newer distribution**. No separate language-server installation, Magic Racket, Node.js,
-or npm is needed to use the extension. It does not automatically install Racket packages.
+Version 0.8.50 needs **VS Code 1.91 or newer** and the **full Racket 9.1 or newer distribution**, and needs no separate language server, Magic Racket, Node.js or npm. It is tested on Linux, Windows and macOS.
 
 ## Install and try it
 

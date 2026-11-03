@@ -1,40 +1,31 @@
 # Racketeer: Organised Racket
 
-*Racket source debugging and editing for VS Code.*
+**The Racket IDE for VS Code.** Debug, run, test, navigate and package Racket in one extension, with nothing else to install.
 
 By [Eric Parsonage](https://github.com/lamestllama).
 
-Racketeer is the only Racket extension for VS Code that debugs Racket source: set breakpoints, step through expressions and inspect live values in the editor, as with any other VS Code language.
-
-Racketeer's DAP server provides expression breakpoints, stepping across files
-and packages, live lexical inspection and evaluation. Run a source file to see
-text and images beside the editor, or debug it with breakpoints and stepping.
-Bundled language tools, testing and package commands complete the development workflow.
-
-Requires the **full Racket 9.1 or newer distribution**. An older Racket is refused on
-Run, Debug, Test Explorer, the language server and the workspace index, with a message
-naming its version, its path and the setting `racketdap.racketExecutable`. Minimal Racket alone
-does not include all the standard libraries and documentation used by the
-language server. No separate `raco pkg install racket-langserver`, Magic Racket,
-Node.js or npm is needed. The extension does not automatically install packages into the
-Racket environment. Tested with Racket 9.1 CS on Linux ARM64 and x64 with VS Code 1.91.0
-and 1.144.1, and on Windows x64 and macOS ARM64 with VS Code 1.144.1.
+- **Debug** with breakpoints on any expression, stepping across files and packages, and live variables. Racketeer is the only Racket extension for VS Code that debugs Racket source.
+- **See results beside the code:** text, images and picts as a program runs, and plots to zoom and rotate.
+- **Test** from VS Code's Testing view: run, debug or measure coverage, down to a single RackUnit case.
+- **Work interactively** in an Interactions window or a REPL, with pictures inline and errors that link to their source.
+- **Navigate** with hover documentation, completion, go to definition, and references and rename across a whole project.
+- **Expand and build** with the macro stepper, package management, executables and distributions.
+- **Edit Rhombus** and WXME documents with embedded boxes.
 
 ## Install and start
 
-1. In Extensions, choose **Install from VSIX…** and select the packaged `racketeer-<version>.vsix`.
-2. Open a trusted folder containing a Racket program and a saved `.rkt` file.
-3. Language tools start automatically; **Racket: ready** appears in the status bar.
-4. Click **Run Current File** above the source to see its Results, or choose
-   **Debug Current File** to stop and inspect it. Debugging uses
-   F5/F10/F11/Shift+F11 for Continue/Over/Into/Out.
+1. Install [Racket 9.1 or newer](https://download.racket-lang.org/), the full distribution.
+2. Install **Racketeer** from the Extensions view.
+3. Open a trusted folder and a saved `.rkt` file. **Racket: ready** appears in the status bar when the language tools have started.
+4. Click **Run Current File** above the source to see its Results, or **Debug Current File** to stop and inspect it.
 
-If Racket is not on PATH, set `racketdap.racketExecutable` in Settings.
-Debugger and language-server startup errors offer **Open Settings**, which opens
-the relevant setting; language-server errors also offer **Show Output**.
-The extension ID is `lamestllama.racketeer`. Remove the earlier
-`lamestllama.racketdap` development extension before installing Racketeer.
-Existing `racketdap` launch configurations and settings remain usable.
+Debugging uses F5, F10, F11 and Shift+F11 for Continue, Step Over, Step Into and Step Out.
+
+If Racket is not on PATH, set `racketdap.racketExecutable` in Settings. An older Racket is refused on every command, with a message naming its version, its path and that setting. Minimal Racket alone lacks standard libraries and documentation the language tools use.
+
+Racketeer needs no separate `racket-langserver`, Magic Racket, Node.js or npm, and installs no packages into Racket by itself. To install from a package file, choose **Install from VSIX…** in the Extensions view. Remove the earlier `lamestllama.racketdap` development extension first; existing `racketdap` launch configurations and settings keep working.
+
+It is tested on Linux, Windows and macOS with Racket 9.1, and with VS Code 1.91 on Linux and the newest VS Code on all three.
 
 ## Debugging
 
