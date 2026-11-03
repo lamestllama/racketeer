@@ -31,7 +31,7 @@ jobs:
     # The 430 Node tests took 32 minutes on macOS with Racket 9.1 and reached
     # test 382 of 430 at the 45-minute mark with Racket 9.3, so the slowest
     # entry needs about 52 minutes.
-    timeout-minutes: 75
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
