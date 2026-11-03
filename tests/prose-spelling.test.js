@@ -24,7 +24,12 @@ function prose(line) {
 // value for a formatter. Upstream sources, upstream pull requests as submitted and binary
 // fixtures are not its own text.
 const application = /dr\s*racket/i;
-const upstream = /^vendor\/collects\/|^vendor\/patches\/pr-|\.wxme$/;
+const upstreamPatches = new Set([
+  'vendor/patches/pr-246-utf16-positions.patch',
+  'vendor/patches/pr-247-open-buffer-imports.patch',
+  'vendor/patches/pr-248-relative-import-without-directory.patch'
+]);
+const wxmeFixture = /^tests\/fixtures\/wxme(?:-debug|-xml)?\/[^/]+\.wxme$/;
 const modulePath = /dr\s*racket\/check-syntax/gi, refusedModule = /#rx"dr\s*racket/gi, serverValue = /'dr\s*racket'/gi;
 const spelled = new Map([
   ['vscode/workspace-rename.rkt', modulePath],
@@ -38,28 +43,52 @@ const spelled = new Map([
   ['tests/rhombus-client.test.js', serverValue]
 ]);
 
+function applicationMentions(file, contents) {
+  if (file.startsWith('vendor/collects/') || upstreamPatches.has(file)) return [];
+  const found = application.test(file) ? [file] : [];
+  if (!contents || contents.includes(0)) return found;
+  const text = contents.toString('utf8');
+  if (wxmeFixture.test(file) && /^#reader\(lib"read\.ss""wxme"\)WXME\d+ ##/.test(text)) return found;
+  const kept = spelled.get(file);
+  // Keep newlines and offsets while removing the few spellings code requires.
+  const checked = kept ? text.replace(kept, match => match.replace(/[^\n]/g, ' ')) : text;
+  for (const match of checked.matchAll(new RegExp(application.source, 'gi'))) {
+    const line = checked.slice(0, match.index).split('\n').length;
+    found.push(`${file}:${line}: ${JSON.stringify(match[0])}`);
+  }
+  return found;
+}
+
 test('first-party files describe behaviour without naming another application', () => {
-  const listed = spawnSync('git', ['ls-files'], { cwd: root, encoding: 'utf8' });
+  const listed = spawnSync('git', ['ls-files', '-z'], { cwd: root, encoding: 'utf8' });
   assert.strictEqual(listed.status, 0);
   const found = [];
-  for (const file of listed.stdout.split('\n').filter(name => name && !upstream.test(name))) {
-    if (application.test(file)) found.push(file);
-    if (!fs.lstatSync(path.join(root, file), { throwIfNoEntry: false })?.isFile()) continue;
-    const contents = fs.readFileSync(path.join(root, file));
-    if (contents.includes(0)) continue;
-    contents.toString('utf8').split('\n').forEach((line, index) => {
-      const kept = spelled.get(file);
-      if (application.test(kept ? line.replace(kept, '') : line)) found.push(`${file}:${index + 1}: ${line.trim()}`);
-    });
+  for (const file of listed.stdout.split('\0').filter(Boolean)) {
+    const contents = fs.lstatSync(path.join(root, file), { throwIfNoEntry: false })?.isFile()
+      ? fs.readFileSync(path.join(root, file)) : undefined;
+    found.push(...applicationMentions(file, contents));
   }
   assert.deepStrictEqual(found, []);
 });
 
+test('application scanning covers wrapped text, names and files outside the precise exceptions', () => {
+  const mention = ['Dr', 'Racket'].join('');
+  for (const [file, text] of [
+    ['docs/naïve.txt', mention], ['README.md', ['Dr', 'Racket'].join('\n')],
+    ['vendor/patches/pr-new.patch', mention], ['docs/example.wxme', mention],
+    [`docs/${mention}.wxme`, 'ordinary text'],
+    ['tests/fixtures/wxme/new.wxme', mention]
+  ]) assert.ok(applicationMentions(file, Buffer.from(text)).length, file);
+  assert.deepStrictEqual(applicationMentions('vendor/patches/pr-246-utf16-positions.patch', Buffer.from(mention)), []);
+  assert.deepStrictEqual(applicationMentions('tests/fixtures/wxme/new.wxme',
+    Buffer.from('#reader(lib"read.ss""wxme")WXME0111 ## \n' + mention)), []);
+});
+
 test('first-party documents use British spelling', () => {
-  const listed = spawnSync('git', ['ls-files', '*.md'], { cwd: root, encoding: 'utf8' });
+  const listed = spawnSync('git', ['ls-files', '-z', '*.md'], { cwd: root, encoding: 'utf8' });
   assert.strictEqual(listed.status, 0);
   const found = [];
-  for (const file of listed.stdout.split('\n').filter(name => name && !name.startsWith('vendor/collects/'))) {
+  for (const file of listed.stdout.split('\0').filter(name => name && !name.startsWith('vendor/collects/'))) {
     let fenced = false;
     fs.readFileSync(path.join(root, file), 'utf8').split('\n').forEach((line, index) => {
       if (line.trimStart().startsWith('```')) { fenced = !fenced; return; }
