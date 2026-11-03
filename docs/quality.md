@@ -1,6 +1,6 @@
 # Release quality requirements
 
-The extension is a development release. A passing test count is evidence for
+A passing test count is evidence for
 the behaviours exercised on the recorded environment; it is not a declaration
 of production readiness on other platforms or configurations.
 

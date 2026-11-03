@@ -426,7 +426,7 @@ Details: [Viewer and editor](https://github.com/lamestllama/racketeer/blob/main/
 
 ## Limits
 
-- This is a development release. Debugging is tested with `racket/base`, `racket`, Scheme, Typed Racket, teaching languages, custom module languages, plain files and GUI callbacks. Other languages and operating systems need further testing, and [debugger features](https://github.com/lamestllama/racketeer/blob/main/docs/debugger.md) records the tested scope.
+- Debugging is tested with `racket/base`, `racket`, Scheme, Typed Racket, teaching languages, custom module languages, plain files and GUI callbacks. Other languages and operating systems need further testing, and [debugger features](https://github.com/lamestllama/racketeer/blob/main/docs/debugger.md) records the tested scope.
 - Racket older than 9.1 is refused: Run, Debug, the Testing view, the language server and the workspace index do not start on it.
 - The debugger has no stepping in macro-time code, no reverse execution, no tracing of caught exceptions and no attaching to an arbitrary process. Local syntax transformers are not available to console evaluation.
 - There is no full terminal for curses or raw-mode programs in a debug session: line input only.

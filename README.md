@@ -37,7 +37,7 @@ The extension ID is `lamestllama.racketeer`; the debugger type and settings pref
 - [Run, Debug, Test and REPL execution](docs/workflows.md), [editing and macro expansion](docs/editor-tools.md), [package development](docs/packages.md), [building applications](docs/application-builds.md), [module dependencies](docs/module-dependencies.md) and [WXME editing](docs/wxme-editor.md) give the details.
 - Examples: [multi-file](examples/multi-file/README.md) follows four calls through nested folders, [workflow](examples/workflow/main.rkt) connects two source files, tests and the Debug REPL, and [packages](examples/packages/README.md) shows a linked package.
 
-Limits on what is offered are stated in [the extension guide](vscode/README.md#limits). This is a development release: the [release quality requirements](docs/quality.md) and [release records](docs/releases/) state what has been checked and what is still needed.
+Limits on what is offered are stated in [the extension guide](vscode/README.md#limits). The [release quality requirements](docs/quality.md) and [release records](docs/releases/) state what has been checked and what is still needed.
 
 ## Build and test
 
