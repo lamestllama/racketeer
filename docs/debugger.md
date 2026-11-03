@@ -71,9 +71,10 @@ Unselected dependencies retain normal loading and assignment protections.
 This is a tested feature list, not a guarantee for every third-party language
 or platform. Validation uses Racket 9.1 CS on Linux ARM64 and x64 with VS Code 1.91.0 and
 1.144.1, and on Windows x64 and macOS ARM64 with VS Code 1.144.1. Text sources are the current editor input. A WXME document is debugged through a read-only
-text snapshot. Graphical syntax and inline rich Interactions rendering remain
-outstanding. Static image previews support choosing among multiple returned values;
-interactive plots and embedded editor objects remain outside that slice.
+text snapshot. Results and Interactions draw printed images, picts and plots inline, and an error
+there links to its source. **Racket: View Image** can choose among multiple returned
+values, **Racket: Open Interactive Plot** opens a live plot in a Racket window, and
+the WXME editor edits embedded objects. Sources are otherwise edited as text.
 Compiler-phase debugging, tracing every caught exception, reverse execution, and
 arbitrary-process attach are not provided.
 
@@ -161,7 +162,10 @@ and on a non-tail expression's final character it stops after that expression
 returns. **Racket: Continue to Cursor** runs to one selected boundary once while
 retaining ordinary breakpoints. A breakpoint stays pending until its module is
 loaded; if there is no expression at that location it remains unverified with an
-explanation. Breakpoints do not silently move into another function. A breakpoint
+explanation. A constant, a bare variable, a definition of either, a `struct` form,
+quoted data and compile-time code have no place to stop, so a breakpoint there remains
+unverified with an explanation. A `require`, and a line that holds only a function's
+header, have none either. Breakpoints do not silently move into another function. A breakpoint
 added to an already loaded, uninstrumented dependency needs a fresh launch.
 
 - Conditions are Racket expressions in the current lexical environment, such as

@@ -1,32 +1,34 @@
 # Racketeer: Organised Racket
 
-**The Racket IDE for VS Code.** Debug, run, test, navigate and package Racket in one extension, with nothing else to install.
+**A Racket IDE for VS Code.** Debug, run, test, navigate and package Racket in one extension, with nothing to install but Racket itself.
 
 By [Eric Parsonage](https://github.com/lamestllama).
 
-- **Debug** with breakpoints on any expression, stepping across files and packages, and live variables. Racketeer is the only Racket extension for VS Code that debugs Racket source.
-- **See results beside the code:** text, images and picts as a program runs, and plots to zoom and rotate.
-- **Test** from VS Code's Testing view: run, debug or measure coverage, down to a single RackUnit case.
-- **Work interactively** in an Interactions window or a REPL, with pictures inline and errors that link to their source.
+- **Debug** with breakpoints on lines and on the calls and forms within a line, stepping across files and the packages chosen for debugging, and live variables. Racketeer is the only Racket extension on the VS Code Marketplace that debugs Racket source.
+- **See results beside the code:** text, and the images, picts and plots a program prints, as it runs. In a debug session a plot opens in its own Racket window to zoom and rotate, which needs a graphical display.
+- **Test** from VS Code's Testing view: run, debug or measure coverage of a file, or of a single RackUnit case in a plain `racket` or `racket/base` module that holds only definitions and literal-named cases, or in a suite after its first run.
+- **Work interactively** in an Interactions window, with pictures inline and errors that link to their source, or in a plain Racket REPL in the terminal.
 - **Navigate** with hover documentation, completion, go to definition and live diagnostics, from the bundled [racket-langserver](https://github.com/jeapostrophe/racket-langserver) that waits for a pause in typing before it analyses.
-- **Find and rename across a whole project:** a workspace index follows references through every file, including ones that are not open. It uses no CPU until asked, analyses files in parallel, and reuses what has not changed.
+- **Find and rename across a whole project:** a workspace index follows references through the project's module files, including ones that are not open, up to 1,000 files of 1 MiB each and 16 MiB in all. By default it leaves out folders named `build`, `dist`, `compiled` and `node_modules`, and files such as `.rktl`, and a rename does not change them. It uses no CPU until asked, analyses up to three files at once on a machine of four or more processors, and reuses what has not changed while the window stays open.
 - **Expand and build** with the macro stepper, package management, executables and distributions.
-- **Edit Rhombus** and WXME documents with embedded boxes.
+- **Edit** WXME documents with embedded boxes, and Rhombus, whose semantic analysis needs the separate `rhombus` package.
 
 ## Install and start
 
-1. Install [Racket 9.1 or newer](https://download.racket-lang.org/), the full distribution.
+1. Install [Racket 9.1 or newer](https://download.racket-lang.org/), the full distribution, and put it on PATH or set `racketdap.racketExecutable`.
 2. Install **Racketeer** from the Extensions view.
-3. Open a trusted folder and a saved `.rkt` file. **Racket: ready** appears in the status bar when the language tools have started.
-4. Click **Run Current File** above the source to see its Results, or **Debug Current File** to stop and inspect it.
+3. Open a trusted folder and a saved `.rkt` file. **Racket: ready** appears in the status bar when the language tools have started. With Magic Racket installed, the status bar shows **Racket: external LSP** until it is disabled and the window reloaded, and the language tools and workspace index stay off.
+4. Click the play icon at the top right of the editor to see its Results, or the debug icon beside it to stop and inspect it.
 
 Debugging uses F5, F10, F11 and Shift+F11 for Continue, Step Over, Step Into and Step Out.
 
-If Racket is not on PATH, set `racketdap.racketExecutable` in Settings. An older Racket is refused on every command, with a message naming its version, its path and that setting. Minimal Racket alone lacks standard libraries and documentation the language tools use.
+If Racket is not on PATH, set `racketdap.racketExecutable` in Settings. An older Racket is refused on Run, Debug, Test Explorer, the language server and the workspace index, with a message naming its version, its path and that setting. Minimal Racket alone lacks standard libraries and documentation the language tools use.
+
+Resyntax suggestions are optional and need the separate `resyntax` package. The macro stepper, interactive plots and the WXME editor need a graphical display.
 
 Racketeer needs no separate `racket-langserver`, Magic Racket, Node.js or npm, and installs no packages into Racket by itself. To install from a package file, choose **Install from VSIX…** in the Extensions view. Remove the earlier `lamestllama.racketdap` development extension first; existing `racketdap` launch configurations and settings keep working.
 
-It is tested on Linux, Windows and macOS with Racket 9.1, and with VS Code 1.91 on Linux and the newest VS Code on all three.
+It is tested on Linux x64 and ARM64, Windows x64 and macOS ARM64 with Racket 9.1, and with VS Code 1.91 on Linux and the newest VS Code on all three.
 
 ## Run a file and see its results
 
@@ -54,13 +56,14 @@ Details: [Run, Debug, Test and REPL execution](https://github.com/lamestllama/ra
 
 ## Debug with breakpoints
 
-Stop a program at any expression, in any file of the workspace or a chosen package, and look at what it holds.
+Stop a program on a line, or at a call or form within one, in any file of the workspace or a chosen package, and look at what it holds.
 
 Click the gutter to the left of a line number, press **F9** or right-click and choose **Add Breakpoint**. Press F9 again to remove it. This works in the source file and in the captured source tab the debugger opens.
 
 - A breakpoint binds to the outermost expression that begins on its line. Use an inline breakpoint to choose a later expression on the line. On the final character of a non-tail expression, an inline breakpoint stops after that expression returns.
 - **Racket: Continue to Cursor** runs to one chosen point, once, and keeps ordinary breakpoints in force.
 - A breakpoint stays pending until its module loads. With no expression at that place, it stays unverified and says why. It never moves into another function.
+- A constant, a bare variable, a definition of either, a `struct` form, quoted data and compile-time code have no place to stop, so a breakpoint there remains unverified with an explanation. A `require`, and a line that holds only a function's header, have none either, so set the breakpoint on a line of its body.
 
 Right-click a breakpoint to add a condition, a hit count or a log message:
 
@@ -180,15 +183,15 @@ Details: [launching a program](https://github.com/lamestllama/racketeer/blob/mai
 
 ## Work interactively
 
-Keep a program loaded and try expressions against it, with pictures inline and errors that link to their source.
+Keep a program loaded and try expressions against it, in an Interactions window with pictures inline and errors that link to their source, or in a plain Racket REPL in the terminal.
 
 ### Interactions and the Debug REPL
 
-**Racket: Run in Interactions** loads the saved root module into a fresh session and opens its Interactions view beside the source. Text and images appear automatically, including expressions at the top level of the file. Try [examples/images.rkt](https://github.com/lamestllama/racketeer/blob/main/examples/images.rkt): its three pictures appear as soon as the file loads.
+**Racket: Run in Interactions** loads the saved root module into a fresh session and opens its Interactions view beside the source. Text and images appear automatically, including expressions at the top level of the file. Try [examples/images.rkt](https://github.com/lamestllama/racketeer/blob/main/examples/images.rkt) from [the repository](https://github.com/lamestllama/racketeer): its three pictures appear as soon as the file loads.
 
 - Enter an expression at the prompt and press Enter. Shift+Enter inserts a newline, and Up and Down recall earlier expressions.
 - Click a picture to open it full-size, or use **Save image…** beneath it.
-- Click an error's location to open and select the expression in the source. A file changed or deleted since the run shows a read-only **Captured** copy of the text that ran. Try `(broken)` from [examples/errors.rkt](https://github.com/lamestllama/racketeer/blob/main/examples/errors.rkt).
+- Click an error's location to open and select the expression in the source. A file changed or deleted since the run shows a read-only **Captured** copy of the text that ran. Try `(broken)` in [examples/errors.rkt](https://github.com/lamestllama/racketeer/blob/main/examples/errors.rkt) from [the repository](https://github.com/lamestllama/racketeer).
 - **Interrupt** cancels evaluation or image conversion. **Run again** saves the file and starts a fresh session. **Stop** leaves the output visible. **Program input** supplies lines or end of input to `read-line` and other input operations. **Logs** opens the session's application log.
 
 | Command | What it does |
@@ -221,7 +224,7 @@ Details: [REPL terminals](https://github.com/lamestllama/racketeer/blob/main/doc
 
 ## View images and plots
 
-Results and Interactions draw image values automatically. In a debug session:
+Results and Interactions draw the images, picts and plots a program prints. Only printed values become pictures: a value at the top level of a module or passed to `print` is drawn, while `displayln`, `display` and `write` of a pict show `#<pict>`. In a debug session:
 
 | Command | Where | What it does |
 | --- | --- | --- |
@@ -229,7 +232,7 @@ Results and Interactions draw image values automatically. In a debug session:
 | **Racket: Save Image As…** | That image editor | Keeps a copy. |
 | **Racket: Open Interactive Plot** | Command Palette, debug toolbar, or the **Variables** context menu | Opens a live value from `plot`, `plot3d`, `plot-snip` or `plot3d-snip` in a Racket window. Drag within a 2D plot to zoom and click to undo a zoom. Drag a 3D plot to rotate it. **Save PNG…** saves the current view. |
 
-Try `tile`, `drawing` and `chart` in [examples/images.rkt](https://github.com/lamestllama/racketeer/blob/main/examples/images.rkt) for `2htdp/image`, pict and plot examples, and `curve` and `surface` in [examples/interactive-plots.rkt](https://github.com/lamestllama/racketeer/blob/main/examples/interactive-plots.rkt).
+Try `tile`, `drawing` and `chart` in [examples/images.rkt](https://github.com/lamestllama/racketeer/blob/main/examples/images.rkt) for `2htdp/image`, pict and plot examples, and `curve` and `surface` in [examples/interactive-plots.rkt](https://github.com/lamestllama/racketeer/blob/main/examples/interactive-plots.rkt), both from [the repository](https://github.com/lamestllama/racketeer).
 
 **Good to know:** the Debug Console stays textual. Viewing uses the value already held and does not evaluate the expression again, but conversion or copying can run the value's code; **Racket: Cancel Evaluation** interrupts it. The live value expires when another interaction starts or the program resumes. PNG previews are limited to 8 MiB. Interactive plots need Racket's GUI libraries and a working display, and stopping or restarting the session closes its plot windows. Values from `plot/pict`, `plot/bitmap` or `plot/no-gui` stay snapshots.
 
@@ -237,9 +240,9 @@ Details: [Images and plots](https://github.com/lamestllama/racketeer/blob/main/d
 
 ## Test
 
-VS Code's **Testing** view finds workspace `.rkt` files without executing anything. Run, debug or measure coverage for one case, one file, a workspace folder or all discovered files.
+VS Code's **Testing** view finds workspace `.rkt` files without executing anything. Run, debug or measure coverage for one file, a workspace folder or all discovered files, and for one case where the Testing view can list it.
 
-- Expand a file or open it to see its direct, literal-named RackUnit `test-case` forms. Run a `run-tests` suite to see its nested cases with individual results.
+- Expand a file or open it to see its direct, literal-named RackUnit `test-case` forms, in a plain `#lang racket` or `#lang racket/base` module that holds only definitions and those cases. Run a `run-tests` suite to see its nested cases with individual results.
 - Run or debug a case from its gutter control, the Testing view or VS Code's **Test at Cursor** commands.
 - Results show check counts, test output and clickable failure locations. Teaching-language checks such as `check-expect` report counts and failure locations too.
 - Choose **Run Tests with Coverage** to see executed and unexecuted expressions in the Test Coverage view and the editor.
@@ -257,11 +260,19 @@ VS Code's **Testing** view finds workspace `.rkt` files without executing anythi
 | `racketdap.testing.exclude` | Generated directories, vendored code and `info.rkt` | Files to leave out of discovery. |
 | `racketdap.testing.sourceRoots` | `["."]` | Directories instrumented by Debug Test and Coverage. |
 
+These run, debug and measure coverage as a whole file, with no single case to choose:
+
+- a top-level `struct`, macro or expression beside `module+ test`
+- `check-equal?` or another check beside `test-case`
+- a `test-case` with a computed name
+- `#lang typed/racket`, `#lang racket/gui` and every other language or reader
+- a custom runner
+
 **Good to know:**
 
 - Each file runs in a fresh process, using its `test` submodule if it has one and otherwise its module body, never `main`.
 - Running one case still runs suite construction and fixtures, and skips the other case bodies. Generated tests need stable names and ordering for individual reruns.
-- Other readers, custom runners and mixed test forms run a whole file. The Testing view does not yet implement all package test metadata.
+- The Testing view does not yet implement all package test metadata.
 - A handled RackUnit failure is reported normally rather than stopping the debugger, so set a source breakpoint to investigate it.
 - A plain Racket module using `test-engine/racket-tests` must call `(test)` itself.
 - Coverage measures executed expressions, not branches or functions. It does not measure transformer code or files never loaded, and it omits edited files until coverage runs again.
@@ -296,7 +307,11 @@ Details: [Language server](https://github.com/lamestllama/racketeer/blob/main/do
 
 ## Find and rename across a project
 
-**Find All References** and **Rename Symbol** (F2) reach every Racket module in a trusted workspace, including files that are not open. Unsaved buffers count as their files' text. Nothing is analysed until a request asks: the first request after a change waits for a pass, which can be cancelled and keeps what it finished, and the next pass analyses again only what changed. The status bar counts the files of a pass and warns when references are partial.
+**Find All References** and **Rename Symbol** (F2) follow references through the module files of a trusted workspace, including files that are not open: `.rkt`, `.ss`, `.scm` and `.scrbl`, up to 1,000 files of 1 MiB each and 16 MiB in all. Unsaved buffers count as their files' text. Nothing is analysed until a request asks: the first request after a change waits for a pass, which can be cancelled and keeps what it finished, and while the window stays open the next pass analyses again only what changed. A pass analyses three files at once on six or more processors, two on four or five, and one on fewer. The status bar counts the files of a pass and warns when references are partial.
+
+**What a rename leaves unchanged.** By default the index leaves out folders named `.git`, `compiled`, `node_modules`, `.test-output`, `dist` and `build` at any depth, symbolic links, and files of other types such as `.rktl`. A rename does not change callers in those folders and files, and the index still reports ready, so check them by hand. A module in an excluded folder counts only while it is open in the editor. To change the folders, set `racket-langserver.workspaceAnalysis.excludedDirectories`: its value replaces the whole list. No setting changes the file types.
+
+A file over a limit is different: it makes the index partial, and rename then refuses.
 
 Rename shows VS Code's usual preview and checks that identifiers keep their bindings before offering edits. It keeps explicit import aliases, nested prefixes and prefixes around selective imports.
 
@@ -310,7 +325,7 @@ Rename shows VS Code's usual preview and checks that identifiers keep their bind
 | `racket-langserver.workspaceAnalysis.maxFileBytes` | `1048576` | Largest source file analysed. |
 | `racket-langserver.workspaceAnalysis.timeoutSeconds` | `20` | Time limit per file. A request also stops waiting, and says so, once sources keep changing for this long with no more files analysed. |
 
-**Good to know:** a file that fails analysis, or reaching a limit, makes the index partial, and rename then refuses and says which file or limit stopped it. Rename can also refuse a selector over composed imports, a phase-shifted use, or a selector shared by several export phases. Compile-time code in different files can run at the same moment. Each extra worker adds about 260 MB while a pass runs. A macro that reads a file it does not register sees that file only at the next change to a file loaded with it, after **Racket: Refresh Workspace References**, or after a restart. Excluded files, environment changes and nondeterministic macros also need a refresh.
+**Good to know:** a file that fails analysis, or a file over a limit, makes the index partial, and rename then refuses. The **Racket Language Server** output names a file that failed or went over the size limit. The limits on file count and file size are settings; the 16 MiB in all is not. Rename can also refuse a selector over composed imports, a phase-shifted use, or a selector shared by several export phases. Compile-time code in different files can run at the same moment. Each extra worker adds about 260 MB while a pass runs. A macro that reads a file it does not register sees that file only at the next change to a file loaded with it, after **Racket: Refresh Workspace References**, or after a restart. Excluded files, environment changes and nondeterministic macros also need a refresh.
 
 Details: [Workspace references](https://github.com/lamestllama/racketeer/blob/main/docs/editor-tools.md#workspace-references) and [rename across files](https://github.com/lamestllama/racketeer/blob/main/docs/editor-tools.md#rename-across-files).
 
@@ -336,7 +351,7 @@ See what a macro does, step by step, in Racket's macro-stepper window.
 | **Racket: Open Line or Selection in Macro Stepper** (**Alt+Shift+Enter**) | Opens the complete selected forms, or the current line, in a fresh Racket namespace. |
 | **Racket: Open File in Macro Stepper** | Expands the entire module with its own imports and macro definitions. |
 
-Both use the current buffer, including unsaved edits, and do not save it. Close the stepper window to finish, or close its **Racket Macro Stepper** terminal to cancel. Startup and expansion errors appear in that terminal. Try [examples/macro-stepper.rkt](https://github.com/lamestllama/racketeer/blob/main/examples/macro-stepper.rkt).
+Both use the current buffer, including unsaved edits, and do not save it. Close the stepper window to finish, or close its **Racket Macro Stepper** terminal to cancel. Startup and expansion errors appear in that terminal. Try [examples/macro-stepper.rkt](https://github.com/lamestllama/racketeer/blob/main/examples/macro-stepper.rkt) from [the repository](https://github.com/lamestllama/racketeer).
 
 **Good to know:** expansion runs compile-time code, but not the module's runtime body. The stepper is a separate window that needs the full Racket installation and a graphical desktop.
 
@@ -373,7 +388,7 @@ Turn a module into something that runs on its own. With a source module open, ru
 | **Racket: Build Executable…** | An executable with the code embedded. It can still need runtime files. |
 | **Racket: Create Distribution…** | A directory holding an executable and its runtime dependencies. |
 
-For a repeatable build, add a `racket-build` task to `.vscode/tasks.json`, with `action` (`launcher`, `executable` or `distribution`), `source`, `output`, `gui`, and `libraries` or `languages` for embedded executables. Paths are relative to the task's workspace folder, and task variables and `dependsOn` work as usual. The folder's `racketdap.racketExecutable` setting supplies the build tools. Try [examples/application](https://github.com/lamestllama/racketeer/tree/main/examples/application).
+For a repeatable build, add a `racket-build` task to `.vscode/tasks.json`, with `action` (`launcher`, `executable` or `distribution`), `source`, `output`, `gui`, and `libraries` or `languages` for embedded executables. Paths are relative to the task's workspace folder, and task variables and `dependsOn` work as usual. The folder's `racketdap.racketExecutable` setting supplies the build tools. Try [examples/application](https://github.com/lamestllama/racketeer/tree/main/examples/application) from [the repository](https://github.com/lamestllama/racketeer).
 
 **Good to know:** a distribution targets compatible operating systems and architectures, and may need system libraries on the destination. Declare data files with `define-runtime-path` so that they are distributed. A cancelled or failed build can leave partial output, so check that the task completed before using a build.
 
@@ -397,7 +412,7 @@ warning debug@network none@storage
 
 The default is `error`. Set `racketdap.logs.filter` for new sessions, or `logFilter` in a launch configuration to override it.
 
-Try [examples/logging.rkt](https://github.com/lamestllama/racketeer/blob/main/examples/logging.rkt) in Interactions: open its log, change the filter to `warning debug@network`, then evaluate `(sample-logs)`.
+Try [examples/logging.rkt](https://github.com/lamestllama/racketeer/blob/main/examples/logging.rkt) from [the repository](https://github.com/lamestllama/racketeer) in Interactions: open its log, change the filter to `warning debug@network`, then evaluate `(sample-logs)`.
 
 **Good to know:** a filter affects new messages only. Logs belong to debugger-backed sessions, including Interactions and tests, so a run in the terminal uses Racket's own logging facilities. Stopped sessions keep their logs until the editor reloads, within limits, and omissions are reported.
 

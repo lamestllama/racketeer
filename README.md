@@ -1,33 +1,35 @@
 # Racketeer: Organised Racket
 
-**The Racket IDE for VS Code.** Debug, run, test, navigate and package Racket in one extension, with nothing else to install.
+**A Racket IDE for VS Code.** Debug, run, test, navigate and package Racket in one extension, with nothing to install but Racket itself.
 
 By [Eric Parsonage](https://github.com/lamestllama).
 
-- **Debug** with breakpoints on any expression, stepping across files and packages, and live variables.
-- **See results beside the code:** text, images and picts as a program runs, and plots to zoom and rotate.
-- **Test** from VS Code's Testing view: run, debug or measure coverage, down to a single RackUnit case.
-- **Work interactively** in an Interactions window or a REPL, with pictures inline and errors that link to their source.
+- **Debug** with breakpoints on lines and on the calls and forms within a line, stepping across files and the packages chosen for debugging, and live variables.
+- **See results beside the code:** text, and the images, picts and plots a program prints, as it runs. In a debug session a plot opens in its own Racket window to zoom and rotate, which needs a graphical display.
+- **Test** from VS Code's Testing view: run, debug or measure coverage of a file, or of a single RackUnit case in a plain `racket` or `racket/base` module that holds only definitions and literal-named cases, or in a suite after its first run.
+- **Work interactively** in an Interactions window, with pictures inline and errors that link to their source, or in a plain Racket REPL in the terminal.
 - **Navigate** with hover documentation, completion, go to definition and live diagnostics, from the bundled [racket-langserver](https://github.com/jeapostrophe/racket-langserver) that waits for a pause in typing before it analyses.
-- **Find and rename across a whole project:** a workspace index follows references through every file, including ones that are not open. It uses no CPU until asked, analyses files in parallel, and reuses what has not changed.
+- **Find and rename across a whole project:** a workspace index follows references through the project's module files, including ones that are not open, up to 1,000 files of 1 MiB each and 16 MiB in all. By default it leaves out folders named `build`, `dist`, `compiled` and `node_modules`, and files such as `.rktl`, and a rename does not change them. It uses no CPU until asked, analyses up to three files at once on a machine of four or more processors, and reuses what has not changed while the window stays open.
 - **Expand and build** with the macro stepper, package management, executables and distributions.
-- **Edit Rhombus** and WXME documents with embedded boxes.
+- **Edit** WXME documents with embedded boxes, and Rhombus, whose semantic analysis needs the separate `rhombus` package.
 
-Version 0.8.50 needs **VS Code 1.91 or newer** and the **full Racket 9.1 or newer distribution**, and needs no separate language server, Magic Racket, Node.js or npm. It is tested on Linux, Windows and macOS.
+Version 0.8.50 needs **VS Code 1.91 or newer** and the **full Racket 9.1 or newer distribution**, and needs no separate language server, Magic Racket, Node.js or npm. It is tested on Linux x64 and ARM64, Windows x64 and macOS ARM64 with Racket 9.1, and with VS Code 1.91 on Linux and the newest VS Code on all three. Resyntax suggestions are optional and need the separate `resyntax` package. The macro stepper, interactive plots and the WXME editor need a graphical display.
 
 ## Install and try it
 
-Install **Racketeer** from the Extensions view in VS Code, or build a package as below and install it with **Extensions: Install from VSIX…** or:
+Install [Racket 9.1 or newer](https://download.racket-lang.org/), the full distribution, and put it on PATH or set `racketdap.racketExecutable`.
+
+Install **Racketeer** from the Extensions view, or build `dist/racketeer-0.8.50.vsix` as described under [Build and test](#build-and-test) and choose **Extensions: Install from VSIX…**. From a terminal:
 
 ```sh
 code --install-extension dist/racketeer-0.8.50.vsix
 ```
 
-Open a trusted folder and a saved `.rkt` file: the language tools start automatically. Click **Run Current File** to see text and images in Results beside the source, or **Debug Current File** for breakpoints, stepping and Variables. Set `racketdap.racketExecutable` if Racket is not on PATH.
+Open a trusted folder and a saved `.rkt` file: the language tools start automatically. Click the play icon at the top right of the editor to see its Results, or the debug icon beside it to stop and inspect it.
 
-Try [examples/demo.rkt](examples/demo.rkt): place a breakpoint on line 4, evaluate `(+ subtotal 20)` in the Debug Console, then `(set! subtotal 200)`. Step Over displays `20` in the Return values scope; continuing prints `220` and `20`.
+Try [examples/demo.rkt](examples/demo.rkt) from the repository: place a breakpoint on line 4, evaluate `(+ subtotal 20)` in the Debug Console, then `(set! subtotal 200)`. Step Over displays `20` in the Return values scope; continuing prints `220` and `20`.
 
-The extension ID is `lamestllama.racketeer`; the debugger type and settings prefix are `racketdap`. Remove the earlier `lamestllama.racketdap` development extension before installing. Disable Magic Racket, if installed, to use Racketeer's bundled language client.
+The extension ID is `lamestllama.racketeer`; the debugger type and settings prefix are `racketdap`. Remove the earlier `lamestllama.racketdap` development extension before installing. Disable Magic Racket, if installed, to use the bundled client. With Magic Racket installed, the status bar shows **Racket: external LSP** until it is disabled and the window reloaded, and the language tools and workspace index stay off.
 
 ## Read more
 
@@ -37,7 +39,7 @@ The extension ID is `lamestllama.racketeer`; the debugger type and settings pref
 - [Run, Debug, Test and REPL execution](docs/workflows.md), [editing and macro expansion](docs/editor-tools.md), [package development](docs/packages.md), [building applications](docs/application-builds.md), [module dependencies](docs/module-dependencies.md) and [WXME editing](docs/wxme-editor.md) give the details.
 - Examples: [multi-file](examples/multi-file/README.md) follows four calls through nested folders, [workflow](examples/workflow/main.rkt) connects two source files, tests and the Debug REPL, and [packages](examples/packages/README.md) shows a linked package.
 
-Limits on what is offered are stated in [the extension guide](vscode/README.md#limits). The [release quality requirements](docs/quality.md) and [release records](docs/releases/) state what has been checked and what is still needed.
+Limits on what is offered are stated in [the extension guide](vscode/README.md#limits). The [release quality requirements](docs/quality.md) and [0.8.50 validation record](docs/releases/0.8.50.md) state what has been checked and what is still needed.
 
 ## Build and test
 
@@ -59,6 +61,8 @@ python3 scripts/test-vscode.py --dogfood --artifact dist/racketeer-0.8.50.vsix
 ```
 
 The extension tests itself. Open this repository in VS Code with the extension installed, open **Testing**, and select **Run All Tests**. Set a breakpoint in a test and select **Debug Test** to inspect it.
+
+Continuous integration runs the core and the installed extension on Linux x64 at every push, with the minimum and newest VS Code, and on Windows x64 and macOS ARM64 on demand. It uses Racket 9.1 and Racket's stable release, except that the installed extension on Windows and macOS uses 9.1 alone.
 
 Details: [the test workflow](tests/README.md), and [continuous integration and local checks](docs/ci.md).
 

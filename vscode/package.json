@@ -1,7 +1,7 @@
 {
   "name": "racketeer",
   "displayName": "Racketeer: Organised Racket",
-  "description": "The Racket IDE for VS Code: debug, run, test and navigate Racket, with images, plots, Test Explorer and macro stepping, and nothing else to install.",
+  "description": "A Racket IDE for VS Code: debug, run, test, navigate and package Racket in one extension, with images, plots and Test Explorer, and nothing to install but Racket itself.",
   "version": "0.8.50",
   "publisher": "lamestllama",
   "author": {
