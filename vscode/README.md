@@ -4,14 +4,14 @@
 
 By [Eric Parsonage](https://github.com/lamestllama).
 
-- **Debug** with breakpoints on lines and on the calls and forms within a line, stepping across files and the packages chosen for debugging, and live variables. Racketeer is the only Racket extension on the VS Code Marketplace that debugs Racket source.
-- **See results beside the code:** text, and the images, picts and plots a program prints, as it runs. In a debug session a plot opens in its own Racket window to zoom and rotate, which needs a graphical display.
-- **Test** from VS Code's Testing view: run, debug or measure coverage of a file, or of a single RackUnit case in a plain `racket` or `racket/base` module that holds only definitions and literal-named cases, or in a suite after its first run.
+- **Debug** with breakpoints on lines and on the calls within a line, stepping across files and chosen packages, and live variables. Racketeer is the only Racket extension on the VS Code Marketplace that debugs Racket source.
+- **See results beside the code:** text, images, picts and plots as a program prints them. While debugging, zoom and rotate a plot in its own window.
+- **Test** from VS Code's Testing view: run, debug or measure coverage of a file, or of a single RackUnit case in plain modules and suites.
 - **Work interactively** in an Interactions window, with pictures inline and errors that link to their source, or in a plain Racket REPL in the terminal.
-- **Navigate** with hover documentation, completion, go to definition and live diagnostics, from the bundled [racket-langserver](https://github.com/jeapostrophe/racket-langserver) that waits for a pause in typing before it analyses.
-- **Find and rename across a whole project:** a workspace index follows references through the project's module files, including ones that are not open, up to 1,000 files of 1 MiB each and 16 MiB in all. By default it leaves out folders named `build`, `dist`, `compiled` and `node_modules`, and files such as `.rktl`, and a rename does not change them. It uses no CPU until asked, analyses up to three files at once on a machine of four or more processors, and reuses what has not changed while the window stays open.
+- **Navigate** with hover documentation, completion, go to definition and live diagnostics, from the bundled [racket-langserver](https://github.com/jeapostrophe/racket-langserver).
+- **Find and rename across a project's module files,** including ones that are not open, with an index that uses no CPU until asked. Folders such as `build` and `dist` are left out by default.
 - **Expand and build** with the macro stepper, package management, executables and distributions.
-- **Edit** WXME documents with embedded boxes, and Rhombus, whose semantic analysis needs the separate `rhombus` package.
+- **Edit** WXME documents with embedded boxes, and Rhombus with the separate `rhombus` package.
 
 ## Install and start
 
