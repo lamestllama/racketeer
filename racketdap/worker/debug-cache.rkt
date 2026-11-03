@@ -17,6 +17,14 @@
   '("instrumentation/instrument.rkt" "instrumentation/runtime.rkt"
     "worker/expand.rkt" "worker/load.rkt" "worker/debug-cache.rkt"))
 
+;; Distinguish readers with incompatible replay records even when a running
+;; extension is replaced at its existing path.
+(define replay-format 2)
+;; Keep the identity of this loaded implementation when its files are replaced.
+(define instrumenter-hashes
+  (for/list ([file (in-list instrumenter-files)])
+    (call-with-input-file* (build-path instrumenter-root file) sha1)))
+
 (define cache-size-limit (* 512 1024 1024))
 (define (default-cache-directory)
   (build-path (find-system-path 'addon-dir) "racketeer" "debug-cache"))
@@ -26,12 +34,11 @@
 ;; library paths and links, which a .dep file records only by the file each one found.
 (define (cache-root directory)
   (define identity
-    (list (version) (system-type 'vm) (system-type 'target-machine)
+    (list replay-format (version) (system-type 'vm) (system-type 'target-machine)
           (map path->bytes* (current-library-collection-paths))
           (map collection-link-identity (current-library-collection-links))
           (path->bytes* (simplify-path instrumenter-root))
-          (for/list ([file (in-list instrumenter-files)])
-            (call-with-input-file* (build-path instrumenter-root file) sha1))))
+          instrumenter-hashes))
   (define key (let ([o (open-output-bytes)]) (write identity o) (sha1 (open-input-bytes (get-output-bytes o)))))
   (build-path directory key))
 (define (path->bytes* p) (if (path? p) (path->bytes (simplify-path p)) p))
