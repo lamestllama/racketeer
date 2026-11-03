@@ -32,12 +32,15 @@ function versionProblem(stdout, executable, env) {
     `Racketeer needs Racket ${requiredText} or newer. Set racketdap.racketExecutable to a newer Racket.`;
 }
 
-// Why this executable is too old, or nothing. One that cannot run says so itself when
-// it is started, so that is not a concern here.
+// Return a version or execution problem in words the caller can show. A failed
+// probe must not grant permission to start a server or erase a workflow error.
 function racketTooOld(executable) {
   return new Promise(resolve => {
-    execFile(executable, ['--version'], { timeout: 10000, windowsHide: true }, (error, stdout) => {
-      resolve(error ? undefined : versionProblem(stdout, executable));
+    execFile(executable, ['--version'], { timeout: 10000, killSignal: 'SIGKILL', windowsHide: true }, (error, stdout) => {
+      if (!error) return resolve(versionProblem(stdout, executable));
+      const reported = stdout && versionProblem(stdout, executable);
+      resolve(reported || `Cannot check the Racket version at ${racketPath(executable)}: ${error.message}. ` +
+        `Racketeer needs Racket ${requiredText} or newer. Check racketdap.racketExecutable.`);
     });
   });
 }

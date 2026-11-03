@@ -57,7 +57,7 @@ function registerTesting(context, sessions) {
     const pending = { sourceHash };
     pending.done = new Promise(resolve => {
       pending.child = execFile(target.racketExecutable, discoveryArgs,
-        { cwd: target.cwd, timeout: 10000, maxBuffer: 1024 * 1024, windowsHide: true }, (error, stdout) => {
+        { cwd: target.cwd, timeout: 10000, killSignal: 'SIGKILL', maxBuffer: 1024 * 1024, windowsHide: true }, (error, stdout) => {
           if (discoveries.get(item.id) !== pending || disposed) return resolve();
           item.busy = false;
           if (document.version !== version) { discoveries.delete(item.id); return resolve(); }

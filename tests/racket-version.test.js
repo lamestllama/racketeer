@@ -25,7 +25,7 @@ function load(name, dependencies) {
   const localRequire = createRequire(filename);
   const module = { exports: {} };
   vm.runInNewContext(fs.readFileSync(filename, 'utf8'), {
-    module, exports: module.exports, setTimeout, clearTimeout, setInterval, clearInterval,
+    module, exports: module.exports, process, setTimeout, clearTimeout, setInterval, clearInterval,
     require: required => Object.hasOwn(dependencies, required) ? dependencies[required] : localRequire(required)
   }, { filename });
   return module.exports;
@@ -58,11 +58,11 @@ test('a command name is reported as the file the search path finds first', stand
   assert.equal(versionProblem('Welcome to Racket v9.0 [cs].', 'racket', search), expected(file));
 });
 
-test('asking a Racket reports only that it is too old', stands, async t => {
+test('asking a Racket reports an old or unusable executable', stands, async t => {
   const old = standIn(t);
   assert.equal(await racketTooOld(old), expected(old));
   assert.equal(await racketTooOld(standIn(t, 'Welcome to Racket v9.1 [cs].')), undefined);
-  assert.equal(await racketTooOld(path.join(path.dirname(old), 'nothing here')), undefined);
+  assert.match(await racketTooOld(path.join(path.dirname(old), 'nothing here')), /Cannot check.*racketExecutable/);
 });
 
 test('Run or Debug says the Racket found is too old, and offers the setting', stands, async t => {
@@ -231,4 +231,27 @@ test('the workspace index does not start on a Racket that is too old, and each r
   }
   await assert.rejects(index.provideRenameEdits(document, { line: 0, character: 0 }, 'b', token), { message: expected(old) });
   assert.equal(started, 0);
+});
+
+test('a failed version probe gives a reason, and terminates a hung executable', stands, async t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'racket probe-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const executable = path.join(directory, 'racket');
+  fs.writeFileSync(executable, '#!/bin/sh\ntrap "" TERM\nwhile :; do :; done\n', { mode: 0o755 });
+  const children = [];
+  const implementation = load('racket-version.js', {
+    'node:child_process': { execFile(...args) {
+      const child = require('node:child_process').execFile(...args);
+      children.push(child);
+      return child;
+    } }
+  });
+  t.after(() => children.forEach(child => { if (child.exitCode === null) child.kill('SIGKILL'); }));
+  let timer;
+  const result = await Promise.race([
+    implementation.racketTooOld(executable),
+    new Promise(resolve => { timer = setTimeout(() => resolve('still waiting'), 12000); })
+  ]);
+  clearTimeout(timer);
+  assert.match(result, /Cannot check.*racketExecutable/s);
 });

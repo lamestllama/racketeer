@@ -82,7 +82,7 @@ function activate(context) {
         return undefined;
       };
       try {
-        const { stdout } = await execute(config.racketExecutable, ['--version'], { timeout: 5000, windowsHide: true });
+        const { stdout } = await execute(config.racketExecutable, ['--version'], { timeout: 5000, killSignal: 'SIGKILL', windowsHide: true });
         const problem = versionProblem(stdout, config.racketExecutable);
         if (problem) return refuse(problem);
       } catch (error) {
