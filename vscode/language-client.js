@@ -39,7 +39,7 @@ function registerLanguageTools(context, debugSources) {
   const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 10);
   status.command = 'racketdap.showLanguageServerOutput';
   let client;
-  let offeringLanguageTools = false;
+  let languageToolsOffered = false;
   let index;
   let stateListener;
   let server;
@@ -73,8 +73,8 @@ function registerLanguageTools(context, debugSources) {
   // Racket stays installed; only its language server is turned off, where it was
   // turned on, so a workspace's own setting does not override the choice.
   async function offerLanguageTools() {
-    if (offeringLanguageTools || context.globalState.get(magicRacketNoticeAnswered)) return;
-    offeringLanguageTools = true;
+    if (languageToolsOffered || context.globalState.get(magicRacketNoticeAnswered)) return;
+    languageToolsOffered = true;
     const choice = await vscode.window.showInformationMessage(
       'Magic Racket\u2019s language server is on, so Racketeer\u2019s language tools and its find and rename across a project are off. Use Racketeer\u2019s instead? Magic Racket stays installed, and the window reloads.',
       useRacketeerTools, keepMagicRacket);
