@@ -2,11 +2,12 @@
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 name: CI
 
-# CI runs when asked for, not on every push. Dispatch the workflow before a
-# release, with platforms linux, macos, windows or all. A pull request runs Linux
-# only. Windows and macOS runners cost more, macOS ten times Linux. Each platform
-# has its own concurrency group, so dispatches of different platforms run side by side.
+# A push or pull request runs Linux only. Windows and macOS runners cost more,
+# macOS ten times Linux, so they run on demand: dispatch the workflow with
+# platforms macos, windows or all. Each platform has its own concurrency group,
+# so dispatches of different platforms run side by side with a push run.
 on:
+  push:
   pull_request:
   workflow_dispatch:
     inputs:

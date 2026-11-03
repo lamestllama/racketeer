@@ -1,8 +1,7 @@
 # Continuous integration
 
-The [GitHub Actions workflow](../.github/workflows/ci.yml) runs on manual dispatch
-and pull requests, not on pushes, so a release is checked by dispatching it for
-each platform. It uses read-only repository permissions and
+The [GitHub Actions workflow](../.github/workflows/ci.yml) runs on pushes, pull
+requests and manual dispatch. It uses read-only repository permissions and
 actions pinned to commit hashes. A newer run cancels an older run of the same
 branch; failures in one matrix entry do not cancel the other entries.
 
