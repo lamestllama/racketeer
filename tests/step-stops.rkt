@@ -182,6 +182,15 @@
      '((before "(void (increment 4) (increment n))")
        (before "4") (after "4") (before "n") (after "n")
        (after "(void (increment 4) (increment n))" "#<void>"))))
+  (for ([template '("(if #f value 99)" "(+ 1 9)")])
+    (test-case (format "generated ~a does not claim to be its source operand" template)
+      (check-equal?
+       (stops (string-append "#lang racket/base\n(require (for-syntax racket/base))\n"
+                "(define-syntax (changed stx) (syntax-case stx () [(_ value) (syntax/loc #'value "
+                template ")]))\n(void (changed 4))\n"))
+       (append '((before "(void (changed 4))"))
+               (if (equal? template "(+ 1 9)") '() '((before "4") (after "4")))
+               '((after "(void (changed 4))" "#<void>"))))))
   (test-case "an operation that hands on its operand's value shows it"
     (check-equal?
      (stops (string-append "#lang racket/base\n(require (for-syntax racket/base))\n"

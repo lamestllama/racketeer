@@ -151,6 +151,7 @@
                            #:module-bindings [known-module-bindings '()]
                            #:module-context [module-context #f]
                            #:expression-boundary? [expression-boundary? #f]
+                           #:source-operands [source-operands '()]
                            #:coverage? [coverage? #f]
                            #:tail? [initial-tail? #f])
   (define descriptors '())
@@ -379,7 +380,7 @@
   ;; belongs to it. This is decided before any code is written: a generated site can come
   ;; before the authored code, or sit apart from it. A constant or a variable cannot stop,
   ;; so an operation written around one is the only stop its text has, and keeps it.
-  (define authored-ranges (make-hash))
+  (define authored-ranges (make-hash (map (lambda (range) (cons range 'operand)) source-operands)))
   (define (range-of located)
     (and located (cons (syntax-position located) (syntax-span located))))
   (define (authored-here? expression)
@@ -399,7 +400,8 @@
          (eq? (hash-ref authored-ranges range #f) 'operand)
          (not (let gives-operand? ([e expression])
                 (or (equal? (authored-here? e) range)
-                    (ormap gives-operand? (result-subexpressions e)))))))
+                    (let ([results (result-subexpressions e)])
+                      (and (pair? results) (andmap gives-operand? results))))))))
   (define (range-belongs-to-authored? expression range)
     (case (hash-ref authored-ranges range #f)
       [(expression) #t]

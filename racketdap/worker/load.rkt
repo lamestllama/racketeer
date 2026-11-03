@@ -148,6 +148,22 @@
     (define live? (or (not rec) (recording-live? rec)))
     (define next-form 0)
     (lambda (form)
+      ;; Retain the source atoms before expansion can discard them. Their ranges
+      ;; remain source atoms even when generated code borrows their locations.
+      (define source-operands
+        (let walk ([v form])
+          (cond
+            [(syntax? v)
+             (define e (syntax-e v))
+             (define atom? (or (not (pair? e))
+                               (and (syntax? (car e)) (eq? (syntax-e (car e)) 'quote))))
+             (append (if (and atom? (syntax-original? v)
+                               (equal? (syntax-source v) selected-source)
+                               (syntax-position v) (syntax-span v))
+                          (list (cons (syntax-position v) (syntax-span v))) '())
+                     (if atom? '() (walk e)))]
+            [(pair? v) (append (walk (car v)) (walk (cdr v)))]
+            [else '()])))
       (parameterize ([current-eval ordinary-eval])
         (define wrapper-name (gensym 'racketdap-form))
         ;; This module's scope must not reach the program's module: compiled code
@@ -170,7 +186,7 @@
           (define-values (annotated sites table)
             (instrument-module expanded selected-source fresh-id
                                #:form (cons unit index) #:module-context bindings
-                               #:coverage? coverage?
+                               #:coverage? coverage? #:source-operands source-operands
                                #:expression-boundary? expression-boundary?))
           (define module-path (hash-ref module-paths bindings '()))
           (when live?
