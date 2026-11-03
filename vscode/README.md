@@ -13,6 +13,12 @@ By [Eric Parsonage](https://github.com/lamestllama).
 - **Expand and build** with the macro stepper, package management, executables and distributions.
 - **Edit** WXME documents with embedded boxes, and Rhombus with the separate `rhombus` package.
 
+![A Racket file beside its Results: a curve, a 3D surface and a picture](https://raw.githubusercontent.com/lamestllama/racketeer/main/docs/images/results-with-plots.png)
+
+![Stopped at a breakpoint, with Variables and the Call Stack showing](https://raw.githubusercontent.com/lamestllama/racketeer/main/docs/images/debugging.png)
+
+![The Testing view with one failed case, and its failure shown in the editor](https://raw.githubusercontent.com/lamestllama/racketeer/main/docs/images/test-explorer.png)
+
 ## Install and start
 
 1. Install [Racket 9.1 or newer](https://download.racket-lang.org/), the full distribution, and put it on PATH or set `racketdap.racketExecutable`.

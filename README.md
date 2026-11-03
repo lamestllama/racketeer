@@ -15,6 +15,12 @@ By [Eric Parsonage](https://github.com/lamestllama).
 
 Version 0.8.50 needs **VS Code 1.91 or newer** and the **full Racket 9.1 or newer distribution**, and needs no separate language server, Magic Racket, Node.js or npm. It is tested on Linux x64 and ARM64, Windows x64 and macOS ARM64 with Racket 9.1, and with VS Code 1.91 on Linux and the newest VS Code on all three. Resyntax suggestions are optional and need the separate `resyntax` package. The macro stepper, interactive plots and the WXME editor need a graphical display.
 
+![A Racket file beside its Results: a curve, a 3D surface and a picture](docs/images/results-with-plots.png)
+
+![Stopped at a breakpoint, with Variables and the Call Stack showing](docs/images/debugging.png)
+
+![The Testing view with one failed case, and its failure shown in the editor](docs/images/test-explorer.png)
+
 ## Install and try it
 
 Install [Racket 9.1 or newer](https://download.racket-lang.org/), the full distribution, and put it on PATH or set `racketdap.racketExecutable`.
