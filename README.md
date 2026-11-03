@@ -83,8 +83,8 @@ the execution model and current limits.
 - Package install/link/update/remove, build and test commands, and source
   debugging of named installed packages, including links outside the workspace.
 
-The [debugger parity matrix](docs/parity/DEBUGGER.md) maps debugger
-controls to this extension and records the tested scope. Runtime instrumentation
+The [debugger feature list](docs/debugger.md) records what the debugger does and
+the tested scope. Runtime instrumentation
 accepts additional module languages through their own module-begin expansion;
 regressions cover Scheme, Typed Racket, teaching languages, and custom languages.
 Selected modules permit interactive assignment to their definitions.

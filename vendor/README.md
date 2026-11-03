@@ -61,9 +61,9 @@ Racketeer's own patches follow:
   internal callers, which an upstream multi-line edit test needs.
 
 - `analysis-wait.patch`: wait 250 ms after the last edit of a document before
-  analysing it, and before analysing again the open documents that load it.
-  Upstream starts a whole-file Check Syntax
-  for every edit, which held a core during typing. A request a person makes, such
+  analysing it, and before analysing again the open documents that load it. Upstream
+  starts a whole-file Check Syntax for every edit: 30 s of typing at 5 keys per second
+  into a 232-line module used 29.3 s of CPU on Linux ARM64, and 3.5 s with this wait. A request a person makes, such
   as hover or references, starts it at once; semantic tokens and inlay hints, which
   a client sends by itself, join the wait and answer from the current text after it.
   An edit still cancels a running analysis at once. The wait is a time in the attempt, not a timer, and is described in

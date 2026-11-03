@@ -165,15 +165,12 @@ Generated expressions sharing a range contribute one result. Edited sources and
 different revisions loaded by separate test processes are omitted rather than
 combined. Run coverage again after editing to refresh the totals.
 
-The behaviour comparison used original examples in the Racket 9.1 IDE. Two
-`check-expect` forms, one failing, produced two tests and one failure. With
-syntactic test suite coverage enabled, `(if flag 'left 'right)` called with
-`#t` marked `'right` as unexecuted. Racketeer's native test results and coverage
-now report those same outcomes. The regression fixtures in
+Two `check-expect` forms, one failing, report two tests and one failure. With
+coverage on, `(if flag 'left 'right)` called with `#t` marks `'right` as unexecuted.
+The original regression fixtures in
 [`teaching-tests.test.js`](../tests/teaching-tests.test.js) and
-[`test-coverage.test.js`](../tests/test-coverage.test.js) were written independently
-from those observations and public documentation, without consulting that IDE's
-implementation or tests. This comparison establishes these behaviours only.
+[`test-coverage.test.js`](../tests/test-coverage.test.js) check these outcomes, and
+establish these behaviours only.
 
 The adapter accepts `coverage: true` together with `testMode: true` and
 `noDebug: true`. Before the final test summary it emits `racketdap/coverage`

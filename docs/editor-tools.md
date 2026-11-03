@@ -16,9 +16,8 @@ numbers. A branch may be in tail position within an `if` that is itself an
 argument to another call; this does not make that branch a tail call of the
 enclosing function. Try [the tail-position example](../examples/tail-positions.rkt).
 
-These facts come from expansion through the documented
-analysis callback of Racket's check-syntax library,
-including macros that preserve source positions. They are hidden after an edit
+These facts come from expansion, through the `syncheck:add-tail-arrow` callback of
+Racket's check-syntax library, including macros that preserve source positions. They are hidden after an edit
 until analysis succeeds again. Generated expressions without usable source
 positions may have no hover information. Each direction shows up to eight
 related locations. Existing type, binding and documentation information remains
@@ -102,8 +101,8 @@ must be enabled for Rename.
 
 Source snapshots use Racket's documented
 [module loading hooks](https://docs.racket-lang.org/syntax/module-helpers.html)
-and the bundled analyser's binding queries. Import edits use documented
-callbacks of Racket's check-syntax library,
+and the bundled analyser's binding queries. Import edits use the `syncheck:add-arrow/name-dup/pxpy` callback of Racket's
+check-syntax library,
 [require forms](https://docs.racket-lang.org/reference/require.html),
 and [module export reflection](https://docs.racket-lang.org/reference/Module_Names_and_Loading.html).
 Nested import forms use the outer transformer's documented

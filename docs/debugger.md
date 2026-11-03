@@ -1,16 +1,13 @@
-# Debugger parity target
+# Debugger features
 
-The initial target is the behaviour of a graphical Racket debugger.
-The overall target includes IDE facilities, presented through native
-VS Code workflows. This matrix covers the debugger portion; it does not establish
-full IDE parity.
+What the debugger does, and the regression evidence for each behaviour.
 
-| Debugger operation | Extension behaviour | Regression evidence |
+| Feature | Behaviour | Regression evidence |
 | --- | --- | --- |
 | Start paused | Debug Current File / `stopOnEntry` | DAP and editor suites |
-| Go, Stop | Continue; Stop terminates the worker and descendants | DAP suite |
-| Step | Step Into visits expression starts and completions | debugger-parity suite |
-| Over, Out | Step Over and Step Out follow expression/activation return targets; bounded tail frames | stepping and conformance suites |
+| Continue, Stop | Continue runs to the next stop; Stop terminates the worker and descendants | DAP suite |
+| Step Into | Visits expression starts and completions | debugger-parity suite |
+| Step Over, Step Out | Follow expression/activation return targets; bounded tail frames | stepping and conformance suites |
 | Pause | Resumable breaks, live lexical variables, approximate source location | blocked primitive and interactive-call regressions |
 | Boundary breakpoints | Inline start/end locations; completion Return values scope | debugger-parity suite |
 | Continue to a point | One-use target independent of ordinary breakpoints | protocol and editor suites |
@@ -71,17 +68,55 @@ assignments can change their definitions. This uses Racket's documented
 [debugging compilation setting](https://docs.racket-lang.org/guide/module-set.html).
 Unselected dependencies retain normal loading and assignment protections.
 
-This is a tested feature mapping, not a guarantee for every third-party language
+This is a tested feature list, not a guarantee for every third-party language
 or platform. Validation uses Linux ARM64, Racket 9.1 CS, and VS Code 1.98.1. Text
-sources are the current editor input. WXME documents, graphical syntax,
-and inline rich Interactions rendering remain outstanding IDE capabilities. Static
-image previews support choosing among multiple returned values; interactive plots
-and embedded editor objects remain outside that slice. Compiler-phase debugging,
-tracing every caught exception, reverse execution, and arbitrary-process attach
-are not part of the documented graphical-debugger baseline mapped here.
+sources are the current editor input. A WXME document is debugged through a read-only
+text snapshot. Graphical syntax and inline rich Interactions rendering remain
+outstanding. Static image previews support choosing among multiple returned values;
+interactive plots and embedded editor objects remain outside that slice.
+Compiler-phase debugging, tracing every caught exception, reverse execution, and
+arbitrary-process attach are not provided.
 
 Pause and cancellation respect Racket's break-disable regions. Nonselected
 code supplies only the nearest instrumented frame. Local syntax transformers
 are not reconstructed for console evaluation. Stop actions are thread-specific;
-other threads may keep changing shared data. No full-parity claim beyond these
-recorded operations and validation boundaries is implied.
+other threads may keep changing shared data. Nothing beyond these recorded
+operations and validation boundaries is claimed.
+
+## Third-party programs
+
+The packaged extension debugged these unmodified programs, pinned at the revisions
+shown, through its public debugger UI and protocol, on Racket 9.1 on Linux ARM64. The
+source licences stay with the programs; the regression programs are original.
+
+| Program | Revision | Scenario |
+| --- | --- | --- |
+| [Typed Racket examples](https://github.com/racket/typed-racket/blob/266429b235fbf624882456bfff55a5df761a301d/typed-racket-test/succeed/icfp-examples.rkt) | `266429b235fbf624882456bfff55a5df761a301d` | Break in `f`, inspect `x`, step through the predicate, return to its caller and finish. |
+| [Asteroids](https://github.com/ericclack/racket-examples/blob/ee858daac3577ead0c8463b9701a8653220039de/asteroids1.rkt) | `ee858daac3577ead0c8463b9701a8653220039de` | Break in the first timer callback's `move-pos`, inspect position and speed, step over angle conversion, step out and stop. Fetch `util.rkt` from the same revision. |
+| [Memory](https://github.com/racket/games/blob/eba5c6fa54c524871badb8b0e205fe37640d6c3e/memory/memory.rkt) | `eba5c6fa54c524871badb8b0e205fe37640d6c3e` | Invoke `game@`, click a card, break in `flip-and-match`, inspect enclosing unit state and step through the first predicate. |
+
+For Asteroids, a separate launcher loads the module and calls its private `go`
+procedure through the public `module->namespace` API, with `random-seed` set to 4242.
+For Memory, a launcher requires `memory.rkt` and uses `(invoke-unit game@)`. Memory uses
+its own clock seed, so its results are state transitions rather than shuffled card
+identities.
+
+Memory exposed a missing capture of macro-renamed unit state in Racketeer 0.8.7. The
+original regressions in `tests/annotator-conformance.test.js` cover source names,
+unused state, shadowing, live mutation, separate instances and an independently written
+renaming macro. Memory also exposed repeated breakpoint hits on nested conditionals
+expanded from one `cond`. The source expression now owns one stepping boundary across
+those nested forms. Separate calls and duplicated expressions retain their own
+breakpoint hits.
+
+The fix uses the documented
+[`disappeared-binding` property](https://docs.racket-lang.org/reference/stxprops.html)
+and [identifier binding equality](https://docs.racket-lang.org/reference/stxcmp.html).
+It does not infer source names from generated identifier spellings.
+
+`tests/debug-third-party-program.test.js` also debugs a Tetris program of about a
+thousand lines, fetched at a pinned commit and hash.
+
+These are specific debugger scenarios, not complete tests of each application.
+Keyboard handlers, every game path, other Racket versions and other operating systems
+are not covered by them.

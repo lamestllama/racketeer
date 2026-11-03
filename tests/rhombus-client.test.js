@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const test = require('./support/node-test');
+const { languageServer, until } = require('./language-server-project');
 
 // These contract tests supplement tests/vscode-rhombus.js, which requires the
 // real server and private Rhombus runtime in the installed-editor harness.
@@ -88,6 +89,60 @@ test('the analysis wait is declared as the server reads it, and reaches it in th
   assert.equal(setting.default, Number(/default-analysis-wait-milliseconds (\d+)\)/.exec(settings)[1]));
   assert.equal(setting.maximum, Number(/maximum-analysis-wait-milliseconds (\d+)\)/.exec(settings)[1]));
   assert.match(fs.readFileSync(path.join(server, 'common/interfaces.rkt'), 'utf8'), /#:json analysisWaitMilliseconds\]/);
+});
+
+test('both formatter settings offer language, and neither offers the name the server has for it', () => {
+  const { properties } = require('../vscode/package.json').contributes.configuration;
+  for (const setting of ['documentFormatter', 'indentationFormatter']) {
+    assert.deepEqual(properties[`racket-langserver.formatting.${setting}`].enum, ['fixw', 'language']);
+  }
+});
+
+test('settings reach the server by its reading them, with language under the name the server knows', async t => {
+  const instance = fixture([{ languageId: 'racket' }]);
+  t.after(() => instance.language.dispose());
+  await instance.language.whenReady();
+  const { workspace } = instance.clients[0].options.middleware;
+  const sent = [];
+  await workspace.didChangeConfiguration(['racket-langserver'], async sections => { sent.push(sections); });
+  assert.deepEqual(sent, [undefined], 'A change sends no settings, so the server asks for them');
+  const read = async (...sections) => JSON.parse(JSON.stringify(
+    await workspace.configuration({ items: sections.map(() => ({})) }, {}, () => sections)));
+  const section = (documentFormatter, indentationFormatter) => ({
+    analysisWaitMilliseconds: 40, formatting: { documentFormatter, indentationFormatter, fmtSettings: { width: 80 } } });
+  assert.deepEqual(await read(section('language', 'language')), [section('drracket', 'drracket')]);
+  assert.deepEqual(await read(section('fixw', 'language')), [section('fixw', 'drracket')]);
+  assert.deepEqual(await read(section('fmt', 'fixw')), [section('fmt', 'fixw')]);
+  assert.deepEqual(await read(section('drracket', 'drracket')),
+    [{ analysisWaitMilliseconds: 40, formatting: { fmtSettings: { width: 80 } } }], 'The old value is as good as not set');
+  assert.deepEqual(await read({ resyntax: { enable: true } }, null, 7), [{ resyntax: { enable: true } }, null, 7]);
+});
+
+test('language selects the indenter in the server, and the old value leaves its default', async t => {
+  const instance = fixture([{ languageId: 'racket' }]);
+  t.after(() => instance.language.dispose());
+  await instance.language.whenReady();
+  const { workspace } = instance.clients[0].options.middleware;
+  const server = await languageServer(t, { capabilities: { workspace: { configuration: true } } });
+  let documentFormatter = 'fixw';
+  server.connection.onRequest('workspace/configuration', (params, token) =>
+    workspace.configuration(params, token, () => [{ formatting: { documentFormatter } }]));
+  await server.open('format.rkt', '#lang racket/base\n(define  (f  x)\n(+ x   1))\n');
+  // fixw also rewrites the spaces inside a line; the indenter changes only where a line starts.
+  const formatted = async () => (await server.request('formatting', 'format.rkt',
+    { options: { tabSize: 2, insertSpaces: true } })).map(edit => edit.newText);
+  const fixw = ['(define (f x)', '  (+ x 1))'], indenter = ['  '];
+  const choose = async (value, expected) => {
+    documentFormatter = value;
+    await workspace.didChangeConfiguration(['racket-langserver'], () =>
+      server.connection.sendNotification('workspace/didChangeConfiguration', { settings: null }));
+    await until(async () => JSON.stringify(await formatted()) === JSON.stringify(expected),
+      `${value} formats as expected`, server.errors, 60000);
+  };
+  await choose('language', indenter);
+  await choose('drracket', fixw);
+  await choose('language', indenter);
+  await choose('fixw', fixw);
 });
 
 for (const source of ['bundled', 'installed']) test(`Rhombus-only startup registers language analysis, leaves its index to the first request and shows status (${source})`, async t => {

@@ -148,8 +148,9 @@ keeps the entry-module behaviour above. Neither mode pauses in uninstrumented
 or compile-time code, and both are ignored by Run Without Debugging.
 
 VS Code keeps its native **Continue**, **Step Into**, **Step Over** and **Step
-Out** controls. **Call Stack**, **Variables** and **Watch** also keep
-their native VS Code names.
+Out** controls. Continue runs until a breakpoint, an exception or the end of the
+program. **Call Stack**, **Variables** and **Watch** also keep their native VS Code
+names.
 
 Step Into visits expression starts and completions. Step Over can stop at an
 expression's completion. When a function returns, this completion stop remains
@@ -249,8 +250,10 @@ positions. This information clears after edits until fresh analysis succeeds.
 Unused imports appear as informational **unused require** diagnostics.
 Syntax-template identifiers show **Predicted binding** when their binding is
 unconfirmed. These labels refresh with source analysis after edits.
-Formatting uses bundled `fixw`; choose the other value through the
-`racket-langserver.formatting.documentFormatter` or `indentationFormatter` settings.
+Formatting uses bundled `fixw`. Choose `language` through the
+`racket-langserver.formatting.documentFormatter` or `indentationFormatter` settings to
+indent by the rules of the file's own language, which leaves all but each line's
+leading space alone.
 Basic syntax highlighting, bracket pairing and commenting also work before
 the server is ready. Save new files to enable semantic language tools.
 
@@ -646,8 +649,8 @@ all package test metadata.
 This remains a development release. Runtime debugging is tested with
 `racket/base`, `racket`, Scheme, Typed Racket, teaching languages, custom module
 languages, plain files and GUI callbacks. Other languages and operating systems
-need further testing. The repository's `docs/parity/DEBUGGER.md` records the
-debugger feature mapping and validation scope.
+need further testing. The repository's `docs/debugger.md` records the debugger's
+features and validation scope.
 
 Caught-exception tracing, transformer-phase stepping, arbitrary-process attach,
 reverse execution, full TTY input and a graphical source editor are

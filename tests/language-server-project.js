@@ -20,7 +20,7 @@ async function until(check, description, diagnostics = () => '', timeout = 15000
   assert.fail(`${description}: ${diagnostics()}`);
 }
 
-async function languageServer(t, { workspace = true, folders } = {}) {
+async function languageServer(t, { workspace = true, folders, capabilities = {} } = {}) {
   const directory = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'racketeer-imports-')));
   const child = spawn('racket', [path.join(root, 'vscode/language-server.rkt')], {
     cwd: directory, stdio: 'pipe', env: { ...process.env, PLTADDONDIR: addon }
@@ -38,7 +38,7 @@ async function languageServer(t, { workspace = true, folders } = {}) {
     child.stdin.destroy(); child.stdout.destroy(); child.stderr.destroy();
     await closed; fs.rmSync(directory, { recursive: true, force: true });
   });
-  await connection.sendRequest('initialize', { processId: process.pid, rootPath: workspace ? directory : null, rootUri: workspace ? uri(directory) : null, capabilities: {}, ...(folders ? { workspaceFolders: folders.map(file => ({ uri: uri(file), name: path.basename(file) })) } : {}) });
+  await connection.sendRequest('initialize', { processId: process.pid, rootPath: workspace ? directory : null, rootUri: workspace ? uri(directory) : null, capabilities, ...(folders ? { workspaceFolders: folders.map(file => ({ uri: uri(file), name: path.basename(file) })) } : {}) });
   await connection.sendNotification('initialized', {});
   const filename = name => path.join(directory, name);
   const address = name => /^(untitled|file):/.test(name) ? name : uri(filename(name));

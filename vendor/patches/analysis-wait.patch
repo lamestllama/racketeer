@@ -56,7 +56,7 @@ index 7ea72de..f043530 100644
  ;; formatting must remain safe for ranges and on-type requests. Keep the two
  ;; selections distinct instead of silently substituting one for the other.
 diff --git a/lsp/analysis-lifecycle.md b/lsp/analysis-lifecycle.md
-index 0b3cba3..9e94af6 100644
+index 0b3cba3..36d4b6c 100644
 --- a/lsp/analysis-lifecycle.md
 +++ b/lsp/analysis-lifecycle.md
 @@ -61,7 +61,8 @@ The `owner` submodule exports operations for the session consumer only. Open
@@ -80,7 +80,7 @@ index 0b3cba3..9e94af6 100644
  - `supervised-worker.rkt`: `Supervised-Worker`, resource ownership, timeout and
    premature-exit detection. It suppresses worker stdout and releases resources
    before reporting a result. Cancelling work does not kill its supervisor;
-@@ -121,10 +122,63 @@ workspace requests. Injecting a different publication workspace alone does not
+@@ -121,10 +122,62 @@ workspace requests. Injecting a different publication workspace alone does not
  create an isolated LSP session; the request layer must use that same workspace.
  Its folders are also project roots for imported modules, as described below.
  
@@ -88,8 +88,7 @@ index 0b3cba3..9e94af6 100644
 +
 +An edit cancels any running analysis of its document at once, since that text is
 +gone, and then waits 250 ms, or as set below, before starting another; each further edit restarts
-+the wait. So a burst of edits analyses its last text once. This wait
-+treats running and pending checks the same way, with the same 250 ms. The wait
++the wait. So a burst of edits analyses its last text once. The wait
 +belongs to the attempt: edit installs an attempt in the `waiting` state with the
 +time it is due, and its completion is what `SafeDoc-analysis-completion` holds, so
 +a waiter has an event from the moment of the edit and the attempt obeys every rule
@@ -145,7 +144,7 @@ index 0b3cba3..9e94af6 100644
  table the worker fills with every module file the expansion loads. An import
  of a file with an open buffer reads that buffer, unsaved edits included. Two
  buffers for one path make that import an error rather than a choice between
-@@ -135,13 +189,13 @@ ordinary compiled loading, even below a project root. Analysis never writes
+@@ -135,13 +188,13 @@ ordinary compiled loading, even below a project root. Analysis never writes
  compiled files.
  
  The controller keeps, for each open buffer, the module files its accepted
@@ -161,7 +160,7 @@ index 0b3cba3..9e94af6 100644
  
  ## Available results and fresh completion
  
-@@ -151,7 +205,7 @@ joined—either a newly scheduled one or a reused completed success's event.
+@@ -151,7 +204,7 @@ joined—either a newly scheduled one or a reused completed success's event.
  Available analysis may answer queries while that event is pending. Restoring a
  product never completes that event or starts Resyntax.
  
@@ -170,7 +169,7 @@ index 0b3cba3..9e94af6 100644
  attempt is removed. An accepted available result retains its completion event,
  so repeated acquisitions can reuse success without retaining the job. Resyntax
  acceptance compares its parent completion with the installed result's completion;
-@@ -198,6 +252,7 @@ Virtual sources never enter retention. Shutdown stops work and clears retention.
+@@ -198,6 +251,7 @@ Virtual sources never enter retention. Shutdown stops work and clears retention.
  `tests/lsp/source-controller-test.rkt` covers ordered observation through the
  production consumer. `analysis-controller-test.rkt` covers attempt identity,
  bounds, acceptance, available facts, cancellation, and URI preservation.

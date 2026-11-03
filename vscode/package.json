@@ -420,19 +420,19 @@
           "type": "string",
           "enum": [
             "fixw",
-            "drracket"
+            "language"
           ],
           "default": "fixw",
-          "description": "Formatter for whole documents."
+          "description": "Formatter for whole documents: bundled fixw, or language, which indents by the rules of the file's own language."
         },
         "racket-langserver.formatting.indentationFormatter": {
           "type": "string",
           "enum": [
             "fixw",
-            "drracket"
+            "language"
           ],
           "default": "fixw",
-          "description": "Indentation formatter for selections and on-type formatting."
+          "description": "Indentation formatter for selections and on-type formatting: bundled fixw, or language, which indents by the rules of the file's own language."
         },
         "racket-langserver.resyntax.enable": {
           "type": "boolean",

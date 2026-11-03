@@ -126,8 +126,7 @@ Its folders are also project roots for imported modules, as described below.
 
 An edit cancels any running analysis of its document at once, since that text is
 gone, and then waits 250 ms, or as set below, before starting another; each further edit restarts
-the wait. So a burst of edits analyses its last text once. This wait
-treats running and pending checks the same way, with the same 250 ms. The wait
+the wait. So a burst of edits analyses its last text once. The wait
 belongs to the attempt: edit installs an attempt in the `waiting` state with the
 time it is due, and its completion is what `SafeDoc-analysis-completion` holds, so
 a waiter has an event from the moment of the edit and the attempt obeys every rule

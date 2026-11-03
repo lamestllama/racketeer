@@ -16,6 +16,19 @@ const isLanguageDocument = document => languageIds.includes(document?.languageId
 // has been validated; this also guards range and on-type formatting requests.
 const racketFormattingOnly = (document, ...args) => document.languageId === 'rhombus'
   ? [] : args.pop()(document, ...args);
+// The settings call the formatter that follows a language's indentation rules
+// `language`, and the server has its own name for it. That name is no value of
+// the settings: left out, it leaves the server on its default.
+const serverLanguageFormatter = 'drracket';
+function serverSettings(section) {
+  if (!section?.formatting) return section;
+  const formatting = { ...section.formatting };
+  for (const key of ['documentFormatter', 'indentationFormatter']) {
+    if (formatting[key] === 'language') formatting[key] = serverLanguageFormatter;
+    else if (formatting[key] === serverLanguageFormatter) delete formatting[key];
+  }
+  return { ...section, formatting };
+}
 
 function registerLanguageTools(context, debugSources) {
   // The language client logs through a LogOutputChannel and follows its level.
@@ -141,7 +154,12 @@ function registerLanguageTools(context, debugSources) {
         provideOnTypeFormattingEdits: racketFormattingOnly,
         provideReferences: (...args) => nextIndex.provideReferences(...args),
         prepareRename: (...args) => nextIndex.prepareRename(...args),
-        provideRenameEdits: (...args) => nextIndex.provideRenameEdits(...args)
+        provideRenameEdits: (...args) => nextIndex.provideRenameEdits(...args),
+        // Settings take one way to the server: a change asks it to read them.
+        workspace: {
+          didChangeConfiguration: (_sections, send) => send(undefined),
+          configuration: async (params, token, read) => (await read(params, token)).map(serverSettings)
+        }
       },
       outputChannel: output,
       initializationFailedHandler(error) {

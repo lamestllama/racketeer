@@ -112,7 +112,7 @@ Known product boundaries remain explicit:
   files and explicitly selected packages; dependencies are not automatically
   instrumented.
 - Remote development has not been validated. Debugger semantic coverage is
-  recorded in the [parity matrix](parity/DEBUGGER.md); claims must stay within
+  recorded in the [debugger feature list](debugger.md); claims must stay within
   that tested scope.
 
 Production release review must resolve the applicable gaps or define a narrower

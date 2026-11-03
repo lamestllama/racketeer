@@ -19,6 +19,42 @@ function prose(line) {
   return text.replace(/`[^`]*`/g, '').replace(/\]\([^)]*\)/g, ']');
 }
 
+// Racketeer's own text describes behaviour on its own terms. What stays is what code must
+// spell: Racket's module path, the module a test refuses to load and the bundled server's
+// value for a formatter. Upstream sources, upstream pull requests as submitted and binary
+// fixtures are not its own text.
+const application = /dr\s*racket/i;
+const upstream = /^vendor\/collects\/|^vendor\/patches\/pr-|\.wxme$/;
+const modulePath = /dr\s*racket\/check-syntax/gi, refusedModule = /#rx"dr\s*racket/gi, serverValue = /'dr\s*racket'/gi;
+const spelled = new Map([
+  ['vscode/workspace-rename.rkt', modulePath],
+  ['tests/predicted-bindings.rkt', modulePath],
+  ['tests/source-positions.rkt', modulePath],
+  ['vendor/patches/tail-position-hover.patch', modulePath],
+  ['tests/dependencies.test.js', refusedModule],
+  ['tests/plots-gui.test.js', refusedModule],
+  ['tests/wxme-xml-edit.test.js', refusedModule],
+  ['vscode/language-client.js', serverValue],
+  ['tests/rhombus-client.test.js', serverValue]
+]);
+
+test('first-party files describe behaviour without naming another application', () => {
+  const listed = spawnSync('git', ['ls-files'], { cwd: root, encoding: 'utf8' });
+  assert.strictEqual(listed.status, 0);
+  const found = [];
+  for (const file of listed.stdout.split('\n').filter(name => name && !upstream.test(name))) {
+    if (application.test(file)) found.push(file);
+    if (!fs.lstatSync(path.join(root, file), { throwIfNoEntry: false })?.isFile()) continue;
+    const contents = fs.readFileSync(path.join(root, file));
+    if (contents.includes(0)) continue;
+    contents.toString('utf8').split('\n').forEach((line, index) => {
+      const kept = spelled.get(file);
+      if (application.test(kept ? line.replace(kept, '') : line)) found.push(`${file}:${index + 1}: ${line.trim()}`);
+    });
+  }
+  assert.deepStrictEqual(found, []);
+});
+
 test('first-party documents use British spelling', () => {
   const listed = spawnSync('git', ['ls-files', '*.md'], { cwd: root, encoding: 'utf8' });
   assert.strictEqual(listed.status, 0);
