@@ -100,7 +100,7 @@ delegate unchanged when the nested execution has installed its own loader.
 If selected-module expansion instead enters another namespace using the same
 loader, dependency loads restore the original compilation and bytecode policy.
 This prevents instrumentation settings from changing ordinary library loads.
-Nested execution retains its evaluator and source events. Our own
+Nested execution retains its evaluator and source events. The repository's own
 RackUnit debugger suites exercise this path through Test Explorer; see the
 [developer testing workflow](../tests/README.md).
 
@@ -132,6 +132,8 @@ process exits, are errors rather than successful test runs.
 Source details are available for direct checks, immediately executed test cases
 and cases within supported runner calls. Other custom runners still contribute
 logged counts and their own output.
+Explicitly run suites also contribute their RackUnit counts; custom runners that
+replace the reporting hooks may provide details only in test output.
 
 Choose **Run with package policies (raco test)** in Test Explorer to delegate
 selected files to `raco test --process --modules --timeout +inf.0`. This enables
@@ -144,6 +146,9 @@ instrumentation, without imposing package runner policies. Use
 [Test Package](packages.md) to traverse an entire installed package.
 Use the include/exclude
 settings to select files; the working directory is the owning workspace.
+Generated directories, vendored code and `info.rkt` are excluded by default. These
+settings govern discovery; **Racket: Test Current File** explicitly runs the selected
+file.
 `racketdap.testing.sourceRoots` controls source instrumentation for Debug Test and coverage,
 using directories relative to that workspace (or absolute paths). It defaults
 to the whole workspace, and the test file is always selected. This allows
@@ -214,8 +219,8 @@ Protocol regressions cover file/submodule selection, RackUnit control flow,
 suite counts, Unicode failure locations, exception frames, required source
 debugging, `noDebug`, and cancellation isolation. Packaged editor tests exercise
 the actual Testing view commands and file actions, two simultaneous Debug
-REPLs, selection breakpoints, restart, and cancellation. Platform validation
-remains Linux ARM64; Windows and macOS are not yet verified.
+REPLs, selection breakpoints, restart, and cancellation. Platform results are
+recorded by [continuous integration](ci.md).
 
 These workflows share the expression instrumenter and runtime used by ordinary
 debug sessions.
@@ -223,3 +228,152 @@ debug sessions.
 Public API references: [VS Code Testing API](https://code.visualstudio.com/api/extension-guides/testing),
 [RackUnit extension API](https://docs.racket-lang.org/rackunit/internals.html),
 and [Racket test reporting](https://docs.racket-lang.org/raco/test.html).
+
+## Results view
+
+**Racket: Run Current File** saves and runs the root module and its `main` submodule
+once. The program exits after its work completes; Results remains available.
+**Racket: Debug Current File** opens the same view and stops on entry. File actions
+use the workspace folder as their working directory, or the file's directory when no
+folder is open.
+
+An error location opens its source when a location is available; a changed file opens
+the captured source read-only. **Run again** or **Debug again** saves the file and
+starts a fresh execution, replacing that file's output. **Stop** retains output;
+closing Results stops its execution. Results is bounded to 32 MiB and 1,000 entries
+and is not saved when the view closes.
+
+## REPL terminals
+
+**Racket: Start REPL** opens a persistent Racket terminal for the workspace.
+**Racket: Load Current File in REPL** saves and uses `racket/enter` to load or reload
+the module and enter its namespace, including its private definitions.
+**Racket: Evaluate Selection in REPL** sends the selected complete expression to the
+current workspace REPL.
+
+The default `racketdap.repl.sessionScope`, `workspace`, shares a REPL within each
+workspace folder. Set it to `file` to keep a separate plain REPL for each saved file.
+Start, Load and Evaluate Selection then use that file's terminal, named with its
+workspace-relative path. Load the file before evaluating its definitions, and load
+again after editing to reload it through `racket/enter`. Closing or exiting a REPL
+lets the next command create a fresh session. Unsaved files and commands without an
+active source file use the workspace session in either mode. Switching modes leaves
+existing sessions available; switching back reuses them. A renamed file gets a
+separate session in file mode.
+
+## Interactions and the Debug REPL
+
+**Racket: Run in Interactions** loads the saved root module into a fresh session and
+opens its Interactions view beside the source. Text and image results appear
+automatically, including expressions at the top level of the file.
+
+Output is retained until cleared, restarted or closed, within a limit of 32 MiB and
+1,000 entries. It is not saved across editor reloads. Image conversion runs as part of
+printing and can execute the value's converter; failures appear in the output.
+
+Errors include clickable source locations when the evaluator has retained the relevant
+source. If an exception breakpoint pauses execution, **Continue** finishes reporting
+the error. Clicking a location opens and selects the expression in the source editor.
+If its file has been changed or deleted since execution, a read-only **Captured**
+document shows the text that ran. Links remain usable after the session stops while
+the error is in the transcript. Clearing, restarting or closing Interactions releases
+that history; an already opened captured document remains available until its tab
+closes.
+
+Malformed input links to the entered text. **Submitted expression** opens the whole
+expression when no exact location within it is available. **Context:** labels
+approximate stack locations. Arbitrary error-message text is never parsed as a file
+link. Each error retains at most eight locations and 1 MiB of captured source, counted
+within the transcript limit. Omissions caused by these limits are reported. Locations
+in uncaptured libraries or embedded WXME editors may be unavailable. The normal error
+formatter and debugger exception controls remain in effect.
+
+**Racket: Load Current File in Debug REPL** reuses this file's session and Interactions
+view. These commands do not execute `main` or `test`. The native Debug Console remains
+available. Calls can hit breakpoints in any instrumented workspace file. At a stop, the
+selected stack frame supplies the lexical environment; at the interaction prompt, the
+module's namespace includes private definitions.
+
+Both selection commands support multiple selections. Select complete expressions; they
+run from top to bottom, ignoring empty cursors. The Debug REPL prints each result and
+stops the batch if an expression fails or is cancelled.
+
+Each file has its own Debug REPL. **Racket: Restart Debug REPL for Current File** loads
+saved edits into a fresh session. Restart and Stop affect that session only. With
+several sessions open, the Debug Console's session selector chooses where manually typed
+expressions go. Selection commands always target the source file's Debug REPL. Cancel
+Evaluation interrupts evaluation in the active Racket debug session; Stop ends the
+session. Plain REPL terminals continue to run ordinary Racket through `racket/enter`.
+Debug REPL program input uses its associated integrated terminal.
+
+## Images and plots
+
+The Interactions view draws returned and printed image values automatically, with a
+native image preview available by clicking the picture. The workflow follows Racket's
+[picture-value model](https://docs.racket-lang.org/quick/) using the public
+[conversion protocol](https://docs.racket-lang.org/file/convertible.html). The native
+Debug Console remains textual.
+
+**Racket: View Image** opens a PNG snapshot in VS Code's built-in image editor. If an
+expression returns several image values, such as `(values tile drawing chart)`, the
+command asks which one to view. The labels retain each value's position in the complete
+result, including any non-image values. The picker lists up to 200 images from that
+result; evaluate a particular value separately to view one beyond that limit.
+
+While paused, it also works from **Variables**, for image fields inside expanded
+structures and images in the **Return values** scope. It uses the selected value
+directly, without evaluating an expression or changing the last console result.
+Previews share one editor group so opening several images keeps the source visible.
+
+Viewing converts the retained value; it does not evaluate the expression again.
+Conversion can execute the value's code: **Racket: Cancel Evaluation** interrupts it.
+The live result expires when another interaction starts or the program resumes. A
+rendered snapshot remains available until its last tab is closed or the editor reloads.
+PNG previews are limited to 8 MiB.
+
+**Racket: Open Interactive Plot** works on a live value returned by `plot`, `plot3d`,
+`plot-snip` or `plot3d-snip`, and opens an independent copy in a Racket GUI window.
+Mouse overlays installed through the plot API remain active. Static values from
+`plot/pict`, `plot/bitmap` or `plot/no-gui` remain snapshots.
+
+Opening a view uses the retained value without reevaluating the expression. Copying may
+execute user code; **Racket: Cancel Evaluation** interrupts opening. Closing a plot
+window releases that view. Stopping or restarting its debug session closes all its plot
+windows. Subsequent REPL evaluations leave open windows available. Racket GUI libraries
+and a working display on the Racket host are required; these windows are separate from
+VS Code's image editor. In a plain terminal REPL, `(require plot)` and
+`(plot-new-window? #t)` make later `plot` and `plot3d` calls open their own windows using
+Racket's public plot API.
+
+## Application logs
+
+**Racket: Show Application Log**, or **Logs** in Interactions, opens a session's messages
+in the native Output panel. **Racket: Set Application Log Filter…** changes capture for a
+running session. **Racket: Clear Application Log** clears its retained messages.
+
+The default filter is `error`, which captures errors and fatal messages. A filter starts
+with `none`, `fatal`, `error`, `warning`, `info` or `debug`, then optionally adds exact
+topic overrides. The last override for a repeated topic wins. Filters affect new messages;
+earlier messages remain visible. `none` disables capture. `racketdap.logs.filter` applies
+to new sessions, and `logFilter` in a launch configuration overrides that setting.
+
+Capture begins before module loading. Stopped sessions keep their received logs; new
+sessions start with a fresh log and their configured filter. Up to ten stopped session
+logs are retained until the editor reloads. Each session retains at most 1,000 messages
+and 1 MiB of message text, with omission notices. Individual messages are truncated at
+16,384 characters. Large pending bursts can be omitted at filter changes or program exit;
+those omissions are reported. Forced termination can lose messages still waiting in the
+worker.
+
+Capture uses the public [Racket logging API](https://docs.racket-lang.org/reference/logging.html)
+for the program's current logger and descendants, including child threads and REPL
+evaluations. Loggers detached from that hierarchy and other processes are outside this
+stream. Existing stderr logging remains active. Opaque log data is not inspected or
+printed. Terminal-only runs use Racket's own logging facilities; this view belongs to
+debugger-backed sessions, including Interactions and tests.
+
+Adapter clients can select an initial `logFilter` at launch and change it with
+`racketdap/logFilter` (`{ "filter": "warning debug@network" }`). Ordered `racketdap/log`
+events carry batches of `entries` with `level`, `topic` (string or false) and `message`,
+plus an omitted-message count `dropped` and a boolean `discardedBacklog`. The worker uses
+bounded batches; clients should bound their own retained history as well.

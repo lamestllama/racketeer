@@ -78,3 +78,41 @@ and macOS. A configured job establishes coverage only after its selected artifac
 passes; native core results alone do not establish editor workflows. Remote development,
 network package failure scenarios and sustained resource/performance tests remain
 separate production requirements. See [quality requirements](quality.md).
+
+## Building and checking locally
+
+Node.js 20 or newer is needed to build the extension and run protocol tests. The package
+script stages the Racket sources, bundles the JavaScript client with esbuild, and uses the
+locked local `@vscode/vsce` 3.9.2 dependency. After `npm ci`, packaging works offline; it does
+not fetch a packager through `npx`. The resulting VSIX includes all JavaScript runtime
+dependencies and their licence notices. Vendored source versions and reproduction instructions
+are in [vendor/README.md](../vendor/README.md).
+
+`scripts/test-gui.py` and `scripts/test-vscode.py` test the packaged VSIX on Linux in a separate
+VS Code profile and extension directory, with Python 3 and Xvfb available. `--code` and `--xvfb`
+select those executables. Each run creates fresh workspace, editor profile, extension and Racket
+addon directories under `.test-output/integration/run-*/` or `.test-output/dogfood/run-*/`. Each
+parent directory has a `latest.json` pointing to the latest run and report. Existing runs remain
+available. Dogfooding drives Test Explorer, test debugging and failure reporting against a
+disposable copy of the real repository suites.
+
+Packaging writes a `.vsix.build.json` beside the VSIX. Editor checks require that manifest, reject
+artifacts whose source or test inputs have changed, and verify the installed files against the
+archive. Reports record the artifact SHA256 and build-input identity. Rebuild after changing those
+inputs, including editor tests. `npm test --prefix vscode` and the headless editor task both use
+`scripts/test-headless.js`; `--list` shows its discovered suites. GUI and editor checks remain
+explicit because they require a display or VS Code.
+
+The semantic fixtures compare source-loaded normal and instrumented execution for tail recursion,
+multiple values, `begin0`, continuations, cross-thread continuation invocation, `dynamic-wind`,
+macros, modules, submodules and compile-time effects. Protocol tests exercise stepping, mutation,
+handle expiration, Unicode, thread control and process termination. These are fixture results, not
+general language-compatibility guarantees.
+
+The editor integration test covers the packaged language server with an empty Racket addon directory,
+editing providers, unsaved diagnostics and repair, run/test tasks, REPL file loading and selection
+execution, restart/disable, and the debugger in the same extension host. Test files are copied into
+the fresh run's workspace so source examples remain unchanged.
+
+The results of a run describe its exact revision and environment: consult them before relying on a
+platform claim.

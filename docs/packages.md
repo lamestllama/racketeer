@@ -56,7 +56,7 @@ also be added after a Debug REPL has loaded a selected package. Missing selected
 packages produce an explicit diagnostic; Run without debugging ignores the
 optional debug selection. Source files are required for source debugging.
 
-Select the packages relevant to your work: instrumenting large dependencies
+Select only the packages that matter to the work at hand: instrumenting large dependencies
 adds execution overhead. Package selection is explicit and is not transitive.
 
 ## Package tests and Test Explorer

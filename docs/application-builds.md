@@ -74,6 +74,9 @@ Builds write directly to the selected paths using the public tools' overwrite
 behaviour. A cancelled or failed build can leave partial output; successful task
 completion is required before using the result.
 
+`examples/application/console.rkt` and `examples/application/gui.rkt` in the source
+checkout are small programs to try these commands on.
+
 References: [executable and launcher creation](https://docs.racket-lang.org/raco/exe.html),
 [distributions](https://docs.racket-lang.org/raco/exe-dist.html), and
 [VS Code task providers](https://code.visualstudio.com/api/extension-guides/task-provider).

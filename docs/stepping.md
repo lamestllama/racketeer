@@ -14,7 +14,7 @@ program's module body. An explicit submodule selection uses that submodule;
 test mode uses `test` when present. Plain files start at their first instrumented
 expression. An entry module without executable stops runs to completion.
 
-To pause before initialisation, add this to your launch configuration:
+To pause before initialisation, add this to the launch configuration:
 
 ```json
 "stopOnEntry": true,
@@ -42,7 +42,7 @@ From the initial stop, **F11 / Step Into** enters the body
 at line 6; further steps enter `app/orders.rkt` and its required files.
 **F10 / Step Over** evaluates the selected expression, including its calls,
 and stops at the call site when it returns, before advancing to the next
-expression. This completion stop lets you inspect or change the return values.
+expression. This completion stop allows the return values to be inspected or changed.
 **Shift+F11 / Step Out** leaves the current function and stops at its caller.
 With no caller to return to, as at module level or in the function a thread runs,
 it finishes the evaluation around the stop: from `(g 3)` in `(f 1 v (g 3))` it stops
@@ -52,7 +52,7 @@ around the stop, as at a tail expression in a thread's function or a callback, S
 Out goes to the next source boundary, which can be inside a function, so the press
 always ends in a stop. **F5 / Continue** runs until a breakpoint, exception, or
 completion.
-You can set `stopOnEntry` to `false` to run directly to your first breakpoint.
+Set `stopOnEntry` to `false` to run directly to the first breakpoint.
 
 **Call Stack**, **Variables**, and **Watch**
 retain their native VS Code labels. The **Locals** scope in Variables contains
@@ -65,6 +65,12 @@ The scope includes the count, such as **Return values (1)**; **Return values
 (0)** is distinct from one `#<void>` value.
 **Waiting for return** identifies a caller whose calculation is still pending.
 These are two stages of one evaluation, not two executions of the expression.
+
+Stepping is by expression, so several stops can share a source line. Expanded forms
+can also share a larger source range, which currently makes some stops highlight a
+whole function. Tail calls have no artificial return boundary: stepping over a tail
+expression follows the enclosing return context and can finish the program.
+Continuation transfers outside a step target are identified in the stop description.
 
 Hover, Go to Definition, and Find References also work in captured debugger
 sources. Navigation opens the current project files. Language-server results

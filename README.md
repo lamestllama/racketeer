@@ -17,115 +17,31 @@ Version 0.8.50 needs **VS Code 1.91 or newer** and the **full Racket 9.1 or newe
 
 ## Install and try it
 
-Install `dist/racketeer-0.8.50.vsix` using VS Code's **Extensions: Install from
-VSIX…**, or:
+Install **Racketeer** from the Extensions view in VS Code, or build a package as below and install it with **Extensions: Install from VSIX…** or:
 
 ```sh
 code --install-extension dist/racketeer-0.8.50.vsix
 ```
 
-Open a trusted folder and a saved `.rkt` file: the language tools start
-automatically. Click **Run Current File** to see text and images in Results
-beside the source. Choose **Debug Current File** for breakpoints, stepping and
-Variables. Testing and optional REPL commands are available in the Command Palette.
-Set `racketdap.racketExecutable` if Racket is not on PATH. The extension ID is
-`lamestllama.racketeer`; the debugger type and settings prefix are `racketdap`.
-Remove the earlier `lamestllama.racketdap` development extension before
-installing Racketeer. Disable Magic Racket if installed to use our bundled client.
+Open a trusted folder and a saved `.rkt` file: the language tools start automatically. Click **Run Current File** to see text and images in Results beside the source, or **Debug Current File** for breakpoints, stepping and Variables. Set `racketdap.racketExecutable` if Racket is not on PATH.
 
-Try [examples/demo.rkt](examples/demo.rkt): place a breakpoint on line 4,
-evaluate `(+ subtotal 20)` in the Debug Console, then `(set! subtotal 200)`.
-Step Over displays `20` in the Return values scope; continuing prints `220` and `20`.
-See the [extension guide](vscode/README.md) for launch configuration and controls.
-The [stepping walkthrough](docs/stepping.md) explains the initial stop and why an
-expression can stay highlighted after a step.
-The [workflow example](examples/workflow/main.rkt) connects two source files,
-tests, and Debug REPL interactions. [Workflow design](docs/workflows.md) records
-the execution model and current limits.
+Try [examples/demo.rkt](examples/demo.rkt): place a breakpoint on line 4, evaluate `(+ subtotal 20)` in the Debug Console, then `(set! subtotal 200)`. Step Over displays `20` in the Return values scope; continuing prints `220` and `20`.
 
-## What works
+The extension ID is `lamestllama.racketeer`; the debugger type and settings prefix are `racketdap`. Remove the earlier `lamestllama.racketdap` development extension before installing. Disable Magic Racket, if installed, to use Racketeer's bundled language client.
 
-- Expression breakpoints, Step Into, Step Over, Step Out, Continue, and resumable asynchronous Pause.
-- Conditional breakpoints, hit counts, and logpoints with Racket expressions.
-- Uncaught runtime exception stops, lexical frames, and exception details.
-- Call Stack, lexical variables in Variables, Watch, Debug Console evaluation,
-  and `set!` assignment against the actual paused program's variables.
-- Before/after expression breakpoints, one-time Continue to Cursor, skipping
-  expressions, replacing returned values, and printing values to Debug Console.
-- Return values scopes with counts distinguishing zero, one, and multiple values.
-- Source-variable hover, printing, and assignment, including module variables.
-- GUI callbacks and eventspace lifetime, additional module languages, and plain
-  non-module files through the launch `language` setting.
-- Bounded inspection of pairs, vectors, boxes, and hashes without forcing
-  promises or invoking custom writers.
-- Individual Racket thread stops, separate target process, captured stdout and
-  stderr, and termination even while an evaluation is blocked.
-- Workspace source instrumentation, pending breakpoint resolution, Unicode
-  source coordinates, and captured source available after on-disk edits.
-- Script launch, automatic `main` submodule, explicit submodules such as `test`,
-  exported entry procedure, arguments, working directory, and environment.
-- Persistent Debug Console sessions (`"interactive": true`) whose function calls
-  can hit breakpoints, plus cooperative **Racket: Cancel Evaluation**.
-- Integrated terminal line input/output (`"console": "integratedTerminal"`),
-  EOF, and interruption. Try [examples/input.rkt](examples/input.rkt).
+## Read more
 
-- Bundled language server: completion, hover documentation, definition,
-  references, rename, diagnostics, symbols, and formatting.
-- Syntax highlighting, bracket matching, commenting, and two-space indentation.
-- Rhombus `.rhm` highlighting and language-server integration when the Rhombus
-  language is installed in the selected Racket environment.
-- Macro expansion through Racket's macro stepper, for selected expressions or
-  complete modules. See [editor tools](docs/editor-tools.md).
-- File execution with retained text, images and error links in Results.
-- Test Explorer with Run/Debug profiles, failure locations, and cancellation.
-- Plain and debugging REPLs, file loading/reloading, selection evaluation, and
-  module-specific Debug REPL restart.
-- A File Actions menu connecting Run, Debug, Test, and REPL workflows.
-- Package install/link/update/remove, build and test commands, and source
-  debugging of named installed packages, including links outside the workspace.
+- [The extension guide](vscode/README.md) describes every feature, command and setting.
+- [Understanding the stops](docs/stepping.md) walks through the initial stop and why an expression can stay highlighted after a step.
+- [Debugger features](docs/debugger.md) records what the debugger does and how it is tested, and [attaching to an embedded program](docs/debugger.md#attach-to-an-embedded-racket-program).
+- [Run, Debug, Test and REPL execution](docs/workflows.md), [editing and macro expansion](docs/editor-tools.md), [package development](docs/packages.md), [building applications](docs/application-builds.md), [module dependencies](docs/module-dependencies.md) and [WXME editing](docs/wxme-editor.md) give the details.
+- Examples: [multi-file](examples/multi-file/README.md) follows four calls through nested folders, [workflow](examples/workflow/main.rkt) connects two source files, tests and the Debug REPL, and [packages](examples/packages/README.md) shows a linked package.
 
-The [debugger feature list](docs/debugger.md) records what the debugger does and
-the tested scope. Runtime instrumentation
-accepts additional module languages through their own module-begin expansion;
-regressions cover Scheme, Typed Racket, teaching languages, and custom languages.
-Selected modules permit interactive assignment to their definitions.
+Limits on what is offered are stated in [the extension guide](vscode/README.md#limits). This is a development release: the [release quality requirements](docs/quality.md) and [release records](docs/releases/) state what has been checked and what is still needed.
 
-Caught-exception tracing, transformer-phase stepping, arbitrary-process attach,
-reverse execution, and a full TTY are outside this release. Cancellation and Pause
-respect Racket's break-disable regions. Effects already performed are not undone.
-The CI matrix also checks the core on Linux x64, Windows x64, and macOS ARM64;
-installed-editor coverage remains on Linux. Consult the results for the exact
-revision and environment before relying on a platform claim.
-The [release quality requirements](docs/quality.md) record acceptance checks,
-support boundaries, and validation still needed before a production release.
-The [0.7.1 validation record](docs/releases/0.7.1.md) identifies the tested
-artifact, results, reproducible commands, and remaining platform work.
+## Build and test
 
-## Build and verify
-
-[Continuous integration](docs/ci.md) runs core checks on Linux, Windows and macOS,
-and verifies installed extension workflows on Linux with the minimum and current
-stable editor versions. Each run retains its test reports and artifact identities.
-
-For a hands-on REPL walkthrough, use the [multi-file example](examples/multi-file/README.md).
-It follows four calls through nested folders and explains the breakpoint,
-console input, expected lexical variables, return values, and restart commands.
-For package workflows, see [package development](docs/packages.md) and the
-[linked-package example](examples/packages/README.md).
-
-We use this extension to test itself. Open this repository in VS Code with the
-extension installed, open **Testing**, and select **Run All Tests**. The checked-in
-workspace settings discover our RackUnit suites, excluding fixtures and support
-modules. Set a breakpoint in a test and select **Debug Test** to inspect it.
-See [tests/README.md](tests/README.md) for the test format and developer workflow.
-
-Node.js 20 or newer is needed to build the extension and run protocol tests.
-The package script stages the Racket sources, bundles the JavaScript client
-with esbuild, and uses the locked local `@vscode/vsce` 3.9.2 dependency.
-After `npm ci`, packaging works offline; it does not fetch a packager through `npx`.
-The resulting VSIX includes all JavaScript runtime dependencies and their
-license notices. Vendored source versions and reproduction instructions are
-in [vendor/README.md](vendor/README.md).
+Node.js 20 or newer is needed to build the extension and run the protocol tests. After `npm ci`, packaging works offline.
 
 ```sh
 npm ci --prefix vscode
@@ -133,8 +49,7 @@ node scripts/package-extension.js
 node scripts/test-headless.js
 ```
 
-On Linux, test the packaged VSIX in a separate VS Code profile and extension
-directory with Python 3 and Xvfb available:
+On Linux, with Python 3 and Xvfb available, test the packaged VSIX in a separate VS Code profile and extension directory:
 
 ```sh
 python3 scripts/test-gui.py
@@ -143,86 +58,25 @@ python3 scripts/test-vscode.py --rhombus --artifact dist/racketeer-0.8.50.vsix
 python3 scripts/test-vscode.py --dogfood --artifact dist/racketeer-0.8.50.vsix
 ```
 
-Use `--code` and `--xvfb` to select those executables. Each run creates fresh
-workspace, editor profile, extension, and Racket addon directories under
-`.test-output/integration/run-*/` or `.test-output/dogfood/run-*/`. Each parent
-directory has a `latest.json` pointing to the latest run and report. Existing
-runs remain available for review. Dogfooding drives Test Explorer, test debugging,
-and failure reporting against a disposable copy of the real repository suites.
+The extension tests itself. Open this repository in VS Code with the extension installed, open **Testing**, and select **Run All Tests**. Set a breakpoint in a test and select **Debug Test** to inspect it.
 
-Packaging writes a `.vsix.build.json` beside the VSIX. Editor checks require
-that manifest, reject artifacts whose source or test inputs have changed,
-and verify the installed files against the archive. Reports record the artifact
-SHA256 and build-input identity. Rebuild after changing those inputs, including
-editor tests. `npm test --prefix vscode` and the headless editor task both use
-`scripts/test-headless.js`; `--list` shows its discovered suites. GUI and editor
-checks remain explicit because they require a display or VS Code.
+Details: [the test workflow](tests/README.md), and [continuous integration and local checks](docs/ci.md).
 
-The semantic fixtures compare source-loaded normal and instrumented execution
-for tail recursion, multiple values, `begin0`, continuations, cross-thread
-continuation invocation, `dynamic-wind`, macros, modules, submodules, and
-compile-time effects. Protocol tests exercise stepping, mutation, handle
-expiration, Unicode, thread control, and process termination. These are fixture
-results, not general language-compatibility guarantees.
+## Layout
 
-The editor integration test covers the packaged language server with an empty
-Racket addon directory, editing providers, unsaved diagnostics and repair,
-run/test tasks, REPL file loading and selection execution, restart/disable,
-and the debugger in the same extension host. Test files are copied into the
-fresh run's workspace so source examples remain unchanged.
+| Path | What is there |
+| --- | --- |
+| `racketdap/` | The debug adapter, its worker and the [instrumentation](racketdap/instrumentation/DESIGN.md). |
+| `vscode/` | The extension client, language-server launcher and manifest. |
+| `vendor/` | Bundled language-server sources, patches and notices: see [vendor/README.md](vendor/README.md). |
+| `tests/` | RackUnit and Node suites, helpers and fixtures. |
+| `scripts/` | Packaging and test harnesses. |
+| `examples/` | Programs to try each feature on. |
+| `experiments/` | The headless demonstration and the lexical evaluator. |
+| `docs/` | Feature details, quality requirements and release records. |
 
-## Implementation
-
-`racketdap/main.rkt` speaks DAP over stdio. It launches
-`racketdap/worker/main.rkt` as a separate Racket process and communicates over
-an authenticated loopback connection. Program output has separate pipes.
-The VS Code extension registers the debugger and launches this adapter.
-It separately starts the source-bundled language server through
-`vscode/language-server.rkt`, adding private collection paths only in that
-process. Language analysis may run expansion-time code, so VS Code workspace
-trust applies to the entire extension. Unsaved new files get syntax highlighting;
-save them to enable the filesystem-based language server.
-
-The headless `run-module` API remains available from `worker/load.rkt`.
-Its single `#:on-event` callback receives live stops; use `stop-kind`
-to select `before` or `after` events. Import the component API directly from
-`racketdap/instrumentation/instrument.rkt`.
-Run `racket experiments/headless-demo.rkt` for an editor-free demonstration.
-Instrumentation uses a fresh namespace and custodian, bypasses selected
-bytecode caches, and does not overwrite `.zo` files. Instrumented code it compiles
-is kept in the extension's own storage between sessions and reused while the hashes
-of each source and its dependencies match; `racketdap.debug.compiledCache` turns that off. The expression instrumenter
-and frame/binding runtime are under `racketdap/instrumentation/`; their
-[component design](racketdap/instrumentation/DESIGN.md) describes the shared API.
-The bundled language server uses Racket’s installed language-analysis libraries,
-including check-syntax. Its sources, pinned archive hashes, patches,
-and licence notices are documented in [vendor/README.md](vendor/README.md).
-
-[DESIGN.md](DESIGN.md) records the longer-term architecture and acceptance plan;
-its delivery gates include work beyond this release.
+[DESIGN.md](DESIGN.md) records the longer-term architecture and acceptance plan; its delivery gates include work beyond this release. [How the pieces connect](docs/debugger.md#how-the-pieces-connect) gives the process structure.
 
 ## Licence
 
-Copyright © 2026 Eric Parsonage. Racketeer's original code, examples, tests,
-and documentation are available under [Apache-2.0 OR MIT](LICENSE), at your
-choice. Bundled dependencies retain their own copyright and licence notices;
-see [vendor/README.md](vendor/README.md).
-
-## Attach to an embedded Racket program
-
-An embedding host can load `racketdap/worker/attach.rkt` and expose a
-loopback listener. Connect with a `racketdap` debug configuration whose
-`request` is `attach`, with the returned `port` and secret `token`; no
-`program` is required. `sourceRoots` and `debugPackages` select source as
-for a launch, with the host's exclusions taking precedence even over
-breakpoints. The extension fills roots from the workspace and packages
-from `racketdap.debug.packages`.
-
-This is cooperative attachment to a host using the library, rather than
-attachment to an arbitrary process. The host owns program input, output
-and thread lifetime. Interrupt is refused. Disconnect and Terminate close
-only the debugger connection and release held stops; they never kill the
-host. Host disconnection produces `terminated`, without `exited`.
-
-See the [host contract](racketdap/instrumentation/DESIGN.md#embedding-host-contract)
-for API and inspector, thread and lock requirements. Keep tokens private.
+Copyright © 2026 Eric Parsonage. Racketeer's original code, examples, tests and documentation are available under [Apache-2.0 OR MIT](LICENSE), at the licensee's choice. Bundled dependencies retain their own copyright and licence notices: see [vendor/README.md](vendor/README.md).

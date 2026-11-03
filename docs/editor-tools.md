@@ -200,3 +200,95 @@ language runtime into a private test environment for semantic checks. The
 ordinary mode retains a fresh addon directory without additional language
 packages. See [testing](../tests/README.md) and [CI](ci.md) for commands and
 retained evidence.
+
+## Language server
+
+The bundled upstream [racket-langserver](https://github.com/jeapostrophe/racket-langserver)
+provides completion, hover documentation, definition, references, rename, diagnostics,
+symbols, semantic tokens, signature help, inlay hints and code actions. Support varies
+with the program's `#lang` and available documentation. Formatting uses bundled `fixw`.
+The value `language` of the `racket-langserver.formatting.documentFormatter` and
+`indentationFormatter` settings indents by the rules of the file's own language, which
+leaves all but each line's leading space alone. Syntax highlighting, bracket matching,
+commenting and two-space indentation also work before the server is ready, and common
+built-in procedures have basic syntax colouring before server analysis completes.
+
+The server supplies semantic highlighting and documentation for ordinary files and
+matching captured debugger sources: for example, `values` is highlighted as a procedure.
+If the file is edited while debugging, the captured source keeps its original text and
+basic colouring; language-server results are used only when the two versions match.
+Captured debugger sources support hover, Go to Definition and Find References. Navigation
+opens current project files. These features are disabled for that view if its file changes
+or the debug session ends.
+
+The language server analyses a document 250 ms after its last edit, so typing does not
+start an analysis at every keystroke. Hover, definition, references and the other requests
+a person makes start it at once, whatever the wait. Set
+`racket-langserver.analysisWaitMilliseconds` to an integer from 0 to 10000 to change the
+wait; a change applies from the next edit. 0 starts each analysis at once, as the unpatched
+server does, and invalid values use the default. The setting applies to the bundled language
+server. When nothing asks first, diagnostics appear 250 ms later than without the wait.
+
+Cold startup loads the bundled source packages and can take longer on a busy machine.
+Startup has a three-minute deadline by default; set
+`racketdap.languageServer.startupTimeoutSeconds` to an integer from 1 to 3600 if the machine
+needs more time. Invalid values use the default. Restarting or shutting down cancels a pending
+startup immediately, regardless of this limit. `racketdap.languageServer.enabled` disables the
+server without disabling the debugger or commands. `racketdap.languageServer.source` set to
+`installed` uses a separately installed `racket-langserver` package; the default is `bundled`.
+Optional Resyntax suggestions require a separately installed `resyntax` package and
+`racket-langserver.resyntax.enable`; they are off by default.
+
+Magic Racket is not required. If its language client is enabled, Racketeer defers
+language-server startup to it to avoid duplicate providers. Disable Magic Racket and reload
+the window to use Racketeer alone. No other extensions or global Racket packages are disabled
+or changed automatically.
+
+The server uses Racket's installed language-analysis libraries, including check-syntax. Its
+sources, pinned archive hashes, patches and licence notices are documented in
+[vendor/README.md](../vendor/README.md).
+
+## Workspace references
+
+Racketeer analyses unopened Racket module files in trusted workspaces using a separate
+indexing service. It works with either the bundled or installed language server, reusing the
+bundled analysis libraries. Nothing is analysed until a request asks: the first Find All
+References or Rename after a change waits for an analysis pass, which can be cancelled and which
+keeps what it finished. A pass analyses again only the files whose text or dependencies changed.
+Unsaved editor buffers remain authoritative for their source files, including where another file
+imports them; closing a buffer returns that file to disk analysis. A file read by `include` and
+its like is read from disk, whatever a buffer holds.
+
+The status bar counts the files of a pass and warns when references are partial. Files that fail
+analysis make the index partial; rename refuses incomplete or stale snapshots, and says which file
+and limit stopped a worker. Background diagnostics are not part of this feature.
+
+Settings under `racket-langserver.workspaceAnalysis` control whether analysis is enabled, excluded
+directory names, file count, maximum source size and the time limit per file. Defaults are 1,000
+files, 1 MiB per file and 20 seconds per file. A request stops waiting and says so when sources keep
+changing, as under a generator or a build, and no more files have been analysed for that time limit.
+A pass runs at most three workers at once and no more than half the number of processors, each in a
+process of its own, and gives the same answers as one at a time. Compile-time code in different files
+can therefore run at the same moment. Each worker adds about 260 MB to the index's memory, more with
+heavy libraries, and has a 2 GiB limit on the memory its analysis adds to its own libraries. Analysing
+a file of 1 MiB can need about 1 GiB; the limit is there to stop compile-time code that never releases
+what it allocates, and it applies to each worker rather than to a pass, because a worker's memory ends
+with it. A pass accepts at most 16 MiB of source input and 200,000 reference/definition locations.
+Excluded directories and symbolic links are not scanned. Reaching a limit or failing to analyse a file
+produces a partial index.
+
+Changes within watched workspace directories mark the analysis out of date, and changes to files that
+are not source files are noted when the next request arrives. A pass then checks every file each
+analysis loaded or registered with the compiler, wherever it is, so a change outside those directories
+is seen at the next pass. A change while a pass runs replaces it, and the new pass starts 2 seconds
+after that change. A macro reading a file it does not register sees that file only at the next change
+to a file loaded with it, after a refresh or a restart. Excluded files, environment changes and
+nondeterministic macros also require a manual refresh. Initial indexing can take time, especially when
+dependencies are not compiled. These limits bound work and retained facts; they are not a total process
+memory limit. Both language tools use Racket's compilation cache under the Racket addon directory's
+`racketeer` subdirectory, keeping generated bytecode outside the project.
+
+## Lambda insertion
+
+The **Alt+\\** (**Option+\\** on macOS) shortcut uses the built-in `editor.action.insertSnippet`
+command with the **Racket lambda** snippet, in an editable Racket buffer.

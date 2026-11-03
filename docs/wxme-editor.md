@@ -1,5 +1,44 @@
 # WXME editing
 
+## Viewer and editor
+
+For a saved WXME source file, **Open With → Racketeer WXME Viewer** reads text and
+embedded bitmap images in source order. The viewer is read-only and does not run the
+program. Ordinary Racket files still open in the text editor. Nested editors, comment
+boxes, XML boxes and Racket boxes retain their boundaries and contents. XML labels show
+the whitespace mode; Racket labels distinguish single values from splicing. Other object
+classes are reported as unsupported. A changed file is marked in the view; close and
+reopen it to refresh. Unsaved text edits must be saved or reverted before viewing.
+
+**Open With → Racketeer WXME Editor** edits text around embedded images and inside nested
+editors or comment boxes. It supports VS Code's Undo, Redo, Save, Save As, Revert and
+unsaved-document recovery. The toolbar inserts a PNG image, comment box or nested editor at
+the cursor. Selecting text before inserting a box moves that text inside it. The × button
+removes an object and its contents; Undo restores them. XML and Racket boxes support text
+editing, insertion and removal. Box controls change XML whitespace handling or Racket
+splicing, with normal Undo/Redo. Their original object types and nested contents survive
+saving. The writer uses Racket's public editor libraries. Unsupported box versions, other
+object classes and linked or missing images cannot be edited. PNG imports are limited to
+8 MiB and 4096 pixels in either dimension. Save As opens its destination in the configured
+default editor; use Open With to continue in the WXME editor if needed.
+
+Editing requires the full Racket installation's GUI libraries and a working graphical display
+on the extension host. It opens inside VS Code; no separate Racket window is shown. The read-only
+viewer also works without a display. Saving preserves supported objects and unchanged text styles
+through Racket's editor codec and can change the file's binary representation. Text placed in a
+comment box takes the framework's standard comment-box style. If the file changes externally,
+use Revert to reload it or Save As to keep the edited version.
+
+**Racket: Run Current File** and **Racket: Debug Current File** save and launch the active WXME
+document from either the editor or viewer. A dirty editable view of the same file is saved before
+launch. Debugging opens a read-only source snapshot with an object replacement character (U+FFFC)
+for each image or box. Use that snapshot for breakpoints and stepping through the surrounding source
+text. The program executes from the original WXME bytes; the snapshot remains fixed if the file is
+edited during a stop. Language services, breakpoints in the custom editor and locations inside
+embedded boxes are not yet available.
+
+## How the editor is built
+
 The editor uses VS Code's `CustomEditorProvider` lifecycle. A document has one
 model shared by all its views. The provider reports undoable edits to VS Code,
 which owns dirty state, undo/redo, save commands and backup scheduling.

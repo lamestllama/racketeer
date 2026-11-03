@@ -11,11 +11,11 @@ What the debugger does, and the regression evidence for each behaviour.
 | Pause | Resumable breaks, live lexical variables, approximate source location | blocked primitive and interactive-call regressions |
 | Boundary breakpoints | Inline start/end locations; completion Return values scope | debugger-parity suite |
 | Continue to a point | One-use target independent of ordinary breakpoints | protocol and editor suites |
-| Skip expression | Skip Expression substitutes evaluated zero/one/multiple values | component, protocol, editor suites |
-| Change returned values | Change Return Values updates the pending values in the Return values scope | component, protocol, editor suites |
-| Print returned values | Print Return Values to Console uses full printing in Debug Console | protocol and editor suites |
+| Skip expression | Racket: Skip Current Expression substitutes evaluated zero/one/multiple values | component, protocol, editor suites |
+| Change returned values | Racket: Change Return Values updates the pending values in the Return values scope | component, protocol, editor suites |
+| Print returned values | Racket: Print Return Values uses full printing in Debug Console | protocol and editor suites |
 | Hover a lexical variable | Read lexical/module values without running macros | component and protocol suites |
-| Print or assign a variable | Print Variable Value to Console and Set Variable Value (set!) use the selected live frame | component, protocol, editor suites |
+| Print or assign a variable | Racket: Print Variable Value and Racket: Set Variable Value use the selected live frame | component, protocol, editor suites |
 | Stack and lexical variables | Select a frame in Call Stack; inspect Variables → Locals or evaluate in Watch and Debug Console | original DAP and editor suites |
 | Unhandled exceptions | Inspect before unwind; Continue preserves the program's error display and escape handlers, including custom recovery | DAP, interactive, GUI suites |
 | Multiple source files | Workspace roots, breakpoint files, and modules loaded during macro expansion | module, language, and DAP suites |
@@ -120,3 +120,172 @@ thousand lines, fetched at a pinned commit and hash.
 These are specific debugger scenarios, not complete tests of each application.
 Keyboard handlers, every game path, other Racket versions and other operating systems
 are not covered by them.
+
+## Launching a program
+
+The root module loads first, then its `main` submodule runs when present. Use
+`"submodule": ["test"]` for tests or `"submodule": []` to load only the root.
+Use `"entry": "run"` to call an exported zero-argument procedure afterwards.
+`args`, `cwd`, `env` and `sourceRoots` are also configurable. `"testMode": true`
+selects test execution and reporting; it cannot be combined with `interactive`,
+`submodule`, `entry` or `language`. For a plain file without a `#lang` or module
+declaration, set `"language": "racket/base"` (or another language module such as
+`r5rs`). Leave `language` unset for module programs. A relative `program` is
+relative to its `cwd` or the workspace folder.
+
+By default, the session ends after the entry action and GUI work complete; visible
+windows, timers and queued callbacks keep GUI programs alive. With
+`"interactive": true`, the module stays loaded until Stop. The Debug Console
+evaluates expressions and defines session bindings. Calls into instrumented
+functions can hit breakpoints and be stepped through. Console errors return to the
+interaction loop. Returned values can be expanded until the next interaction;
+paused-frame references expire when that stop resumes.
+
+With `"console": "integratedTerminal"`, program output and line input use a terminal
+named **Racket: …**. Enter submits a line, Ctrl+D sends EOF on an empty line and
+Ctrl+C interrupts the running interaction or program. Closing the terminal sends
+EOF. This provides line input over pipes; it is not a shell or a full TTY for
+curses/raw-mode applications. The default `internalConsole` sends output to Debug
+Console and gives the program EOF on stdin. Debug Console input always evaluates
+Racket expressions.
+
+The debugger keeps a separate target process, captures stdout and stderr, and can
+terminate a program even while an evaluation is blocked. Source coordinates handle
+Unicode text.
+
+## Breakpoints
+
+Breakpoints bind to expressions beginning on the selected line, preferring the
+outermost expression. An inline breakpoint selects a later expression on the line,
+and on a non-tail expression's final character it stops after that expression
+returns. **Racket: Continue to Cursor** runs to one selected boundary once while
+retaining ordinary breakpoints. A breakpoint stays pending until its module is
+loaded; if there is no expression at that location it remains unverified with an
+explanation. Breakpoints do not silently move into another function. A breakpoint
+added to an already loaded, uninstrumented dependency needs a fresh launch.
+
+- Conditions are Racket expressions in the current lexical environment, such as
+  `(> subtotal 100)`. Only `#f` is false. A condition must return one value.
+- Hit counts accept `N`, `=N`, `>=N`, `>N`, `<=N`, `<N` and `%N`, where N is a
+  positive integer. `%3` means every third hit. Counts include all encounters
+  across program threads, before testing the condition. Editing a breakpoint
+  resets its count; re-sending an unchanged breakpoint preserves it.
+- Logpoints interpolate expressions: `subtotal={subtotal}, tax={(* subtotal rate)}`.
+  `{{` and `}}` give literal braces. Conditions and hit counts also apply to
+  logpoints. Logpoints write to Debug Console and continue without stopping.
+- A condition or log expression error stops at the breakpoint with a diagnostic.
+  These expressions can have real effects, like ordinary console evaluation.
+
+## Uncaught exceptions
+
+**Uncaught Racket exceptions**, enabled by default in the Breakpoints pane, stops at
+an uncaught runtime error. Call Stack, lexical variables, Exception scope and
+exception details remain available. Continue propagates the same exception: a script
+usually ends, while an interactive console call reports the error and leaves the
+module loaded. The program's error display and escape handlers retain their original
+context; a custom `error-escape-handler` can recover and continue after the stop.
+Racket values raised with `raise` need not be exception objects. Exceptions handled
+by the program are not intercepted. Source information comes from the available
+instrumented context; expansion and load errors without such a context are reported
+as diagnostics rather than source-level exception stops.
+
+## Evaluation and values
+
+Evaluation uses the live variables of the selected frame. `set!` and other
+evaluation effects are real; selected module definitions remain editable, while
+imported bindings retain Racket's assignment protections. Watch also evaluates Racket
+code. Hover reads lexical or module variables without expanding user macros.
+
+Variable actions use the selected stack frame. Expression actions use the executing
+frame. Replacement expressions can return `(values ...)`, including `(values)` for
+zero values; changes take effect when execution resumes. Variable assignment uses
+`set!` semantics on the live lexical or module variable. Explicit Print actions use
+full Racket printing, including custom writers, and can be interrupted with
+**Racket: Cancel Evaluation**.
+
+**Racket: Cancel Evaluation** interrupts a blocked console, watch, condition or
+logpoint evaluation. The session and paused frames remain usable when cancellation
+succeeds. Cancellation is cooperative: code that disables or catches breaks may keep
+running; Stop still terminates the worker. Effects that already happened are not
+rolled back. When a console call is paused and another evaluation runs inside that
+stop, Cancel targets the inner evaluation.
+
+Lists, vectors, hashes and inspector-visible structures show bounded contents in
+their previews. Pairs, vectors, boxes, hashes and visible structure fields can be
+expanded. Syntax objects show a datum preview and expand to the datum and source
+coordinates; procedures expand to show arity. Procedure names appear when they can
+be obtained without invoking program callbacks; other procedures can remain
+`#<procedure>`.
+
+Automatic inspection does not force promises, call custom writers or invoke wrapped
+accessors. Wrapped values retain conservative previews; explicit console evaluation
+runs their code. A stopped program's source remains available even if its file is
+edited; a fresh session debugs the edited version.
+
+## Threads, Pause and what is instrumented
+
+A breakpoint stops only the triggering Racket thread. Other threads continue; shared
+values can change. Pause can interrupt a blocked primitive while retaining live
+frames; its location is marked approximate in the stop description. If a break
+arrives without an instrumented frame, stopping waits for the next source expression.
+Code that disables breaks defers interruption. Source files under the workspace
+folder are instrumented by default; collection dependencies normally run without
+instrumentation. GUI callbacks continue to dispatch while an interactive session
+waits for console input.
+
+Caught-exception tracing, transformer-phase stepping, arbitrary-process attach,
+reverse execution, full TTY input and a graphical source editor are outside this
+release. Standard text sources are used in VS Code.
+
+## Compiled code
+
+The debugger is compiled once for each Racket version and VM into the extension's
+storage, in the background after the first launch begins. It notes each library it
+was compiled against, and runs from source when one changes. Windows has no
+status-change time, so a library replaced there with the same size and date goes
+unseen by the compiled debugger.
+
+Instrumented code is kept in the extension's storage between debug sessions and
+reused while the hashes of each source and of everything it depends on match. Like
+`raco make`, a macro's output is reused until a file it depends on changes, so a
+macro that reads a file should register it with `register-external-file`.
+`racketdap.debug.compiledCache` and the `debugCache` launch attribute turn this off.
+Instrumentation uses a fresh namespace and custodian, bypasses selected bytecode
+caches and does not overwrite `.zo` files.
+
+## Attach to an embedded Racket program
+
+An embedding host can load `racketdap/worker/attach.rkt` and expose a loopback
+listener. Connect with a `racketdap` debug configuration whose `request` is `attach`,
+with the returned `port` and secret `token`; no `program` is required. `sourceRoots`
+and `debugPackages` select source as for a launch, with the host's exclusions taking
+precedence even over breakpoints. The extension fills roots from the workspace and
+packages from `racketdap.debug.packages`.
+
+This is cooperative attachment to a host using the library, rather than attachment to
+an arbitrary process. The host owns program input, output and thread lifetime.
+Interrupt is refused. Disconnect and Terminate close only the debugger connection and
+release held stops; they never kill the host. Host disconnection produces
+`terminated`, without `exited`.
+
+See the [host contract](../racketdap/instrumentation/DESIGN.md#embedding-host-contract)
+for API and inspector, thread and lock requirements. Keep tokens private.
+
+## How the pieces connect
+
+`racketdap/main.rkt` speaks DAP over stdio. It launches `racketdap/worker/main.rkt` as
+a separate Racket process and communicates over an authenticated loopback connection.
+Program output has separate pipes. The VS Code extension registers the debugger and
+launches this adapter. It separately starts the source-bundled language server through
+`vscode/language-server.rkt`, adding private collection paths only in that process.
+Language analysis may run expansion-time code, so VS Code workspace trust applies to
+the entire extension.
+
+The headless `run-module` API remains available from `worker/load.rkt`. Its single
+`#:on-event` callback receives live stops; `stop-kind` selects `before` or `after`
+events. The component API is imported directly from
+`racketdap/instrumentation/instrument.rkt`. `racket experiments/headless-demo.rkt`
+gives an editor-free demonstration. The expression instrumenter and frame/binding
+runtime are under `racketdap/instrumentation/`, packaged as
+`runtime/racketdap/instrumentation/`; their
+[component design](../racketdap/instrumentation/DESIGN.md) describes the shared API.
