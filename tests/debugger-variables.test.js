@@ -539,8 +539,8 @@ test('containers report their sizes and page as they are asked', async t => {
     assert.deepEqual(sizes('l'), [undefined, 2]);
     assert.deepEqual(sizes('b'), [undefined, 1]);
     assert.deepEqual(sizes('p'), [undefined, 1]);
-    // A hierarchy past the preview's limit goes uncounted, and still opens in full.
-    assert.deepEqual(sizes('deep'), [undefined, undefined]);
+    // The preview budget does not hide the container's size.
+    assert.deepEqual(sizes('deep'), [40, undefined]);
     assert.equal((await stop.open(rows.deep.variablesReference)).length, 40);
     const vector = rows.v.variablesReference;
     assert.equal((await stop.open(vector)).length, 150);

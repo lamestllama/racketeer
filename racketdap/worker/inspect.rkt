@@ -210,8 +210,19 @@
 (define (page items start count)
   (define length* (length items))
   (take (drop items (min start length*)) (max 0 (- (min (+ start count) length*) (min start length*)))))
-;; How many rows a value opens to, indexed and named, without visiting them. Only a hierarchy
-;; past the preview's limit goes uncounted: counting it is work on every row that shows it.
+;; Count fields once per structure type, without reading their values. The preview
+;; budget does not limit container sizes or paging. Weak keys release unused types.
+(define structure-counts (make-weak-hasheq))
+(define (structure-field-count type)
+  (hash-ref! structure-counts type
+    (lambda ()
+      (parameterize ([current-inspector debugger-inspector])
+        (let loop ([type type] [fields 0])
+          (cond [(not type) fields]
+                [else
+                 (define-values (name init auto ref set immutable super skipped?) (struct-type-info type))
+                 (loop super (+ fields init auto))]))))))
+;; How many rows a value opens to, indexed and named, without visiting them.
 (define (child-counts value)
   (cond
     [(or (unavailable? value) (wrapped? value)) (values 0 0)]
@@ -223,13 +234,7 @@
     [(instrumented-port? value) (values 0 3)]
     [(visible-structure-type value)
      => (lambda (type)
-          (parameterize ([current-inspector debugger-inspector])
-            (let loop ([type type] [fields 0] [remaining preview-hierarchy])
-              (cond [(not type) (values fields 0)]
-                    [(zero? remaining) (values 0 0)]
-                    [else
-                     (define-values (name init auto ref set immutable super skipped?) (struct-type-info type))
-                     (loop super (+ fields init auto) (sub1 remaining))]))))]
+          (values (structure-field-count type) 0))]
     [(procedure? value) (values 0 1)]
     [else (values 0 0)]))
 ;; A request with no count asks for every row. Past this many a reply stops being a page a
