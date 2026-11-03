@@ -155,9 +155,14 @@ function registerLanguageTools(context, debugSources) {
         provideReferences: (...args) => nextIndex.provideReferences(...args),
         prepareRename: (...args) => nextIndex.prepareRename(...args),
         provideRenameEdits: (...args) => nextIndex.provideRenameEdits(...args),
-        // Settings take one way to the server: a change asks it to read them.
+        // The bundled server rereads settings on a change. Older installed
+        // servers require a pushed section, translated just like a pull response.
         workspace: {
-          didChangeConfiguration: (_sections, send) => send(undefined),
+          didChangeConfiguration: (_sections, send) => installed
+            ? next.sendNotification('workspace/didChangeConfiguration', {
+              settings: { 'racket-langserver': serverSettings(vscode.workspace.getConfiguration().get('racket-langserver')) }
+            })
+            : send(undefined),
           configuration: async (params, token, read) => (await read(params, token)).map(serverSettings)
         }
       },

@@ -18,7 +18,7 @@ function event() {
 function fixture(initialDocuments = [], source = 'bundled') {
   const opened = event(), active = event(), changed = event();
   const clients = [], indexes = [], processes = [], commands = new Map();
-  let enabled = true;
+  let enabled = true, settings = {};
   const disposable = () => ({ dispose() {} });
   const status = { visible: false, show() { this.visible = true; }, hide() { this.visible = false; }, dispose() {} };
   const vscode = {
@@ -32,7 +32,8 @@ function fixture(initialDocuments = [], source = 'bundled') {
     },
     workspace: {
       isTrusted: true, textDocuments: initialDocuments,
-      getConfiguration: () => ({ get(key, fallback) {
+      getConfiguration: section => ({ get(key, fallback) {
+        if (section === undefined && key === 'racket-langserver') return settings;
         return ({ 'languageServer.enabled': enabled, 'languageServer.source': source })[key] ?? fallback;
       } }),
       onDidOpenTextDocument: opened.subscribe,
@@ -42,13 +43,14 @@ function fixture(initialDocuments = [], source = 'bundled') {
     commands: { registerCommand: (name, callback) => { commands.set(name, callback); return disposable(); } }
   };
   class Client {
-    constructor(_id, _name, factory, options) { this.factory = factory; this.options = options; this.state = event(); clients.push(this); }
+    constructor(_id, _name, factory, options) { this.factory = factory; this.options = options; this.state = event(); this.notifications = []; clients.push(this); }
     createDefaultErrorHandler() { return { error() {}, closed() {} }; }
     onDidChangeState(callback) { return this.state.subscribe(callback); }
     onNotification(_method, callback) { this.indexNotification = callback; return disposable(); }
     isRunning() { return this.running; }
     async start() { await this.factory(); this.running = true; this.state.emit({ newState: 'running' }); }
     async stop() { this.running = false; }
+    async sendNotification(method, params) { this.notifications.push({ method, params }); }
     dispose() { return this.stop(); }
   }
   const context = { subscriptions: [], asAbsolutePath: file => `/extension/${file}` };
@@ -71,6 +73,7 @@ function fixture(initialDocuments = [], source = 'bundled') {
   vm.runInNewContext(fs.readFileSync(filename, 'utf8'), { module, require: name => name === './selected-editor' ? require('../vscode/selected-editor') : dependencies[name] }, { filename });
   const language = module.exports.registerLanguageTools(context, { setLanguageClient() {} });
   return { language, vscode, status, clients, indexes, processes, opened, active, changed, commands, context,
+    setSettings(value) { settings = value; },
     setEnabled(value) { enabled = value; changed.emit({ affectsConfiguration: key => key === 'racketdap.languageServer' }); } };
 }
 
@@ -116,6 +119,26 @@ test('settings reach the server by its reading them, with language under the nam
   assert.deepEqual(await read(section('drracket', 'drracket')),
     [{ analysisWaitMilliseconds: 40, formatting: { fmtSettings: { width: 80 } } }], 'The old value is as good as not set');
   assert.deepEqual(await read({ resyntax: { enable: true } }, null, 7), [{ resyntax: { enable: true } }, null, 7]);
+});
+
+test('installed servers receive translated settings without requiring support for pull on change', async t => {
+  const instance = fixture([{ languageId: 'racket' }], 'installed');
+  t.after(() => instance.language.dispose());
+  await instance.language.whenReady();
+  const client = instance.clients[0];
+  const settings = { analysisWaitMilliseconds: 600, resyntax: { enable: false }, formatting: {
+    documentFormatter: 'language', indentationFormatter: 'fixw', fmtSettings: { width: 91 }
+  } };
+  instance.setSettings(settings);
+  await client.options.middleware.workspace.didChangeConfiguration(['racket-langserver'], () => {
+    assert.fail('An older installed server cannot pull after settings: null');
+  });
+  assert.deepEqual(JSON.parse(JSON.stringify(client.notifications)), [{
+    method: 'workspace/didChangeConfiguration', params: { settings: { 'racket-langserver': {
+      ...settings, formatting: { ...settings.formatting, documentFormatter: 'drracket' }
+    } } }
+  }]);
+  assert.equal(settings.formatting.documentFormatter, 'language');
 });
 
 test('language selects the indenter in the server, and the old value leaves its default', async t => {
