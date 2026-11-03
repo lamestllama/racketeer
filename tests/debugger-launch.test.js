@@ -660,3 +660,26 @@ test('a library replacement preserving its size and date during compilation is r
   assert.ok(!fs.existsSync(published), 'A replacement must not certify the former expansion');
   assert.equal(p.launch(), 'LATTER\n');
 });
+
+test('a library replaced while its final stamp is sampled is not certified', { timeout: 300000, skip: !keepsChangeTime }, async t => {
+  const p = libraryProject(t);
+  const launcher = path.join(p.files.racketdap, 'launcher.rkt');
+  const old = fs.readFileSync(launcher, 'utf8');
+  const stamp = `(let-values ([(stat) (file-or-directory-stat path)])
+            (list* (hash-ref stat 'size) (hash-ref stat 'modify-time-seconds)
+                   (hash-ref stat 'change-time-nanoseconds)))`;
+  assert.ok(old.includes(stamp));
+  const replacement = fs.readFileSync(p.macro, 'utf8').replace('FORMER', 'LATTER');
+  const hook = `(begin
+    (if (equal? path (string->path ${JSON.stringify(p.macro)}))
+        (let-values ([(date) (file-or-directory-modify-seconds path)])
+          (sleep 0.02)
+          (let-values ([(out) (open-output-file path 'truncate)])
+            (display ${JSON.stringify(replacement)} out) (close-output-port out))
+          (file-or-directory-modify-seconds path date))
+        (void))
+    ${stamp})`;
+  fs.writeFileSync(launcher, old.replace(stamp, hook));
+  const published = build(p.files, p.env);
+  assert.ok(!fs.existsSync(published), 'The sampled replacement must not certify the previous expansion');
+});

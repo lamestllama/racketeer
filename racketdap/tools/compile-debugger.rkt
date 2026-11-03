@@ -85,9 +85,9 @@
       (for/list ([file (in-list (remove-duplicates (append-map module-recorded-dependencies sources)))]
                  #:unless (under? file root))
         file)))
-  (define finished (current-inexact-milliseconds))
   (for/list ([file (in-list (remove-duplicates (append-map library-files libraries)))])
     (define stamp (file-stamp file))
+    (define finished (current-inexact-milliseconds))
     (when (and stamp (or (<= (floor (/ started 1000)) (cadr stamp) (/ finished 1000))
                          (<= started (/ (cddr stamp) 1000000) finished)))
       (error 'compile-debugger "library changed during the build: ~a" file))
