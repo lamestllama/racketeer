@@ -161,8 +161,10 @@ test('timeout and cancellation reap only their own unresponsive worker', { timeo
   const a = decodeWxme(process.execPath, stalled, first, { signal: controller.signal });
   const b = decodeWxme(process.execPath, stalled, second, { timeout: 3000 });
   const checkedA = assert.rejects(a, /cancelled/), checkedB = assert.rejects(b, /timed out/);
-  while (!fs.existsSync(first) || !fs.existsSync(second)) await new Promise(r => setTimeout(r, 20));
-  const pidA = Number(fs.readFileSync(first)), pidB = Number(fs.readFileSync(second));
+  // A worker creates its file before it writes the number.
+  const pidIn = file => fs.existsSync(file) ? Number(fs.readFileSync(file)) : 0;
+  while (!pidIn(first) || !pidIn(second)) await new Promise(r => setTimeout(r, 20));
+  const pidA = pidIn(first), pidB = pidIn(second);
   controller.abort(new Error('cancelled'));
   await checkedA;
   assert.throws(() => process.kill(pidA, 0), { code: 'ESRCH' });

@@ -137,8 +137,10 @@ test('cancellation and deadlines release a stalled transformer and its ordinary 
     const pending = request(file, [], { signal: controller.signal, timeout: mode === 'timeout' ? 5000 : 15000 });
     t.after(async () => { controller.abort(new Error('cancelled')); await pending.catch(() => {}); });
     const failed = assert.rejects(pending, mode === 'timeout' ? /timed out/ : /cancelled/);
-    const deadline = Date.now() + 8000; while (!fs.existsSync(receipt) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
-    assert.ok(fs.existsSync(receipt)); const pid = Number(fs.readFileSync(receipt, 'utf8'));
+    // The child creates its receipt before it writes the number.
+    const receiptPid = () => fs.existsSync(receipt) ? Number(fs.readFileSync(receipt, 'utf8')) : 0;
+    const deadline = Date.now() + 8000; while (!receiptPid() && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
+    const pid = receiptPid(); assert.ok(pid);
     if (mode === 'cancel') controller.abort(new Error('cancelled'));
     await failed;
     if (process.platform === 'linux') {

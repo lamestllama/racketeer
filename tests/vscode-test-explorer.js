@@ -135,11 +135,13 @@ exports.run = async function (extension, workspace) {
       const pending = run(nativeProfile, [blocked], cancellation);
       pending.catch(() => {});
       const deadline = Date.now() + 30000;
-      while (!fs.existsSync(marker)) {
+      // Racket creates the file before it writes the number.
+      let pid = 0;
+      while (!pid) {
+        pid = fs.existsSync(marker) ? Number(fs.readFileSync(marker, 'utf8')) : 0;
         assert.ok(Date.now() < deadline, 'Native test process starts');
-        await new Promise(resolve => setTimeout(resolve, 30));
+        if (!pid) await new Promise(resolve => setTimeout(resolve, 30));
       }
-      const pid = Number(fs.readFileSync(marker, 'utf8'));
       cancellation.cancel();
       assert.equal((await pending).get(blocked.id).status, 'skipped');
       // Reaping has its own deadline from the cancellation, not what remains
