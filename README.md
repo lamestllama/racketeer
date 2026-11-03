@@ -13,7 +13,7 @@ By [Eric Parsonage](https://github.com/lamestllama).
 - **Expand and build** with the macro stepper, package management, executables and distributions.
 - **Edit** WXME documents with embedded boxes, and Rhombus with the separate `rhombus` package.
 
-Version 0.8.50 needs **VS Code 1.91 or newer** and the **full Racket 9.1 or newer distribution**, and needs no separate language server, Magic Racket, Node.js or npm. It is tested on Linux x64 and ARM64, Windows x64 and macOS ARM64 with Racket 9.1, and with VS Code 1.91 on Linux and the newest VS Code on all three. Resyntax suggestions are optional and need the separate `resyntax` package. The macro stepper, interactive plots and the WXME editor need a graphical display.
+Version 0.8.51 needs **VS Code 1.91 or newer** and the **full Racket 9.1 or newer distribution**, and needs no separate language server, Magic Racket, Node.js or npm. It is tested on Linux x64 and ARM64, Windows x64 and macOS ARM64 with Racket 9.1, and with VS Code 1.91 on Linux and the newest VS Code on all three. Resyntax suggestions are optional and need the separate `resyntax` package. The macro stepper, interactive plots and the WXME editor need a graphical display.
 
 ![A Racket file beside its Results: a curve, a 3D surface and a picture](docs/images/results-with-plots.png)
 
@@ -25,10 +25,10 @@ Version 0.8.50 needs **VS Code 1.91 or newer** and the **full Racket 9.1 or newe
 
 Install [Racket 9.1 or newer](https://download.racket-lang.org/), the full distribution, and put it on PATH or set `racketdap.racketExecutable`.
 
-Install **Racketeer** from the Extensions view, or build `dist/racketeer-0.8.50.vsix` as described under [Build and test](#build-and-test) and choose **Extensions: Install from VSIX…**. From a terminal:
+Install **Racketeer** from the Extensions view, or build `dist/racketeer-0.8.51.vsix` as described under [Build and test](#build-and-test) and choose **Extensions: Install from VSIX…**. From a terminal:
 
 ```sh
-code --install-extension dist/racketeer-0.8.50.vsix
+code --install-extension dist/racketeer-0.8.51.vsix
 ```
 
 Open a trusted folder and a saved `.rkt` file: the language tools start automatically. Click the play icon at the top right of the editor to see its Results, or the debug icon beside it to stop and inspect it.
@@ -45,7 +45,7 @@ The extension ID is `lamestllama.racketeer`; the debugger type and settings pref
 - [Run, Debug, Test and REPL execution](docs/workflows.md), [editing and macro expansion](docs/editor-tools.md), [package development](docs/packages.md), [building applications](docs/application-builds.md), [module dependencies](docs/module-dependencies.md) and [WXME editing](docs/wxme-editor.md) give the details.
 - Examples: [multi-file](examples/multi-file/README.md) follows four calls through nested folders, [workflow](examples/workflow/main.rkt) connects two source files, tests and the Debug REPL, and [packages](examples/packages/README.md) shows a linked package.
 
-Limits on what is offered are stated in [the extension guide](vscode/README.md#limits). The [release quality requirements](docs/quality.md) and [0.8.50 validation record](docs/releases/0.8.50.md) state what has been checked and what is still needed.
+Limits on what is offered are stated in [the extension guide](vscode/README.md#limits). The [release quality requirements](docs/quality.md) and [0.8.51 validation record](docs/releases/0.8.51.md) state what has been checked and what is still needed.
 
 ## Build and test
 
@@ -61,9 +61,9 @@ On Linux, with Python 3 and Xvfb available, test the packaged VSIX in a separate
 
 ```sh
 python3 scripts/test-gui.py
-python3 scripts/test-vscode.py --artifact dist/racketeer-0.8.50.vsix
-python3 scripts/test-vscode.py --rhombus --artifact dist/racketeer-0.8.50.vsix
-python3 scripts/test-vscode.py --dogfood --artifact dist/racketeer-0.8.50.vsix
+python3 scripts/test-vscode.py --artifact dist/racketeer-0.8.51.vsix
+python3 scripts/test-vscode.py --rhombus --artifact dist/racketeer-0.8.51.vsix
+python3 scripts/test-vscode.py --dogfood --artifact dist/racketeer-0.8.51.vsix
 ```
 
 The extension tests itself. Open this repository in VS Code with the extension installed, open **Testing**, and select **Run All Tests**. Set a breakpoint in a test and select **Debug Test** to inspect it.

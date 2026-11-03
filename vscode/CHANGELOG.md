@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.51
+
+- When Magic Racket's language server is what keeps Racketeer's language tools off, Racketeer offers to turn off only that server and reload the window. Magic Racket stays installed. The notice waits in the notification list until it is answered or dismissed, and is not shown again after that. A workspace's own value of the setting is changed there, so that it does not override the choice.
+- Three tests read a process number from a file as soon as the file existed, and could read it empty. Each now waits for the number, which removes an intermittent failure.
+- Linux CI runs on every push, and macOS and Windows on demand.
+
 ## 0.8.50
 
 - Debugging starts more than twice as fast: a small program goes from launch to exit in about 0.9 s instead of about 2.5 s. An extension package cannot hold compiled files, so Racket compiled the debugger in memory on every launch. It is now compiled once for each Racket version and VM into the extension's storage, in the background after the first launch begins, and that first launch runs as before. A program and the processes it starts see the same compiled-file settings, environment and command line as without this. If the compiled folder is damaged, out of date, older than a library the debugger uses, or cannot be written, the debugger runs from source and, where it can, compiles again.
