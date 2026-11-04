@@ -14,6 +14,10 @@
   (syntax->list #'(quote quote-syntax #%datum #%top #%variable-reference
                         #%plain-lambda case-lambda)))
 (define binding-forms (syntax->list #'(let-values letrec-values)))
+;; Racket 9.2 adds this form, which hands an expression to the core compiler. Racket 9.1
+;; cannot bind its name, so it is known by that name. It has nothing to instrument.
+(define (foreign-inline? form)
+  (and (identifier? form) (eq? (syntax-e form) '#%foreign-inline)))
 (define (bound-form? identifier forms)
   (and (identifier? identifier)
        (for/or ([form (in-list forms)]) (free-identifier=? identifier form))))
@@ -325,6 +329,7 @@
          (let ([parts (syntax->list expression)])
            (and (pair? parts)
                 (not (bound-form? (car parts) atomic-forms))
+                (not (foreign-inline? (car parts)))
                 (or (not (free-identifier=? (car parts) #'#%expression))
                     (stoppable? (cadr parts)))))))
   (define (binding-container? expression)
@@ -659,6 +664,7 @@
          (application (syntax->list #'(expression ...)) environment act)]
         [(#%expression expression)
          #`(#%expression #,(walk #'expression environment act tail? inferred-name))]
+        [(form . ignored) (foreign-inline? #'form) expression]
         [_ (raise-syntax-error 'instrument-module "unsupported expanded runtime form" expression)]))
     (define (rewrite)
       (cond

@@ -3,7 +3,7 @@
 ;; SPDX-License-Identifier: Apache-2.0 OR MIT
 ;; What the instrumenter hands back to the expander decides how long a program
 ;; takes to load. Its shape is checked here, without timing anything.
-(require racket/list rackunit
+(require racket/list rackunit version/utils
          "../racketdap/instrumentation/instrument.rkt")
 
 (define-namespace-anchor anchor)
@@ -115,6 +115,16 @@
     (for ([generate (list long-function long-calling-function)])
       (define (size count) (nodes (instrumented (generate count))))
       (check-true (< (size 200) (* 2.2 (size 100))))))
+  (test-case "an expression for the core compiler is left as it is"
+    (define form (datum->syntax #f '(#%foreign-inline 1 #:pure)))
+    (define-values (annotated sites table)
+      (instrument-module form (string->path "/tmp/generated.rkt") (lambda () 1)
+                         #:module-context (make-module-binding-context)))
+    (check-equal? (syntax->datum annotated) (syntax->datum form))
+    (when (version<=? "9.2" (version))
+      (check-not-exn
+       (lambda ()
+         (instrumented "(require (only-in '#%kernel #%foreign-inline))\n(define subject (#%foreign-inline 1 #:pure))")))))
   (test-case "a long body is written in core forms, in coverage runs too"
     (for ([coverage? '(#f #t)])
       (check-false (non-core (instrumented (long-calling-function 40) #:coverage? coverage?))))))
