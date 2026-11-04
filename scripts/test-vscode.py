@@ -124,6 +124,18 @@ def isolated_environment(output, inherited=None):
     return env
 
 
+def show_failure(log, env=os.environ, count=40):
+    """Name a failure in the output, so that reading it needs no downloaded artifact."""
+    if not log.is_file():
+        return
+    tail = '\n'.join(log.read_text(encoding='utf-8', errors='replace').splitlines()[-count:])
+    sys.stdout.reconfigure(errors='backslashreplace')
+    print(f'Last lines of {log}:\n{tail}', flush=True)
+    if env.get('GITHUB_STEP_SUMMARY'):
+        with open(env['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as summary:
+            summary.write(f'### Editor run failed\n\n```\n{tail}\n```\n')
+
+
 def verify_artifact(artifact, installed=None):
     command = ['node', str(ROOT / 'scripts/artifact.js'), 'verify', str(artifact)]
     if installed:
@@ -200,6 +212,7 @@ def run(args, executable, app, selected):
         evidence.update(result)
     except Exception as error:
         evidence.update(passed=False, error=str(error))
+        show_failure(output / 'vscode.log')
         raise
     finally:
         report.write_text(json.dumps(evidence, indent=2) + '\n')

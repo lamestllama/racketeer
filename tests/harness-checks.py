@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 """Editor orchestration regressions without launching an editor."""
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -120,6 +121,27 @@ class EditorIsolation(unittest.TestCase):
 
 
 class RhombusFixture(unittest.TestCase):
+    def test_failed_run_names_its_failure_in_the_output_and_step_summary(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            log = Path(temporary) / 'vscode.log'
+            summary = Path(temporary) / 'summary.md'
+            log.write_text('\n'.join(['first line', *['filler'] * 3, 'AssertionError: λ']), encoding='utf-8')
+            output = io.StringIO()
+            with patch('sys.stdout', output):
+                output.reconfigure = lambda errors: None
+                harness.show_failure(log, {'GITHUB_STEP_SUMMARY': str(summary)}, count=4)
+            self.assertIn('AssertionError: λ', output.getvalue())
+            self.assertNotIn('first line', output.getvalue())
+            self.assertIn('AssertionError: λ', summary.read_text(encoding='utf-8'))
+            self.assertNotIn('first line', summary.read_text(encoding='utf-8'))
+
+    def test_a_run_that_ended_before_the_editor_shows_nothing(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output = io.StringIO()
+            with patch('sys.stdout', output):
+                harness.show_failure(Path(temporary) / 'vscode.log', {})
+            self.assertEqual(output.getvalue(), '')
+
     def test_committed_lock_covers_every_extra_dependency(self):
         lock = runtime.read_lock()
         self.assertEqual({package['name'] for package in lock['packages']}, {
