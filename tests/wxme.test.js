@@ -154,6 +154,7 @@ test('missing executable and cancellation before launch settle without a worker'
 });
 
 test('timeout and cancellation reap only their own unresponsive worker', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
   const directory = temporary(t), stalled = path.join(directory, 'stalled.js');
   fs.writeFileSync(stalled, `process.stdin.once('data', chunk => { require('fs').writeFileSync(JSON.parse(chunk).path, String(process.pid)); }); setInterval(() => {}, 1000);`);
   const first = path.join(directory, 'first'), second = path.join(directory, 'second');
@@ -165,10 +166,14 @@ test('timeout and cancellation reap only their own unresponsive worker', async t
   const pidIn = file => fs.existsSync(file) ? Number(fs.readFileSync(file)) : 0;
   await until(() => pidIn(first) && pidIn(second));
   const pidA = pidIn(first), pidB = pidIn(second);
+  // These workers ignore their input closing, so a kill follows 1500 ms after each stop.
   controller.abort(new Error('cancelled'));
+  t.mock.timers.tick(1500);
   await checkedA;
   assert.throws(() => process.kill(pidA, 0), { code: 'ESRCH' });
   assert.doesNotThrow(() => process.kill(pidB, 0));
+  t.mock.timers.tick(1500); // The second worker's deadline.
+  t.mock.timers.tick(1500);
   await checkedB;
   assert.throws(() => process.kill(pidB, 0), { code: 'ESRCH' });
 });

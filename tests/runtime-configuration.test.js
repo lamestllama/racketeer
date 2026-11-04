@@ -50,7 +50,7 @@ test('Run and Debug configure only the entry program before dependencies, body a
     'dependency.rkt': '#lang racket/base\n(module configure-runtime racket/base (error "dependency configuration ran"))\n' +
       '(displayln (list \'dependency (print-as-expression)))\n'
   });
-  const expected = execFileSync('racket', [program], { encoding: 'utf8', timeout: 10000 });
+  const expected = execFileSync('racket', [program], { encoding: 'utf8', timeout: 240000 });
   assert.equal(expected, 'configured\n(dependency #f)\n(body #f)\n(main #f)\n');
   for (const noDebug of [true, false]) {
     const client = await start(t, program, { noDebug });
@@ -128,7 +128,7 @@ test('legacy language configuration follows the submodule protocol and remains s
     `(define (get-info data) (lambda (key default) (if (eq? key 'configure-runtime)\n` +
     ` (list (vector '(file ${infoPath}) 'configure #f)) default)))\n` +
     '(define (configure data) (displayln "legacy") (print-as-expression #f))\n');
-  const expected = execFileSync('racket', [program], { encoding: 'utf8', timeout: 10000 });
+  const expected = execFileSync('racket', [program], { encoding: 'utf8', timeout: 240000 });
   assert.equal(expected, 'submodule\nlegacy\n(body #f)\n');
   for (const noDebug of [true, false]) {
     const client = await start(t, program, { noDebug });

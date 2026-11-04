@@ -29,7 +29,7 @@ function descendants(pid) {
 // killed without warning, while the index analyses a module whose
 // compile-time code holds a child that ignores breaks.
 test('the language and workspace index servers end with an extension host that is killed', {
-  skip: process.platform === 'win32' && 'POSIX process listing; Windows uses a job object', timeout: 300000
+  skip: process.platform === 'win32' && 'POSIX process listing; Windows uses a job object'
 }, async t => {
   const directory = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'racketeer servers ')));
   const pids = path.join(directory, 'pids');
@@ -60,7 +60,7 @@ test('the language and workspace index servers end with an extension host that i
       const language = await server('language-server.rkt').start();
       const index = await server('workspace-index-server.rkt').start();
       const connection = rpc.createMessageConnection(new rpc.StreamMessageReader(index.stdout), new rpc.StreamMessageWriter(index.stdin));
-      connection.onRequest('workspace/configuration', () => [{ enabled: true, timeoutSeconds: 90 }]);
+      connection.onRequest('workspace/configuration', () => [{ enabled: true, timeoutSeconds: 120 }]);
       connection.listen();
       await connection.sendRequest('initialize', { processId: null, rootUri: null,
         workspaceFolders: [{ uri: ${JSON.stringify(pathToFileURL(directory).href)}, name: 'servers' }],

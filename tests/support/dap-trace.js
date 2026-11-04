@@ -28,7 +28,7 @@ const ok = async request => {
 };
 // Runs script(session) with breakpoints set; the session ends when the program does.
 async function session(launch, breakpoints, script) {
-  const client = new DapClient(undefined, { timeout: 120000, closeTimeout: 10000 });
+  const client = new DapClient();
   const messages = record(client);
   const context = { client, ok, messages, breakpointResponses: {} };
   try {

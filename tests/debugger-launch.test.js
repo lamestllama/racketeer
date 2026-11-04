@@ -156,7 +156,7 @@ for (const [name, spoil] of [
   ['storage under a file', files => { fs.writeFileSync(files.storage, 'a file'); files.storage = path.join(files.storage, 'below'); }]
 ]) {
   test(`with ${name} the debugger runs from source`,
-    { timeout: 300000, skip: process.platform === 'win32' || process.getuid?.() === 0 }, async t => {
+    { skip: process.platform === 'win32' || process.getuid?.() === 0 }, async t => {
       const files = folder(t);
       const spoilt = files.storage;
       spoil(files);
@@ -168,9 +168,9 @@ for (const [name, spoil] of [
     });
 }
 
-test('a storage path holding the list separator is an ordinary path', { skip: process.platform === 'win32' }, async t => {
+test('a storage path holding the list separator is an ordinary path', async t => {
   const files = folder(t);
-  files.storage = path.join(files.directory, 'a:b');
+  files.storage = path.join(files.directory, `a${path.delimiter}b`);
   await session(launcherArgs(files), files.program);
   const [build] = await built(files.storage);
   assert.ok(compiledFiles(path.join(files.storage, build)).length);

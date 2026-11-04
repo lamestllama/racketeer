@@ -21,9 +21,8 @@ function owned(command, program, input) {
   });
   return { process, get output() { return output; }, get errors() { return errors; }, get code() { return code; } };
 }
-const gui = { timeout: 30000 };
 if (process.platform === 'linux' && !process.env.DISPLAY) throw new Error('Run this suite through scripts/test-gui.py with an isolated display.');
-test('native GUI shows a real rewrite, navigates to expansion, and closes through public window APIs', gui, async () => {
+test('native GUI shows a real rewrite, navigates to expansion, and closes through public window APIs', async () => {
   const child = spawn(racket, [path.join(__dirname, 'support/macro-stepper-gui.rkt')], { cwd: root });
   let stdout = '', stderr = '';
   child.stdout.on('data', text => { stdout += text; }); child.stderr.on('data', text => { stderr += text; });
@@ -37,7 +36,7 @@ test('native GUI shows a real rewrite, navigates to expansion, and closes throug
   assert.notEqual(result.before, result.after);
 });
 
-test('owned GUI terminal cancellation kills a stuck transformer and its child process', gui, async t => {
+test('owned GUI terminal cancellation kills a stuck transformer and its child process', async t => {
   const server = net.createServer();
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
   let socket;

@@ -72,10 +72,6 @@ and reruns the suite. It also checks the four-file Debug REPL example, including
 its call stack and a second expression in the same session. It does not edit
 the checkout or use your editor profile.
 
-The editor process has a ten-minute time limit. On a busy host, pass
-`--timeout 1200` to allow twenty minutes for the complete run, including cold
-language-server starts. Individual assertion deadlines remain unchanged.
-
 Each run has fresh workspace, profile, extensions, and Racket addon directories;
 inherited collection and compiled-cache overrides are removed. The report and
 logs are saved in its run directory, located through `.test-output/dogfood/latest.json`.
@@ -112,9 +108,7 @@ acceptance runs with the ordinary installed-editor checks on the isolated
 display. Package identities and provisioning logs accompany the Rhombus report.
 
 The GUI command includes callback debugging, event-loop Pause/Continue, macro-stepper windows, interactive
-plots and WXME text, object and XML/Racket-box editing. Pass `--timeout 600` on a
-busy host to increase its whole-suite time limit; individual test deadlines
-remain unchanged.
+plots and WXME text, object and XML/Racket-box editing.
 
 The headless command stages the bundled runtime and analysis dependencies before
 running tests, so a fresh checkout does not need an earlier package build. It

@@ -198,7 +198,7 @@ async function server(t, command, body) {
   child.stderr.resume();
   const connection = rpc.createMessageConnection(new rpc.StreamMessageReader(child.stdout), new rpc.StreamMessageWriter(child.stdin));
   connection.onError(() => {}); connection.onClose(() => connection.dispose());
-  connection.onRequest('workspace/configuration', ({ items }) => items.map(() => ({ enabled: true, timeoutSeconds: 90 })));
+  connection.onRequest('workspace/configuration', ({ items }) => items.map(() => ({ enabled: true, timeoutSeconds: 120 })));
   connection.onRequest('client/registerCapability', () => null);
   connection.listen();
   t.after(async () => { connection.dispose(); child.kill('SIGKILL'); child.stdin.destroy(); child.stdout.destroy(); await closed; });

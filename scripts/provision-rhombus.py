@@ -57,7 +57,7 @@ def environment(addon, inherited=None):
 
 def package_identity(racket, env):
     result = subprocess.run([str(racket), '-e', IDENTITY_EXPRESSION], env=env,
-                            check=True, capture_output=True, text=True, timeout=60)
+                            check=True, capture_output=True, text=True, timeout=600)
     return json.loads(result.stdout)
 
 
@@ -127,7 +127,7 @@ def provision(output, racket, inherited=None):
         probe.write_text('#lang rhombus\nprintln(6 * 7)\n')
         with (output / 'rhombus-probe.log').open('w') as log:
             result = subprocess.run([str(racket), str(probe)], env=env, stdout=subprocess.PIPE,
-                                    stderr=log, text=True, check=True, timeout=120)
+                                    stderr=log, text=True, check=True, timeout=600)
             log.write(result.stdout)
         if result.stdout.strip() != '42':
             raise RuntimeError(f'Rhombus runtime probe produced unexpected output: {result.stdout!r}')

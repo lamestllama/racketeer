@@ -10,12 +10,15 @@ test('a wait returns what its condition found, as soon as it finds it', async ()
   assert.equal(await until(() => ++asked === 3 && 'found'), 'found');
 });
 
+test('a wait still polls while a test holds a mocked timer', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let asked = 0;
+  assert.equal(await until(() => ++asked === 3 && 'found'), 'found');
+});
+
 test('a wait that reaches the deadline names what it waited for', async t => {
-  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  t.mock.timers.enable({ apis: ['Date'] });
   const waiting = assert.rejects(until(() => false, 'the marker', () => 'details'), /Timed out: the marker details/);
-  for (let elapsed = 0; elapsed <= deadline; elapsed += 25) {
-    await new Promise(resolve => setImmediate(resolve));
-    t.mock.timers.tick(25);
-  }
+  t.mock.timers.tick(deadline);
   await waiting;
 });

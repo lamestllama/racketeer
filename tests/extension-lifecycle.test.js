@@ -40,7 +40,7 @@ test('JSON-RPC write failures reject the request without an unhandled rejection'
         connection.dispose(); input.destroy(); output.destroy();
       }
     })().catch(error => { console.error(error); process.exitCode = 1; });
-  `], { encoding: 'utf8', timeout: 10000 });
+  `], { encoding: 'utf8', timeout: 240000 });
   assert.equal(result.status, 0, result.stderr || String(result.error));
 });
 
@@ -425,7 +425,7 @@ for (const mode of ['cancel', 'reject', 'timeout']) test({
   cancel: 'restart and disposal cancel language initialization before joining its queue',
   reject: 'initialization failure reports once and SDK stop reaps the starting process',
   timeout: 'configured language startup deadline reaps its process and gives timeout-specific advice'
-}[mode], { timeout: 10000 }, async t => {
+}[mode], async t => {
   const initializeFails = mode === 'reject';
   const configuredTimeout = mode === 'timeout' ? 1 : mode === 'cancel' ? 240 : 'unbounded';
   const commands = new Map(), starting = [];

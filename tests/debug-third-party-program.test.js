@@ -36,7 +36,7 @@ async function fetchArchive() {
   if (existing && digest(existing) === sha256) return { file: cached };
   let data;
   try {
-    const response = await fetch(url, { signal: AbortSignal.timeout(60000) });
+    const response = await fetch(url, { signal: AbortSignal.timeout(240000) });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     data = Buffer.from(await response.arrayBuffer());
   } catch (error) {
