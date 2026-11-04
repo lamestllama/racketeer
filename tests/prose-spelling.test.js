@@ -21,14 +21,9 @@ function prose(line) {
 
 // Racketeer's own text describes behaviour on its own terms. What stays is what code must
 // spell: Racket's module path, the module a test refuses to load and the bundled server's
-// value for a formatter. Upstream sources, upstream pull requests as submitted and binary
+// value for a formatter. Upstream sources and binary
 // fixtures are not its own text.
 const application = /dr\s*racket/i;
-const upstreamPatches = new Set([
-  'vendor/patches/pr-246-utf16-positions.patch',
-  'vendor/patches/pr-247-open-buffer-imports.patch',
-  'vendor/patches/pr-248-relative-import-without-directory.patch'
-]);
 const wxmeFixture = /^tests\/fixtures\/wxme(?:-debug|-xml)?\/[^/]+\.wxme$/;
 const modulePath = /dr\s*racket\/check-syntax/gi, refusedModule = /#rx"dr\s*racket/gi, serverValue = /'dr\s*racket'/gi;
 const spelled = new Map([
@@ -44,7 +39,7 @@ const spelled = new Map([
 ]);
 
 function applicationMentions(file, contents) {
-  if (file.startsWith('vendor/collects/') || upstreamPatches.has(file)) return [];
+  if (file.startsWith('vendor/collects/')) return [];
   const found = application.test(file) ? [file] : [];
   if (!contents || contents.includes(0)) return found;
   const text = contents.toString('utf8');
@@ -79,7 +74,6 @@ test('application scanning covers wrapped text, names and files outside the prec
     [`docs/${mention}.wxme`, 'ordinary text'],
     ['tests/fixtures/wxme/new.wxme', mention]
   ]) assert.ok(applicationMentions(file, Buffer.from(text)).length, file);
-  assert.deepStrictEqual(applicationMentions('vendor/patches/pr-246-utf16-positions.patch', Buffer.from(mention)), []);
   assert.deepStrictEqual(applicationMentions('tests/fixtures/wxme/new.wxme',
     Buffer.from('#reader(lib"read.ss""wxme")WXME0111 ## \n' + mention)), []);
 });

@@ -120,7 +120,7 @@
     (define-values (annotated sites table)
       (instrument-module form (string->path "/tmp/generated.rkt") (lambda () 1)
                          #:module-context (make-module-binding-context)))
-    (check-equal? (syntax->datum annotated) (syntax->datum form))
+    (check-regexp-match #rx"[(]#%foreign-inline 1 #:pure[)]" (format "~s" (syntax->datum annotated)))
     (when (version<=? "9.2" (version))
       (check-not-exn
        (lambda ()

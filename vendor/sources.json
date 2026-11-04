@@ -1,9 +1,9 @@
 [
   {
     "name": "racket-langserver",
-    "url": "https://codeload.github.com/jeapostrophe/racket-langserver/zip/b7c4642055ccda877e3e6380e76e2776031a3c52",
-    "sha256": "7e42f62ce67cc5b820e697c9b3ba9f14d752a866bbe8eb2a84194fe54b5f2316",
-    "prefix": "racket-langserver-b7c4642055ccda877e3e6380e76e2776031a3c52"
+    "url": "https://codeload.github.com/jeapostrophe/racket-langserver/zip/23e19894f1a11ce38bc56028ee048adb984bca06",
+    "sha256": "22cc31706245c452ac3ce7f35bda0d37cd4286ad018b935b6e2a5dddec77b39f",
+    "prefix": "racket-langserver-23e19894f1a11ce38bc56028ee048adb984bca06"
   },
   {
     "name": "fixw",
