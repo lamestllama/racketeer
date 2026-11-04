@@ -8,7 +8,7 @@ const { spawnSync } = require('node:child_process');
 const { fileURLToPath } = require('node:url');
 const { definition, uri, edited, project } = require('./workspace-index-project');
 
-test('selectors shared by different export phases are refused without changing the snapshot', { timeout: 120000 }, async t => {
+test('selectors shared by different export phases are refused without changing the snapshot', async t => {
   const p = await project(t);
   for (const compileName of ['square', 'other']) {
     const provider = `#lang racket/base\n(require (for-syntax racket/base))\n(provide square (for-syntax (rename-out [${compileName} square])))\n(define (square x) (* x x))\n(begin-for-syntax (define (${compileName} x) (+ x 1)))\n`;
@@ -21,7 +21,7 @@ test('selectors shared by different export phases are refused without changing t
   }
 });
 
-test('an import selector is not confused with a hidden definition of the same name', { timeout: 120000 }, async t => {
+test('an import selector is not confused with a hidden definition of the same name', async t => {
   const p = await project(t);
   const provider = '#lang racket/base\n(provide (rename-out [other square] [third squared]))\n(define (square x) (* x x))\n(define (other x) x)\n(define (third x) x)\n(error "Rename must not run this module body")\n';
   const consumer = '#lang racket/base\n(require (only-in "definition.rkt" square))\n';
@@ -32,7 +32,7 @@ test('an import selector is not confused with a hidden definition of the same na
   assert.equal(edited(provider, changes[p.origin]), provider.replace('(square x)', '(squared x)'));
 });
 
-test('selective imports retain submodule identity', { timeout: 120000 }, async t => {
+test('selective imports retain submodule identity', async t => {
   const p = await project(t);
   const provider = '#lang racket/base\n(module inner racket/base\n  (provide square)\n  (define (square x) (* x x)))\n';
   const consumer = '#lang racket/base\n(require (only-in (submod "definition.rkt" inner) square))\n(square 3)\n';
@@ -49,7 +49,7 @@ test('selective imports retain submodule identity', { timeout: 120000 }, async t
   assert.equal(result.stdout.trim(), '9');
 });
 
-test('composed selectors shared by different modules are refused', { timeout: 120000 }, async t => {
+test('composed selectors shared by different modules are refused', async t => {
   const p = await project(t);
   p.write('other.rkt', '#lang racket/base\n(provide square)\n(define square 3)\n');
   const consumer = '#lang racket/base\n(require (except-in (combine-in "definition.rkt" "other.rkt") square))\n';
@@ -62,7 +62,7 @@ test('composed selectors shared by different modules are refused', { timeout: 12
   assert.equal(edited(independent, changes[uri(p.filename('uses.rkt'))]), independent.replace('(square 3)', '(squared 3)'));
 });
 
-test('nested import discovery does not interpret a custom transformer or quoted data', { timeout: 120000 }, async t => {
+test('nested import discovery does not interpret a custom transformer or quoted data', async t => {
   const p = await project(t);
   const text = '#lang racket/base\n(require (only-in racket/base [prefix-in standard-prefix])\n'
     + '         (for-syntax racket/base racket/require-transform))\n'

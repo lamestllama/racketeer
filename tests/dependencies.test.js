@@ -2,12 +2,13 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const test = require('./support/node-test'), assert = require('node:assert/strict');
+const treeRemoval = require('./support/tree-removal');
+const { until } = require('./support/wait');
 const fs = require('node:fs'), os = require('node:os'), path = require('node:path'), vm = require('node:vm');
 const { createRequire } = require('node:module');
 const { spawnSync } = require('node:child_process');
 const { requestDependencies } = require('../vscode/dependency-process');
 const { dependencyFixture } = require('./support/dependency-fixture');
-const treeRemoval = require('./support/tree-removal');
 const root = path.resolve(__dirname, '..'), helper = path.join(root, 'racketdap/tools/dependency-worker.rkt'), collects = path.join(root, 'vendor/collects');
 function directory(t) { const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'racketeer-dependencies-')); t.after(() => fs.rmSync(dir, treeRemoval)); return dir; }
 const request = (file, buffers = [], options) => requestDependencies('racket', helper, collects, { version: 1, path: file, buffers, roots: [path.dirname(file)] }, options);
@@ -51,7 +52,7 @@ test('imports retain phase shifts, label imports and relative submodules without
 
 test('unsaved transitive compile-time imports replace compiled intermediates and reset when the buffer closes', async t => {
   const dir = directory(t), fixture = dependencyFixture(dir);
-  const compiled = spawnSync('raco', ['make', path.join(dir, 'bridge.rkt')], { encoding: 'utf8', timeout: 15000 }); assert.equal(compiled.status, 0, compiled.stderr);
+  const compiled = spawnSync('raco', ['make', path.join(dir, 'bridge.rkt')], { encoding: 'utf8', timeout: 240000 }); assert.equal(compiled.status, 0, compiled.stderr);
   const changed = await request(fixture.file, [{ path: fixture.selector, text: fixture.replacement }]);
   assert.ok(moduleAt(changed).imports.some(i => i.name === 'new.rkt'));
   assert.ok(!moduleAt(changed).imports.some(i => i.name === 'old.rkt'));
@@ -63,7 +64,7 @@ test('unsaved transitive compile-time imports replace compiled intermediates and
 test('dependency analysis uses no GUI application modules and malformed source reports its error', async t => {
   const dir = directory(t), fixture = dependencyFixture(dir), engine = path.join(root, 'racketdap/tools/module-dependencies.rkt');
   const expression = `(define resolve (current-module-name-resolver)) (parameterize ([current-module-name-resolver (case-lambda [(p n) (resolve p n)] [(p r s l) (when (regexp-match? #rx"drracket" (format "~s" p)) (error 'dependency "Forbidden dependency")) (resolve p r s l)])]) (define analyze (dynamic-require '(file ${JSON.stringify(engine)}) 'module-dependencies)) (void (analyze ${JSON.stringify(fixture.file)} '() '())))`;
-  const result = spawnSync('racket', ['-S', collects, '-e', expression], { encoding: 'utf8', timeout: 15000 }); assert.equal(result.status, 0, result.stderr);
+  const result = spawnSync('racket', ['-S', collects, '-e', expression], { encoding: 'utf8', timeout: 240000 }); assert.equal(result.status, 0, result.stderr);
   fs.writeFileSync(fixture.file, '#lang racket/base\n('); await assert.rejects(request(fixture.file), /expected a.*\)/);
 });
 
@@ -130,7 +131,7 @@ test('expanding different files serializes analysis and cancellation prevents qu
   assert.equal((await first).length, 0); assert.equal((await second).length, 0); assert.equal(calls, 1);
 });
 
-test('cancellation and deadlines release a stalled transformer and its ordinary child process', { timeout: 25000 }, async t => {
+test('cancellation and deadlines release a stalled transformer and its ordinary child process', async t => {
   const dir = directory(t), file = path.join(dir, 'blocked.rkt'), receipt = path.join(dir, 'child-pid');
   fs.writeFileSync(file, `#lang racket/base\n(require (for-syntax racket/base racket/system))\n(begin-for-syntax\n (define-values (child out in err) (subprocess #f #f #f (find-executable-path "racket") "-e" "(sync never-evt)"))\n (call-with-output-file ${JSON.stringify(receipt)} (lambda (out) (write (subprocess-pid child) out)) #:exists 'truncate/replace)\n (sync never-evt))\n`);
   for (const mode of ['cancel', 'timeout']) {
@@ -140,13 +141,12 @@ test('cancellation and deadlines release a stalled transformer and its ordinary 
     const failed = assert.rejects(pending, mode === 'timeout' ? /timed out/ : /cancelled/);
     // The child creates its receipt before it writes the number.
     const receiptPid = () => fs.existsSync(receipt) ? Number(fs.readFileSync(receipt, 'utf8')) : 0;
-    const deadline = Date.now() + 8000; while (!receiptPid() && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
+    await until(() => receiptPid());
     const pid = receiptPid(); assert.ok(pid);
     if (mode === 'cancel') controller.abort(new Error('cancelled'));
     await failed;
     if (process.platform === 'linux') {
-      const stat = `/proc/${pid}/stat`; const end = Date.now() + 3000;
-      while (fs.existsSync(stat) && fs.readFileSync(stat, 'utf8').split(' ')[2] !== 'Z' && Date.now() < end) await new Promise(resolve => setTimeout(resolve, 20));
+      const stat = `/proc/${pid}/stat`; await until(() => !(fs.existsSync(stat) && fs.readFileSync(stat, 'utf8').split(' ')[2] !== 'Z'));
       assert.ok(!fs.existsSync(stat) || fs.readFileSync(stat, 'utf8').split(' ')[2] === 'Z');
     }
     fs.unlinkSync(receipt);

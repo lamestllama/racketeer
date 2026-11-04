@@ -1,13 +1,13 @@
 // Copyright (c) 2026 Eric Parsonage
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
-const test = require('node:test');
+const test = require('./support/node-test');
+const treeRemoval = require('./support/tree-removal');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { racketPath, versionProblem } = require('../vscode/racket-version');
-const treeRemoval = require('./support/tree-removal');
 
 test('a command path skips a file without execute permission', { skip: process.platform === 'win32' }, t => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'racket-path-'));

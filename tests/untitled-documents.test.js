@@ -10,7 +10,7 @@ const { languageServer, until } = require('./language-server-project');
 const source = '#lang racket/base\n(define (square x) (* x x))\n(square 3)\n';
 const atUse = { line: 2, character: 3 };
 
-test('untitled documents retain their URI through diagnostics, completion and definition', { timeout: 60000 }, async t => {
+test('untitled documents retain their URI through diagnostics, completion and definition', async t => {
   const p = await languageServer(t);
   const uri = 'untitled:Untitled-1';
   await p.open(uri, source);
@@ -28,7 +28,7 @@ test('untitled documents retain their URI through diagnostics, completion and de
   assert.deepEqual(fs.readdirSync(p.directory), []);
 });
 
-for (const workspace of [true, false]) test(`untitled documents refuse relative imports without a save location with workspace=${workspace}`, { timeout: 60000 }, async t => {
+for (const workspace of [true, false]) test(`untitled documents refuse relative imports without a save location with workspace=${workspace}`, async t => {
   const p = await languageServer(t, { workspace });
   const uri = 'untitled:Untitled-3';
   await p.open(uri, source); await p.expectDiagnostics(uri, false);
@@ -45,7 +45,7 @@ for (const workspace of [true, false]) test(`untitled documents refuse relative 
   assert.deepEqual(fs.readdirSync(p.directory), ['dependency.rkt']);
 });
 
-test('an associated save location supplies the import base without replacing an existing file', { timeout: 60000 }, async t => {
+test('an associated save location supplies the import base without replacing an existing file', async t => {
   const p = await languageServer(t, { workspace: false });
   p.write('draft.rkt', 'keep this existing file');
   p.write('dependency.rkt', '#lang racket/base\n(provide fresh)\n(define fresh 2)\n');
@@ -57,7 +57,7 @@ test('an associated save location supplies the import base without replacing an 
   assert.deepEqual(fs.readdirSync(p.directory).sort(), ['dependency.rkt', 'draft.rkt']);
 });
 
-test('closing blocked untitled analysis retires queries before Save As and same-URI reopen', { timeout: 90000 }, async t => {
+test('closing blocked untitled analysis retires queries before Save As and same-URI reopen', async t => {
   const p = await languageServer(t);
   const uri = 'untitled:Untitled-5';
   const entered = p.filename('entered');

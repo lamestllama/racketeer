@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const assert = require('node:assert/strict');
+const treeRemoval = require('./support/tree-removal');
 const test = require('./support/node-test');
 const path = require('node:path');
 const fs = require('node:fs/promises');
@@ -9,7 +10,6 @@ const os = require('node:os');
 const { DapClient } = require('./dap-client');
 const { deferCleanup } = require('./cleanup');
 const { selectTests } = require('../vscode/test-selection');
-const treeRemoval = require('./support/tree-removal');
 
 test('test selection honors excluded ancestors and overlapping selections', () => {
   const parent = { id: 'workspace', children: [] };

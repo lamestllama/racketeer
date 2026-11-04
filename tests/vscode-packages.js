@@ -1,14 +1,15 @@
 // Copyright (c) 2026 Eric Parsonage
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
+const { until, exited } = require('./support/wait');
 const assert = require('node:assert/strict');
+const treeRemoval = require('./support/tree-removal');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const vscode = require('vscode');
-const treeRemoval = require('./support/tree-removal');
 const execute = promisify(execFile);
 
 exports.run = async function (workspace) {
@@ -64,12 +65,7 @@ exports.run = async function (workspace) {
     });
     assert.equal(breakpoints[0].verified, true);
     const evaluated = repl.session.customRequest('evaluate', { context: 'repl', expression: '(answer 7)' });
-    const deadline = Date.now() + 15000;
-    let stop;
-    while (!(stop = messages.find(m => m.session.id === repl.session.id && m.event === 'stopped'))) {
-      assert.ok(Date.now() < deadline, 'Debug REPL stops inside external package source');
-      await new Promise(resolve => setTimeout(resolve, 20));
-    }
+    const stop = await until(() => messages.find(m => m.session.id === repl.session.id && m.event === 'stopped'), 'Debug REPL stops inside external package source');
     const { stackFrames } = await repl.session.customRequest('stackTrace', { threadId: stop.body.threadId });
     assert.equal(stackFrames[0].source.path, helper);
     assert.equal((await repl.session.customRequest('evaluate', { frameId: stackFrames[0].id, expression: 'value' })).result, '7');
@@ -88,21 +84,10 @@ exports.run = async function (workspace) {
       '  (sync never-evt))', ''
     ].join('\n'));
     const cancelled = assert.rejects(vscode.commands.executeCommand('racketdap.testPackage', name), /did not complete successfully/);
-    const cancellationDeadline = Date.now() + 30000;
-    let pid;
-    while (!pid) {
-      try { pid = Number(await fs.readFile(marker, 'utf8')); } catch (error) { if (error.code !== 'ENOENT') throw error; }
-      assert.ok(Date.now() < cancellationDeadline, 'Package test starts before cancellation');
-      if (!pid) await new Promise(resolve => setTimeout(resolve, 30));
-    }
+    const pid = await until(() => fs.readFile(marker, 'utf8').then(Number, error => { if (error.code !== 'ENOENT') throw error; }), 'Package test starts before cancellation');
     const running = vscode.tasks.taskExecutions.find(execution => execution.task.name === `Test package ${name}`);
     assert.ok(running); running.terminate(); await cancelled;
-    for (;;) {
-      try { process.kill(pid, 0); }
-      catch (error) { if (error.code === 'ESRCH') break; throw error; }
-      assert.ok(Date.now() < cancellationDeadline, 'Cancelled package test child exits');
-      await new Promise(resolve => setTimeout(resolve, 30));
-    }
+    await until(() => exited(pid), 'Cancelled package test child exits');
     await fs.rm(blocked); await fs.rm(marker);
     assert.equal((await vscode.commands.executeCommand('racketdap.removePackage', name)).exitCode, 0);
     assert.ok(!(await vscode.commands.executeCommand('racketdap.listPackages')).some(pkg => pkg.name === name));
@@ -110,7 +95,7 @@ exports.run = async function (workspace) {
     // directory link, this requires a real update of the installed copy.
     const archive = path.join(directory, `${name}.zip`);
     const bundle = () => execute(settings.get('racketExecutable', 'racket'),
-      ['-l', 'raco', '--', 'pkg', 'create', '--source', '--dest', directory, '--', library], { timeout: 30000 });
+      ['-l', 'raco', '--', 'pkg', 'create', '--source', '--dest', directory, '--', library], { timeout: 240000 });
     await bundle();
     assert.equal((await vscode.commands.executeCommand('racketdap.installPackage', archive)).exitCode, 0);
     const installed = (await vscode.commands.executeCommand('racketdap.listPackages')).find(pkg => pkg.name === name);
@@ -134,14 +119,8 @@ exports.run = async function (workspace) {
       await settings.update('racketExecutable', previousExecutable, vscode.ConfigurationTarget.Workspace);
     }
     await extension.exports.languageServerReady();
-    const recoveredDeadline = Date.now() + 30000;
-    for (;;) {
-      const definitions = await vscode.commands.executeCommand('vscode.executeDefinitionProvider', document.uri,
-        new vscode.Position(2, document.lineAt(2).text.lastIndexOf('value') + 1));
-      if (definitions?.length) break;
-      assert.ok(Date.now() < recoveredDeadline, 'Language analysis recovers after restoring the executable');
-      await new Promise(resolve => setTimeout(resolve, 50));
-    }
+    await until(async () => (await vscode.commands.executeCommand('vscode.executeDefinitionProvider', document.uri,
+        new vscode.Position(2, document.lineAt(2).text.lastIndexOf('value') + 1)))?.length, 'Language analysis recovers after restoring the executable');
     assert.equal((await vscode.commands.executeCommand('racketdap.testPackage', name)).exitCode, 0);
     // A real process that never speaks LSP must not prevent a corrected
     // configuration from taking over. Build a native executable on every OS.
@@ -150,7 +129,7 @@ exports.run = async function (workspace) {
     const startupMarker = path.join(directory, 'server-started.txt');
     await fs.writeFile(hangingScript, `#lang racket/base\n(require racket/os)\n(call-with-output-file ${JSON.stringify(startupMarker)} (lambda (out) (display (getpid) out)))\n(sync never-evt)\n`);
     await execute(settings.get('racketExecutable', 'racket'),
-      ['-l', 'raco', '--', 'exe', '-o', hangingExecutable, hangingScript], { timeout: 60000 });
+      ['-l', 'raco', '--', 'exe', '-o', hangingExecutable, hangingScript], { timeout: 240000 });
     const initializationRejections = [];
     const captureInitializationRejection = error => initializationRejections.push(String(error?.stack || error));
     process.on('unhandledRejection', captureInitializationRejection);
@@ -158,25 +137,13 @@ exports.run = async function (workspace) {
       let startupPid;
       try {
         await settings.update('racketExecutable', hangingExecutable, vscode.ConfigurationTarget.Workspace);
-        const startupDeadline = Date.now() + 15000;
-        while (!startupPid) {
-          try { startupPid = Number(await fs.readFile(startupMarker, 'utf8')); }
-          catch (error) { if (error.code !== 'ENOENT') throw error; }
-          assert.ok(Date.now() < startupDeadline, 'Unresponsive language process starts');
-          if (!startupPid) await new Promise(resolve => setTimeout(resolve, 30));
-        }
+        startupPid = await until(() => fs.readFile(startupMarker, 'utf8').then(Number, error => { if (error.code !== 'ENOENT') throw error; }), 'Unresponsive language process starts');
       } finally {
         await settings.update('racketExecutable', previousExecutable, vscode.ConfigurationTarget.Workspace);
       }
       await extension.exports.languageServerReady();
-      const startupRecoveryDeadline = Date.now() + 30000;
-      for (;;) {
-        const definitions = await vscode.commands.executeCommand('vscode.executeDefinitionProvider', document.uri,
-          new vscode.Position(2, document.lineAt(2).text.lastIndexOf('value') + 1));
-        if (definitions?.length) break;
-        assert.ok(Date.now() < startupRecoveryDeadline, 'Language server recovers from unresponsive initialization');
-        await new Promise(resolve => setTimeout(resolve, 50));
-      }
+      await until(async () => (await vscode.commands.executeCommand('vscode.executeDefinitionProvider', document.uri,
+          new vscode.Position(2, document.lineAt(2).text.lastIndexOf('value') + 1)))?.length, 'Language server recovers from unresponsive initialization');
       assert.throws(() => process.kill(startupPid, 0), { code: 'ESRCH' }, 'Cancelled language process is reaped');
       await new Promise(resolve => setImmediate(resolve));
       assert.deepEqual(initializationRejections, [], 'Cancelling initialization does not leave an unhandled rejection');

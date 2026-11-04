@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const assert = require('node:assert/strict');
+const treeRemoval = require('./support/tree-removal');
 const test = require('./support/node-test');
 const fs = require('node:fs/promises');
 const os = require('node:os');
@@ -10,7 +11,6 @@ const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const { DapClient } = require('./dap-client');
 const { deferCleanup } = require('./cleanup');
-const treeRemoval = require('./support/tree-removal');
 const execute = promisify(execFile);
 const root = path.resolve(__dirname, '..');
 
@@ -28,7 +28,7 @@ async function fixture(t) {
   await fs.writeFile(program, '#lang racket/base\n(require dogfood-library)\n(define result (twice 21))\n(displayln result)\n');
   const env = { ...process.env, PLTADDONDIR: addon };
   await execute('racket', ['-l', 'raco', '--', 'pkg', 'install', '--scope', 'user', '--no-setup', '--deps', 'fail', '--link', '--', directory],
-    { env, timeout: 30000 });
+    { env, timeout: 240000 });
   return { directory, program, helper, workspace, addon, env };
 }
 async function ok(request) {

@@ -2,17 +2,17 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const test = require('./support/node-test'), assert = require('node:assert/strict');
+const treeRemoval = require('./support/tree-removal');
 const fs = require('node:fs/promises'), os = require('node:os'), path = require('node:path');
 const { DapClient } = require('./dap-client');
 const { deferCleanup } = require('./cleanup');
 const { InteractionOutput } = require('../vscode/interaction-output');
-const treeRemoval = require('./support/tree-removal');
 async function ok(request) { const r = await request; assert.equal(r.success, true, r.message); return r.body; }
 async function start(t, source) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'racket results λ '));
   deferCleanup(t, () => fs.rm(directory, treeRemoval));
   const program = path.join(directory, 'main λ.rkt'); await fs.writeFile(program, source);
-  const client = new DapClient(undefined, { timeout: 60000 }); deferCleanup(t, () => client.close());
+  const client = new DapClient(); deferCleanup(t, () => client.close());
   await ok(client.request('initialize'));
   await ok(client.request('launch', { program, cwd: directory, sourceRoots: [directory], noDebug: true,
     interactive: false, console: 'integratedTerminal', racketdapRichInteractions: true }));

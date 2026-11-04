@@ -2,12 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const assert = require('node:assert/strict');
+const treeRemoval = require('./support/tree-removal');
 const test = require('./support/node-test');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const { DapClient } = require('./dap-client');
-const treeRemoval = require('./support/tree-removal');
 async function ok(p) { const r = await p; assert.equal(r.success, true, r.message); return r.body; }
 for (const interactive of [false, true]) test(`GUI callback debugging with interactive=${interactive}`, { skip: process.platform === 'linux' && !process.env.DISPLAY }, async t => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'racket-gui-parity-'));

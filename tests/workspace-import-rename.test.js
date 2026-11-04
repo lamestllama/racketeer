@@ -8,7 +8,7 @@ const { spawnSync } = require('node:child_process');
 const { fileURLToPath } = require('node:url');
 const { definition, uses, uri, edited, project } = require('./workspace-index-project');
 
-test('export rename preserves explicit aliases and prefixes in unopened consumers', { timeout: 120000 }, async t => {
+test('export rename preserves explicit aliases and prefixes in unopened consumers', async t => {
   const p = await project(t);
   const consumers = {
     'file-prefix.rkt': '#lang racket/base\n(require (prefix-in s: (file "definition.rkt")))\n(s:square 3)\n',
@@ -47,7 +47,7 @@ test('export rename preserves explicit aliases and prefixes in unopened consumer
   }
 });
 
-test('renaming a local alias from its use leaves the exporting module unchanged', { timeout: 120000 }, async t => {
+test('renaming a local alias from its use leaves the exporting module unchanged', async t => {
   const p = await project(t);
   for (const [spec, name, expression] of [
     ['(rename-in "definition.rkt" [square sq])', 'sq', '(sq 3)'],
@@ -66,7 +66,7 @@ test('renaming a local alias from its use leaves the exporting module unchanged'
   }
 });
 
-test('prefixed use prepares only its base name and retains Unicode prefixes', { timeout: 120000 }, async t => {
+test('prefixed use prepares only its base name and retains Unicode prefixes', async t => {
   const p = await project(t);
   const text = '#lang racket/base\n(require (prefix-in π: (prefix-in λ: (file "definition.rkt"))))\n; 😀\n(π:λ:square 3)\n';
   p.write('prefix.rkt', uses);
@@ -82,7 +82,7 @@ test('prefixed use prepares only its base name and retains Unicode prefixes', { 
   assert.equal(fs.readFileSync(p.filename('prefix.rkt'), 'utf8'), uses);
 });
 
-test('alias and prefix renames retain capture checks', { timeout: 120000 }, async t => {
+test('alias and prefix renames retain capture checks', async t => {
   const p = await project(t);
   for (const [spec, body, target, name] of [
     ['(rename-in "definition.rkt" [square sq])', '(let ([result 1]) (sq result))', 'alias', 'result'],
@@ -99,7 +99,7 @@ test('alias and prefix renames retain capture checks', { timeout: 120000 }, asyn
   }
 });
 
-test('export rename composes nested prefixes and preserves aliases inside prefixes', { timeout: 120000 }, async t => {
+test('export rename composes nested prefixes and preserves aliases inside prefixes', async t => {
   const p = await project(t);
   const provider = definition.replace('(provide square)', '(provide square other)') + '(define other 1)\n';
   p.write('definition.rkt', provider); p.open('definition.rkt', provider, 2);

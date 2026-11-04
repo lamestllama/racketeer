@@ -2,20 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const assert = require('node:assert/strict');
+const { until } = require('./support/wait');
 const fs = require('node:fs');
 const path = require('node:path');
 const vscode = require('vscode');
 const { semanticTokens } = require('./vscode-highlighting');
 
-async function until(check, description, timeout = 30000) {
-  const deadline = Date.now() + timeout;
-  while (Date.now() < deadline) {
-    const result = await check();
-    if (result) return result;
-    await new Promise(resolve => setTimeout(resolve, 100));
-  }
-  throw new Error(`Timed out: ${description}`);
-}
 
 // The console log names each check group as it starts, so a run that stops
 // responding shows which group it reached.

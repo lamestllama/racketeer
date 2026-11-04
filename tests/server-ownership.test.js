@@ -2,13 +2,14 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const assert = require('node:assert/strict');
+const treeRemoval = require('./support/tree-removal');
+const { until } = require('./support/wait');
 const test = require('./support/node-test');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawn, execFileSync } = require('node:child_process');
 const { pathToFileURL } = require('node:url');
-const treeRemoval = require('./support/tree-removal');
 
 const root = path.resolve(__dirname, '..');
 const alive = pid => { try { process.kill(pid, 0); return true; } catch (_) { return false; } };
@@ -78,17 +79,12 @@ test('the language and workspace index servers end with an extension host that i
     host.once('exit', code => reject(new Error(`Host exited with ${code}`)));
   });
   // A fresh addon directory compiles both servers first.
-  const deadline = Date.now() + 240000;
-  while (!fs.existsSync(pids)) {
-    assert.ok(Date.now() < deadline, 'The index started analysing the busy module');
-    await new Promise(resolve => setTimeout(resolve, 50));
-  }
+  await until(() => fs.existsSync(pids), 'The index started analysing the busy module');
   tree = servers.flatMap(pid => [pid, ...descendants(pid)]);
   assert.ok(tree.length >= 3, `The servers and the compile-time child are running: ${tree}`);
   const exited = new Promise(resolve => host.once('exit', resolve));
   host.kill('SIGKILL');
   await exited;
-  const settled = Date.now() + 20000;
-  while (tree.some(alive) && Date.now() < settled) await new Promise(resolve => setTimeout(resolve, 100));
+  await until(() => !(tree.some(alive)));
   assert.deepEqual(tree.filter(alive), [], 'No server process outlives the extension host');
 });

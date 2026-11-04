@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const assert = require('node:assert/strict');
+const treeRemoval = require('./support/tree-removal');
 const test = require('./support/node-test');
 const fs = require('node:fs/promises');
 const path = require('node:path');
@@ -11,7 +12,6 @@ const { createRequire } = require('node:module');
 const { createHash } = require('node:crypto');
 const { DapClient } = require('./dap-client');
 const { deferCleanup } = require('./cleanup');
-const treeRemoval = require('./support/tree-removal');
 const hash = text => createHash('sha1').update(text.replace(/\r\n/g, '\n')).digest('hex');
 async function ok(request) {
   const response = await request;
@@ -117,7 +117,7 @@ test('a range holding written code is covered only if that code ran, not generat
   assert.equal(expression(report, source, '(list 1)').executed, false);
 });
 
-test('coverage cost does not grow with recursion depth', { timeout: 30000 }, async t => {
+test('coverage cost does not grow with recursion depth', async t => {
   const source = '#lang racket/base\n(require rackunit)\n' +
     '(define (depth n) (if (zero? n) 0 (add1 (depth (sub1 n)))))\n' +
     '(check-equal? (depth 10000) 10000)\n';

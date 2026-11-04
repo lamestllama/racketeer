@@ -2,13 +2,13 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const assert = require('node:assert/strict');
+const treeRemoval = require('./support/tree-removal');
 const test = require('./support/node-test');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { setTimeout: delay } = require('node:timers/promises');
 const { root, definition, uri, rawServer } = require('./workspace-index-project');
-const treeRemoval = require('./support/tree-removal');
 
 const invalidRequest = -32600, serverNotInitialized = -32002, requestFailed = -32803;
 const exitCode = async server => (await server.closed)[0];
@@ -33,7 +33,7 @@ const references = (directory, id) => ({ id, method: 'textDocument/references', 
   textDocument: { uri: uri(path.join(directory, 'definition.rkt')) },
   position: { line: 2, character: 10 }, context: { includeDeclaration: false } } });
 
-test('initialize answers the standard capabilities and the private extensions', { timeout: 120000 }, async t => {
+test('initialize answers the standard capabilities and the private extensions', async t => {
   const server = rawServer(t);
   const { capabilities } = await initialize(server, asking);
   assert.equal(capabilities.positionEncoding, 'utf-16');
@@ -45,7 +45,7 @@ test('initialize answers the standard capabilities and the private extensions', 
   assert.deepEqual(capabilities.experimental.racketeer, { version: 1, indexStatus: true, sourceReferences: true });
 });
 
-test('the design document states each capability and private message the server has', { timeout: 120000 }, async t => {
+test('the design document states each capability and private message the server has', async t => {
   const design = fs.readFileSync(path.join(root, 'DESIGN.md'), 'utf8');
   const server = rawServer(t);
   const { capabilities } = await initialize(server, asking);
@@ -54,13 +54,13 @@ test('the design document states each capability and private message the server 
     'racket-langserver.workspaceAnalysis', capabilities.positionEncoding]) assert.ok(design.includes(`\`${name}\``), name);
 });
 
-test('prepareProvider is offered only to a client with prepareSupport', { timeout: 120000 }, async t => {
+test('prepareProvider is offered only to a client with prepareSupport', async t => {
   const server = rawServer(t);
   const { capabilities } = await initialize(server, { textDocument: { rename: { prepareSupport: true } } });
   assert.deepEqual(capabilities.renameProvider, { prepareProvider: true });
 });
 
-test('requests before initialize answer ServerNotInitialized and notifications are dropped', { timeout: 120000 }, async t => {
+test('requests before initialize answer ServerNotInitialized and notifications are dropped', async t => {
   const directory = workspace(t), server = rawServer(t);
   open(server, directory);
   server.send({ id: 1, method: 'shutdown' });
@@ -72,14 +72,14 @@ test('requests before initialize answer ServerNotInitialized and notifications a
   assert.equal(answer.error.code, -32801, 'The dropped open left no document to answer for');
 });
 
-test('a second initialize answers InvalidRequest', { timeout: 120000 }, async t => {
+test('a second initialize answers InvalidRequest', async t => {
   const server = rawServer(t);
   await initialize(server);
   server.send({ id: 1, method: 'initialize', params: { capabilities: {} } });
   assert.equal((await server.next()).error.code, invalidRequest);
 });
 
-test('after shutdown requests answer InvalidRequest and exit ends the process with code 0', { timeout: 120000 }, async t => {
+test('after shutdown requests answer InvalidRequest and exit ends the process with code 0', async t => {
   const directory = workspace(t), server = rawServer(t);
   await initialize(server);
   server.send({ id: 1, method: 'shutdown' });
@@ -93,21 +93,21 @@ test('after shutdown requests answer InvalidRequest and exit ends the process wi
   assert.equal(await exitCode(server), 0);
 });
 
-test('exit without shutdown ends the process with code 1', { timeout: 120000 }, async t => {
+test('exit without shutdown ends the process with code 1', async t => {
   const server = rawServer(t);
   await initialize(server);
   server.send({ method: 'exit' });
   assert.equal(await exitCode(server), 1);
 });
 
-test('the end of its input still ends the process', { timeout: 120000 }, async t => {
+test('the end of its input still ends the process', async t => {
   const server = rawServer(t);
   await initialize(server);
   server.child.stdin.end();
   assert.equal(await exitCode(server), 0);
 });
 
-test('shutdown answers a request it interrupts with InvalidRequest, not a cancellation', { timeout: 120000 }, async t => {
+test('shutdown answers a request it interrupts with InvalidRequest, not a cancellation', async t => {
   const directory = workspace(t), server = rawServer(t);
   const entered = path.join(directory, 'entered');
   fs.writeFileSync(path.join(directory, 'blocked.rkt'), `#lang racket/base
@@ -119,18 +119,14 @@ test('shutdown answers a request it interrupts with InvalidRequest, not a cancel
   await initialize(server, {}, directory);
   open(server, directory);
   server.send(references(directory, 1));
-  const deadline = Date.now() + 60000;
-  while (!fs.existsSync(entered)) {
-    assert.ok(Date.now() < deadline, 'Index enters blocked expansion');
-    await new Promise(resolve => setTimeout(resolve, 25));
-  }
+  await until(() => fs.existsSync(entered), 'Index enters blocked expansion');
   server.send({ id: 2, method: 'shutdown' });
   const answers = [await server.next(), await server.next()];
   assert.equal(answers.find(answer => answer.id === 1).error.code, invalidRequest);
   assert.equal(answers.find(answer => answer.id === 2).result, null);
 });
 
-test('shutdown answers a request still waiting for settings, which a client closing down may never send', { timeout: 120000 }, async t => {
+test('shutdown answers a request still waiting for settings, which a client closing down may never send', async t => {
   const directory = workspace(t), server = rawServer(t);
   await initialize(server, { workspace: { configuration: true } }, directory);
   const pull = await server.next();
@@ -147,7 +143,7 @@ test('shutdown answers a request still waiting for settings, which a client clos
   assert.equal(answers.find(answer => answer.id === 'stop').result, null);
 });
 
-test('a captured source answers references privately while its text is the file\'s', { timeout: 120000 }, async t => {
+test('a captured source answers references privately while its text is the file\'s', async t => {
   const directory = workspace(t), server = rawServer(t);
   await initialize(server, {}, directory);
   const request = (id, text) => ({ id, method: 'racketeer/sourceReferences', params: {
@@ -160,7 +156,7 @@ test('a captured source answers references privately while its text is the file\
   assert.equal((await server.next()).error.code, -32801);
 });
 
-test('a client without documentChanges receives a plain WorkspaceEdit', { timeout: 120000 }, async t => {
+test('a client without documentChanges receives a plain WorkspaceEdit', async t => {
   const directory = workspace(t), server = rawServer(t);
   await initialize(server, {}, directory);
   open(server, directory);
@@ -171,7 +167,7 @@ test('a client without documentChanges receives a plain WorkspaceEdit', { timeou
   assert.equal(result.changes[uri(path.join(directory, 'definition.rkt'))].length, 2);
 });
 
-test('index status is sent only to a client that asked for it', { timeout: 120000 }, async t => {
+test('index status is sent only to a client that asked for it', async t => {
   const directory = workspace(t);
   const plain = rawServer(t);
   await initialize(plain, {}, directory);
@@ -185,7 +181,7 @@ test('index status is sent only to a client that asked for it', { timeout: 12000
   assert.equal(status.params.state, 'ready', 'Status reports only the final state');
 });
 
-test('a pass reports progress only to a client that offers it, and only once its token is accepted', { timeout: 120000 }, async t => {
+test('a pass reports progress only to a client that offers it, and only once its token is accepted', async t => {
   const directory = workspace(t), plain = rawServer(t);
   await initialize(plain, asking, directory);
   open(plain, directory); plain.send(references(directory, 1));
@@ -222,7 +218,7 @@ test('a pass reports progress only to a client that offers it, and only once its
   assert.deepEqual(last, { kind: 'report', percentage: 100, message: '1/1' });
 });
 
-test('a pass that ends before its token is accepted still begins and ends', { timeout: 120000 }, async t => {
+test('a pass that ends before its token is accepted still begins and ends', async t => {
   const directory = workspace(t), server = rawServer(t);
   await initialize(server, { ...asking, window: { workDoneProgress: true } }, directory);
   open(server, directory); server.send(references(directory, 1));
@@ -250,13 +246,12 @@ function answering(server, answer) {
   return asked;
 }
 
-test('settings are pulled after initialized and again when they change, and each folder is watched', { timeout: 120000 }, async t => {
+test('settings are pulled after initialized and again when they change, and each folder is watched', async t => {
   const directory = workspace(t), other = workspace(t), server = rawServer(t);
   server.others = [];
   await initialize(server, settingsAnd, directory);
   const asked = answering(server, message => server.send({ id: message.id,
     result: message.method === 'workspace/configuration' ? [{ enabled: false }] : null }));
-  const until = async condition => { while (!condition()) await new Promise(resolve => setTimeout(resolve, 10)); };
   await until(() => asked.length === 2);
   assert.deepEqual(asked.map(message => message.method), ['client/registerCapability', 'workspace/configuration']);
   assert.deepEqual(asked[0].params.registrations.map(item => item.registerOptions.watchers[0].globPattern),
@@ -272,7 +267,7 @@ test('settings are pulled after initialized and again when they change, and each
   assert.deepEqual(asked[4].params.registrations.map(item => item.id), [uri(other)]);
 });
 
-test('a request waits for settings already asked for', { timeout: 120000 }, async t => {
+test('a request waits for settings already asked for', async t => {
   const directory = workspace(t), server = rawServer(t);
   server.others = [];
   await initialize(server, settingsAnd, directory);
@@ -300,7 +295,7 @@ test('a request waits for settings already asked for', { timeout: 120000 }, asyn
   assert.equal(asked.filter(message => message.method === 'workspace/configuration').length, 2);
 });
 
-test('the refresh command makes the next request start a pass and an unknown command is refused', { timeout: 120000 }, async t => {
+test('the refresh command makes the next request start a pass and an unknown command is refused', async t => {
   const directory = workspace(t), server = rawServer(t);
   await initialize(server, asking, directory);
   open(server, directory);
@@ -325,7 +320,7 @@ test('the refresh command makes the next request start a pass and an unknown com
   assert.equal(seen.get('refresh').result, null);
 });
 
-test('a rename waiting for the writer refuses after a change read meanwhile', { timeout: 180000 }, async t => {
+test('a rename waiting for the writer refuses after a change read meanwhile', async t => {
   const directory = workspace(t), origin = path.join(directory, 'definition.rkt'), consumer = path.join(directory, 'uses.rkt');
   // Enough references to fill the pipe, so that a reply behind them waits to be written.
   const text = '#lang racket/base\n(require "definition.rkt")\n' + '(square 3)\n'.repeat(6000);
@@ -342,11 +337,7 @@ test('a rename waiting for the writer refuses after a change read meanwhile', { 
   await delay(2000);
   server.send({ id: 'rename', method: 'textDocument/rename', params: { textDocument: { uri: uri(origin) },
     position: { line: 2, character: 10 }, newName: 'squared' } });
-  const deadline = Date.now() + 90000;
-  while (!/rename [^\n]*: reaped/.test(logged)) {
-    assert.ok(Date.now() < deadline, logged);
-    await delay(50);
-  }
+  await until(() => /rename [^\n]*: reaped/.test(logged), () => logged);
   await delay(100);
   // The old answer's ranges would now address other text.
   fs.writeFileSync(consumer, `; a new first line\n${text}`);
@@ -371,7 +362,7 @@ const settingsPull = async server => {
 const renameRequest = (directory, id) => ({ id, method: 'textDocument/rename', params: {
   textDocument: { uri: uri(path.join(directory, 'definition.rkt')) }, position: { line: 2, character: 10 }, newName: 'squared' } });
 
-test('an older settings answer arriving last does not restore what it superseded', { timeout: 120000 }, async t => {
+test('an older settings answer arriving last does not restore what it superseded', async t => {
   const directory = workspace(t), server = rawServer(t);
   await initialize(server, { workspace: { configuration: true } }, directory);
   const older = await settingsPull(server);
@@ -384,7 +375,7 @@ test('an older settings answer arriving last does not restore what it superseded
   assert.match((await server.next()).error?.message ?? 'The rename succeeded', /Enable workspace analysis/);
 });
 
-test('a request waits for the latest settings even when an older answer comes first', { timeout: 120000 }, async t => {
+test('a request waits for the latest settings even when an older answer comes first', async t => {
   const directory = workspace(t), server = rawServer(t);
   await initialize(server, { workspace: { configuration: true } }, directory);
   const older = await settingsPull(server);
@@ -401,14 +392,14 @@ test('a request waits for the latest settings even when an older answer comes fi
   assert.equal((await answered).id, 'refs');
 });
 
-test('watched files are registered by a plain pattern for a client without relative patterns', { timeout: 120000 }, async t => {
+test('watched files are registered by a plain pattern for a client without relative patterns', async t => {
   const directory = workspace(t), server = rawServer(t);
   await initialize(server, { workspace: { didChangeWatchedFiles: { dynamicRegistration: true } } }, directory);
   const { params: { registrations: [registration] } } = await server.next();
   assert.equal(registration.registerOptions.watchers[0].globPattern, '**/*');
 });
 
-test('a progress token the client rejects is not used', { timeout: 120000 }, async t => {
+test('a progress token the client rejects is not used', async t => {
   const directory = workspace(t), server = rawServer(t);
   await initialize(server, { window: { workDoneProgress: true } }, directory);
   open(server, directory);

@@ -2,19 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const assert = require('node:assert/strict');
+const { until } = require('./support/wait');
 const fs = require('node:fs');
 const path = require('node:path');
 const vscode = require('vscode');
 
-async function until(check, description, timeout = 60000) {
-  const deadline = Date.now() + timeout;
-  while (Date.now() < deadline) {
-    const result = await check();
-    if (result) return result;
-    await new Promise(resolve => setTimeout(resolve, 100));
-  }
-  throw new Error(`Timed out: ${description}`);
-}
 
 // Run only in the harness's private Rhombus package environment. This exercises
 // the installed extension and real racket-langserver, including unsaved edits.

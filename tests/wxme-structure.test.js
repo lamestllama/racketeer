@@ -15,7 +15,7 @@ const model = (parts = [text('a😀bcλ')]) => new WxmeDocument({ fsPath: '/orig
 const fixture = name => path.join(__dirname, 'fixtures/wxme', name + '.wxme');
 async function load(name) { const file = fixture(name); return new WxmeDocument({ fsPath: file }, fs.readFileSync(file), await decodeWxme('racket', viewer, file)); }
 async function save(doc) { return requestWxme('racket', codec, doc.uri.fsPath, doc.request()); }
-const gui = { skip: !process.env.RACKETDAP_TEST_WXME_GUI, timeout: 60000 };
+const gui = { skip: !process.env.RACKETDAP_TEST_WXME_GUI };
 
 test('wrapping a Unicode selection preserves original spans and stable identities', () => {
   const doc = model([text('a😀bcλ'), { kind: 'comment', parts: [text('existing')] }, text('end')]);
@@ -98,7 +98,7 @@ test('codec imports a PNG and preserves image insertion through save and reopen'
 
 test('styled Unicode and tabs retain their styles when moved into a box and saved', gui, async () => {
   const probe = (mode, input) => {
-    const result = spawnSync('racket', [path.join(__dirname, 'support/wxme-style.rkt'), mode], { input: JSON.stringify(input), encoding: 'utf8', timeout: 15000 });
+    const result = spawnSync('racket', [path.join(__dirname, 'support/wxme-style.rkt'), mode], { input: JSON.stringify(input), encoding: 'utf8', timeout: 240000 });
     assert.equal(result.status, 0, result.stderr); return JSON.parse(result.stdout);
   };
   const bytes = probe('create', null);

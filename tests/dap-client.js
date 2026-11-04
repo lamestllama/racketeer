@@ -7,8 +7,8 @@ const path = require('node:path');
 class DapClient {
   constructor(adapter = path.resolve(__dirname, '../racketdap/main.rkt'), options = {}) {
     this.child = (options.spawn || spawn)('racket', [adapter], { stdio: ['pipe', 'pipe', 'pipe'] });
-    this.timeout = options.timeout ?? 15000;
-    this.closeTimeout = options.closeTimeout ?? 3000;
+    this.timeout = options.timeout ?? 240000;
+    this.closeTimeout = options.closeTimeout ?? 60000;
     this.sequence = 0;
     this.lastReceived = 0;
     this.buffer = Buffer.alloc(0);

@@ -2,13 +2,13 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const test = require('./support/node-test'), assert = require('node:assert/strict');
+const treeRemoval = require('./support/tree-removal');
 const fs = require('node:fs'), path = require('node:path'), os = require('node:os');
 const { spawnSync } = require('node:child_process');
 const { decodeWxme, requestWxme } = require('../vscode/wxme-process');
 const { renderWxme } = require('../vscode/wxme-render');
 const { DapClient } = require('./dap-client');
 const expected = require('./fixtures/wxme-xml/expected.json');
-const treeRemoval = require('./support/tree-removal');
 const fixture = name => path.join(__dirname, 'fixtures/wxme-xml', name + '.wxme');
 const viewer = path.resolve(__dirname, '../racketdap/tools/wxme-view.rkt');
 const editor = path.resolve(__dirname, '../racketdap/tools/wxme-edit.rkt');
@@ -73,7 +73,7 @@ test('nested XML streams cannot load a document-supplied reader', async t => {
 test('source projections replace an outer XML box with one position', () => {
   const module = path.resolve(__dirname, '../racketdap/wxme-source.rkt');
   for (const name of ['preserve', 'eliminate']) {
-    const result = spawnSync('racket', ['-e', `(require racket/file (file ${JSON.stringify(module)})) (display (source-text (file->bytes ${JSON.stringify(fixture(name))})))`], { encoding: 'utf8', timeout: 15000 });
+    const result = spawnSync('racket', ['-e', `(require racket/file (file ${JSON.stringify(module)})) (display (source-text (file->bytes ${JSON.stringify(fixture(name))})))`], { encoding: 'utf8', timeout: 240000 });
     assert.equal(result.status, 0, result.stderr); assert.equal(result.stdout, expected.projection);
   }
 });

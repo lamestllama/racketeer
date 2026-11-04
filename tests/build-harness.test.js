@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const assert = require('node:assert/strict');
+const treeRemoval = require('./support/tree-removal');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -9,7 +10,6 @@ const test = require('./support/node-test');
 const { spawnSync } = require('node:child_process');
 const { sourceIdentity, recordArtifact, verifyArtifact, archiveContents } = require('../scripts/artifact');
 const { inventory } = require('../scripts/test-headless');
-const treeRemoval = require('./support/tree-removal');
 const root = path.resolve(__dirname, '..');
 
 async function fixture(t) {
@@ -68,7 +68,7 @@ test('headless entry point prepares bundled dependencies in a fresh checkout', a
   const env = { ...process.env };
   delete env.NODE_TEST_CONTEXT;
   const result = spawnSync(process.execPath, ['scripts/test-headless.js'],
-    { cwd: directory, env, encoding: 'utf8', timeout: 30000 });
+    { cwd: directory, env, encoding: 'utf8', timeout: 240000 });
   assert.equal(result.status, 0, result.stdout + result.stderr || String(result.error));
   assert.equal(fs.readFileSync(path.join(directory, 'probe-passed'), 'utf8'), 'yes');
 });

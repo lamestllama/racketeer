@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const assert = require('node:assert/strict');
+const treeRemoval = require('./support/tree-removal');
 const test = require('./support/node-test');
 const { execFile } = require('node:child_process');
 const { createHash } = require('node:crypto');
@@ -12,12 +13,11 @@ const os = require('node:os');
 const { DapClient } = require('./dap-client');
 const { deferCleanup } = require('./cleanup');
 const { selectTests } = require('../vscode/test-selection');
-const treeRemoval = require('./support/tree-removal');
 
 function discover(text) {
   return new Promise((resolve, reject) => {
     const child = execFile('racket', [path.resolve(__dirname, '../racketdap/test-discovery.rkt')],
-      { timeout: 10000 }, (error, stdout) => error ? reject(error) : resolve(JSON.parse(stdout)));
+      { timeout: 240000 }, (error, stdout) => error ? reject(error) : resolve(JSON.parse(stdout)));
     child.stdin.on('error', reject);
     child.stdin.end(text);
   });

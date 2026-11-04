@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const test = require('./support/node-test');
+const treeRemoval = require('./support/tree-removal');
+const { until } = require('./support/wait');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -12,7 +14,6 @@ const { createRequire } = require('node:module');
 const { spawn, spawnSync } = require('node:child_process');
 const { once } = require('node:events');
 const { decodeWxme } = require('../vscode/wxme-process');
-const treeRemoval = require('./support/tree-removal');
 const helper = path.resolve(__dirname, '../racketdap/tools/wxme-view.rkt');
 const fixture = name => path.join(__dirname, 'fixtures/wxme', `${name}.wxme`);
 const decode = file => decodeWxme(process.env.RACKET || 'racket', helper, file);
@@ -154,7 +155,7 @@ test('missing executable and cancellation before launch settle without a worker'
   await assert.rejects(decodeWxme('/must-not-start', helper, fixture('images'), { signal: controller.signal }), /cancelled before launch/);
 });
 
-test('timeout and cancellation reap only their own unresponsive worker', { timeout: 15000 }, async t => {
+test('timeout and cancellation reap only their own unresponsive worker', async t => {
   const directory = temporary(t), stalled = path.join(directory, 'stalled.js');
   fs.writeFileSync(stalled, `process.stdin.once('data', chunk => { require('fs').writeFileSync(JSON.parse(chunk).path, String(process.pid)); }); setInterval(() => {}, 1000);`);
   const first = path.join(directory, 'first'), second = path.join(directory, 'second');
@@ -164,7 +165,7 @@ test('timeout and cancellation reap only their own unresponsive worker', { timeo
   const checkedA = assert.rejects(a, /cancelled/), checkedB = assert.rejects(b, /timed out/);
   // A worker creates its file before it writes the number.
   const pidIn = file => fs.existsSync(file) ? Number(fs.readFileSync(file)) : 0;
-  while (!pidIn(first) || !pidIn(second)) await new Promise(r => setTimeout(r, 20));
+  await until(() => pidIn(first) && pidIn(second));
   const pidA = pidIn(first), pidB = pidIn(second);
   controller.abort(new Error('cancelled'));
   await checkedA;
@@ -174,7 +175,7 @@ test('timeout and cancellation reap only their own unresponsive worker', { timeo
   assert.throws(() => process.kill(pidB, 0), { code: 'ESRCH' });
 });
 
-test('decoder exits when its extension input lease closes', { timeout: 10000 }, async () => {
+test('decoder exits when its extension input lease closes', async () => {
   const child = spawn(process.env.RACKET || 'racket', [helper], { stdio: 'pipe' });
   const closed = once(child, 'close');
   child.stdin.on('error', () => {}); child.stderr.resume(); child.stdout.resume();
@@ -213,8 +214,7 @@ test('views notice disk and buffer changes, share a document, and reopen from cu
   await new Promise(r => setTimeout(r, 50));
   assert.equal(document.stale, false, 'Delayed create/save events with identical bytes are ignored');
   fs.copyFileSync(fixture('text'), file); h.changes.fire(h.uri);
-  const deadline = Date.now() + 2000;
-  while (!document.stale && Date.now() < deadline) await new Promise(r => setTimeout(r, 10));
+  await until(() => document.stale);
   for (const panel of panels) assert.match(panel.webview.html, /file has changed/);
   document.dispose();
   const reopened = await h.provider.openCustomDocument(h.uri, {}, h.token);

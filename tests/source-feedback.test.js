@@ -12,7 +12,7 @@ const position = (source, needle, delta = 1) => {
   return { line: prefix.length - 1, character: prefix.at(-1).length };
 };
 
-test('tail hover describes relative contexts and keeps non-tail arguments distinct', { timeout: 120000 }, async t => {
+test('tail hover describes relative contexts and keeps non-tail arguments distinct', async t => {
   const p = await languageServer(t);
   const source = '#lang racket/base\n(define (f x)\n  (+ 1 (if x (f #f) 3)))\n(define (g x)\n  (if x (g #f) 4))\n';
   await p.open('tail.rkt', source); await p.expectDiagnostics('tail.rkt', false);
@@ -27,7 +27,7 @@ test('tail hover describes relative contexts and keeps non-tail arguments distin
   assert.match(await hover('(+ 1'), /\*\*Tail position\*\*/);
 });
 
-test('workspace references and rename preserve UTF-16 coordinates across files', { timeout: 120000 }, async t => {
+test('workspace references and rename preserve UTF-16 coordinates across files', async t => {
   const p = await project(t);
   const definition = '#lang racket/base\n(provide 😀) (define 😀 1)\n';
   const consumer = '#lang racket/base\n(require "unicode.rkt")\n(list "🙂" 😀 😀)\n';
@@ -48,7 +48,7 @@ test('workspace references and rename preserve UTF-16 coordinates across files',
   assert.equal(edited(consumer, rename.changes[use]), consumer.replaceAll('😀', 'face'));
 });
 
-test('tail hover follows Unicode unsaved edits and disappears on invalid source or close', { timeout: 120000 }, async t => {
+test('tail hover follows Unicode unsaved edits and disappears on invalid source or close', async t => {
   const p = await languageServer(t);
   const file = 'untitled:Untitled-1';
   const source = '#lang racket/base\n(define (λ😀 x) (λ😀 x))\n';
@@ -65,7 +65,7 @@ test('tail hover follows Unicode unsaved edits and disappears on invalid source 
   assert.doesNotMatch(text(await p.request('hover', file, { position: nested })), /\*\*Tail position\*\*/);
 });
 
-test('macro expansion supplies tail facts without guessing from source spelling', { timeout: 120000 }, async t => {
+test('macro expansion supplies tail facts without guessing from source spelling', async t => {
   const p = await languageServer(t);
   const source = '#lang racket/base\n(define-syntax-rule (finish e) e)\n(define (f x) (finish (f x)))\n(define (g x) (+ 1 (g x)))\n';
   await p.open('macro.rkt', source); await p.expectDiagnostics('macro.rkt', false);
@@ -75,7 +75,7 @@ test('macro expansion supplies tail facts without guessing from source spelling'
   assert.doesNotMatch(text(await p.request('hover', 'macro.rkt', { position: argument })), /\*\*Tail position\*\*/);
 });
 
-test('existing import diagnostics, alias navigation and Outline use the same language server', { timeout: 120000 }, async t => {
+test('existing import diagnostics, alias navigation and Outline use the same language server', async t => {
   const p = await languageServer(t);
   p.write('library λ.rkt', '#lang racket/base\n(provide twice)\n(define (twice x) (* x 2))\n');
   const source = '#lang racket/base\n(require racket/list (rename-in (file "library λ.rkt") [twice double]))\n(define (answer x) (double x))\n';
@@ -94,7 +94,7 @@ test('existing import diagnostics, alias navigation and Outline use the same lan
   assert.match(text(await p.request('hover', 'consumer.rkt', { position: { line: 3, character: 2 } })), /imported from/);
 });
 
-test('UTF-16 definition, highlights, diagnostics and incremental edits agree on astral characters', { timeout: 120000 }, async t => {
+test('UTF-16 definition, highlights, diagnostics and incremental edits agree on astral characters', async t => {
   const p = await languageServer(t), file = 'unicode.rkt';
   const source = '#lang racket/base\n(define 😀 1) (list 😀 😀)\n';
   p.write(file, source); await p.open(file, source); await p.expectDiagnostics(file, false);

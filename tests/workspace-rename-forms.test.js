@@ -16,12 +16,12 @@ function applyPreview(changes) {
 }
 
 function evaluate(p, file) {
-  const result = spawnSync('racket', [p.filename(file)], { encoding: 'utf8', timeout: 30000 });
+  const result = spawnSync('racket', [p.filename(file)], { encoding: 'utf8', timeout: 240000 });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout.trim(), '9');
 }
 
-test('export rename updates selectors outside composed standard imports', { timeout: 120000 }, async t => {
+test('export rename updates selectors outside composed standard imports', async t => {
   const p = await project(t);
   const cases = {
     'selected.rkt': ['(only-in (prefix-in p: "definition.rkt") p:square)', '(p:square 3)'],
@@ -42,7 +42,7 @@ test('export rename updates selectors outside composed standard imports', { time
   for (const file of Object.keys(cases)) evaluate(p, file);
 });
 
-test('export rename follows phase-shifted uses and keeps their import selectors', { timeout: 120000 }, async t => {
+test('export rename follows phase-shifted uses and keeps their import selectors', async t => {
   const p = await project(t);
   const source = '#lang racket/base\n(require (for-syntax racket/base (only-in "definition.rkt" square)))\n'
     + '(define-syntax (answer stx) (datum->syntax stx (square 3)))\n(answer)\n';
@@ -58,7 +58,7 @@ test('export rename follows phase-shifted uses and keeps their import selectors'
   applyPreview(changes); evaluate(p, 'phase.rkt'); evaluate(p, 'nested-phase.rkt');
 });
 
-test('relative submodule selectors keep the identity of the selected submodule', { timeout: 120000 }, async t => {
+test('relative submodule selectors keep the identity of the selected submodule', async t => {
   const p = await project(t);
   const source = '#lang racket/base\n(module inner racket/base\n  (provide square)\n  (define (square x) (* x x)))\n'
     + '(require (only-in (submod "." inner) square))\n(provide square)\n';
@@ -70,7 +70,7 @@ test('relative submodule selectors keep the identity of the selected submodule',
   applyPreview(changes); evaluate(p, 'uses.rkt');
 });
 
-test('local alias rename inside nested prefixes preserves prefixes and the exported name', { timeout: 120000 }, async t => {
+test('local alias rename inside nested prefixes preserves prefixes and the exported name', async t => {
   const p = await project(t);
   const source = '#lang racket/base\n(require (prefix-in π: (prefix-in λ: (rename-in "definition.rkt" [square sq]))))\n(π:λ:sq 3)\n';
   p.write('alias.rkt', source); const consumer = p.open('alias.rkt', source); await p.update();
@@ -84,7 +84,7 @@ test('local alias rename inside nested prefixes preserves prefixes and the expor
   applyPreview(changes); evaluate(p, 'alias.rkt');
 });
 
-test('relative sibling imports distinguish submodules with the same exported name', { timeout: 120000 }, async t => {
+test('relative sibling imports distinguish submodules with the same exported name', async t => {
   const p = await project(t);
   const first = '(module first racket/base\n  (provide square)\n  (define (square x) (* x x)))\n';
   const other = '(module other racket/base\n  (provide square)\n  (define (square x) (+ x 1)))\n';
@@ -101,7 +101,7 @@ test('relative sibling imports distinguish submodules with the same exported nam
   applyPreview(changes); evaluate(p, 'uses.rkt');
 });
 
-test('renaming a compile-time definition preserves a same-named runtime binding', { timeout: 120000 }, async t => {
+test('renaming a compile-time definition preserves a same-named runtime binding', async t => {
   const p = await project(t);
   const provider = '#lang racket/base\n(require (for-syntax racket/base))\n'
     + '(define (square x) (+ x 1))\n(begin-for-syntax (define (square x) (* x x)))\n'
@@ -118,7 +118,7 @@ test('renaming a compile-time definition preserves a same-named runtime binding'
   applyPreview(changes); evaluate(p, 'uses.rkt');
 });
 
-test('prefixed aliases of external definitions can be renamed locally', { timeout: 120000 }, async t => {
+test('prefixed aliases of external definitions can be renamed locally', async t => {
   const p = await project(t);
   const source = '#lang racket/base\n(require (prefix-in p: (only-in racket/list [first head])))\n(p:head \'(9))\n';
   p.write('alias.rkt', source); const consumer = p.open('alias.rkt', source); await p.update();
@@ -129,7 +129,7 @@ test('prefixed aliases of external definitions can be renamed locally', { timeou
   applyPreview(changes); evaluate(p, 'alias.rkt');
 });
 
-test('prefixed alias rename refuses lexical capture without changing files', { timeout: 120000 }, async t => {
+test('prefixed alias rename refuses lexical capture without changing files', async t => {
   const p = await project(t);
   const source = '#lang racket/base\n(require (prefix-in p: (rename-in "definition.rkt" [square sq])))\n'
     + '(let ([p:area 3]) (p:sq p:area))\n';

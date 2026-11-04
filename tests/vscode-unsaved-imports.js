@@ -2,19 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const assert = require('node:assert/strict');
+const { until } = require('./support/wait');
 const fs = require('node:fs');
 const path = require('node:path');
 const vscode = require('vscode');
 
-async function until(check, description) {
-  const deadline = Date.now() + 30000;
-  while (Date.now() < deadline) {
-    const result = await check();
-    if (result) return result;
-    await new Promise(resolve => setTimeout(resolve, 50));
-  }
-  assert.fail(`Timed out: ${description}`);
-}
 
 exports.run = async (extension, workspace) => {
   const directory = path.join(workspace.uri.fsPath, 'unsaved imports');

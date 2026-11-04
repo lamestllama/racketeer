@@ -2,13 +2,13 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const assert = require('node:assert/strict');
+const treeRemoval = require('./support/tree-removal');
 const test = require('./support/node-test');
 const path = require('node:path');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const { DapClient } = require('./dap-client');
 const { deferCleanup } = require('./cleanup');
-const treeRemoval = require('./support/tree-removal');
 
 async function ok(request) {
   const response = await request;

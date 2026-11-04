@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const test = require('./support/node-test');
+const treeRemoval = require('./support/tree-removal');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -10,7 +11,6 @@ const { spawn } = require('node:child_process');
 const { once } = require('node:events');
 const { edited } = require('./text-edits');
 const rpc = require(require.resolve('vscode-jsonrpc/node', { paths: [require('node:path').join(__dirname, '../vscode')] }));
-const treeRemoval = require('./support/tree-removal');
 const root = path.resolve(__dirname, '..');
 const definition = '#lang racket/base\n(provide square)\n(define (square x) (* x x))\n';
 const uses = '#lang racket/base\n(require "definition.rkt")\n(square 3)\n';
@@ -83,7 +83,7 @@ async function project(t, env = {}, shared) {
     documents.set(key, { uri: key, text, version, identity: ++identity });
     return key;
   };
-  const settings = { enabled: true, timeoutSeconds: 20, ...shared?.settings };
+  const settings = { enabled: true, timeoutSeconds: 120, ...shared?.settings };
   const roots = [uri(directory)];
   connection.onRequest('workspace/configuration', ({ items }) => items.map(() => settings));
   connection.onRequest('client/registerCapability', () => null);

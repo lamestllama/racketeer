@@ -329,6 +329,7 @@ test('language startup deadline terminates a real unresponsive child', async t =
 });
 
 test('ready language processes clear the startup deadline and are reaped on disposal', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
   let timedOut = false;
   const server = createLanguageProcess(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {}, {
     timeout: 50, onTimeout: () => { timedOut = true; }
@@ -336,15 +337,16 @@ test('ready language processes clear the startup deadline and are reaped on disp
   t.after(() => server.dispose());
   const child = await server.start();
   server.ready();
-  await new Promise(resolve => setTimeout(resolve, 80));
+  t.mock.timers.tick(50);
   assert.equal(timedOut, false);
+  t.mock.timers.reset();
   assert.equal(child.exitCode, null);
   const exited = once(child, 'exit');
   await server.dispose();
   await exited;
 });
 
-test('language cancellation closes owned pipes while a fixture descendant retains inherited stdio', { timeout: 10000 }, async () => {
+test('language cancellation closes owned pipes while a fixture descendant retains inherited stdio', async () => {
   const connected = deferred();
   let socket;
   let socketError;

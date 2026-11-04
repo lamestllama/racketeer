@@ -2,13 +2,14 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const assert = require('node:assert/strict');
+const treeRemoval = require('./support/tree-removal');
+const { until } = require('./support/wait');
 const test = require('./support/node-test');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { addon, uri, project } = require('./workspace-index-project');
-const treeRemoval = require('./support/tree-removal');
 
 const from = (locations, source) => locations.filter(location => location.uri === source);
 
@@ -71,7 +72,7 @@ async function assertAsFresh(t, p, { env, key = p.origin } = {}) {
   return counts;
 }
 
-test('an edit in a dependency reanalyses its consumers and reuses the rest, as a fresh pass answers', { timeout: 180000 }, async t => {
+test('an edit in a dependency reanalyses its consumers and reuses the rest, as a fresh pass answers', async t => {
   const p = await workspace(t);
   const before = { consumer: p.consumer.expansions(), other: p.other.expansions() };
   assert.equal(from(await p.references(p.origin), p.consumerUri).length, 1);
@@ -84,7 +85,7 @@ test('an edit in a dependency reanalyses its consumers and reuses the rest, as a
   assert.equal(after.other, before.other, 'An unrelated file must be reused');
 });
 
-test('an edit in a dependency of a dependency reanalyses every file that reached it', { timeout: 180000 }, async t => {
+test('an edit in a dependency of a dependency reanalyses every file that reached it', async t => {
   const p = await workspace(t, { files: { 'bottom.rkt': '#lang racket/base\n(require "definition.rkt")\n(provide square)\n' } });
   p.write('middle.rkt', '#lang racket/base\n(require "bottom.rkt")\n(provide square)\n');
   await p.update(); await p.references(p.origin);
@@ -98,7 +99,7 @@ test('an edit in a dependency of a dependency reanalyses every file that reached
   assert.equal(after.other, before.other, 'An unrelated file must be reused');
 });
 
-test('a macro changing in another file reanalyses every file that used it, directly or not', { timeout: 180000 }, async t => {
+test('a macro changing in another file reanalyses every file that used it, directly or not', async t => {
   const macro = '#lang racket/base\n(provide call)\n(define-syntax-rule (call f) (f 1))\n';
   const p = await workspace(t, {
     consumer: '(require "macro.rkt" "definition.rkt")\n(call square)',
@@ -123,7 +124,7 @@ test('a macro changing in another file reanalyses every file that used it, direc
   assert.equal(after.other, before.other, 'An unrelated file must be reused');
 });
 
-test('a file added that shadows the one a relative import found reanalyses its consumers', { timeout: 180000 }, async t => {
+test('a file added that shadows the one a relative import found reanalyses its consumers', async t => {
   const p = await workspace(t, {
     consumer: '(require "chosen.rkt")\n(square 3)',
     files: { 'chosen.ss': '#lang racket/base\n(require "definition.rkt")\n(provide square)\n' } });
@@ -162,7 +163,7 @@ function outsideWorkspace(t, ...folders) {
   });
 }
 
-test('a file added in an earlier root of a collection shadows the one an import found', { timeout: 180000 }, async t => {
+test('a file added in an earlier root of a collection shadows the one an import found', async t => {
   const [first, second] = outsideWorkspace(t, 'first', 'second');
   linking(t, [['probe-shadow', first], ['probe-shadow', second]]);
   fs.writeFileSync(path.join(second, 'lib.rkt'), keeps);
@@ -177,7 +178,7 @@ test('a file added in an earlier root of a collection shadows the one an import 
   assert.equal(after.other, before.other, 'An unrelated file must be reused');
 });
 
-test('a collection link changed reanalyses the files that used the collection', { timeout: 180000 }, async t => {
+test('a collection link changed reanalyses the files that used the collection', async t => {
   const [one, two] = outsideWorkspace(t, 'one', 'two');
   const link = linking(t, [['probe-link', one]]);
   fs.writeFileSync(path.join(one, 'lib.rkt'), keeps);
@@ -194,7 +195,7 @@ test('a collection link changed reanalyses the files that used the collection', 
   assert.equal(after.other, before.other, 'An unrelated file must be reused');
 });
 
-test('a file outside the workspace changed reanalyses the files that loaded it', { timeout: 180000 }, async t => {
+test('a file outside the workspace changed reanalyses the files that loaded it', async t => {
   const [folder] = outsideWorkspace(t, 'library');
   linking(t, [['probe-outside', folder]]);
   fs.writeFileSync(path.join(folder, 'lib.rkt'), keeps);
@@ -209,12 +210,12 @@ test('a file outside the workspace changed reanalyses the files that loaded it',
   assert.equal(after.other, before.other, 'An unrelated file must be reused');
 });
 
-test('a library with only compiled code is compared by that code', { timeout: 180000 }, async t => {
+test('a library with only compiled code is compared by that code', async t => {
   const p = await project(t);
   const folder = fs.mkdtempSync(path.join(addon, 'compiled-only-')), library = path.join(folder, 'macro.rkt');
   const compileOnly = text => {
     fs.writeFileSync(library, text);
-    const made = spawnSync('raco', ['make', library], { encoding: 'utf8', env: { ...process.env, PLTADDONDIR: addon }, timeout: 60000 });
+    const made = spawnSync('raco', ['make', library], { encoding: 'utf8', env: { ...process.env, PLTADDONDIR: addon }, timeout: 240000 });
     assert.equal(made.status, 0, made.stderr);
     fs.unlinkSync(library);
   };
@@ -233,7 +234,7 @@ test('a library with only compiled code is compared by that code', { timeout: 18
   assert.equal(await count(), 0, 'Replaced compiled code is read afresh');
 });
 
-test('a registered file replaced during an analysis is not recorded with its later bytes', { timeout: 180000 }, async t => {
+test('a registered file replaced during an analysis is not recorded with its later bytes', async t => {
   const p = await project(t);
   const part = p.filename('part.txt'), gate = p.filename('entered'), release = p.filename('release');
   fs.writeFileSync(part, '(define-syntax-rule (call f) (f 1))\n');
@@ -250,11 +251,7 @@ test('a registered file replaced during an analysis is not recorded with its lat
   await p.update();
   const consumer = uri(p.filename('uses.rkt'));
   const first = p.references(p.origin);
-  const deadline = Date.now() + 30000;
-  while (!fs.existsSync(gate)) {
-    assert.ok(Date.now() < deadline, p.diagnostics());
-    await new Promise(resolve => setTimeout(resolve, 20));
-  }
+  await until(() => fs.existsSync(gate), () => p.diagnostics());
   // A copy that keeps its date, while the analysis holds what it read before.
   fs.writeFileSync(part, '(define-syntax-rule (call f) 1)\n');
   fs.utimesSync(part, past, past);
@@ -264,7 +261,7 @@ test('a registered file replaced during an analysis is not recorded with its lat
   assert.equal(from(await p.references(p.origin), consumer).length, 0, 'The next pass reads what the file holds');
 });
 
-test('a registered file seen unchanged from one pass to the next keeps its reader\'s result', { timeout: 180000 }, async t => {
+test('a registered file seen unchanged from one pass to the next keeps its reader\'s result', async t => {
   const p = await project(t);
   p.write('part.txt', '(define-syntax-rule (call f) (f 1))\n');
   const consumer = tracked(p, 'consumer', '(require racket/include "definition.rkt")\n(include "part.txt")\n(call square)');
@@ -281,7 +278,7 @@ test('a registered file seen unchanged from one pass to the next keeps its reade
   assert.equal(consumer.expansions(), expansions, 'Seen unchanged at both ends, the result stands');
 });
 
-test('a file deleted is dropped, its consumers fail as in a fresh pass, and the rest are reused', { timeout: 180000 }, async t => {
+test('a file deleted is dropped, its consumers fail as in a fresh pass, and the rest are reused', async t => {
   const p = await workspace(t);
   const before = { other: p.other.expansions() };
   assert.equal(from(await p.references(p.origin), p.consumerUri).length, 1);
@@ -306,7 +303,7 @@ const keepsForm = '(define-syntax-rule (call f) (f 1))\n', dropsForm = '(define-
 const includer = name => `(require racket/include "definition.rkt")\n(include "${name}")\n(call square)`;
 
 for (const included of ['part.rktl', 'part.txt']) {
-  test(`an included file changed reanalyses the files that included it (${included})`, { timeout: 180000 }, async t => {
+  test(`an included file changed reanalyses the files that included it (${included})`, async t => {
     const p = await workspace(t, { consumer: includer(included), files: { [included]: keepsForm } });
     assert.equal(from(await p.references(p.origin), p.consumerUri).length, 1, p.diagnostics());
     const before = { consumer: p.consumer.expansions(), other: p.other.expansions() };
@@ -319,7 +316,7 @@ for (const included of ['part.rktl', 'part.txt']) {
   });
 }
 
-test('a file included while open is read from the disk, as a fresh pass reads it', { timeout: 180000 }, async t => {
+test('a file included while open is read from the disk, as a fresh pass reads it', async t => {
   const p = await workspace(t, { consumer: includer('part.rktl'), files: { 'part.rktl': keepsForm } });
   p.open('part.rktl', dropsForm);
   await p.update(true);
@@ -333,7 +330,7 @@ test('a file included while open is read from the disk, as a fresh pass reads it
   assert.ok(after.consumer > before);
 });
 
-test('an unsaved buffer counts as its file: dependents follow it, and closing it restores the disk', { timeout: 180000 }, async t => {
+test('an unsaved buffer counts as its file: dependents follow it, and closing it restores the disk', async t => {
   const p = await workspace(t);
   const original = fs.readFileSync(p.filename('middle.rkt'), 'utf8');
   const before = { consumer: p.consumer.expansions(), other: p.other.expansions() };
@@ -358,7 +355,7 @@ test('an unsaved buffer counts as its file: dependents follow it, and closing it
   assert.deepEqual(closed, open, 'Closing a buffer that matches the disk changes nothing');
 });
 
-test('a failed file is analysed again by every pass until it succeeds', { timeout: 180000 }, async t => {
+test('a failed file is analysed again by every pass until it succeeds', async t => {
   const p = await workspace(t);
   const failing = tracked(p, 'failing.rkt', '(require "later.rkt")\n(square 3)');
   p.write('failing.rkt', failing.text);
@@ -381,7 +378,7 @@ test('a failed file is analysed again by every pass until it succeeds', { timeou
   assert.equal(from(await p.references(p.origin), uri(p.filename('failing.rkt'))).length, 1);
 });
 
-test('a macro reading an unregistered file sees it only after a change to a file loaded with it, or a refresh', { timeout: 180000 }, async t => {
+test('a macro reading an unregistered file sees it only after a change to a file loaded with it, or a refresh', async t => {
   const p = await workspace(t, {
     consumer: `(require (for-syntax racket/base racket/file) "definition.rkt" "helper.rkt")
 (define-syntax (from-data stx)
@@ -404,7 +401,7 @@ test('a macro reading an unregistered file sees it only after a change to a file
   assert.equal(await count(), 1, 'A refresh forgets every result');
 });
 
-test('a reused pass answers without analysing anything but the request', { timeout: 180000 }, async t => {
+test('a reused pass answers without analysing anything but the request', async t => {
   const p = await workspace(t, { env: { RACKETEER_INDEX_TRACE: '1' } });
   const analyses = () => p.diagnostics().match(/analyse \S+: starting/g).length;
   const before = { consumer: p.consumer.expansions(), other: p.other.expansions(), analyses: analyses() };
@@ -417,7 +414,7 @@ test('a reused pass answers without analysing anything but the request', { timeo
   assert.equal(analyses(), before.analyses + 1, 'Only the file the request names');
 });
 
-test('a lower size limit applies to files a pass would otherwise reuse', { timeout: 180000 }, async t => {
+test('a lower size limit applies to files a pass would otherwise reuse', async t => {
   const p = await workspace(t);
   p.settings.maxFileBytes = 10;
   await p.update();
@@ -425,7 +422,7 @@ test('a lower size limit applies to files a pass would otherwise reuse', { timeo
   assert.equal(p.notifications.at(-1).state, 'partial');
 });
 
-test('a file added or edited that nothing loads is analysed alone', { timeout: 180000 }, async t => {
+test('a file added or edited that nothing loads is analysed alone', async t => {
   const p = await workspace(t);
   const second = tracked(p, 'second.rkt', '(require "definition.rkt")\n(square 4)');
   const before = { consumer: p.consumer.expansions(), other: p.other.expansions() };

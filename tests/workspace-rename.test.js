@@ -8,7 +8,7 @@ const { fileURLToPath } = require('node:url');
 const rpc = require(require.resolve('vscode-jsonrpc/node', { paths: [require('node:path').join(__dirname, '../vscode')] }));
 const { definition, uses, uri, edited, project } = require('./workspace-index-project');
 
-test('workspace rename follows imports and previews edits without changing files', { timeout: 120000 }, async t => {
+test('workspace rename follows imports and previews edits without changing files', async t => {
   const p = await project(t), consumer = p.open('uses.rkt', uses);
   const untouched = '#lang racket/base\n(define (square x) (+ x 1))\n(square 3)\n';
   p.write('unrelated.rkt', untouched); await p.update();
@@ -33,7 +33,7 @@ test('workspace rename follows imports and previews edits without changing files
   assert.equal(fs.readFileSync(p.filename('unrelated.rkt'), 'utf8'), untouched);
 });
 
-test('one source identifier with several bindings blocks only its own rename', { timeout: 120000 }, async t => {
+test('one source identifier with several bindings blocks only its own rename', async t => {
   // A macro can bind one written name more than once, as Rhombus's fun binds
   // the function and a generated helper at its name.
   const p = await project(t), consumer = p.open('uses.rkt', uses);
@@ -50,7 +50,7 @@ test('one source identifier with several bindings blocks only its own rename', {
   assert.equal(fs.readFileSync(p.filename('twice.rkt'), 'utf8'), twice);
 });
 
-test('workspace rename rejects capture, conflicting imports, and invalid names', { timeout: 120000 }, async t => {
+test('workspace rename rejects capture, conflicting imports, and invalid names', async t => {
   const p = await project(t);
   p.write('other.rkt', '#lang racket/base\n(provide squared)\n(define squared 4)\n');
   await p.update();
@@ -69,7 +69,7 @@ test('workspace rename rejects capture, conflicting imports, and invalid names',
   }
 });
 
-test('lexical rename preserves scopes and uses current Unicode buffers', { timeout: 120000 }, async t => {
+test('lexical rename preserves scopes and uses current Unicode buffers', async t => {
   const p = await project(t);
   const text = '#lang racket/base\n; 😀\n(define (f x) (let ([other 2]) (+ x other)))\n(define (g x) x)\n';
   p.write('local.rkt', text);
@@ -91,7 +91,7 @@ test('lexical rename preserves scopes and uses current Unicode buffers', { timeo
   assert.equal(fs.readFileSync(p.filename('definition.rkt'), 'utf8'), definition);
 });
 
-test('rename refuses partial indexes, stale disk snapshots and retired requests', { timeout: 120000 }, async t => {
+test('rename refuses partial indexes, stale disk snapshots and retired requests', async t => {
   const p = await project(t);
   p.write('broken.rkt', '#lang racket/base\nunknown-name\n'); await p.update();
   await assert.rejects(p.rename(p.origin, 'squared'), /analysis is incomplete/);
@@ -113,7 +113,7 @@ test('rename refuses partial indexes, stale disk snapshots and retired requests'
   assert.equal((await p.rename(p.origin, 'squared')).changes[uri(p.filename('uses.rkt'))].length, 2);
 });
 
-test('workspace rename releases expansion state within the worker memory limit', { timeout: 180000 }, async t => {
+test('workspace rename releases expansion state within the worker memory limit', async t => {
   const p = await project(t);
   const consumers = Array.from({ length: 4 }, (_, index) => `shapes-${index}.rkt`);
   const text = '#lang racket/base\n(require (prefix-in image: 2htdp/image) (prefix-in plot: plot/no-gui) "definition.rkt")\n(image:circle (square 3) "solid" "red")\n';
@@ -133,7 +133,7 @@ test('workspace rename releases expansion state within the worker memory limit',
   }
 });
 
-test('rename names the version of each buffer it analysed, and null for text on disk', { timeout: 120000 }, async t => {
+test('rename names the version of each buffer it analysed, and null for text on disk', async t => {
   const p = await project(t), consumer = p.open('uses.rkt', uses + '(square 4)\n', 7);
   await p.update();
   const { documentChanges } = await p.rename(p.origin, 'squared');
@@ -144,7 +144,7 @@ test('rename names the version of each buffer it analysed, and null for text on 
   assert.equal(after.documentChanges.find(({ textDocument }) => textDocument.uri === consumer).textDocument.version, null);
 });
 
-test('a rename pending while source files change answers from the new sources', { timeout: 120000 }, async t => {
+test('a rename pending while source files change answers from the new sources', async t => {
   const p = await project(t), consumer = uri(p.filename('uses.rkt'));
   await p.references(p.origin);
   const pending = p.rename(p.origin, 'squared');

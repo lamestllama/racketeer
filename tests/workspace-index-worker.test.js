@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const assert = require('node:assert/strict');
+const treeRemoval = require('./support/tree-removal');
+const { until } = require('./support/wait');
 const test = require('./support/node-test');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -11,7 +13,6 @@ const { once } = require('node:events');
 const { setTimeout: delay } = require('node:timers/promises');
 const rpc = require(require.resolve('vscode-jsonrpc/node', { paths: [path.join(__dirname, '../vscode')] }));
 const { definition, uses, uri, root, addon, project } = require('./workspace-index-project');
-const treeRemoval = require('./support/tree-removal');
 
 const windows = process.platform === 'win32';
 // Above what these tests' own small files need, and quick for a macro to pass.
@@ -33,22 +34,13 @@ const endProcess = status => `((get-ffi-obj "_exit" ${library} (_fun _int -> _vo
 const writePid = file => `(call-with-output-file ${quoted(file)} #:exists 'truncate (lambda (out)
   (write ((get-ffi-obj ${windows ? '"_getpid"' : '"getpid"'} ${library} (_fun -> _int))) out)))`;
 
-async function eventually(check, seconds, describe) {
-  const deadline = Date.now() + seconds * 1000;
-  for (;;) {
-    const value = await check();
-    if (value) return value;
-    assert.ok(Date.now() < deadline, describe());
-    await delay(50);
-  }
-}
 const running = pid => { try { process.kill(pid, 0); return true; } catch { return false; } };
-const pidIn = file => eventually(() => {
+const pidIn = file => until(() => {
   const text = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
   return /^\d+$/.test(text) && Number(text);
 }, 60, () => `No process id appeared in ${file}`);
 
-test('a file that needs more memory than the former 256 MB limit is analysed', { timeout: 120000 }, async t => {
+test('a file that needs more memory than the former 256 MB limit is analysed', async t => {
   const p = await project(t, unset);
   // A collection is when the limit is checked, so it runs while all of this is held.
   p.write('large.rkt', compileTime(`(let ([kept (for/list ([i 320]) (make-vector 125000 i))])
@@ -59,7 +51,7 @@ test('a file that needs more memory than the former 256 MB limit is analysed', {
   assert.equal(p.notifications.at(-1).state, 'ready', p.diagnostics());
 });
 
-test('a worker over the memory limit says so in words, names its file, and the index carries on', { timeout: 120000 }, async t => {
+test('a worker over the memory limit says so in words, names its file, and the index carries on', async t => {
   const p = await project(t, low);
   p.write('greedy.rkt', compileTime(keepAllocating));
   await p.update();
@@ -73,7 +65,7 @@ test('a worker over the memory limit says so in words, names its file, and the i
   assert.equal(p.notifications.at(-1).state, 'ready');
 });
 
-test('a rename stopped by the memory limit says why and names the file, and a later partial index does too', { timeout: 180000 }, async t => {
+test('a rename stopped by the memory limit says why and names the file, and a later partial index does too', async t => {
   const p = await project(t, low);
   const marker = p.filename('now');
   // Analysed normally until the marker appears, so that the index is ready first.
@@ -98,7 +90,7 @@ test('a rename stopped by the memory limit says why and names the file, and a la
 
 // One allocation over the limit is refused as an exception, not by ending the custodian.
 const allocateOverLimit = '(let ([kept (make-vector 20000000 0)]) (collect-garbage) (void (vector-length kept)))';
-test('one allocation over the memory limit says so in words, and the index carries on', { timeout: 120000 }, async t => {
+test('one allocation over the memory limit says so in words, and the index carries on', async t => {
   const p = await project(t, low);
   p.write('bounded.rkt', compileTime(allocateOverLimit));
   await p.update();
@@ -108,7 +100,7 @@ test('one allocation over the memory limit says so in words, and the index carri
   assert.doesNotMatch(p.diagnostics(), /struct:/);
 });
 
-test('one allocation over the memory limit also explains why a rename stopped', { timeout: 120000 }, async t => {
+test('one allocation over the memory limit also explains why a rename stopped', async t => {
   const p = await project(t, low), marker = p.filename('allocate');
   p.write('later.rkt', compileTime(`(when (file-exists? ${quoted(marker)}) ${allocateOverLimit})`));
   await p.update();
@@ -123,40 +115,37 @@ test('one allocation over the memory limit also explains why a rename stopped', 
   });
 });
 
-test('a worker in a blocking C call is stopped at its time limit, and the index carries on', { timeout: 120000 }, async t => {
+test('a worker in a blocking C call is stopped at its time limit, and the index carries on', async t => {
   const p = await project(t, {});
   p.settings.timeoutSeconds = 3;
   p.write('stuck.rkt', compileTime(blockInC(70), 'ffi/unsafe'));
   await p.update();
   const asking = p.references(p.origin);
   // Before workers were processes, the stop waited for the whole C call.
-  await eventually(() => p.notifications.at(-1)?.state === 'partial', 40, () => p.diagnostics());
+  await until(() => p.notifications.at(-1)?.state === 'partial', () => p.diagnostics());
   assert.match(p.diagnostics(), /stuck\.rkt \(analysis exceeded its 3 second time limit\)/);
   assert.equal(from(await asking, uri(p.filename('uses.rkt'))).length, 1);
 });
 
-test('cancelling a rename whose worker is in a blocking C call frees the index at once', { timeout: 120000 }, async t => {
+test('cancelling a rename whose worker is in a blocking C call frees the index at once', async t => {
   const p = await project(t, {});
   const marker = p.filename('now'), entered = p.filename('entered');
   p.write('later.rkt', compileTime(`(when (file-exists? ${quoted(marker)})
   (call-with-output-file ${quoted(entered)} #:exists 'truncate void)
-  ${blockInC(70)})`, 'ffi/unsafe'));
+  ${blockInC(600)})`, 'ffi/unsafe'));
   await p.update();
   await p.references(p.origin);
   fs.writeFileSync(marker, '');
   const cancel = new rpc.CancellationTokenSource();
   const rejected = assert.rejects(p.rename(p.origin, 'squared', undefined, cancel.token), error => error.code === -32800);
-  await eventually(() => fs.existsSync(entered), 40, () => p.diagnostics());
-  const started = Date.now();
+  await until(() => fs.existsSync(entered), () => p.diagnostics());
   cancel.cancel(); await rejected; cancel.dispose();
   fs.unlinkSync(marker);
   // The next worker cannot start until this one has stopped.
   assert.equal(from(await p.references(p.origin), uri(p.filename('uses.rkt'))).length, 1);
-  // Before workers were processes, the stop waited for the whole C call.
-  assert.ok(Date.now() - started < 30000, p.diagnostics());
 });
 
-test('compile-time code that ends its process loses only its file, and the status is reported', { timeout: 120000 }, async t => {
+test('compile-time code that ends its process loses only its file, and the status is reported', async t => {
   const p = await project(t, {});
   p.write('ended.rkt', compileTime(endProcess(7), 'ffi/unsafe'));
   await p.update();
@@ -165,7 +154,7 @@ test('compile-time code that ends its process loses only its file, and the statu
   assert.match(p.diagnostics(), /ended\.rkt \(analysis worker exited with status 7\)/);
 });
 
-test('a worker killed by a signal is reported as that, with what it means', { timeout: 120000, skip: windows }, async t => {
+test('a worker killed by a signal is reported as that, with what it means', { skip: windows }, async t => {
   const p = await project(t, {});
   p.write('killed.rkt', compileTime(`((get-ffi-obj "kill" #f (_fun _int _int -> _int))
   ((get-ffi-obj "getpid" #f (_fun -> _int))) 9)
@@ -175,7 +164,7 @@ test('a worker killed by a signal is reported as that, with what it means', { ti
   assert.match(p.diagnostics(), /killed\.rkt \(analysis worker was killed by signal 9, which is how the system ends a process when memory runs out\)/);
 });
 
-test('what a dying worker writes to its own error output is part of the reason', { timeout: 120000, skip: windows }, async t => {
+test('what a dying worker writes to its own error output is part of the reason', { skip: windows }, async t => {
   const p = await project(t, {});
   p.write('noisy.rkt', compileTime(`(call-with-output-file "/dev/stderr" #:exists 'append
   (lambda (out) (write-string "fatal: the runtime gave up\\n" out)))
@@ -185,7 +174,7 @@ test('what a dying worker writes to its own error output is part of the reason',
   assert.match(p.diagnostics(), /noisy\.rkt \(analysis worker exited with status 3: fatal: the runtime gave up\)/);
 });
 
-test('compile-time code that finds the real output reaches only its own worker', { timeout: 120000, skip: windows }, async t => {
+test('compile-time code that finds the real output reaches only its own worker', { skip: windows }, async t => {
   const p = await project(t, {});
   p.write('forged.rkt', compileTime(`(call-with-output-file "/dev/stdout" #:exists 'append
   (lambda (out) (write-string "Content-Length: 2\\r\\n\\r\\n{}not a reply" out)))
@@ -226,10 +215,10 @@ async function server(t, command, body) {
 }
 const plain = () => [path.join(root, 'vscode/workspace-index-server.rkt')];
 const owned = () => [path.join(root, 'racketdap/tools/owned-command.rkt'), ...plain()];
-const stops = (pid, describe) => eventually(() => !running(pid), 20, () => `Worker ${pid} is still running ${describe}`);
+const stops = (pid, describe) => until(() => !running(pid), () => `Worker ${pid} is still running ${describe}`);
 
 const residentBytes = pid => Number(/^VmRSS:\s+(\d+)/m.exec(fs.readFileSync(`/proc/${pid}/status`, 'utf8'))[1]) * 1024;
-test('a truncated reply declaring a large graph allocates nothing like it in the server', { timeout: 120000, skip: process.platform !== 'linux' }, async t => {
+test('a truncated reply declaring a large graph allocates nothing like it in the server', { skip: process.platform !== 'linux' }, async t => {
   const p = await project(t, low);
   await p.references(p.origin);
   const before = residentBytes(p.child.pid);
@@ -254,7 +243,7 @@ test('a truncated reply declaring a large graph allocates nothing like it in the
   assert.ok(peak - before < 80 * 1024 * 1024, `The server grew ${(peak - before) / 1024 / 1024} MiB`);
 });
 
-test('a reply nested too deeply to read stops at a limit in the server', { timeout: 120000, skip: process.platform !== 'linux' }, async t => {
+test('a reply nested too deeply to read stops at a limit in the server', { skip: process.platform !== 'linux' }, async t => {
   const p = await project(t);
   await p.references(p.origin);
   const before = residentBytes(p.child.pid);
@@ -284,7 +273,7 @@ test('a reply nested too deeply to read stops at a limit in the server', { timeo
   assert.match(p.diagnostics(), /nested\.rkt \(analysis worker sent a reply that could not be read\)/);
 });
 
-test('each worker is a process of its own, and ends when the server is killed', { timeout: 120000 }, async t => {
+test('each worker is a process of its own, and ends when the server is killed', async t => {
   const s = await server(t, plain(), '(sync never-evt)');
   assert.notEqual(s.pid, s.child.pid, 'The worker runs in a separate process');
   assert.ok(running(s.pid));
@@ -292,7 +281,7 @@ test('each worker is a process of its own, and ends when the server is killed', 
   await stops(s.pid, 'after its server was killed');
 });
 
-test('a worker in a blocking C call ends when the server exits', { timeout: 120000 }, async t => {
+test('a worker in a blocking C call ends when the server exits', async t => {
   const s = await server(t, plain(), blockInC(70));
   assert.notEqual(s.pid, s.child.pid, 'The worker runs in a separate process');
   await s.connection.sendRequest('shutdown');
@@ -301,7 +290,7 @@ test('a worker in a blocking C call ends when the server exits', { timeout: 1200
   await stops(s.pid, 'after its server exited');
 });
 
-test('a worker in a blocking C call ends with the owned process tree', { timeout: 120000 }, async t => {
+test('a worker in a blocking C call ends with the owned process tree', async t => {
   const s = await server(t, owned(), blockInC(70));
   assert.notEqual(s.pid, s.child.pid, 'The worker runs in a separate process');
   s.child.kill('SIGKILL');

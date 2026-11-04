@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const assert = require('node:assert/strict');
+const { until } = require('./support/wait');
 const path = require('node:path');
 const fs = require('node:fs');
 const vscode = require('vscode');
@@ -58,37 +59,26 @@ exports.run = async function () {
       };
     }
   });
-  async function event(name, predicate = () => true) {
+  function event(name, predicate = () => true) {
     const names = Array.isArray(name) ? name : [name];
-    const deadline = Date.now() + 20000;
-    while (Date.now() < deadline) {
+    return until(() => {
       const index = messages.findIndex(m => m.type === 'event' && names.includes(m.event) && predicate(m));
-      if (index >= 0) return messages.splice(index, 1)[0];
-      await new Promise(resolve => setTimeout(resolve, 20));
-    }
-    throw new Error(`No ${name} event. Messages: ${JSON.stringify(messages)}`);
+      return index >= 0 && messages.splice(index, 1)[0];
+    }, `${name} event`, () => JSON.stringify(messages));
   }
   let referenceLocations;
-  async function waitUntil(predicate, description) {
-    const deadline = Date.now() + 20000;
-    let result;
-    while (!(result = await predicate())) {
-      if (Date.now() >= deadline) {
-        const editor = vscode.window.activeTextEditor;
-        const item = vscode.debug.activeStackItem;
-        throw new Error(`Timed out: ${description}. ${JSON.stringify({
+  const waitUntil = (predicate, description) => until(predicate, description, () => {
+    const editor = vscode.window.activeTextEditor;
+    const item = vscode.debug.activeStackItem;
+    return JSON.stringify({
           editor: editor?.document.uri.toString(), selection: editor?.selection,
           visible: vscode.window.visibleTextEditors.map(visible => visible.document.uri.toString()),
           sourceDocument: { closed: document.isClosed, version: document.version },
           workspaceAnalysis: vscode.workspace.getConfiguration('racket-langserver', workspace.uri).get('workspaceAnalysis'),
           stackItem: item && { sessionId: item.session.id, threadId: item.threadId, frameId: item.frameId },
           breakpoints: vscode.debug.breakpoints, references: referenceLocations, messages: messages.slice(-20)
-        })}`);
-      }
-      await new Promise(resolve => setTimeout(resolve, 20));
-    }
-    return result;
-  }
+        });
+  });
   async function selectedFrame(session, stop) {
     await waitUntil(() => {
       const item = vscode.debug.activeStackItem;
@@ -121,11 +111,7 @@ exports.run = async function () {
     const stoppedDocument = stoppedEditor.document;
     const highlightedValues = async () => (await semanticTokens(stoppedDocument))
       .some(token => token.text === 'values' && token.type === 'function');
-    const languageDeadline = Date.now() + 20000;
-    while (!await highlightedValues()) {
-      assert.ok(Date.now() < languageDeadline, 'The stopped file receives semantic function highlighting');
-      await new Promise(resolve => setTimeout(resolve, 100));
-    }
+    await until(async () => await highlightedValues(), 'The stopped file receives semantic function highlighting');
     const valuesPosition = new vscode.Position(4, 4);
     const snapshotHover = await vscode.commands.executeCommand('vscode.executeHoverProvider', stoppedDocument.uri, valuesPosition);
     assert.ok(snapshotHover.some(item => item.contents.some(content => /values/.test(content.value || content))),

@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const assert = require('node:assert/strict');
+const treeRemoval = require('./support/tree-removal');
+const { until } = require('./support/wait');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
@@ -9,17 +11,7 @@ const { spawn } = require('node:child_process');
 const { once } = require('node:events');
 const rpc = require(require.resolve('vscode-jsonrpc/node', { paths: [require('node:path').join(__dirname, '../vscode')] }));
 const { root, uri, addon } = require('./workspace-index-project');
-const treeRemoval = require('./support/tree-removal');
 
-async function until(check, description, diagnostics = () => '', timeout = 15000) {
-  const deadline = Date.now() + timeout;
-  while (Date.now() < deadline) {
-    const result = await check();
-    if (result) return result;
-    await new Promise(resolve => setTimeout(resolve, 25));
-  }
-  assert.fail(`${description}: ${diagnostics()}`);
-}
 
 async function languageServer(t, { workspace = true, folders, capabilities = {} } = {}) {
   const directory = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'racketeer-imports-')));

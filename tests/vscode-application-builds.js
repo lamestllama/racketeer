@@ -2,12 +2,13 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const assert = require('node:assert/strict');
+const treeRemoval = require('./support/tree-removal');
+const { until } = require('./support/wait');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const vscode = require('vscode');
-const treeRemoval = require('./support/tree-removal');
 const execute = promisify(execFile);
 
 exports.run = async function (workspace, observe = async () => {}) {
@@ -29,14 +30,6 @@ exports.run = async function (workspace, observe = async () => {}) {
   const processes = new Map();
   const processStarts = vscode.tasks.onDidStartTaskProcess(event => processes.set(event.execution, event.processId));
   const exists = async filename => { try { await fs.stat(filename); return true; } catch (error) { if (error.code !== 'ENOENT') throw error; return false; } };
-  async function until(check, label, timeout = 60000, details = () => '') {
-    const deadline = Date.now() + timeout;
-    while (Date.now() < deadline) {
-      const result = await check(); if (result) return result;
-      await new Promise(resolve => setTimeout(resolve, 40));
-    }
-    throw new Error(`Timed out: ${label}${details()}`);
-  }
   const alive = pid => {
     try { process.kill(pid, 0); return true; } catch (error) { if (error.code === 'ESRCH') return false; throw error; }
   };
@@ -56,7 +49,7 @@ exports.run = async function (workspace, observe = async () => {}) {
   }
   async function checkGui(file, name) {
     const receipt = path.join(output, name + '.json');
-    await execute(await executable(file), [receipt], { cwd: output, timeout: 30000 });
+    await execute(await executable(file), [receipt], { cwd: output, timeout: 240000 });
     const value = JSON.parse(await fs.readFile(receipt, 'utf8'));
     assert.equal(value.visible, true); assert.equal(value.payload, 'runtime λ');
   }
@@ -156,7 +149,7 @@ exports.run = async function (workspace, observe = async () => {}) {
     // Report which process outlived the task, to tell a compiler that ignored
     // termination from a child that the termination did not reach.
     const compilerPid = processes.get(running);
-    await until(() => !alive(childPid), 'Compiler child stopped', 10000,
+    await until(() => !alive(childPid), 'Compiler child stopped',
       () => ` (compiler process ${compilerPid ?? 'unknown'} ${compilerPid && alive(compilerPid) ? 'still running' : 'stopped'})`);
     childPid = undefined;
     checks.push('Native task cancellation stops a stalled compiler and its ordinary child process');

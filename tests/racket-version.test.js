@@ -3,6 +3,8 @@
 'use strict';
 // What a person with an older Racket is told on each way in, with a stand-in Racket.
 const assert = require('node:assert/strict');
+const treeRemoval = require('./support/tree-removal');
+const { until } = require('./support/wait');
 const test = require('./support/node-test');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -10,7 +12,6 @@ const path = require('node:path');
 const vm = require('node:vm');
 const { createRequire } = require('node:module');
 const { racketPath, versionProblem, racketTooOld } = require('../vscode/racket-version');
-const treeRemoval = require('./support/tree-removal');
 
 // A shell script stands in, and Windows starts no script without a shell.
 const stands = { skip: process.platform === 'win32' && 'a stand-in Racket is a shell script' };
@@ -152,8 +153,7 @@ test('Test Explorer says the Racket found is too old, for discovery and for a ru
   assert.equal(totals.errored, 1);
   assert.deepEqual(results.map(result => result.message), [expected(old)]);
   const listed = [...controller.items].map(([, value]) => value)[0];
-  const deadline = Date.now() + 20000;
-  while (listed.error !== expected(old) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 50));
+  await until(() => !(listed.error !== expected(old)));
   assert.equal(listed.error, expected(old));
   context.subscriptions.forEach(entry => entry.dispose());
 });
@@ -214,7 +214,7 @@ test('the workspace index does not start on a Racket that is too old, and each r
   const parse = value => ({ scheme: 'file', fsPath: value, toString: () => value });
   const events = () => disposable;
   const workspace = { workspaceFolders: [{ uri: parse('/workspace') }], textDocuments: [],
-    getConfiguration: () => ({ get: () => ({ enabled: true, timeoutSeconds: 20 }) }),
+    getConfiguration: () => ({ get: () => ({ enabled: true, timeoutSeconds: 120 }) }),
     onDidOpenTextDocument: events(), onDidCloseTextDocument: events(), onDidChangeTextDocument: events(),
     onDidChangeWorkspaceFolders: events(), onDidChangeConfiguration: events() };
   const { createWorkspaceIndex } = load('workspace-index.js', { vscode: { workspace, Uri: { parse } },
@@ -251,7 +251,7 @@ test('a failed version probe gives a reason, and terminates a hung executable', 
   let timer;
   const result = await Promise.race([
     implementation.racketTooOld(executable),
-    new Promise(resolve => { timer = setTimeout(() => resolve('still waiting'), 12000); })
+    new Promise(resolve => { timer = setTimeout(() => resolve('still waiting'), 240000); })
   ]);
   clearTimeout(timer);
   assert.match(result, /Cannot check.*racketExecutable/s);

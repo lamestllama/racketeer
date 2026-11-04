@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const test = require('./support/node-test'), assert = require('node:assert/strict');
+const treeRemoval = require('./support/tree-removal');
 const fs = require('node:fs'), path = require('node:path'), os = require('node:os');
 const { DapClient } = require('./dap-client');
 const expected = require('./fixtures/wxme-debug/expected.json');
-const treeRemoval = require('./support/tree-removal');
 const ok = async p => { const r = await p; assert.equal(r.success, true, r.message); return r.body; };
 async function launch(t, name, configuration = {}) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'wxme-debug-'));

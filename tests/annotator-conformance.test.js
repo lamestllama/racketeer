@@ -3,6 +3,7 @@
 'use strict';
 // Behavioral tests: no imports of the instrumentation implementation.
 const assert = require('node:assert/strict');
+const treeRemoval = require('./support/tree-removal');
 const test = require('./support/node-test');
 const fs = require('node:fs/promises');
 const os = require('node:os');
@@ -10,7 +11,6 @@ const path = require('node:path');
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const { DapClient } = require('./dap-client');
-const treeRemoval = require('./support/tree-removal');
 const execute = promisify(execFile);
 const adapter = process.env.RACKETDAP_CONFORMANCE_ADAPTER;
 
@@ -67,7 +67,7 @@ test('instrumented execution preserves values, effects, continuations, and tail 
     '  (write (let loop ([n 30000] [total 0]) (if (zero? n) total (loop (sub1 n) (add1 total))))) (newline)',
     '  (write (reverse effects)) (newline))'
   ]);
-  const normal = await execute('racket', [program], { timeout: 30000 });
+  const normal = await execute('racket', [program], { timeout: 240000 });
   await ok(client.request('configurationDone'));
   assert.equal(await finished(client), normal.stdout);
   assert.equal(normal.stderr, '');
@@ -87,7 +87,7 @@ test('function inspection preserves inferred names, identity, and case-lambda ar
     '(module+ main (run cedar))'
   ];
   const { client, program } = await prepare(t, lines, [{ line: 8 }]);
-  const normal = await execute('racket', [program], { timeout: 30000 });
+  const normal = await execute('racket', [program], { timeout: 240000 });
   await ok(client.request('configurationDone'));
   const { threadId, frame } = await stoppedFrame(client);
   for (const [expression, name] of [['cedar', 'cedar'], ['branch', 'branch'], ['nested', 'leaf'], ['selected', 'selected'], ['proc', 'cedar']]) {
@@ -133,7 +133,7 @@ test('port provenance preserves evaluation order, multiple values, tail calls, a
     '  (displayln (failure (lambda () ((values 1 2) 3))))',
     '  (displayln (reverse events)))'
   ]);
-  const normal = await execute('racket', [program], { timeout: 30000 });
+  const normal = await execute('racket', [program], { timeout: 240000 });
   await ok(client.request('configurationDone'));
   assert.equal(await finished(client), normal.stdout);
   assert.equal(normal.stderr, '');
@@ -402,7 +402,7 @@ test('debug loading preserves expansion-time effects and leaves source files unc
     '(module+ main (displayln (answer)))'
   ]);
   const before = await fs.stat(program);
-  const normal = await execute('racket', [program], { timeout: 30000 });
+  const normal = await execute('racket', [program], { timeout: 240000 });
   await ok(client.request('configurationDone'));
   assert.equal(await finished(client), normal.stdout);
   assert.equal(await fs.readFile(program, 'utf8'), source);

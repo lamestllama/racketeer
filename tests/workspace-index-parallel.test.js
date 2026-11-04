@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const assert = require('node:assert/strict');
+const { until } = require('./support/wait');
 const test = require('./support/node-test');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -14,15 +15,6 @@ const windows = process.platform === 'win32';
 const quoted = text => JSON.stringify(text);
 const workers = count => ({ RACKETEER_INDEX_TRACE: '1', RACKETEER_INDEX_WORKERS: count === undefined ? undefined : String(count) });
 
-async function eventually(check, seconds, describe) {
-  const deadline = Date.now() + seconds * 1000;
-  for (;;) {
-    const value = await check();
-    if (value) return value;
-    assert.ok(Date.now() < deadline, describe());
-    await delay(25);
-  }
-}
 const running = pid => { try { process.kill(pid, 0); return true; } catch { return false; } };
 
 // Compile-time programs. A file's macro runs in whichever worker analyses it.
@@ -35,7 +27,7 @@ const writePid = file => `(call-with-output-file ${quoted(file)} #:exists 'trunc
 const blockForever = windows
   ? '((get-ffi-obj "Sleep" (ffi-lib "kernel32") (_fun _uint32 -> _void)) 70000)'
   : '((get-ffi-obj "sleep" #f (_fun _uint -> _uint)) 70)';
-const pidFrom = (file, describe) => eventually(() => {
+const pidFrom = (file, describe) => until(() => {
   const text = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
   return /^\d+$/.test(text) && Number(text);
 }, 60, describe);
@@ -57,13 +49,13 @@ ${comment}(require (for-syntax racket/base) "definition.rkt")
     write,
     open: name => fs.writeFileSync(gate(name), ''),
     hasEntered: name => fs.existsSync(entered(name)),
-    entered: name => eventually(() => fs.existsSync(entered(name)), 60, () => `${name} did not start\n${p.diagnostics()}`)
+    entered: name => until(() => fs.existsSync(entered(name)), () => `${name} did not start\n${p.diagnostics()}`)
   };
 }
 
 // What the trace says, in the order it happened.
 const label = name => new RegExp(`analyse \\S*${name.replace('.', '\\.')}: reaped`);
-const reaped = (p, name) => eventually(() => label(name).test(p.diagnostics()), 60, () => `${name} did not end\n${p.diagnostics()}`);
+const reaped = (p, name) => until(() => label(name).test(p.diagnostics()), () => `${name} did not end\n${p.diagnostics()}`);
 const reapedAt = (p, name) => p.diagnostics().search(label(name));
 const most = p => {
   let now = 0, peak = 0;
@@ -103,13 +95,13 @@ const defaults = () => {
   return { here, table };
 };
 
-test('a default is half the processors, within a cap', { timeout: 120000 }, () => {
+test('a default is half the processors, within a cap', () => {
   assert.deepEqual(defaults().table, [1, 1, 1, 2, 3, 3, 3, 3]);
 });
 
 // Every gated file is reached at once, and the one after them only when one ends.
 for (const [count, describe] of [[3, 'three workers'], [undefined, 'the default']]) {
-  test(`a pass runs as many workers at once as it may, and no more (${describe})`, { timeout: 180000 }, async t => {
+  test(`a pass runs as many workers at once as it may, and no more (${describe})`, async t => {
     const p = await project(t, workers(count));
     const g = gates(p), limit = count || defaults().here;
     const names = ['a.rkt', 'b.rkt', 'c.rkt', 'd.rkt', 'e.rkt', 'f.rkt'];
@@ -127,7 +119,7 @@ for (const [count, describe] of [[3, 'three workers'], [undefined, 'the default'
   });
 }
 
-test('one worker keeps to one process at a time', { timeout: 120000 }, async t => {
+test('one worker keeps to one process at a time', async t => {
   const p = await project(t, workers(1));
   p.write('a.rkt', '#lang racket/base\n(require "definition.rkt")\n(square 1)\n');
   p.write('b.rkt', '#lang racket/base\n(require "definition.rkt")\n(square 2)\n');
@@ -136,7 +128,7 @@ test('one worker keeps to one process at a time', { timeout: 120000 }, async t =
   assert.equal(most(p), 1);
 });
 
-test('workers ending in another order give what one worker gives, to the byte', { timeout: 240000 }, async t => {
+test('workers ending in another order give what one worker gives, to the byte', async t => {
   const p = await project(t, workers(3));
   const g = gates(p);
   for (const name of ['a.rkt', 'b.rkt', 'c.rkt']) g.write(name);
@@ -171,7 +163,7 @@ test('workers ending in another order give what one worker gives, to the byte', 
   assert.equal(started(p) - before, 4, 'The edited file, the two that failed and the request');
 });
 
-test('the reason a rename gives is the first file\'s in the pass, whichever worker stopped first', { timeout: 240000 }, async t => {
+test('the reason a rename gives is the first file\'s in the pass, whichever worker stopped first', async t => {
   const env = { RACKETEER_INDEX_WORKER_MEGABYTES: '64' };
   const p = await project(t, { ...workers(3), ...env });
   const g = gates(p);
@@ -183,7 +175,7 @@ test('the reason a rename gives is the first file\'s in the pass, whichever work
   await p.update();
   const asking = p.references(p.origin);
   await g.entered('a-greedy.rkt');
-  await eventually(() => /b-ends\.rkt: analysis worker exited with status 3/.test(p.diagnostics()), 60, p.diagnostics);
+  await until(() => /b-ends\.rkt: analysis worker exited with status 3/.test(p.diagnostics()), p.diagnostics);
   assert.doesNotMatch(p.diagnostics(), /memory limit/);
   g.open('a-greedy.rkt');
   assert.equal((await asking).length, 3, 'The other workers carry on');
@@ -199,7 +191,7 @@ test('the reason a rename gives is the first file\'s in the pass, whichever work
 // A comment of this size is quick to analyse, and two of them pass the limit of 16 MiB of source.
 const largeComment = `;${'x'.repeat(8.5 * 1024 * 1024)}\n`;
 
-test('a pass stopped at a limit gives what one worker gives and keeps nothing found beyond it', { timeout: 300000 }, async t => {
+test('a pass stopped at a limit gives what one worker gives and keeps nothing found beyond it', async t => {
   const p = await project(t, workers(3));
   const g = gates(p);
   p.settings.timeoutSeconds = 90;
@@ -228,7 +220,7 @@ test('a pass stopped at a limit gives what one worker gives and keeps nothing fo
   assert.equal(expansions(), 1, 'The worker ran ahead of the pass');
   g.open('big-2.rkt');
   await asking;
-  await eventually(() => !running(pid), 20, () => `Worker ${pid} is still running after the pass stopped`);
+  await until(() => !running(pid), () => `Worker ${pid} is still running after the pass stopped`);
   assert.deepEqual({ ...p.notifications.at(-1) }, { state: 'partial', indexed: 2, total: 6, failures: 1 });
   const parallel = await answers(p);
   const serial = await project(t, workers(1), p);
@@ -257,10 +249,10 @@ async function blocked(t, count, body = blockForever) {
   const pids = () => Promise.all(files.map(name => pidFrom(pidFile(name), () => `No process id for ${name}\n${p.diagnostics()}`)));
   return { p, files, pids };
 }
-const allStop = (p, pids, describe) => eventually(() => !pids.some(running), 20,
+const allStop = (p, pids, describe) => until(() => !pids.some(running), 20,
   () => `Of ${pids}, these are still running ${describe}: ${pids.filter(running)}\n${p.diagnostics()}`);
 
-test('cancelling the only request stops every worker of its pass at once', { timeout: 180000 }, async t => {
+test('cancelling the only request stops every worker of its pass at once', async t => {
   const { p, files, pids } = await blocked(t, 3);
   const cancel = new rpc.CancellationTokenSource();
   const asking = p.references(p.origin, undefined, false, cancel.token);
@@ -272,7 +264,7 @@ test('cancelling the only request stops every worker of its pass at once', { tim
   await assert.rejects(asking, error => error.code === -32800);
   cancel.dispose();
   await allStop(p, all, 'after the request was cancelled');
-  await eventually(() => p.notifications.at(-1).state === 'outdated', 20, p.diagnostics);
+  await until(() => p.notifications.at(-1).state === 'outdated', p.diagnostics);
   await delay(2000);
   assert.equal(started(p), before, 'Nobody is asking, so no more files are analysed');
   for (const name of files) p.write(name, '#lang racket/base\n');
@@ -281,7 +273,7 @@ test('cancelling the only request stops every worker of its pass at once', { tim
   assert.equal(p.notifications.at(-1).state, 'ready', p.diagnostics());
 });
 
-test('a change replacing a pass stops every worker of it', { timeout: 180000 }, async t => {
+test('a change replacing a pass stops every worker of it', async t => {
   const { p, files, pids } = await blocked(t, 3);
   const asking = p.references(p.origin);
   const all = await pids();
@@ -292,7 +284,7 @@ test('a change replacing a pass stops every worker of it', { timeout: 180000 }, 
   assert.equal(p.notifications.at(-1).state, 'ready', p.diagnostics());
 });
 
-test('shutdown stops every worker', { timeout: 180000 }, async t => {
+test('shutdown stops every worker', async t => {
   const { p, pids } = await blocked(t, 3);
   const asking = attempt(p.references(p.origin));
   const all = await pids();
@@ -301,7 +293,7 @@ test('shutdown stops every worker', { timeout: 180000 }, async t => {
   assert.equal((await asking).code, -32600);
 });
 
-test('every worker ends when the server is killed', { timeout: 180000 }, async t => {
+test('every worker ends when the server is killed', async t => {
   const { p, pids } = await blocked(t, 3, '(sync never-evt)');
   void attempt(p.references(p.origin));
   const all = await pids();

@@ -10,7 +10,7 @@ const { project, addon } = require('./workspace-index-project');
 const running = pid => { try { process.kill(pid, 0); return true; } catch { return false; } };
 const windows = process.platform === 'win32';
 
-test('project cleanup reaps an analysis in a native call before removing its folder', { timeout: 120000 }, async () => {
+test('project cleanup reaps an analysis in a native call before removing its folder', async () => {
   const cleanups = [];
   const p = await project({ after: fn => cleanups.push(fn) }, { RACKETEER_INDEX_WORKERS: '1' });
   const marker = path.join(addon, `${path.basename(p.directory)}.pid`);
@@ -26,13 +26,10 @@ test('project cleanup reaps an analysis in a native call before removing its fol
     p.settings.timeoutSeconds = 90;
     await p.update();
     const asking = p.references(p.origin).catch(error => error);
-    const deadline = Date.now() + 60000;
-    while (!worker) {
+    worker = await until(() => {
       const text = fs.existsSync(marker) ? fs.readFileSync(marker, 'utf8') : '';
-      if (/^\d+$/.test(text)) worker = Number(text);
-      assert.ok(Date.now() < deadline, p.diagnostics());
-      await delay(25);
-    }
+      return /^\d+$/.test(text) && Number(text);
+    }, () => p.diagnostics());
     assert.ok(running(worker));
     for (const cleanup of cleanups) await cleanup();
     await asking;

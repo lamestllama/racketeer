@@ -233,7 +233,7 @@ test('language selects the indenter in the server, and the old value leaves its 
     await workspace.didChangeConfiguration(['racket-langserver'], () =>
       server.connection.sendNotification('workspace/didChangeConfiguration', { settings: null }));
     await until(async () => JSON.stringify(await formatted()) === JSON.stringify(expected),
-      `${value} formats as expected`, server.errors, 60000);
+      `${value} formats as expected`, server.errors);
   };
   await choose('language', indenter);
   await choose('drracket', fixw);

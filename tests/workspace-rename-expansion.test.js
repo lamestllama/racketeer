@@ -15,7 +15,7 @@ async function renamed(t, consumer) {
 }
 const wholeWord = text => text.replace(/\bsquare\b/g, 'squared');
 
-test('quoted data shaped like a core form leaves a rename whole', { timeout: 120000 }, async t => {
+test('quoted data shaped like a core form leaves a rename whole', async t => {
   const consumer = `#lang racket/base
 (require "definition.rkt")
 (define modules '(module module*))
@@ -28,7 +28,7 @@ test('quoted data shaped like a core form leaves a rename whole', { timeout: 120
   assert.equal(await renamed(t, consumer), wholeWord(consumer));
 });
 
-test('variables named after core forms are variables', { timeout: 120000 }, async t => {
+test('variables named after core forms are variables', async t => {
   const consumer = `#lang racket/base
 (require "definition.rkt")
 (define (one module) (square module))
@@ -46,7 +46,7 @@ test('variables named after core forms are variables', { timeout: 120000 }, asyn
   assert.equal(await renamed(t, consumer), wholeWord(consumer));
 });
 
-test('a core form under another name is still that form', { timeout: 120000 }, async t => {
+test('a core form under another name is still that form', async t => {
   const consumer = `#lang racket/base
 (require (rename-in racket/base [quote q] [begin-for-syntax phase-up] [module mod])
          "definition.rkt"
@@ -63,7 +63,7 @@ test('a core form under another name is still that form', { timeout: 120000 }, a
     .replace('(square 4)', '(squared 4)'));
 });
 
-test('a submodule that shares its enclosing phase is read at that phase', { timeout: 120000 }, async t => {
+test('a submodule that shares its enclosing phase is read at that phase', async t => {
   const consumer = `#lang racket/base
 (require (for-syntax racket/base "definition.rkt"))
 (begin-for-syntax
@@ -73,7 +73,7 @@ test('a submodule that shares its enclosing phase is read at that phase', { time
   assert.equal(await renamed(t, consumer), wholeWord(consumer));
 });
 
-test('an import selecting from a primitive module leaves a rename whole', { timeout: 120000 }, async t => {
+test('an import selecting from a primitive module leaves a rename whole', async t => {
   const consumer = `#lang racket/base
 (require "definition.rkt"
          (only-in '#%kernel [cons kons])
@@ -84,7 +84,7 @@ test('an import selecting from a primitive module leaves a rename whole', { time
   assert.equal(await renamed(t, consumer), wholeWord(consumer));
 });
 
-test('a quoted name in an import is the file\'s own submodule', { timeout: 120000 }, async t => {
+test('a quoted name in an import is the file\'s own submodule', async t => {
   const p = await project(t);
   const source = `#lang racket/base
 (module inner racket/base
@@ -100,7 +100,7 @@ test('a quoted name in an import is the file\'s own submodule', { timeout: 12000
   assert.equal(edited(source, changes[key]), source.replaceAll('helper', 'assist'));
 });
 
-test('a selector over a quoted submodule name stays independent of another binding', { timeout: 120000 }, async t => {
+test('a selector over a quoted submodule name stays independent of another binding', async t => {
   const consumer = `#lang racket/base
 (module inner racket/base
   (provide square)
@@ -115,7 +115,7 @@ test('a selector over a quoted submodule name stays independent of another bindi
   assert.equal(edited, consumer.replace('(square 1)', '(squared 1)'));
 });
 
-test('an import through a parent directory is the same module', { timeout: 120000 }, async t => {
+test('an import through a parent directory is the same module', async t => {
   const p = await project(t);
   const consumer = `#lang racket/base
 (require "../definition.rkt"

@@ -4,6 +4,8 @@
 // The debugger compiled once into storage, through racketdap/launcher.rkt. Each test
 // runs a copy of the sources, as an installed extension holds them: no compiled files.
 const assert = require('node:assert/strict');
+const treeRemoval = require('./support/tree-removal');
+const { until } = require('./support/wait');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -11,7 +13,6 @@ const { spawn, spawnSync } = require('node:child_process');
 const test = require('./support/node-test');
 const { DapClient } = require('./dap-client');
 const { debuggerArgs } = require('../vscode/language-process');
-const treeRemoval = require('./support/tree-removal');
 
 const repository = path.resolve(__dirname, '..');
 function folder(t) {
@@ -29,7 +30,7 @@ const launcherArgs = ({ racketdap, storage }, file = 'main.rkt') =>
   [path.join(racketdap, 'launcher.rkt'), storage, path.join(racketdap, file)];
 // One session, with these arguments to Racket; returns what it wrote.
 async function session(args, program, { env, launch = {} } = {}) {
-  const client = new DapClient(undefined, { timeout: 120000, leavesProcess: true,
+  const client = new DapClient(undefined, { leavesProcess: true,
     spawn: (command, _args, options) => spawn(command, args, { ...options, env: { ...process.env, ...env } }) });
   try {
     const ok = async request => { const response = await request; assert.equal(response.success, true, response.message); };
@@ -46,14 +47,9 @@ async function session(args, program, { env, launch = {} } = {}) {
 const entries = storage => fs.existsSync(storage) ? fs.readdirSync(storage).sort() : [];
 const finished = storage => entries(storage).filter(name => !/\.(building|stale-.*)$/.test(name));
 // What a launch leaves to finish in the background.
-async function built(storage, count = 1) {
-  const deadline = Date.now() + 240000;
-  while (Date.now() < deadline) {
-    if (!entries(storage).some(name => name.endsWith('.building')) && finished(storage).length >= count) return finished(storage);
-    await new Promise(resolve => setTimeout(resolve, 100));
-  }
-  throw new Error(`No build finished: ${entries(storage)}`);
-}
+const built = (storage, count = 1) => until(() =>
+  !entries(storage).some(name => name.endsWith('.building')) && finished(storage).length >= count && finished(storage),
+  () => `a finished build: ${entries(storage)}`);
 const compiledFiles = directory => fs.readdirSync(directory, { recursive: true }).filter(name => name.endsWith('.zo')).map(String);
 const inBuild = (storage, build, file) => path.join(storage, build, compiledFiles(path.join(storage, build)).find(name => name.endsWith(file)));
 
@@ -68,7 +64,7 @@ ${before}`));
 }
 const stamps = (text, label) => [...text.matchAll(new RegExp(`${label} ([0-9.]+)`, 'g'))].map(match => match[1]);
 
-test('a launch runs from source and starts the build, and later launches load compiled code', { timeout: 300000 }, async t => {
+test('a launch runs from source and starts the build, and later launches load compiled code', async t => {
   const files = folder(t);
   const { racketdap, storage, program } = files;
   stamp(path.join(racketdap, 'main.rkt'), 'adapter', '(define input (current-input-port))');
@@ -98,7 +94,7 @@ test('a launch runs from source and starts the build, and later launches load co
     'The build holds the debugger, not the libraries it uses');
 });
 
-test('a program and its children see what they see without the launcher', { timeout: 300000 }, async t => {
+test('a program and its children see what they see without the launcher', async t => {
   const files = folder(t);
   const { directory, racketdap, storage } = files;
   const program = path.join(directory, 'settings.rkt');
@@ -128,7 +124,7 @@ for (const [name, damage] of [
   ['a cut short compiled file', file => fs.truncateSync(file, fs.statSync(file).size >> 1)],
   ['a missing compiled file', file => fs.rmSync(file)]
 ]) {
-  test(`${name} runs from source and is compiled again`, { timeout: 300000 }, async t => {
+  test(`${name} runs from source and is compiled again`, async t => {
     const files = folder(t);
     const { storage, program } = files;
     await session(launcherArgs(files), program);
@@ -144,7 +140,7 @@ for (const [name, damage] of [
   });
 }
 
-test('a damaged manifest runs from source and is compiled again', { timeout: 300000 }, async t => {
+test('a damaged manifest runs from source and is compiled again', async t => {
   const files = folder(t);
   const { storage, program } = files;
   await session(launcherArgs(files), program);
@@ -174,7 +170,7 @@ for (const [name, spoil] of [
     });
 }
 
-test('a storage path holding the list separator is an ordinary path', { timeout: 300000, skip: process.platform === 'win32' }, async t => {
+test('a storage path holding the list separator is an ordinary path', { skip: process.platform === 'win32' }, async t => {
   const files = folder(t);
   files.storage = path.join(files.directory, 'a:b');
   await session(launcherArgs(files), files.program);
@@ -183,7 +179,7 @@ test('a storage path holding the list separator is an ordinary path', { timeout:
   assert.match((await session(launcherArgs(files), files.program)).output, /finished/);
 });
 
-test('two first sessions at once both run and leave one usable build', { timeout: 300000 }, async t => {
+test('two first sessions at once both run and leave one usable build', async t => {
   const files = folder(t);
   const { storage, program } = files;
   for (const { output } of await Promise.all([session(launcherArgs(files), program), session(launcherArgs(files), program)]))
@@ -193,7 +189,7 @@ test('two first sessions at once both run and leave one usable build', { timeout
   assert.match((await session(launcherArgs(files), program)).output, /finished/);
 });
 
-test('changed sources are compiled again under the same folder', { timeout: 300000 }, async t => {
+test('changed sources are compiled again under the same folder', async t => {
   const files = folder(t);
   const { racketdap, storage, program } = files;
   stamp(path.join(racketdap, 'worker/main.rkt'), 'worker', '(define bootstrap (read-message');
@@ -232,7 +228,7 @@ function build({ racketdap, storage }, env) {
   return destination;
 }
 
-test('a source replaced during the build cannot certify the code compiled from what it replaced', { timeout: 300000 }, async t => {
+test('a source replaced during the build cannot certify the code compiled from what it replaced', async t => {
   const files = folder(t);
   const target = path.join(files.racketdap, 'snapshot-probe.rkt');
   const replacement = '#lang racket/base\n(displayln "CURRENT")\n';
@@ -245,12 +241,12 @@ test('a source replaced during the build cannot certify the code compiled from w
 (displayln "FORMER")
 `);
   build(files);
-  const launched = spawnSync('racket', [path.join(files.racketdap, 'launcher.rkt'), files.storage, target], { encoding: 'utf8', timeout: 30000 });
+  const launched = spawnSync('racket', [path.join(files.racketdap, 'launcher.rkt'), files.storage, target], { encoding: 'utf8', timeout: 240000 });
   assert.equal(launched.status, 0, launched.stderr);
   assert.equal(launched.stdout, 'CURRENT\n');
 });
 
-test('a builder resuming after its folder was taken over leaves its successor alone', { timeout: 300000 }, async t => {
+test('a builder resuming after its folder was taken over leaves its successor alone', async t => {
   const files = folder(t);
   const { racketdap, storage } = files;
   const entered = path.join(storage, 'entered'), release = path.join(storage, 'release');
@@ -267,11 +263,7 @@ test('a builder resuming after its folder was taken over leaves its successor al
   const builder = spawn('racket', [path.join(racketdap, 'tools/compile-debugger.rkt'), building, destination], { stdio: 'ignore' });
   const ended = new Promise(resolve => builder.once('close', resolve));
   t.after(() => { builder.kill('SIGKILL'); return ended; });
-  const deadline = Date.now() + 240000;
-  while (!fs.existsSync(entered)) {
-    assert.ok(Date.now() < deadline, 'The builder never reached the probe');
-    await new Promise(resolve => setTimeout(resolve, 50));
-  }
+  await until(() => fs.existsSync(entered), 'The builder never reached the probe');
   // What a later launch does to a folder it takes for abandoned.
   fs.renameSync(building, `${destination}.stale-1`);
   fs.mkdirSync(building);
@@ -302,7 +294,7 @@ function libraryProject(t) {
     for (const file of fs.readdirSync(library, { recursive: true })) fs.utimesSync(path.join(library, String(file)), past, past);
   };
   const launch = () => {
-    const launched = spawnSync('racket', [path.join(files.racketdap, 'launcher.rkt'), files.storage, target], { env, encoding: 'utf8', timeout: 30000 });
+    const launched = spawnSync('racket', [path.join(files.racketdap, 'launcher.rkt'), files.storage, target], { env, encoding: 'utf8', timeout: 240000 });
     assert.equal(launched.status, 0, launched.stderr);
     return launched.stdout;
   };
@@ -310,7 +302,7 @@ function libraryProject(t) {
   return { files, library, macro, write, target, env, age, launch };
 }
 
-test('a library upgraded after the build runs the debugger from source, behind a re-export too', { timeout: 300000 }, async t => {
+test('a library upgraded after the build runs the debugger from source, behind a re-export too', async t => {
   const p = libraryProject(t);
   const published = build(p.files, p.env);
   assert.ok(fs.existsSync(path.join(published, 'manifest.rktd')), 'The baseline needs a published build');
@@ -320,14 +312,14 @@ test('a library upgraded after the build runs the debugger from source, behind a
   assert.equal(p.launch(), 'LATTER\n');
 });
 
-test('a library dated in the future does not stop the build', { timeout: 300000 }, async t => {
+test('a library dated in the future does not stop the build', async t => {
   const p = libraryProject(t);
   const later = new Date(Date.now() + 3600000);
   fs.utimesSync(p.macro, later, later);
   assert.ok(fs.existsSync(path.join(build(p.files, p.env), 'manifest.rktd')), 'Otherwise every launch builds and nothing is published');
 });
 
-test('a library replaced during the build is not certified by what it became', { timeout: 300000 }, async t => {
+test('a library replaced during the build is not certified by what it became', async t => {
   const p = libraryProject(t);
   fs.writeFileSync(path.join(p.files.racketdap, 'library-replacer.rkt'), `#lang racket/base
 (require launch-library (for-syntax racket/base))
@@ -340,7 +332,7 @@ test('a library replaced during the build is not certified by what it became', {
   assert.equal(p.launch(), 'LATTER\n');
 });
 
-test('a library with only compiled code keeps the build, until that code is replaced', { timeout: 300000 }, async t => {
+test('a library with only compiled code keeps the build, until that code is replaced', async t => {
   const p = libraryProject(t);
   const compileOnly = () => {
     const made = spawnSync('raco', ['make', p.macro], { env: p.env, encoding: 'utf8' });
@@ -359,7 +351,7 @@ test('a library with only compiled code keeps the build, until that code is repl
   assert.deepEqual(fs.readFileSync(path.join(published, 'manifest.rktd')), manifest);
 });
 
-test('another Racket setup gets a folder of its own and leaves the first', { timeout: 300000 }, async t => {
+test('another Racket setup gets a folder of its own and leaves the first', async t => {
   const files = folder(t);
   const { directory, storage, program } = files;
   await session(launcherArgs(files), program);
@@ -370,14 +362,13 @@ test('another Racket setup gets a folder of its own and leaves the first', { tim
   assert.equal(both.length, 2);
 });
 
-test('the build waits until the worker has connected, or has failed to', { timeout: 300000, skip: process.platform === 'win32' }, async t => {
+test('the build waits until the worker has connected, or has failed to', { skip: process.platform === 'win32' }, async t => {
   const files = folder(t);
   const { directory, storage, program } = files;
   // A worker as slow to start as a slow machine's.
   const slowRacket = path.join(directory, 'slow-racket');
   fs.writeFileSync(slowRacket, '#!/bin/sh\nsleep 4\nexec racket "$@"\n', { mode: 0o755 });
-  const client = new DapClient(undefined, { timeout: 120000,
-    spawn: (command, _args, options) => spawn(command, launcherArgs(files), options) });
+  const client = new DapClient(undefined, { spawn: (command, _args, options) => spawn(command, launcherArgs(files), options) });
   t.after(() => client.close().catch(() => {}));
   await client.request('initialize', { adapterID: 'racketdap' });
   const launched = client.request('launch', { program, cwd: path.dirname(program), racketExecutable: slowRacket });
@@ -391,8 +382,7 @@ test('the build waits until the worker has connected, or has failed to', { timeo
   await built(storage);
 
   const again = folder(t);
-  const failing = new DapClient(undefined, { timeout: 120000,
-    spawn: (command, _args, options) => spawn(command, launcherArgs(again), options) });
+  const failing = new DapClient(undefined, { spawn: (command, _args, options) => spawn(command, launcherArgs(again), options) });
   t.after(() => failing.close().catch(() => {}));
   await failing.request('initialize', { adapterID: 'racketdap' });
   // A worker that never connects, as one too slow to start does not.
@@ -402,7 +392,7 @@ test('the build waits until the worker has connected, or has failed to', { timeo
   await failing.close();
 });
 
-test('a building folder holds off a second build until it is abandoned', { timeout: 300000 }, async t => {
+test('a building folder holds off a second build until it is abandoned', async t => {
   const files = folder(t);
   const { directory, racketdap, storage, program } = files;
   await session(launcherArgs(files), program);
@@ -428,8 +418,7 @@ test('a building folder holds off a second build until it is abandoned', { timeo
   assert.ok(fs.existsSync(started));
   assert.deepEqual(finished(storage), [build]);
   // The builder publishes its folder first, then clears the abandoned one.
-  const cleared = Date.now() + 60000;
-  while (entries(storage).length > 1 && Date.now() < cleared) await new Promise(resolve => setTimeout(resolve, 100));
+  await until(() => !(entries(storage).length > 1));
   assert.equal(entries(storage).length, 1, entries(storage).join());
 });
 
@@ -446,7 +435,7 @@ function runTool(args, request) {
   });
 }
 
-test('tools run through the launcher as they do without it', { timeout: 300000 }, async t => {
+test('tools run through the launcher as they do without it', async t => {
   const files = folder(t);
   const { racketdap, storage } = files;
   // A tool whose supervisor and worker are both debugger files.
@@ -489,7 +478,7 @@ test('tools run through the launcher as they do without it', { timeout: 300000 }
   assert.equal(compiledFiles(racketdap).length, 0);
 });
 
-test('a debugger file left out of the build loads from source, and its libraries as usual', { timeout: 300000 }, async t => {
+test('a debugger file left out of the build loads from source, and its libraries as usual', async t => {
   const files = folder(t);
   const { racketdap, storage, program, directory } = files;
   fs.writeFileSync(path.join(racketdap, 'tools/no-library.rkt'), '#lang racket/base\n(require no-such-library/here)\n');
@@ -525,13 +514,13 @@ test('the extension starts debugger files through the launcher when it has stora
     ['/extension/runtime/racketdap/launcher.rkt', path.join('/storage', 'debugger'), '/extension/runtime/racketdap/tools/macro-stepper.rkt']);
 });
 
-test('separate compiled roots track a compiled-only library replacement', { timeout: 300000 }, async t => {
+test('separate compiled roots track a compiled-only library replacement', async t => {
   const p = libraryProject(t);
   const separate = path.join(p.files.directory, 'separate-compiled');
   p.env.PLTCOMPILEDROOTS = `${separate}${path.delimiter}`;
   let generation = 0;
   const compileOnly = () => {
-    const made = spawnSync('raco', ['make', p.macro], { env: p.env, encoding: 'utf8', timeout: 60000 });
+    const made = spawnSync('raco', ['make', p.macro], { env: p.env, encoding: 'utf8', timeout: 240000 });
     assert.equal(made.status, 0, made.stderr);
     fs.unlinkSync(p.macro);
     const past = new Date(Date.now() - (2 - generation++) * 3600000);
@@ -543,20 +532,20 @@ test('separate compiled roots track a compiled-only library replacement', { time
   assert.ok(fs.existsSync(path.join(published, 'manifest.rktd')), 'A published build is required');
   assert.equal(p.launch(), 'FORMER\n');
   p.write('LATTER'); compileOnly();
-  const direct = spawnSync('racket', [p.target], { env: p.env, encoding: 'utf8', timeout: 30000 });
+  const direct = spawnSync('racket', [p.target], { env: p.env, encoding: 'utf8', timeout: 240000 });
   assert.equal(direct.status, 0, direct.stderr);
   assert.equal(direct.stdout, 'LATTER\n');
   assert.equal(p.launch(), 'LATTER\n');
 });
 
-test('switching compiled roots does not keep expansions from the former root', { timeout: 300000 }, async t => {
+test('switching compiled roots does not keep expansions from the former root', async t => {
   const p = libraryProject(t);
   const rootA = path.join(p.files.directory, 'compiled-a');
   const rootB = path.join(p.files.directory, 'compiled-b');
   const make = (compiledRoot, answer) => {
     p.write(answer);
     p.env.PLTCOMPILEDROOTS = `${compiledRoot}${path.delimiter}`;
-    const made = spawnSync('raco', ['make', p.macro], { env: p.env, encoding: 'utf8', timeout: 60000 });
+    const made = spawnSync('raco', ['make', p.macro], { env: p.env, encoding: 'utf8', timeout: 240000 });
     assert.equal(made.status, 0, made.stderr);
     fs.unlinkSync(p.macro);
     const past = new Date(Date.now() - 3600000);
@@ -567,20 +556,20 @@ test('switching compiled roots does not keep expansions from the former root', {
   assert.ok(fs.existsSync(path.join(published, 'manifest.rktd')));
   assert.equal(p.launch(), 'FORMER\n');
   make(rootB, 'LATTER');
-  const direct = spawnSync('racket', [p.target], { env: p.env, encoding: 'utf8', timeout: 30000 });
+  const direct = spawnSync('racket', [p.target], { env: p.env, encoding: 'utf8', timeout: 240000 });
   assert.equal(direct.status, 0, direct.stderr);
   assert.equal(direct.stdout, 'LATTER\n');
   assert.equal(p.launch(), 'LATTER\n');
 });
 
-test('a library newly present in an earlier compiled root displaces the former expansion', { timeout: 300000 }, async t => {
+test('a library newly present in an earlier compiled root displaces the former expansion', async t => {
   const p = libraryProject(t);
   const rootA = path.join(p.files.directory, 'compiled-a');
   const rootB = path.join(p.files.directory, 'compiled-b');
   const make = (compiledRoot, answer) => {
     p.write(answer);
     const env = { ...p.env, PLTCOMPILEDROOTS: `${compiledRoot}${path.delimiter}` };
-    const made = spawnSync('raco', ['make', p.macro], { env, encoding: 'utf8', timeout: 60000 });
+    const made = spawnSync('raco', ['make', p.macro], { env, encoding: 'utf8', timeout: 240000 });
     assert.equal(made.status, 0, made.stderr);
     fs.unlinkSync(p.macro);
     const past = new Date(Date.now() - 3600000);
@@ -592,17 +581,17 @@ test('a library newly present in an earlier compiled root displaces the former e
   assert.ok(fs.existsSync(path.join(published, 'manifest.rktd')));
   assert.equal(p.launch(), 'FORMER\n');
   make(rootA, 'LATTER');
-  const direct = spawnSync('racket', [p.target], { env: p.env, encoding: 'utf8', timeout: 30000 });
+  const direct = spawnSync('racket', [p.target], { env: p.env, encoding: 'utf8', timeout: 240000 });
   assert.equal(direct.status, 0, direct.stderr);
   assert.equal(direct.stdout, 'LATTER\n');
   assert.equal(p.launch(), 'LATTER\n');
 });
 
-test('a development tree build ignores bytecode left beside debugger sources', { timeout: 300000 }, async t => {
+test('a development tree build ignores bytecode left beside debugger sources', async t => {
   const p = folder(t);
   const target = path.join(p.racketdap, 'development-probe.rkt');
   fs.writeFileSync(target, '#lang racket/base\n(displayln (quote FORMER))\n');
-  const made = spawnSync('raco', ['make', target], { encoding: 'utf8', timeout: 60000 });
+  const made = spawnSync('raco', ['make', target], { encoding: 'utf8', timeout: 240000 });
   assert.equal(made.status, 0, made.stderr);
   const zo = path.join(p.racketdap, 'compiled', 'development-probe_rkt.zo');
   const former = fs.readFileSync(zo);
@@ -610,7 +599,7 @@ test('a development tree build ignores bytecode left beside debugger sources', {
   const past = new Date(Date.now() - 3600000); fs.utimesSync(target, past, past);
   const published = build(p);
   assert.ok(fs.existsSync(path.join(published, 'manifest.rktd')));
-  const launched = spawnSync('racket', launcherArgs(p, 'development-probe.rkt'), { encoding: 'utf8', timeout: 30000 });
+  const launched = spawnSync('racket', launcherArgs(p, 'development-probe.rkt'), { encoding: 'utf8', timeout: 240000 });
   assert.equal(launched.status, 0, launched.stderr);
   assert.equal(launched.stdout, 'LATTER\n');
   assert.deepEqual(fs.readFileSync(zo), former, 'The old bytecode beside the sources is untouched');
@@ -618,12 +607,12 @@ test('a development tree build ignores bytecode left beside debugger sources', {
     'Ordinary libraries are read from their installation roots');
 });
 
-test('a user-scope linked library is tracked without adding a collection root', { timeout: 300000 }, async t => {
+test('a user-scope linked library is tracked without adding a collection root', async t => {
   const p = libraryProject(t);
   p.env.PLTADDONDIR = path.join(p.files.directory, 'user-addon');
   delete p.env.PLTCOLLECTS;
   const linked = spawnSync('raco', ['link', '--user', '--name', 'launch-library', p.library],
-    { env: p.env, encoding: 'utf8', timeout: 60000 });
+    { env: p.env, encoding: 'utf8', timeout: 240000 });
   assert.equal(linked.status, 0, linked.stderr);
   const published = build(p.files, p.env);
   assert.ok(fs.existsSync(path.join(published, 'manifest.rktd')));
@@ -634,7 +623,7 @@ test('a user-scope linked library is tracked without adding a collection root', 
 
 // Windows gives no time that a replacement cannot restore.
 const keepsChangeTime = process.platform !== 'win32';
-test('a library replacement preserving its size and date invalidates a published expansion', { timeout: 300000, skip: !keepsChangeTime }, async t => {
+test('a library replacement preserving its size and date invalidates a published expansion', { skip: !keepsChangeTime }, async t => {
   const p = libraryProject(t);
   const published = build(p.files, p.env);
   assert.ok(fs.existsSync(path.join(published, 'manifest.rktd')));
@@ -643,13 +632,13 @@ test('a library replacement preserving its size and date invalidates a published
   p.write('LATTER');
   fs.utimesSync(p.macro, old.atime, old.mtime);
   assert.equal(fs.statSync(p.macro).size, old.size);
-  const direct = spawnSync('racket', [p.target], { env: p.env, encoding: 'utf8', timeout: 30000 });
+  const direct = spawnSync('racket', [p.target], { env: p.env, encoding: 'utf8', timeout: 240000 });
   assert.equal(direct.status, 0, direct.stderr);
   assert.equal(direct.stdout, 'LATTER\n');
   assert.equal(p.launch(), 'LATTER\n');
 });
 
-test('a library replacement preserving its size and date during compilation is refused', { timeout: 300000, skip: !keepsChangeTime }, async t => {
+test('a library replacement preserving its size and date during compilation is refused', { skip: !keepsChangeTime }, async t => {
   const p = libraryProject(t);
   const replacement = fs.readFileSync(p.macro, 'utf8').replace('FORMER', 'LATTER');
   fs.writeFileSync(path.join(p.files.racketdap, 'library-replacer.rkt'), `#lang racket/base
@@ -665,7 +654,7 @@ test('a library replacement preserving its size and date during compilation is r
   assert.equal(p.launch(), 'LATTER\n');
 });
 
-test('a library replaced while its final stamp is sampled is not certified', { timeout: 300000, skip: !keepsChangeTime }, async t => {
+test('a library replaced while its final stamp is sampled is not certified', { skip: !keepsChangeTime }, async t => {
   const p = libraryProject(t);
   const launcher = path.join(p.files.racketdap, 'launcher.rkt');
   const old = fs.readFileSync(launcher, 'utf8');

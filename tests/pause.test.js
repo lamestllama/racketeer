@@ -2,12 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const assert = require('node:assert/strict');
+const treeRemoval = require('./support/tree-removal');
 const test = require('./support/node-test');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const { DapClient } = require('./dap-client');
-const treeRemoval = require('./support/tree-removal');
 async function ok(promise) {
   const response = await promise;
   assert.equal(response.success, true, response.message);
@@ -17,7 +17,7 @@ async function prepare(t, lines, config = {}) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'racket-pause-'));
   const program = path.join(dir, 'main.rkt');
   await fs.writeFile(program, lines.join('\n') + '\n');
-  const client = new DapClient(undefined, { timeout: 30000 });
+  const client = new DapClient();
   t.after(async () => { await client.close(); await fs.rm(dir, treeRemoval); });
   await ok(client.request('initialize'));
   await ok(client.request('launch', { program, cwd: dir, stopOnEntry: true, ...config }));
@@ -29,15 +29,11 @@ async function prepare(t, lines, config = {}) {
 }
 async function suspend(client, threadId) {
   await ok(client.request('pause', { threadId }));
-  const deadline = Date.now() + 30000;
-  let outcome;
-  while (!outcome && Date.now() < deadline) {
+  const outcome = await until(() => {
     if (client.fatalError) throw client.fatalError;
     const index = client.events.findIndex(e => (e.event === 'stopped' && !e.body.preserveFocusHint) || e.event === 'terminated');
-    if (index >= 0) outcome = client.events.splice(index, 1)[0];
-    else await new Promise(resolve => setTimeout(resolve, 10));
-  }
-  assert.ok(outcome, 'Pause must respond with a stopped event');
+    return index >= 0 && client.events.splice(index, 1)[0];
+  }, 'Pause must respond with a stopped event');
   assert.equal(outcome.event, 'stopped', 'Pause must not terminate the program');
   assert.equal(outcome.body.reason, 'pause');
   const { stackFrames } = await ok(client.request('stackTrace', { threadId: outcome.body.threadId }));

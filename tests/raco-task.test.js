@@ -2,11 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const assert = require('node:assert/strict');
+const treeRemoval = require('./support/tree-removal');
+const { until } = require('./support/wait');
 const test = require('./support/node-test');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
-const treeRemoval = require('./support/tree-removal');
 
 function harness() {
   const listeners = { process: new Set(), task: new Set(), cancel: new Set() };
@@ -72,7 +73,7 @@ test('tasks that cannot start settle and failed launches release listeners', asy
 });
 
 for (const signal of ['SIGHUP', 'SIGKILL']) {
-  test(`an owned task ends its compile-time descendants when it receives ${signal}`, { skip: process.platform === 'win32' && 'POSIX signals; Windows uses a job object', timeout: 120000 }, async t => {
+  test(`an owned task ends its compile-time descendants when it receives ${signal}`, { skip: process.platform === 'win32' && 'POSIX signals; Windows uses a job object' }, async t => {
     const { spawn } = require('node:child_process');
     const os = require('node:os');
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'racket owned build '));
@@ -102,17 +103,12 @@ for (const signal of ['SIGHUP', 'SIGKILL']) {
     'Build', ['exe', '-o', path.join(directory, 'slow'), '--', path.join(directory, 'slow.rkt')]);
     const child = spawn(task.execution.process, task.execution.args, { cwd: task.execution.options.cwd, stdio: 'ignore' });
     const exited = new Promise(resolve => child.once('exit', resolve));
-    const deadline = Date.now() + 60000;
-    while (!fs.existsSync(pids) || !fs.readFileSync(pids, 'utf8').trim()) {
-      assert.ok(Date.now() < deadline, 'The compile-time child started');
-      await new Promise(resolve => setTimeout(resolve, 50));
-    }
+    await until(() => fs.existsSync(pids) || !fs.readFileSync(pids, 'utf8').trim(), 'The compile-time child started');
     descendants = fs.readFileSync(pids, 'utf8').replace(/[()]/g, '').trim().split(/\s+/).map(Number);
     // VS Code's terminal sends SIGHUP when a task is terminated.
     child.kill(signal);
     await exited;
-    const settled = Date.now() + 10000;
-    while (descendants.some(alive) && Date.now() < settled) await new Promise(resolve => setTimeout(resolve, 50));
+    await until(() => !(descendants.some(alive)));
     assert.deepEqual(descendants.filter(alive), [], 'No descendant outlives the task');
   });
 }

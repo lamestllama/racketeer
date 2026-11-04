@@ -4,12 +4,12 @@
 // A folder or a file can be reached by more than one path, and a client, a launch
 // configuration and the loader need not agree on which one they use.
 const assert = require('node:assert');
+const treeRemoval = require('./support/tree-removal');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('./support/node-test.js');
 const { session } = require('./support/dap-trace.js');
-const treeRemoval = require('./support/tree-removal');
 
 const skip = process.platform === 'win32';
 // A project in a folder, and a link to that folder.
@@ -148,7 +148,7 @@ for (const [name, layout] of [
   ['the program is a link and the working directory real', ({ real, link }) => ({ program: path.join(link, 'main.rkt'), cwd: real })],
   ['the program is real and a source root a link', ({ real, link }) => ({ program: path.join(real, 'main.rkt'), cwd: real, sourceRoots: [link] })]
 ]) {
-  test(`Step In enters a dependency when ${name}`, { timeout: 300000, skip }, async t => {
+  test(`Step In enters a dependency when ${name}`, { skip }, async t => {
     const p = project(t, called);
     const cache = path.join(path.dirname(p.real), 'cache');
     for (const options of [{ debugCache: false }, { debugCacheDirectory: cache }, { debugCacheDirectory: cache }]) {

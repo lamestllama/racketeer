@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const assert = require('node:assert/strict');
+const { until } = require('./support/wait');
 const test = require('./support/node-test');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -15,7 +16,7 @@ const passes = p => (p.diagnostics().match(/discover: starting/g) || []).length;
 const quietly = () => delay(3000);
 const from = (locations, source) => locations.filter(location => location.uri === source);
 
-test('nothing is analysed at startup or after any change until a request asks', { timeout: 120000 }, async t => {
+test('nothing is analysed at startup or after any change until a request asks', async t => {
   const p = await project(t, traced);
   await quietly();
   assert.equal(passes(p), 0, 'No pass at startup');
@@ -40,7 +41,7 @@ test('nothing is analysed at startup or after any change until a request asks', 
   assert.equal(passes(p), 1, 'A second request with nothing changed needs no pass');
 });
 
-test('the first request after a change waits for a pass and sees its progress first', { timeout: 120000 }, async t => {
+test('the first request after a change waits for a pass and sees its progress first', async t => {
   const p = await project(t);
   await p.references(p.origin);
   const first = p.notifications.length, firstProgress = p.progress.length;
@@ -85,25 +86,17 @@ async function blockingProject(t, env) {
   p.write('blocked.rkt', blocking);
   await p.update();
   const reached = async () => {
-    const deadline = Date.now() + 60000;
-    while (!fs.existsSync(entered)) {
-      assert.ok(Date.now() < deadline, p.diagnostics());
-      await delay(25);
-    }
+    await until(() => fs.existsSync(entered), () => p.diagnostics());
   };
   // Workers run at once, so reaching one file does not mean that the one before it ended.
   const finished = async name => {
-    const deadline = Date.now() + 60000;
-    while (!new RegExp(`analyse \\S*${name.replace('.', '\\.')}: reaped`).test(p.diagnostics())) {
-      assert.ok(Date.now() < deadline, p.diagnostics());
-      await delay(25);
-    }
+    await until(() => new RegExp(`analyse \\S*${name.replace('.', '\\.')}: reaped`).test(p.diagnostics()), () => p.diagnostics());
   };
   return { ...p, reached, finished, expansions: () => fs.readFileSync(log, 'utf8').trim().split('\n').length,
     release: () => fs.unlinkSync(gate), entered };
 }
 
-test('cancelling the only request stops its pass, and the next request keeps what it finished', { timeout: 120000 }, async t => {
+test('cancelling the only request stops its pass, and the next request keeps what it finished', async t => {
   const p = await blockingProject(t, traced);
   const cancel = new rpc.CancellationTokenSource();
   const request = p.references(p.origin, undefined, false, cancel.token);
@@ -128,7 +121,7 @@ test('cancelling the only request stops its pass, and the next request keeps wha
   assert.equal(p.expansions(), expansions, 'A finished file is not analysed again');
 });
 
-test('a pass keeps going while one of its requests is cancelled and another waits', { timeout: 120000 }, async t => {
+test('a pass keeps going while one of its requests is cancelled and another waits', async t => {
   const p = await blockingProject(t, traced);
   const cancel = new rpc.CancellationTokenSource();
   const cancelled = p.references(p.origin, undefined, false, cancel.token);
@@ -145,7 +138,7 @@ test('a pass keeps going while one of its requests is cancelled and another wait
   assert.equal(passes(p), passesBefore, 'The second request did not need a new pass');
 });
 
-test('a partial index refuses rename with the same message after a request asked for it', { timeout: 120000 }, async t => {
+test('a partial index refuses rename with the same message after a request asked for it', async t => {
   const p = await project(t);
   p.write('broken.rkt', '#lang racket/base\n(\n');
   await p.update();
@@ -155,7 +148,7 @@ test('a partial index refuses rename with the same message after a request asked
   assert.equal(p.notifications.at(-1).state, 'partial');
 });
 
-test('prepareRename and rename each start a pass when none has run', { timeout: 120000 }, async t => {
+test('prepareRename and rename each start a pass when none has run', async t => {
   const first = await project(t, traced);
   assert.equal((await first.rename(first.origin)).start.character, 9);
   assert.equal(passes(first), 1);
@@ -175,7 +168,7 @@ function rewriting(p, name, milliseconds) {
   return { stop: () => clearInterval(timer), count: () => generation };
 }
 
-test('a request refuses in words once sources have kept changing past the time limit', { timeout: 120000 }, async t => {
+test('a request refuses in words once sources have kept changing past the time limit', async t => {
   const p = await project(t);
   p.settings.timeoutSeconds = 4;
   p.write('generated.rkt', '#lang racket/base\n');
@@ -186,7 +179,7 @@ test('a request refuses in words once sources have kept changing past the time l
   t.after(writer.stop);
   const started = Date.now();
   const answers = Promise.all([settled(p.references(p.origin)), settled(p.rename(p.origin, 'squared'))]);
-  const outcome = await Promise.race([answers, delay(30000, 'still waiting', { ref: false })]);
+  const outcome = await Promise.race([answers, delay(240000, 'still waiting', { ref: false })]);
   writer.stop();
   assert.notEqual(outcome, 'still waiting', `Pending after ${writer.count()} rewrites`);
   assert.ok(Date.now() - started >= 4000, 'It waits out the time limit first');
@@ -215,11 +208,7 @@ function gatedSource(p, name) {
   return {
     // Each pass that reaches the source says so afresh.
     async reached() {
-      const deadline = Date.now() + 60000;
-      while (!fs.existsSync(entered)) {
-        assert.ok(Date.now() < deadline, p.diagnostics());
-        await delay(25);
-      }
+      await until(() => fs.existsSync(entered), () => p.diagnostics());
       fs.unlinkSync(entered);
     },
     hold: () => fs.writeFileSync(gate, 'held'),
@@ -235,7 +224,7 @@ const changeAfter = async (p, from, seconds) => {
   await p.diskChange('other.rkt');
 };
 
-test('a pass replaced with more files analysed than before is waited for, past the time limit', { timeout: 120000 }, async t => {
+test('a pass replaced with more files analysed than before is waited for, past the time limit', async t => {
   const p = await project(t, { RACKETEER_INDEX_WORKERS: '1' });
   p.settings.timeoutSeconds = 6;
   const first = gatedSource(p, 'first.rkt'), second = gatedSource(p, 'second.rkt');
@@ -257,7 +246,7 @@ test('a pass replaced with more files analysed than before is waited for, past t
   assert.equal(from(value, uri(p.filename('uses.rkt'))).length, 1);
 });
 
-test('a pass replaced with no more files analysed still ends in a refusal, however far apart the changes', { timeout: 120000 }, async t => {
+test('a pass replaced with no more files analysed still ends in a refusal, however far apart the changes', async t => {
   const p = await project(t, { RACKETEER_INDEX_WORKERS: '1' });
   p.settings.timeoutSeconds = 3;
   const held = gatedSource(p, 'first.rkt');
@@ -276,7 +265,7 @@ test('a pass replaced with no more files analysed still ends in a refusal, howev
 
 // An editor closes a document some time after its tab, however long ago its file was
 // deleted, and a buffer with no file is a source until then.
-test('documents closing are not sources changing, however far apart and with no more files analysed', { timeout: 120000 }, async t => {
+test('documents closing are not sources changing, however far apart and with no more files analysed', async t => {
   const p = await project(t, { RACKETEER_INDEX_WORKERS: '1' });
   p.settings.timeoutSeconds = 3;
   for (const name of ['gone-1.rkt', 'gone-2.rkt']) p.open(name, '#lang racket/base\n');
@@ -299,7 +288,7 @@ test('documents closing are not sources changing, however far apart and with no 
   assert.equal(from(value, uri(p.filename('uses.rkt'))).length, 1);
 });
 
-test('a rename whose own work outlasts the time limit is not refused for two changes during it', { timeout: 120000 }, async t => {
+test('a rename whose own work outlasts the time limit is not refused for two changes during it', async t => {
   const p = await project(t, { RACKETEER_INDEX_WORKERS: '1' });
   p.settings.timeoutSeconds = 10;
   const held = gatedSource(p, 'first.rkt');
@@ -323,7 +312,7 @@ test('a rename whose own work outlasts the time limit is not refused for two cha
   assert.ok(value.changes[uri(p.filename('uses.rkt'))]);
 });
 
-test('a rename cut short each time it starts is still refused', { timeout: 120000 }, async t => {
+test('a rename cut short each time it starts is still refused', async t => {
   const p = await project(t, { RACKETEER_INDEX_WORKERS: '1' });
   p.settings.timeoutSeconds = 4;
   p.write('generated.rkt', '#lang racket/base\n');
@@ -346,7 +335,7 @@ test('a rename cut short each time it starts is still refused', { timeout: 12000
   assert.match(outcome.error?.message, /Workspace sources kept changing for 4 seconds/);
 });
 
-test('a burst of changes that ends is waited out, however many it held', { timeout: 120000 }, async t => {
+test('a burst of changes that ends is waited out, however many it held', async t => {
   const p = await project(t);
   p.write('generated.rkt', '#lang racket/base\n');
   await p.update();

@@ -2,12 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const assert = require('node:assert');
+const treeRemoval = require('./support/tree-removal');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('./support/node-test.js');
 const { session, normalized, normalizedByFile } = require('./support/dap-trace.js');
-const treeRemoval = require('./support/tree-removal');
 
 const files = {
   'deep.rkt': `#lang racket/base
@@ -159,7 +159,7 @@ function assertSameTrace(actual, expected, label, view = normalized) {
   for (let i = 0; i < Math.max(a.length, e.length); i++) assert.strictEqual(a[i], e[i], `${label}: message ${i}`);
 }
 
-test('a cached run sends the same messages as an uncached one, on the build and on the reuse', { timeout: 300000 }, async t => {
+test('a cached run sends the same messages as an uncached one, on the build and on the reuse', async t => {
   const p = project(t);
   const uncached = await run(p, false);
   const stopped = uncached.messages.filter(m => m.event === 'stopped').length;
@@ -182,7 +182,7 @@ test('a cached run sends the same messages as an uncached one, on the build and 
 });
 
 for (const [where, arrange] of arrangements) {
-  test(`a project ${where} sends the same messages cached as uncached`, { timeout: 300000 }, async t => {
+  test(`a project ${where} sends the same messages cached as uncached`, async t => {
     const p = arrange(project(t));
     const uncached = await run(p, false);
     assert.ok(!JSON.stringify(uncached.messages).includes('mismatch'));
@@ -190,7 +190,7 @@ for (const [where, arrange] of arrangements) {
     assertSameTrace(await run(p, true), uncached, 'reuse');
   });
   // Nothing of the parent runs, so nothing of the parent can register its own definitions.
-  test(`a submodule of a parent with nothing to run evaluates its macros and imports ${where}`, { timeout: 300000 }, async t => {
+  test(`a submodule of a parent with nothing to run evaluates its macros and imports ${where}`, async t => {
     const p = arrange(project(t));
     fs.writeFileSync(path.join(p.source, 'only-syntax.rkt'), `#lang racket/base
 (require "macros.rkt")
@@ -231,19 +231,19 @@ async function checkEdit(t, change, shows) {
   assertSameTrace(await run(p, true), uncached, 'after the edit', normalizedByFile);
   assertSameTrace(await run(p, true), uncached, 'reuse after the edit');
 }
-test('editing a macro in another file rebuilds its users', { timeout: 300000 }, t => checkEdit(t,
+test('editing a macro in another file rebuilds its users', t => checkEdit(t,
   p => edit(p, 'macros.rkt', '(define-syntax-rule (from-macro) (deep-value))',
     "(define-syntax-rule (from-macro) (list 'changed (deep-value)))"), '(changed deep-one)'));
-test("editing a dependency's dependency rebuilds its users", { timeout: 300000 }, t => checkEdit(t,
+test("editing a dependency's dependency rebuilds its users", t => checkEdit(t,
   p => edit(p, 'deep.rkt', "'deep-one", "'deep-two"), 'deep-two'));
-test('an edit that keeps the file date is still seen', { timeout: 300000 }, t => checkEdit(t,
+test('an edit that keeps the file date is still seen', t => checkEdit(t,
   p => edit(p, 'deep.rkt', "'deep-one", "'deep-tri", { keepDate: true }), 'deep-tri'));
-test('editing a file a macro includes rebuilds, whatever its date', { timeout: 300000 }, t => checkEdit(t,
+test('editing a file a macro includes rebuilds, whatever its date', t => checkEdit(t,
   p => edit(p, 'included.txt', 'included-one', 'included-two', { keepDate: true }), 'included-two'));
-test('an edit that moves lines keeps breakpoints and stops where the source says', { timeout: 300000 }, t => checkEdit(t,
+test('an edit that moves lines keeps breakpoints and stops where the source says', t => checkEdit(t,
   p => edit(p, 'main.rkt', '(define total 0)', ';; a new first line\n\n(define total 0)'), 'main'));
 
-test('entries from another Racket version are rebuilt, not read', { timeout: 300000 }, async t => {
+test('entries from another Racket version are rebuilt, not read', async t => {
   const p = project(t);
   const uncached = await run(p, false);
   await run(p, true);
@@ -253,7 +253,7 @@ test('entries from another Racket version are rebuilt, not read', { timeout: 300
   assert.ok(!fs.readFileSync(dep, 'latin1').startsWith('("8.0"'));
 });
 
-test('two sessions at once on an empty cache both run correctly and leave it usable', { timeout: 300000 }, async t => {
+test('two sessions at once on an empty cache both run correctly and leave it usable', async t => {
   const p = project(t);
   const uncached = await run(p, false);
   const [first, second] = await Promise.all([run(p, true), run(p, true)]);
@@ -269,7 +269,7 @@ for (const [name, damage] of [
   ['an empty file', file => fs.writeFileSync(file, '')],
   ['a file that cannot be read', file => fs.chmodSync(file, 0)]
 ]) {
-  test(`${name} in the cache runs the program from source, then rebuilds`, { timeout: 300000 }, async t => {
+  test(`${name} in the cache runs the program from source, then rebuilds`, async t => {
     const p = project(t);
     const uncached = await run(p, false);
     await run(p, true);
@@ -282,7 +282,7 @@ for (const [name, damage] of [
     assert.ok(fs.existsSync(entry(p, 'macros.rkt')));
   });
 }
-test('an entry reads as damaged wherever a byte of its code changes', { timeout: 300000 }, async t => {
+test('an entry reads as damaged wherever a byte of its code changes', async t => {
   const p = project(t);
   await run(p, true);
   const stored = entry(p, 'macros.rkt');
@@ -301,14 +301,14 @@ test('an entry reads as damaged wherever a byte of its code changes', { timeout:
     assert.strictEqual(intact(), '#f', `at ${position}`);
   }
 });
-test('a damaged dependency record rebuilds', { timeout: 300000 }, async t => {
+test('a damaged dependency record rebuilds', async t => {
   const p = project(t);
   const uncached = await run(p, false);
   await run(p, true);
   fs.writeFileSync(entry(p, 'macros.rkt', '.dep'), 'not ( a record');
   assertSameTrace(await run(p, true), uncached, 'with the damaged record', normalizedByFile);
 });
-test('a file saved while it compiles is not taken for what was compiled', { timeout: 300000 }, async t => {
+test('a file saved while it compiles is not taken for what was compiled', async t => {
   const p = project(t);
   const deep = path.join(p.source, 'deep.rkt');
   const saved = files['deep.rkt'].replace("'deep-one", "'deep-saved-later");
@@ -325,7 +325,7 @@ test('a file saved while it compiles is not taken for what was compiled', { time
   assertSameTrace(await run(p, true), uncached, 'settled');
 });
 
-test('coverage code has its own entries, apart from debugging code', { timeout: 300000 }, async t => {
+test('coverage code has its own entries, apart from debugging code', async t => {
   const p = project(t);
   await run(p, true);
   const script = `(require (file ${JSON.stringify(path.resolve(__dirname, '../racketdap/worker/load.rkt'))})
@@ -350,7 +350,7 @@ test('a cache location that cannot be used runs the program from source', async 
   assertSameTrace(await run(p, true), uncached, 'with no usable cache');
 });
 
-test('a syntax error reads the same with and without the cache, on every run', { timeout: 300000 }, async t => {
+test('a syntax error reads the same with and without the cache, on every run', async t => {
   const p = project(t);
   edit(p, 'macros.rkt', '(define doubled (* n 2))', '(define doubled (* n 2) extra)');
   const uncached = await session(uncachedOptions({ program: p.main, cwd: p.source }), {});
@@ -365,7 +365,7 @@ test('a syntax error reads the same with and without the cache, on every run', {
   assertSameTrace(await run(p, true), fixed, 'after the fix', normalizedByFile);
 });
 
-test('code a compiled file cannot hold still runs, from source', { timeout: 300000 }, async t => {
+test('code a compiled file cannot hold still runs, from source', async t => {
   const p = project(t);
   fs.writeFileSync(path.join(p.source, 'macros.rkt'), files['macros.rkt'].replace('(provide', `(provide embedded
 )(define-syntax (embedded stx) (datum->syntax #'here (list 'quote (lambda () 'a-closure))))
@@ -378,7 +378,7 @@ test('code a compiled file cannot hold still runs, from source', { timeout: 3000
   assertSameTrace(await session(cachedOptions, {}), uncached, 'second');
 });
 
-test('test runs and coverage use the source, not the cache', { timeout: 300000 }, async t => {
+test('test runs and coverage use the source, not the cache', async t => {
   const p = project(t);
   const cachedOptions = { program: p.main, cwd: p.source, debugCacheDirectory: p.cache };
   await session({ ...cachedOptions, testMode: true, noDebug: true, coverage: true }, {});
@@ -398,7 +398,7 @@ test('with the cache off nothing is written, beside the sources or anywhere else
   assert.deepStrictEqual(walk(path.dirname(p.source)).map(file => path.basename(file)).sort(), Object.keys(files).sort());
 });
 
-test('stopping on entry stops at the same place', { timeout: 300000 }, async t => {
+test('stopping on entry stops at the same place', async t => {
   const p = project(t);
   const stops = async ({ client, ok }) => {
     for (;;) {
@@ -414,7 +414,7 @@ test('stopping on entry stops at the same place', { timeout: 300000 }, async t =
   assertSameTrace(await session(cached, {}, stops), uncached, 'reuse');
 });
 
-test('an explicit submodule runs from the cache as it does from source', { timeout: 300000 }, async t => {
+test('an explicit submodule runs from the cache as it does from source', async t => {
   const p = project(t);
   const options = { program: p.main, cwd: p.source, submodule: ['test'] };
   const uncached = await session(uncachedOptions(options), {});
@@ -425,7 +425,7 @@ test('an explicit submodule runs from the cache as it does from source', { timeo
 
 const debugCacheModule = path.resolve(__dirname, '../racketdap/worker/debug-cache.rkt');
 
-test('the key changes with the instrumenter, its location and the library paths', { timeout: 300000 }, async t => {
+test('the key changes with the instrumenter, its location and the library paths', async t => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'debug cache key-'));
   t.after(() => fs.rmSync(directory, treeRemoval));
   const key = (module, setup = '') => racket(`(require (file ${JSON.stringify(module)})) ${setup}
@@ -460,7 +460,7 @@ test('over its limit the cache drops the least recently used entries first', asy
   assert.deepStrictEqual(fs.readdirSync(directory).sort(), ['middle.dep', 'middle.zo', 'newest.dep', 'newest.zo']);
 });
 
-test('choosing to debug a library rebuilds the code compiled against it', { timeout: 300000 }, async t => {
+test('choosing to debug a library rebuilds the code compiled against it', async t => {
   const p = project(t);
   const library = path.join(path.dirname(p.source), 'library');
   fs.mkdirSync(library);
@@ -493,7 +493,7 @@ for (const [name, language, setup] of [
   ['typed/racket/base', 'module main typed/racket/base', () => {}],
   ['racket/kernel-like s-exp', 'module main (quote #%kernel)', () => {}]
 ]) {
-  test(`a module in ${name} caches and stops where it does uncached`, { timeout: 300000 }, async t => {
+  test(`a module in ${name} caches and stops where it does uncached`, async t => {
     const p = project(t);
     setup(p);
     const uses = name.startsWith('a language') ? '(marker)' : "'no-marker";
@@ -525,7 +525,7 @@ for (const [name, language, setup] of [
 }
 
 for (const [where, arrange] of arrangements) {
-  test(`a module in a language defined in the project runs from the cache ${where}`, { timeout: 300000 }, async t => {
+  test(`a module in a language defined in the project runs from the cache ${where}`, async t => {
     const p = arrange(project(t));
     fs.writeFileSync(path.join(p.source, 'my-language.rkt'),
       '#lang racket/base\n(provide (all-from-out racket/base) marker)\n(define (marker) (quote marker-one))\n');
@@ -549,7 +549,7 @@ for (const [where, arrange] of arrangements) {
 
 // The extension's default working directory is the workspace folder, so a program
 // in a subfolder runs with a working directory that is not its own.
-test('Evaluate in a submodule works from a working directory other than the program\'s', { timeout: 300000 }, async t => {
+test('Evaluate in a submodule works from a working directory other than the program\'s', async t => {
   const p = project(t);
   const line = lineIn(p.main, "(displayln (list 'main total))");
   for (const options of [{ debugCache: false }, { debugCacheDirectory: p.cache }, { debugCacheDirectory: p.cache }]) {
@@ -569,7 +569,7 @@ test('Evaluate in a submodule works from a working directory other than the prog
   }
 });
 
-test('a module in a language defined in the project stops from another working directory', { timeout: 300000 }, async t => {
+test('a module in a language defined in the project stops from another working directory', async t => {
   const p = project(t);
   fs.writeFileSync(path.join(p.source, 'my-language.rkt'),
     '#lang racket/base\n(provide (all-from-out racket/base) marker)\n(define (marker) (quote marker-one))\n');
@@ -584,7 +584,7 @@ test('a module in a language defined in the project stops from another working d
   }
 });
 
-test('a language given as a submodule stops from another working directory', { timeout: 300000 }, async t => {
+test('a language given as a submodule stops from another working directory', async t => {
   const p = project(t);
   fs.writeFileSync(path.join(p.source, 'my-language.rkt'),
     '#lang racket/base\n(module inner racket/base\n  (provide (all-from-out racket/base) marker)\n  (define (marker) (quote marker-two)))\n');
@@ -609,7 +609,7 @@ for (const [name, spell] of [
   ['the program is named through a link and the breakpoint is not', (link, real) => ({ program: link, breakpoint: real })],
   ['the breakpoint is named through a link and the program is not', (link, real) => ({ program: real, breakpoint: link })]
 ]) {
-  test(`a breakpoint stops when ${name}`, { timeout: 300000, skip: process.platform === 'win32' }, async t => {
+  test(`a breakpoint stops when ${name}`, { skip: process.platform === 'win32' }, async t => {
     const p = project(t);
     const linked = `${p.source}-link`;
     fs.symlinkSync(p.source, linked);
@@ -631,7 +631,7 @@ for (const [name, spell] of [
   });
 }
 
-test('a breakpoint stops when its path differs in case, where the file system ignores case', { timeout: 300000 }, async t => {
+test('a breakpoint stops when its path differs in case, where the file system ignores case', async t => {
   const p = project(t);
   if (!fs.existsSync(p.main.replace(/main\.rkt$/, 'MAIN.RKT'))) return t.skip('This file system distinguishes case.');
   const line = lineIn(path.join(p.source, 'macros.rkt'), '(add1 doubled)');
@@ -651,7 +651,7 @@ test('a breakpoint stops when its path differs in case, where the file system ig
   }
 });
 
-test('compile-time effects run when building, once, and not when reusing', { timeout: 300000 }, async t => {
+test('compile-time effects run when building, once, and not when reusing', async t => {
   const p = project(t);
   edit(p, 'macros.rkt', '(struct point', '(begin-for-syntax (displayln "at compile time"))\n(struct point');
   const options = { program: p.main, cwd: p.source };

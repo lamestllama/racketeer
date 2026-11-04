@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const assert = require('node:assert/strict'), path = require('node:path');
-const fs = require('node:fs/promises'), vscode = require('vscode');
 const treeRemoval = require('./support/tree-removal');
+const { until } = require('./support/wait');
+const fs = require('node:fs/promises'), vscode = require('vscode');
 exports.run = async function (workspace, interact) {
   const sessions = [], events = [], ended = new Set(), checks = [];
   const directory = await fs.mkdtemp(path.join(workspace.uri.fsPath, 'application-logs-'));
@@ -25,11 +26,6 @@ exports.run = async function (workspace, interact) {
       return { onDidSendMessage(message) { events.push({ session, ...message }); if (message.event === 'terminated') ended.add(session.id); } };
     }
   });
-  async function until(check, description) {
-    const deadline = Date.now() + 30000;
-    while (Date.now() < deadline) { const result = await check(); if (result) return result; await new Promise(resolve => setTimeout(resolve, 25)); }
-    throw new Error('Timed out: ' + description);
-  }
   const event = (session, name) => until(() => {
     const i = events.findIndex(message => message.session.id === session.id && message.event === name);
     return i >= 0 && events.splice(i, 1)[0];

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const assert = require('node:assert/strict');
+const { until } = require('./support/wait');
 const fs = require('node:fs');
 const path = require('node:path');
 const vscode = require('vscode');
@@ -11,13 +12,6 @@ exports.run = async function (workspace) {
   const config = vscode.workspace.getConfiguration('racketdap');
   const previous = config.inspect('repl.sessionScope')?.workspaceValue;
   const terminals = new Set();
-  const until = async (predicate, description) => {
-    const deadline = Date.now() + 30000;
-    while (!predicate()) {
-      assert.ok(Date.now() < deadline, description);
-      await new Promise(resolve => setTimeout(resolve, 50));
-    }
-  };
   async function command(name) {
     const terminal = await vscode.commands.executeCommand(`racketdap.${name}`);
     assert.ok(terminal, name + ' returns a terminal');

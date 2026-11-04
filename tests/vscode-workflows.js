@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const assert = require('node:assert/strict');
+const { until: wait } = require('./support/wait');
 const fs = require('node:fs');
 const path = require('node:path');
 const vscode = require('vscode');
@@ -16,15 +17,7 @@ exports.run = async function (workspace) {
       return { onDidSendMessage(message) { messages.push({ session, ...message }); } };
     }
   });
-  async function until(check, description) {
-    const deadline = Date.now() + 20000;
-    while (Date.now() < deadline) {
-      const result = await check();
-      if (result) return result;
-      await new Promise(resolve => setTimeout(resolve, 30));
-    }
-    throw new Error(`Timed out: ${description}. ${JSON.stringify(messages.slice(-10))}`);
-  }
+  const until = (check, description) => wait(check, description, () => JSON.stringify(messages.slice(-10)));
   async function event(session, name, predicate = () => true) {
     return until(() => {
       const index = messages.findIndex(m => (!session || m.session.id === session.id) && m.event === name && predicate(m));

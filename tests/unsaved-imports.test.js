@@ -12,7 +12,7 @@ const { languageServer, until } = require('./language-server-project');
 const dependency = name => `#lang racket/base\n\n(provide ${name})\n(define (${name} x) (+ x 1))\n`;
 const consumer = name => `#lang racket/base\n(require "dependency.rkt")\n(${name} 3)\n`;
 
-test('index references and rename follow unsaved exports without saving either file', { timeout: 120000 }, async t => {
+test('index references and rename follow unsaved exports without saving either file', async t => {
   const p = await project(t);
   p.write('dependency.rkt', dependency('before'));
   p.write('consumer.rkt', consumer('before'));
@@ -33,7 +33,7 @@ test('index references and rename follow unsaved exports without saving either f
   assert.equal(p.notifications.at(-1).state, 'ready', p.diagnostics());
 });
 
-test('language diagnostics and definitions refresh consumers on dependency open, edit, revert, save and close', { timeout: 120000 }, async t => {
+test('language diagnostics and definitions refresh consumers on dependency open, edit, revert, save and close', async t => {
   const p = await languageServer(t);
   p.write('dependency.rkt', dependency('before'));
   p.write('consumer.rkt', consumer('after'));
@@ -64,7 +64,7 @@ test('language diagnostics and definitions refresh consumers on dependency open,
   await p.expectDiagnostics('consumer.rkt', false);
 });
 
-test('unsaved compile-time imports replace values baked into compiled intermediate modules', { timeout: 120000 }, async t => {
+test('unsaved compile-time imports replace values baked into compiled intermediate modules', async t => {
   const p = await languageServer(t);
   const leaf = value => `#lang racket/base\n(provide stamp)\n(define stamp '${value})\n`;
   p.write('leaf.rkt', leaf('old'));
@@ -92,7 +92,7 @@ test('unsaved compile-time imports replace values baked into compiled intermedia
   assert.deepEqual(fs.readFileSync(bytecode), before, 'Unsaved analysis must not replace disk bytecode');
 });
 
-test('dependency replacement cancels blocked expansion and releases unchanged consumer queries', { timeout: 120000 }, async t => {
+test('dependency replacement cancels blocked expansion and releases unchanged consumer queries', async t => {
   const p = await languageServer(t);
   const gate = p.filename('gate'), entered = p.filename('entered');
   const leaf = value => `#lang racket/base\n(provide stamp)\n(define stamp '${value})\n`;
@@ -120,7 +120,7 @@ test('dependency replacement cancels blocked expansion and releases unchanged co
   assert.equal(fs.readFileSync(p.filename('dependency.rkt'), 'utf8'), leaf('old'));
 });
 
-test('open buffers survive disk deletion and supply unsaved submodules through legacy paths', { timeout: 120000 }, async t => {
+test('open buffers survive disk deletion and supply unsaved submodules through legacy paths', async t => {
   const p = await languageServer(t);
   const submodule = name => `#lang racket/base\n(module tools racket/base (provide ${name}) (define ${name} 7))\n`;
   p.write('dependency.ss', submodule('before'));

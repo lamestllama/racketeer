@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const assert = require('node:assert/strict');
+const { until: wait } = require('./support/wait');
 const path = require('node:path');
 const fs = require('node:fs/promises');
 const vscode = require('vscode');
@@ -35,15 +36,7 @@ exports.run = async function (workspace) {
       };
     }
   });
-  async function until(check, description, timeout = 30000) {
-    const deadline = Date.now() + timeout;
-    while (Date.now() < deadline) {
-      const result = await check();
-      if (result) return result;
-      await new Promise(resolve => setTimeout(resolve, 50));
-    }
-    throw new Error(`Timed out: ${description}. Requests: ${JSON.stringify(requests.map(r => r.arguments))}`);
-  }
+  const until = (check, description) => wait(check, description, () => `Requests: ${JSON.stringify(requests.map(r => r.arguments))}`);
   const answered = (description, match) => until(() => {
     const request = requests.find(candidate => match(candidate.arguments));
     const response = request && responses.get(request.seq);
@@ -55,7 +48,7 @@ exports.run = async function (workspace) {
     assert.equal(await vscode.debug.startDebugging(workspace, {
       type: 'racketdap', request: 'launch', name: 'Variables panel', program, submodule: []
     }), true);
-    await until(() => events.some(event => event.event === 'stopped'), 'the program stops at its breakpoint', 60000);
+    await until(() => events.some(event => event.event === 'stopped'), 'the program stops at its breakpoint');
     await list('workbench.debug.action.focusVariablesView');
     // A scope reports no size, so the panel asks with neither start nor count, and gets every row.
     const scope = await answered('the panel opens Locals',

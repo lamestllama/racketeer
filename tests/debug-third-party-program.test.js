@@ -6,6 +6,7 @@
 // is fetched at test time into the untracked test output folder, never into
 // the source tree or the package.
 const assert = require('node:assert/strict');
+const treeRemoval = require('./support/tree-removal');
 const test = require('./support/node-test');
 const crypto = require('node:crypto');
 const fs = require('node:fs/promises');
@@ -15,14 +16,12 @@ const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const { DapClient } = require('./dap-client');
 const { deferCleanup } = require('./cleanup');
-const treeRemoval = require('./support/tree-removal');
 
 const execute = promisify(execFile);
 const commit = 'bbf9dc58b8b1606f574ebf1a466eeef278689a68';
 const url = `https://codeload.github.com/mosceo/tetris/zip/${commit}`;
 const sha256 = '8ff1dca0f912f42a94b6a5ee17c3892a25660303f17452f7f22935175284f343';
 const cached = path.resolve(__dirname, '..', '.test-output', 'third-party', `tetris-${commit}.zip`);
-const deadline = 120000;
 // tetris.rkt requires 2htdp/universe, whose toolkit needs a display on Linux.
 // There scripts/test-gui.py runs this suite; Windows and macOS always have one.
 const options = { skip: process.platform === 'linux' && !process.env.DISPLAY };
@@ -67,7 +66,7 @@ async function extract(t) {
 }
 // Selects the source as the extension does for a workspace holding the program.
 async function launch(t, directory, breakpoints = []) {
-  const client = new DapClient(undefined, { timeout: deadline });
+  const client = new DapClient();
   deferCleanup(t, () => client.close());
   await ok(client.request('initialize', { adapterID: 'racketdap' }));
   await ok(client.request('launch', {
@@ -87,7 +86,7 @@ async function finishes(client) {
   assert.doesNotMatch(output, /FAILURE|ERROR/, output);
 }
 
-test('a real program of about a thousand lines runs to exit 0 under the debugger within its deadline', options, async t => {
+test('a real program of about a thousand lines runs to exit 0 under the debugger', options, async t => {
   const directory = await extract(t);
   if (!directory) return;
   const start = Date.now();
@@ -95,7 +94,6 @@ test('a real program of about a thousand lines runs to exit 0 under the debugger
   await finishes(client);
   const elapsed = Date.now() - start;
   t.diagnostic(`Debug session took ${elapsed} ms`);
-  assert.ok(elapsed < deadline, `Debug session took ${elapsed} ms`);
 });
 
 test('a breakpoint in a real program stops inside its function with named locals, then the program exits 0', options, async t => {

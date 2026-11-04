@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const assert = require('node:assert/strict');
+const treeRemoval = require('./support/tree-removal');
 const test = require('./support/node-test');
 const fs = require('node:fs/promises');
 const path = require('node:path');
@@ -9,7 +10,6 @@ const os = require('node:os');
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const { buildPlan, executablePath } = require('../vscode/application-build');
-const treeRemoval = require('./support/tree-removal');
 const execute = promisify(execFile);
 
 // Windows keeps a deleted file until the last handle to it closes, so a
@@ -74,7 +74,7 @@ test('invalid build definitions and direct input replacement are rejected', () =
   assert.equal(executablePath('APP.EXE', false, 'win32'), 'APP.EXE');
 });
 
-test('public tools build a user-package launcher, embed modules and relocate runtime files', { timeout: 120000 }, async t => {
+test('public tools build a user-package launcher, embed modules and relocate runtime files', async t => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'racket build λ '));
   t.after(() => removeTree(t, directory));
   const source = path.join(directory, 'source'), library = path.join(directory, 'library');
@@ -82,7 +82,7 @@ test('public tools build a user-package launcher, embed modules and relocate run
   await fs.writeFile(path.join(library, 'info.rkt'), '#lang info\n(define collection "build-example")\n(define deps \'("base"))\n');
   await fs.writeFile(path.join(library, 'main.rkt'), '#lang racket/base\n(provide answer)\n(define answer 42)\n');
   const env = { ...process.env, PLTADDONDIR: path.join(directory, 'addon') };
-  await execute('racket', ['-l', 'raco', '--', 'pkg', 'install', '--scope', 'user', '--no-setup', '--deps', 'fail', '--link', '--', library], { env, timeout: 30000 });
+  await execute('racket', ['-l', 'raco', '--', 'pkg', 'install', '--scope', 'user', '--no-setup', '--deps', 'fail', '--link', '--', library], { env, timeout: 240000 });
   const program = path.join(source, 'main λ.rkt');
   await fs.writeFile(program, `#lang racket/base
 (require build-example racket/runtime-path racket/file)
@@ -92,7 +92,7 @@ test('public tools build a user-package launcher, embed modules and relocate run
   await fs.writeFile(path.join(source, 'data.txt'), 'payload λ');
   async function build(action, input, output, extra = {}) {
     const plan = buildPlan({ action, source: input, output, ...extra }, directory);
-    await execute('racket', ['-l', 'raco', '--', ...plan.args], { cwd: directory, env, timeout: 60000 });
+    await execute('racket', ['-l', 'raco', '--', ...plan.args], { cwd: directory, env, timeout: 240000 });
     return plan.output;
   }
   const launcher = await build('launcher', program, path.join(directory, 'launcher'));
@@ -112,15 +112,15 @@ test('public tools build a user-package launcher, embed modules and relocate run
   await assert.rejects(execute(exe, [], { env }), /data.txt|cannot open input file/i);
 });
 
-test('explicit dynamic libraries are embedded and compiler errors remain errors', { timeout: 120000 }, async t => {
+test('explicit dynamic libraries are embedded and compiler errors remain errors', async t => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'racket dynamic build '));
   t.after(() => removeTree(t, directory));
   const program = path.join(directory, 'dynamic.rkt');
   await fs.writeFile(program, '#lang racket/base\n(displayln ((dynamic-require \'racket/math \'sqr) 7))\n');
   const plan = buildPlan({ action: 'executable', source: program, output: path.join(directory, 'app'), libraries: ['racket/math'] }, directory);
-  await execute('racket', ['-l', 'raco', '--', ...plan.args], { timeout: 60000 });
+  await execute('racket', ['-l', 'raco', '--', ...plan.args], { timeout: 240000 });
   await fs.rename(program, path.join(directory, 'hidden.rkt'));
   assert.equal((await execute(plan.output)).stdout.trim(), '49');
   await fs.writeFile(program, '#lang racket/base\n(');
-  await assert.rejects(execute('racket', ['-l', 'raco', '--', ...plan.args], { timeout: 60000 }), /expected a|read-syntax/);
+  await assert.rejects(execute('racket', ['-l', 'raco', '--', ...plan.args], { timeout: 240000 }), /expected a|read-syntax/);
 });

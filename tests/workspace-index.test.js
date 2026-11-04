@@ -9,7 +9,7 @@ const { root, uses, uri, project, rawServer } = require('./workspace-index-proje
 
 const from = (locations, source) => locations.filter(location => location.uri === source);
 
-test('standalone index follows disk and unsaved buffers through close, rename and deletion', { timeout: 120000 }, async t => {
+test('standalone index follows disk and unsaved buffers through close, rename and deletion', async t => {
   const p = await project(t), consumer = uri(p.filename('uses.rkt'));
   const initial = await p.references(p.origin);
   assert.equal(from(initial, consumer).length, 1, JSON.stringify({ consumer, locations: initial,
@@ -29,7 +29,7 @@ test('standalone index follows disk and unsaved buffers through close, rename an
   assert.equal(from(await p.references(p.origin), renamed).length, 0);
 });
 
-test('standalone analysis preserves local references and protects protocol output', { timeout: 120000 }, async t => {
+test('standalone analysis preserves local references and protects protocol output', async t => {
   const p = await project(t);
   const noisy = '#lang racket/base\n(require (for-syntax racket/base))\n(begin-for-syntax (display "noise") (eprintf "more noise"))\n(define (twice local) (+ local local))\n(twice 4)\n';
   p.write('local.rkt', noisy);
@@ -40,7 +40,7 @@ test('standalone analysis preserves local references and protects protocol outpu
   assert.ok(!p.diagnostics().includes('more noise'));
 });
 
-test('references from nested imports include unopened consumers and the definition', { timeout: 120000 }, async t => {
+test('references from nested imports include unopened consumers and the definition', async t => {
   const p = await project(t);
   fs.cpSync(path.join(root, 'examples/multi-file'), p.filename('multi-file'), { recursive: true,
     filter: source => path.basename(source) !== 'compiled' });
@@ -55,7 +55,7 @@ test('references from nested imports include unopened consumers and the definiti
   }
 });
 
-test('ambiguous URI aliases cannot overwrite one another and imports resolve by binding', { timeout: 120000 }, async t => {
+test('ambiguous URI aliases cannot overwrite one another and imports resolve by binding', async t => {
   const p = await project(t), consumer = p.open('uses.rkt', uses);
   const alias = consumer.replace('uses.rkt', '%75ses.rkt');
   p.open(alias, uses + '(square 4)\n', 3); await p.update();
@@ -68,7 +68,7 @@ test('ambiguous URI aliases cannot overwrite one another and imports resolve by 
   assert.equal(from(refs, consumer).length, 1);
 });
 
-test('a failed analysis and a failing request answer RequestFailed', { timeout: 120000 }, async t => {
+test('a failed analysis and a failing request answer RequestFailed', async t => {
   const p = await project(t);
   const broken = '#lang racket/base\n(\n';
   p.write('broken.rkt', broken);
@@ -77,7 +77,7 @@ test('a failed analysis and a failing request answer RequestFailed', { timeout: 
   await assert.rejects(p.request('textDocument/references', {}), error => error.code === -32803);
 });
 
-test('malformed JSON answers ParseError with a null id, and the server reads on', { timeout: 120000 }, async t => {
+test('malformed JSON answers ParseError with a null id, and the server reads on', async t => {
   const server = rawServer(t);
   server.writeFrame('{bad}');
   const parse = await server.next();

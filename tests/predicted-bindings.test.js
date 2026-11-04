@@ -10,7 +10,7 @@ const point = (source, needle, offset = 0) => {
   return { line: lines.length - 1, character: lines.at(-1).length };
 };
 
-test('syntax-template predictions are distinguished from ordinary bindings and documentation', { timeout: 120000 }, async t => {
+test('syntax-template predictions are distinguished from ordinary bindings and documentation', async t => {
   const p = await languageServer(t), file = 'bindings.rkt';
   const source = '#lang racket/base\n(define value 7)\n(define quoted #\'value)\n(define (answer) (+ value 1))\n';
   await p.open(file, source); await p.expectDiagnostics(file, false);
@@ -28,7 +28,7 @@ test('syntax-template predictions are distinguished from ordinary bindings and d
   assert.equal(definition.range.start.line, 1);
 });
 
-test('predicted bindings follow Unicode unsaved changes, errors and document lifetimes', { timeout: 120000 }, async t => {
+test('predicted bindings follow Unicode unsaved changes, errors and document lifetimes', async t => {
   const p = await languageServer(t), file = 'untitled:Bindings-λ';
   const source = '#lang racket/base\n(define λ😀 7) (define quoted #\'λ😀)\n';
   await p.open(file, source); await p.expectDiagnostics(file, false);
@@ -48,7 +48,7 @@ test('predicted bindings follow Unicode unsaved changes, errors and document lif
   assert.doesNotMatch(content(await p.request('hover', file, { position: use })), /Predicted binding/);
 });
 
-test('macro templates report predictions without labelling macro calls or spelling matches', { timeout: 120000 }, async t => {
+test('macro templates report predictions without labelling macro calls or spelling matches', async t => {
   const p = await languageServer(t), file = 'macro.rkt';
   const source = '#lang racket/base\n(require (for-syntax racket/base))\n(define outer 1)\n(define-syntax (sample stx) #\'(let ([local outer]) (+ local outer)))\n(sample)\n(define quoted \'outer)\n; outer\n"outer"\n';
   await p.open(file, source); await p.expectDiagnostics(file, false);

@@ -2,21 +2,16 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const assert = require('node:assert/strict');
+const { until: wait } = require('./support/wait');
 const test = require('./support/node-test');
 const { setTimeout: delay } = require('node:timers/promises');
 const { project } = require('./workspace-index-project');
 
 const traced = { RACKETEER_INDEX_TRACE: '1' };
 const untraced = { RACKETEER_INDEX_TRACE: undefined };
-async function until(p, pattern, seconds) {
-  const deadline = Date.now() + seconds * 1000;
-  while (!pattern.test(p.diagnostics())) {
-    assert.ok(Date.now() < deadline, `${pattern} not logged:\n${p.diagnostics()}`);
-    await delay(50);
-  }
-}
+const until = (p, pattern) => wait(() => pattern.test(p.diagnostics()), () => `${pattern} not logged:\n${p.diagnostics()}`);
 
-test('a traced index names each worker and every wait it passes, with a monotonic time', { timeout: 120000 }, async t => {
+test('a traced index names each worker and every wait it passes, with a monotonic time', async t => {
   const p = await project(t, traced);
   await p.references(p.origin);
   const worker = /Workspace analysis worker at (\d+) ms: analyse \S*definition\.rkt: (.*)/g;
@@ -28,31 +23,29 @@ test('a traced index names each worker and every wait it passes, with a monotoni
   assert.match(p.diagnostics(), /worker at \d+ ms: discover: starting/);
 });
 
-test('an untraced index logs no worker that starts and stops promptly', { timeout: 120000 }, async t => {
+test('an untraced index logs no worker that starts and stops promptly', async t => {
   const p = await project(t, untraced);
   await p.references(p.origin);
   assert.equal(p.notifications.at(-1).state, 'ready', p.diagnostics());
   assert.doesNotMatch(p.diagnostics(), /: (starting|kill requested)\n|timer at/);
 });
 
-test('a traced index shows its timer running at regular intervals', { timeout: 120000 }, async t => {
+test('a traced index shows its timer running at regular intervals', async t => {
   const p = await project(t, traced);
-  await until(p, /timer at \d+ ms: running\n[^]*timer at \d+ ms: running\n/, 30);
+  await until(p, /timer at \d+ ms: running\n[^]*timer at \d+ ms: running\n/);
 });
 
-test('a pause of the whole server is reported when its timer wakes', { timeout: 120000,
-  skip: process.platform === 'win32' }, async t => {
+test('a pause of the whole server is reported when its timer wakes', { skip: process.platform === 'win32' }, async t => {
   const p = await project(t, untraced);
   // The timer runs once the server is serving: stopping it earlier leaves no tick to compare.
   await p.update();
   p.child.kill('SIGSTOP');
   await delay(7000);
   p.child.kill('SIGCONT');
-  await until(p, /timer at \d+ ms: woke \d+ ms after it last ran\n/, 10);
+  await until(p, /timer at \d+ ms: woke \d+ ms after it last ran\n/);
 });
 
-test('an untraced index stops a worker in a blocking C call at once, and has nothing to log', { timeout: 120000,
-  skip: process.platform === 'win32' }, async t => {
+test('an untraced index stops a worker in a blocking C call at once, and has nothing to log', { skip: process.platform === 'win32' }, async t => {
   const p = await project(t, untraced);
   // The system ends a worker's process wherever its code is.
   p.write('stuck.rkt', `#lang racket/base
@@ -61,7 +54,7 @@ test('an untraced index stops a worker in a blocking C call at once, and has not
   p.settings.timeoutSeconds = 5;
   await p.update();
   const asking = p.references(p.origin).catch(() => {});
-  await until(p, /stuck\.rkt \(analysis exceeded its 5 second time limit\)/, 40);
+  await until(p, /stuck\.rkt \(analysis exceeded its 5 second time limit\)/);
   assert.doesNotMatch(p.diagnostics(), /stuck\.rkt: (starting|kill requested|killed|reaped)/);
   await asking;
 });

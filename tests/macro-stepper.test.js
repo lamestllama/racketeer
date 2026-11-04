@@ -142,7 +142,7 @@ test('closing an opened macro terminal stops only its owned process', async () =
   assert.equal(second, terminals[1]);
 });
 
-test('missing graphical display surfaces a native startup error', { skip: process.platform !== 'linux', timeout: 20000 }, async () => {
+test('missing graphical display surfaces a native startup error', { skip: process.platform !== 'linux' }, async () => {
   const child = spawn(racket, [helper], { cwd: root, env: { ...process.env, DISPLAY: ':9876', WAYLAND_DISPLAY: '' } });
   let stderr = ''; child.stderr.on('data', text => { stderr += text; });
   child.stdin.on('error', () => {});

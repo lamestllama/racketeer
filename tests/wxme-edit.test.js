@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const test = require('./support/node-test');
+const treeRemoval = require('./support/tree-removal');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -11,7 +12,6 @@ const { createRequire } = require('node:module');
 const { WxmeDocument, normalize, hash } = require('../vscode/wxme-document');
 const { requestWxme, decodeWxme } = require('../vscode/wxme-process');
 const { spawnSync } = require('node:child_process');
-const treeRemoval = require('./support/tree-removal');
 const helper = path.resolve(__dirname, '../racketdap/tools/wxme-edit.rkt');
 const fixture = name => fs.readFileSync(path.join(__dirname, 'fixtures/wxme', name + '.wxme'));
 const token = { isCancellationRequested: false, onCancellationRequested: () => ({ dispose() {} }) };
@@ -242,7 +242,7 @@ test('a replacement save waits for a cancelled save and then succeeds', async t 
   assert.equal(JSON.parse(fs.readFileSync(h.file)).parts[0].text, 'saved after cancellation');
 });
 
-const gui = { skip: !process.env.RACKETDAP_TEST_WXME_GUI, timeout: 60000 };
+const gui = { skip: !process.env.RACKETDAP_TEST_WXME_GUI };
 test('public encoder preserves images, nested comments and Unicode across text edits and reopen', gui, async () => {
   for (const [name, edits] of [['images', [{ path: [0], text: '#lang racket/base\n; edited λ 😀\n(define first ' }]],
     ['boxes', [{ path: [1, 1, 0], text: 'changed comment λ 😀\n' }]], ['empty-comment', [{ path: [1, 0], text: 'no longer empty' }]],
@@ -286,7 +286,7 @@ test('saving original executable source preserves its objects and intended evalu
   fs.writeFileSync(saved, Buffer.from(changed.bytes, 'base64'));
   assert.deepEqual(changed.parts.slice(1), read.parts.slice(1));
   for (const [file, value] of [[original, '42'], [saved, '43']]) {
-    const run = spawnSync('racket', ['-e', `(display (dynamic-require '(file ${JSON.stringify(file)}) 'value))`], { encoding: 'utf8', timeout: 15000 });
+    const run = spawnSync('racket', ['-e', `(display (dynamic-require '(file ${JSON.stringify(file)}) 'value))`], { encoding: 'utf8', timeout: 240000 });
     assert.equal(run.status, 0, run.stderr); assert.equal(run.stdout, value);
   }
 });

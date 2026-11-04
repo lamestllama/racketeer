@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const test = require('./support/node-test'), assert = require('node:assert/strict');
+const treeRemoval = require('./support/tree-removal');
 const fs = require('node:fs/promises'), os = require('node:os'), path = require('node:path');
 const { DapClient } = require('./dap-client');
 const { deferCleanup } = require('./cleanup');
-const treeRemoval = require('./support/tree-removal');
 async function ok(value) { const response = await value; assert.equal(response.success, true, response.message); return response.body; }
 const source = `#lang racket/base
 (define-logger network)
@@ -22,7 +22,7 @@ async function start(t, extra = {}) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'racket logs λ '));
   deferCleanup(t, () => fs.rm(directory, treeRemoval));
   const program = path.join(directory, 'main.rkt'); await fs.writeFile(program, source);
-  const client = new DapClient(undefined, { timeout: 30000 }); deferCleanup(t, () => client.close());
+  const client = new DapClient(); deferCleanup(t, () => client.close());
   await ok(client.request('initialize')); await ok(client.request('launch', { program, interactive: true, ...extra }));
   await ok(client.request('configurationDone')); await client.event('racketdap/ready');
   const drain = () => {
@@ -81,11 +81,7 @@ test('child-thread messages arrive during evaluation and final messages precede 
 test('large bursts have bounded batches, explicit omission counts, truncation and recovery', async t => {
   const h = await start(t, { logFilter: 'none debug@network' }); h.drain();
   await h.evaluate('(for ([i (in-range 12000)]) (log-network-debug "burst ~a" i))');
-  const deadline = Date.now() + 5000;
-  while (h.client.events.filter(event => event.event === 'racketdap/log').reduce((n, event) => n + event.body.entries.length + event.body.dropped, 0) < 12000) {
-    assert.ok(Date.now() < deadline, 'The asynchronous receiver finishes draining the burst');
-    await new Promise(resolve => setTimeout(resolve, 20));
-  }
+  await until(() => h.client.events.filter(event => event.event === 'racketdap/log').reduce((n, event) => n + event.body.entries.length + event.body.dropped, 0) >= 12000, 'The asynchronous receiver finishes draining the burst');
   const events = h.client.events.filter(event => event.event === 'racketdap/log');
   for (const event of events) { assert.ok(event.body.entries.length <= 1000); assert.ok(Buffer.byteLength(JSON.stringify(event.body)) < 2 * 1024 * 1024); }
   const batch = h.drain(); assert.equal(batch.entries.length + batch.dropped, 12000);

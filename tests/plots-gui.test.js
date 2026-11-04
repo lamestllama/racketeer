@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const assert = require('node:assert/strict');
+const treeRemoval = require('./support/tree-removal');
 const test = require('./support/node-test');
 const fs = require('node:fs/promises');
 const path = require('node:path');
@@ -10,10 +11,9 @@ const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const { DapClient } = require('./dap-client');
 const { deferCleanup } = require('./cleanup');
-const treeRemoval = require('./support/tree-removal');
 const execute = promisify(execFile);
 const root = path.resolve(__dirname, '..');
-const gui = { skip: process.platform === 'linux' && !process.env.DISPLAY, timeout: 120000 };
+const gui = { skip: process.platform === 'linux' && !process.env.DISPLAY };
 
 async function ok(pending) {
   const response = await pending;
@@ -30,7 +30,7 @@ test('plot windows support zoom, rotation, overlays, current-view saving and own
          (when (regexp-match? #rx"drracket" (format "~a" result)) (error 'test "GUI application dependency: ~a" result)) result]
         [(p ns) (resolver p ns)]))
     (dynamic-require '(file ${JSON.stringify(path.join(root, 'tests/support/plots-gui.rkt'))}) #f)`;
-  const { stdout } = await execute('racket', ['-e', script], { timeout: 60000 });
+  const { stdout } = await execute('racket', ['-e', script], { timeout: 240000 });
   const report = JSON.parse(stdout.trim().split('\n').at(-1));
   assert.equal(report.checks.length, 7);
 });
@@ -40,7 +40,7 @@ test('live plot results, multiple results and nested variables open without reev
   deferCleanup(t, () => fs.rm(directory, treeRemoval));
   const program = path.join(directory, 'plots.rkt');
   await fs.writeFile(program, (await fs.readFile(path.join(root, 'examples/interactive-plots.rkt'), 'utf8')) + '\n(define evaluations 0)\n');
-  const client = new DapClient(undefined, { timeout: 60000 });
+  const client = new DapClient();
   deferCleanup(t, () => client.close());
   await ok(client.request('initialize'));
   await ok(client.request('launch', { program, cwd: directory, interactive: true }));

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const assert = require('node:assert/strict');
+const { until } = require('./support/wait');
 const fs = require('node:fs');
 const path = require('node:path');
 const vscode = require('vscode');
@@ -24,20 +25,9 @@ exports.run = async function (extension, workspace) {
   const subscription = vscode.window.onDidCloseTerminal(value => ended.add(value));
   // Creating the marker precedes writing and closing it in the worker.
   const markerWritten = (file, expected) => fs.existsSync(file) && fs.readFileSync(file, 'utf8') === expected;
-  const timeout = async (predicate, description) => {
-    const started = Date.now();
-    const deadline = started + 20000;
-    while (Date.now() < deadline) {
-      if (predicate()) {
-        console.log(`${description}: ${Date.now() - started} ms`);
-        return;
-      }
-      await new Promise(resolve => setTimeout(resolve, 30));
-    }
-    throw new Error(`Timed out: ${description}; terminals: ${JSON.stringify([...active].map(value => ({
-      name: value.name, exitStatus: value.exitStatus
-    })))}`);
-  };
+  const timeout = (predicate, description) => until(predicate, description, () => `terminals: ${JSON.stringify([...active].map(value => ({
+    name: value.name, exitStatus: value.exitStatus
+  })))}`);
   async function closeTerminal() {
     if (!terminal) return;
     terminal.dispose();

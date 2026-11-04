@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const assert = require('node:assert/strict');
+const { until } = require('./support/wait');
 const test = require('./support/node-test');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -24,7 +25,7 @@ async function trackedProject(t) {
   return { ...p, consumerText, count, expansions: () => fs.readFileSync(marker, 'utf8').trim().split('\n').length };
 }
 
-test('unchanged open and close reuse complete analysis while disk notifications invalidate it', { timeout: 120000 }, async t => {
+test('unchanged open and close reuse complete analysis while disk notifications invalidate it', async t => {
   const p = await trackedProject(t), before = p.expansions();
   const consumer = p.open('uses.rkt', p.consumerText);
   await p.update(true); assert.equal(await p.count(), 1);
@@ -37,7 +38,7 @@ test('unchanged open and close reuse complete analysis while disk notifications 
   assert.ok(p.expansions() > before, 'A disk event about a changed file invalidates its analysis');
 });
 
-test('buffer changes and close after an unreported disk write require fresh analysis', { timeout: 120000 }, async t => {
+test('buffer changes and close after an unreported disk write require fresh analysis', async t => {
   const p = await trackedProject(t);
   const consumer = p.open('uses.rkt', p.consumerText + '(square 4)\n');
   await p.update(true); assert.equal(await p.count(), 2);
@@ -56,7 +57,7 @@ test('buffer changes and close after an unreported disk write require fresh anal
   assert.equal(p.notifications.at(-1).state, 'ready');
 });
 
-test('saving an unsaved module refreshes dependents even when closing leaves identical source text', { timeout: 120000 }, async t => {
+test('saving an unsaved module refreshes dependents even when closing leaves identical source text', async t => {
   const p = await project(t), marker = path.join(addon, path.basename(p.directory));
   const dependency = value => `#lang racket/base\n(provide value)\n(define value "${value}")\n`;
   p.write('dependency.rkt', dependency('old'));
@@ -74,7 +75,7 @@ test('saving an unsaved module refreshes dependents even when closing leaves ide
   assert.equal(fs.readFileSync(marker, 'utf8'), 'new', 'Import expansion must use the saved dependency');
 });
 
-test('reuse verification catches source additions and deletion without watcher notifications', { timeout: 120000 }, async t => {
+test('reuse verification catches source additions and deletion without watcher notifications', async t => {
   const p = await trackedProject(t), added = uri(p.filename('added.rkt'));
   p.write('added.rkt', uses);
   await p.update(true);
@@ -87,7 +88,7 @@ test('reuse verification catches source additions and deletion without watcher n
   assert.equal(p.notifications.at(-1).state, 'partial', 'Changed limits must invalidate a completed index');
 });
 
-test('reused analysis retains current document ownership and rename disk validation', { timeout: 120000 }, async t => {
+test('reused analysis retains current document ownership and rename disk validation', async t => {
   const p = await trackedProject(t);
   const consumer = p.open('uses.rkt', p.consumerText, 9);
   await p.update(true); assert.equal(await p.count(), 1);
@@ -101,7 +102,7 @@ test('reused analysis retains current document ownership and rename disk validat
   await assert.rejects(p.rename(p.origin, 'squared'), /Workspace files changed/);
 });
 
-test('reopening a document cancels its old request even when completed analysis is reused', { timeout: 120000 }, async t => {
+test('reopening a document cancels its old request even when completed analysis is reused', async t => {
   const p = await trackedProject(t);
   const blocked = path.join(addon, path.basename(p.directory) + '-block');
   const entered = blocked + '-entered';
@@ -117,11 +118,7 @@ test('reopening a document cancels its old request even when completed analysis 
   const before = p.expansions();
   fs.writeFileSync(blocked, 'block');
   const rejected = assert.rejects(p.references(p.origin), error => error.code === -32801);
-  const deadline = Date.now() + 20000;
-  while (!fs.existsSync(entered)) {
-    assert.ok(Date.now() < deadline, p.diagnostics());
-    await new Promise(resolve => setTimeout(resolve, 25));
-  }
+  await until(() => fs.existsSync(entered), () => p.diagnostics());
   p.open('definition.rkt', source); await p.update(true);
   await rejected;
   fs.unlinkSync(blocked);
@@ -129,7 +126,7 @@ test('reopening a document cancels its old request even when completed analysis 
   assert.equal(p.expansions(), before, 'Ownership changes must not require repeating unchanged analysis');
 });
 
-test('unchanged documents opening and closing during a pass neither restart it nor delay a waiting request', { timeout: 120000 }, async t => {
+test('unchanged documents opening and closing during a pass neither restart it nor delay a waiting request', async t => {
   const p = await project(t), consumer = uri(p.filename('uses.rkt'));
   await p.references(p.origin);
   const marker = path.join(addon, path.basename(p.directory) + '-slow');
@@ -144,18 +141,17 @@ test('unchanged documents opening and closing during a pass neither restart it n
   let settled = false;
   const request = p.references(p.origin).finally(() => { settled = true; });
   // Each lifetime event arrives sooner than the pass can finish.
-  const deadline = Date.now() + 30000;
-  while (!settled && Date.now() < deadline) {
+  await until(async () => {
     await new Promise(resolve => setTimeout(resolve, 500));
     if (p.documents.has(consumer)) p.documents.delete(consumer); else p.open('uses.rkt', uses);
     await p.update(true);
-  }
-  assert.ok(settled, 'A waiting request must not starve while unchanged documents open and close');
+    return settled;
+  }, 'A waiting request must not starve while unchanged documents open and close');
   assert.equal((await request).filter(location => location.uri === consumer).length, 1);
   assert.equal(fs.readFileSync(marker, 'utf8').trim().split('\n').length, 1, 'Unchanged documents must not restart the pass');
 });
 
-test('a reported change in an excluded directory starts no pass, and one elsewhere does', { timeout: 120000 }, async t => {
+test('a reported change in an excluded directory starts no pass, and one elsewhere does', async t => {
   const p = await trackedProject(t), before = p.expansions();
   await p.diskChange('compiled/definition_rkt.zo');
   await p.diskChange('node_modules/package/file.txt');
@@ -167,7 +163,7 @@ test('a reported change in an excluded directory starts no pass, and one elsewhe
   assert.ok(p.expansions() > before);
 });
 
-test('a folder added and removed takes its contributions with it', { timeout: 120000 }, async t => {
+test('a folder added and removed takes its contributions with it', async t => {
   const p = await project(t);
   await p.references(p.origin);
   const other = fs.mkdtempSync(path.join(addon, 'folder-')), file = path.join(other, 'other.rkt');
@@ -183,7 +179,7 @@ test('a folder added and removed takes its contributions with it', { timeout: 12
   assert.equal((await p.rename(p.origin, 'squared')).changes[uri(file)], undefined);
 });
 
-test('closing a buffer for a file outside the sources leaves no trace of its text', { timeout: 180000 }, async t => {
+test('closing a buffer for a file outside the sources leaves no trace of its text', async t => {
   const p = await project(t);
   const keeps = '#lang racket/base\n(provide call)\n(define-syntax-rule (call f) (f 1))\n';
   const drops = '#lang racket/base\n(provide call)\n(define-syntax-rule (call f) 1)\n';

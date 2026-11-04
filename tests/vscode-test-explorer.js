@@ -2,12 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const assert = require('node:assert/strict');
+const treeRemoval = require('./support/tree-removal');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const { createRequire } = require('node:module');
 const vscode = require('vscode');
-const treeRemoval = require('./support/tree-removal');
 
 // Use the artifact's verified source snapshot with real TestItems, TestRuns,
 // tasks and the installed adapter. Capture public API calls under a separate
@@ -135,25 +135,11 @@ exports.run = async function (extension, workspace) {
     try {
       const pending = run(nativeProfile, [blocked], cancellation);
       pending.catch(() => {});
-      const deadline = Date.now() + 30000;
-      // Racket creates the file before it writes the number.
-      let pid = 0;
-      while (!pid) {
-        pid = fs.existsSync(marker) ? Number(fs.readFileSync(marker, 'utf8')) : 0;
-        assert.ok(Date.now() < deadline, 'Native test process starts');
-        if (!pid) await new Promise(resolve => setTimeout(resolve, 30));
-      }
+            // Racket creates the file before it writes the number.
+      const pid = await until(() => fs.existsSync(marker) ? Number(fs.readFileSync(marker, 'utf8')) : 0, 'Native test process starts');
       cancellation.cancel();
       assert.equal((await pending).get(blocked.id).status, 'skipped');
-      // Reaping has its own deadline from the cancellation, not what remains
-      // of the one for starting the process.
-      const reaped = Date.now() + 30000;
-      for (;;) {
-        try { process.kill(pid, 0); }
-        catch (error) { if (error.code === 'ESRCH') break; throw error; }
-        assert.ok(Date.now() < reaped, `Native test cancellation reaps the child ${pid} within 30 seconds`);
-        await new Promise(resolve => setTimeout(resolve, 30));
-      }
+      await until(() => exited(pid), `Native test cancellation reaps the child ${pid}`);
     } finally { cancellation.dispose(); }
     const recovered = await run(nativeProfile, [policy]);
     assert.equal(recovered.get(policy.id).status, 'passed');

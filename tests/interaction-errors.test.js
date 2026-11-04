@@ -2,18 +2,18 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const test = require('./support/node-test'), assert = require('node:assert/strict');
+const treeRemoval = require('./support/tree-removal');
 const fs = require('node:fs/promises'), os = require('node:os'), path = require('node:path');
 const { DapClient } = require('./dap-client');
 const { deferCleanup } = require('./cleanup');
 const { InteractionOutput } = require('../vscode/interaction-output');
-const treeRemoval = require('./support/tree-removal');
 const mainSource = '#lang racket/base\n(define (fail) (let ([emoji "😀"]) (/ 1 0)))\n';
 async function start(t, source = mainSource, files = {}) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'racket error λ '));
   deferCleanup(t, () => fs.rm(directory, treeRemoval));
   for (const [name, text] of Object.entries({ 'main λ.rkt': source, ...files })) await fs.writeFile(path.join(directory, name), text);
   const program = path.join(directory, 'main λ.rkt');
-  const client = new DapClient(undefined, { timeout: 30000 }); deferCleanup(t, () => client.close());
+  const client = new DapClient(); deferCleanup(t, () => client.close());
   async function ok(value) { const r = await value; assert.equal(r.success, true, r.message); return r.body; }
   await ok(client.request('initialize')); await ok(client.request('launch', { program, cwd: directory, sourceRoots: [directory], interactive: true, racketdapRichInteractions: true }));
   await ok(client.request('configurationDone'));

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const assert = require('node:assert/strict');
+const treeRemoval = require('./support/tree-removal');
 const test = require('./support/node-test');
 const fs = require('node:fs/promises');
 const path = require('node:path');
@@ -10,7 +11,6 @@ const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const { DapClient } = require('./dap-client');
 const { deferCleanup } = require('./cleanup');
-const treeRemoval = require('./support/tree-removal');
 const execute = promisify(execFile);
 const root = path.resolve(__dirname, '..');
 
@@ -24,7 +24,7 @@ async function session(t, source) {
   deferCleanup(t, () => fs.rm(directory, treeRemoval));
   const program = path.join(directory, 'images.rkt');
   await fs.writeFile(program, source);
-  const client = new DapClient(undefined, { timeout: 60000 });
+  const client = new DapClient();
   deferCleanup(t, () => client.close());
   await ok(client.request('initialize', { adapterID: 'racketdap' }));
   await ok(client.request('launch', { program, cwd: directory, interactive: true }));
@@ -44,7 +44,7 @@ async function render(client, value) {
   return Buffer.from(image.data, 'base64');
 }
 
-test('image, pict and plot results match public PNG conversion without reevaluation', { timeout: 180000 }, async t => {
+test('image, pict and plot results match public PNG conversion without reevaluation', async t => {
   const source = await fs.readFile(path.join(root, 'examples/images.rkt'), 'utf8');
   const { client, directory, program } = await session(t, source + '\n(define evaluations 0)\n');
   const script = `(require racket/port)
@@ -55,7 +55,7 @@ test('image, pict and plot results match public PNG conversion without reevaluat
       (for ([name '(tile drawing chart)])
         (call-with-output-file (build-path ${JSON.stringify(directory)} (format "~a.png" name))
           (lambda (out) (write-bytes (convert (eval name) 'png-bytes) out)))))`;
-  await execute('racket', ['-e', script], { timeout: 60000 });
+  await execute('racket', ['-e', script], { timeout: 240000 });
   for (const [name, width, height] of [['tile', 64, 32], ['drawing', 48, 32], ['chart', 240, 160]]) {
     const value = await evaluate(client, `(begin (set! evaluations (add1 evaluations)) ${name})`);
     assert.equal(value.racketdapImage, true);
