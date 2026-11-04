@@ -103,7 +103,7 @@ for (const signal of ['SIGHUP', 'SIGKILL']) {
     'Build', ['exe', '-o', path.join(directory, 'slow'), '--', path.join(directory, 'slow.rkt')]);
     const child = spawn(task.execution.process, task.execution.args, { cwd: task.execution.options.cwd, stdio: 'ignore' });
     const exited = new Promise(resolve => child.once('exit', resolve));
-    await until(() => fs.existsSync(pids) || !fs.readFileSync(pids, 'utf8').trim(), 'The compile-time child started');
+    await until(() => fs.existsSync(pids) && fs.readFileSync(pids, 'utf8').trim(), 'The compile-time child started');
     descendants = fs.readFileSync(pids, 'utf8').replace(/[()]/g, '').trim().split(/\s+/).map(Number);
     // VS Code's terminal sends SIGHUP when a task is terminated.
     child.kill(signal);
