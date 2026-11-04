@@ -20,7 +20,7 @@ const sourceSuffixes = ['.rkt', '.ss', '.scrbl', '.rhm', '.rktl', '.rktd', ''];
 // fake document opens to the language server or consumes the server's live traces.
 function createWorkspaceIndex(context, { executable, timeout, output, onStatus }) {
   let connection, starting, disposed = false, synchronized = false;
-  let identity = 0, heard = Date.now(), extensions = {}, folders = [];
+  let identity = 0, heard = Date.now(), folders = [];
   const identities = new WeakMap();
   // The documents the server holds, at the versions it has.
   const versions = new WeakMap();
@@ -132,17 +132,16 @@ function createWorkspaceIndex(context, { executable, timeout, output, onStatus }
       connection.onRequest('client/unregisterCapability', ({ unregisterations }) => { unregisterations.forEach(unwatch); });
       connection.listen();
       folders = currentFolders();
-      const { capabilities } = await connection.sendRequest('initialize', {
+      await connection.sendRequest('initialize', {
         processId: null, clientInfo: { name: 'Racketeer' }, rootUri: null, workspaceFolders: folders,
         capabilities: { general: { positionEncodings: ['utf-16'] },
           window: { workDoneProgress: true },
           textDocument: { rename: { prepareSupport: true } },
           workspace: { configuration: true, workspaceFolders: true, workspaceEdit: { documentChanges: true },
             didChangeWatchedFiles: { dynamicRegistration: true, relativePatternSupport: true } },
-          experimental: { racketeer: { indexStatus: true, sourceReferences: true } } }
+          experimental: { racketeer: { indexStatus: true } } }
       });
       if (disposed) return;
-      extensions = capabilities?.experimental?.racketeer || {};
       await connection.sendNotification('initialized', {});
       process.ready();
       synchronized = true;
@@ -264,22 +263,17 @@ function createWorkspaceIndex(context, { executable, timeout, output, onStatus }
       }
       return edit;
     },
-    // A captured source supplies its file URI separately; its own document
-    // owns the request even if VS Code closes the underlying file document.
-    async provideReferences(document, position, options, token, next, sourceUri) {
-      if (!enabled() || (!sourceUri && !isSource(document))) return next(document, position, options, token);
+    async provideReferences(document, position, options, token, next) {
+      if (!enabled() || !isSource(document)) return next(document, position, options, token);
       if (disposed || token.isCancellationRequested) return [];
       const version = document.version, owned = documentIdentity(document);
-      const text = sourceUri && document.getText();
       try {
         await start();
         if (disposed || token.isCancellationRequested) return [];
-        if (sourceUri && !extensions.sourceReferences) return next(document, position, options, token);
-        const locations = await ask(sourceUri ? 'racketeer/sourceReferences' : 'textDocument/references', {
-          textDocument: { uri: (sourceUri || document.uri).toString() },
+        const locations = await ask('textDocument/references', {
+          textDocument: { uri: document.uri.toString() },
           position: { line: position.line, character: position.character },
-          context: { includeDeclaration: options.includeDeclaration },
-          ...(sourceUri ? { text } : {})
+          context: { includeDeclaration: options.includeDeclaration }
         }, token);
         if (locations === silent) return next(document, position, options, token);
         if (disposed || token.isCancellationRequested || version !== document.version ||

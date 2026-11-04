@@ -33,7 +33,7 @@ function serverSettings(section) {
   return { ...section, formatting };
 }
 
-function registerLanguageTools(context, debugSources) {
+function registerLanguageTools(context) {
   // The language client logs through a LogOutputChannel and follows its level.
   const output = vscode.window.createOutputChannel('Racket Language Server', { log: true });
   const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 10);
@@ -55,7 +55,6 @@ function registerLanguageTools(context, debugSources) {
   }
 
   async function stopClient() {
-    debugSources.setLanguageClient(undefined);
     await index?.dispose();
     index = undefined;
     stateListener?.dispose();
@@ -248,9 +247,6 @@ function registerLanguageTools(context, debugSources) {
     showStatus('$(sync~spin) Racket', 'Starting Racket language tools. Loading source packages can take longer on the first run or a busy machine.');
     try { await next.start(); }
     catch { return; } // The client has already reported the startup failure.
-    if (!process.cancelled && !disposed && next.isRunning()) {
-      debugSources.setLanguageClient(next, (...args) => nextIndex.provideReferences(...args));
-    }
   }
 
   function scheduleRestart() {

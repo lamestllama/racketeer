@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const assert = require('node:assert/strict');
+const { until } = require('./support/wait');
 const { removeQuietly } = require('./cleanup');
 const test = require('./support/node-test');
 const fs = require('node:fs');
@@ -12,7 +13,7 @@ const { root, definition, uri, rawServer } = require('./workspace-index-project'
 
 const invalidRequest = -32600, serverNotInitialized = -32002, requestFailed = -32803;
 const exitCode = async server => (await server.closed)[0];
-const asking = { experimental: { racketeer: { indexStatus: true, sourceReferences: true } } };
+const asking = { experimental: { racketeer: { indexStatus: true } } };
 
 function workspace(t) {
   const directory = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'racketeer-lifecycle-')));
@@ -42,7 +43,7 @@ test('initialize answers the standard capabilities and the private extensions', 
   assert.equal(capabilities.referencesProvider, true);
   assert.equal(capabilities.renameProvider, true, 'This client did not offer prepareSupport');
   assert.deepEqual(capabilities.workspace.workspaceFolders, { supported: true, changeNotifications: true });
-  assert.deepEqual(capabilities.experimental.racketeer, { version: 1, indexStatus: true, sourceReferences: true });
+  assert.deepEqual(capabilities.experimental.racketeer, { version: 1, indexStatus: true });
 });
 
 test('the design document states each capability and private message the server has', async t => {
@@ -50,7 +51,7 @@ test('the design document states each capability and private message the server 
   const server = rawServer(t);
   const { capabilities } = await initialize(server, asking);
   for (const name of Object.keys(capabilities)) assert.ok(design.includes(`\`${name}`), name);
-  for (const name of ['racketeer/indexStatus', 'racketeer/sourceReferences', 'racketeer.refreshWorkspaceIndex',
+  for (const name of ['racketeer/indexStatus', 'racketeer.refreshWorkspaceIndex',
     'racket-langserver.workspaceAnalysis', capabilities.positionEncoding]) assert.ok(design.includes(`\`${name}\``), name);
 });
 
@@ -141,19 +142,6 @@ test('shutdown answers a request still waiting for settings, which a client clos
   assert.notEqual(answers[1], 'still waiting');
   assert.equal(answers.find(answer => answer.id === 'refs').error.code, invalidRequest);
   assert.equal(answers.find(answer => answer.id === 'stop').result, null);
-});
-
-test('a captured source answers references privately while its text is the file\'s', async t => {
-  const directory = workspace(t), server = rawServer(t);
-  await initialize(server, {}, directory);
-  const request = (id, text) => ({ id, method: 'racketeer/sourceReferences', params: {
-    textDocument: { uri: uri(path.join(directory, 'definition.rkt')) },
-    position: { line: 2, character: 10 }, context: { includeDeclaration: true }, text } });
-  server.send(request(1, definition));
-  const same = await server.next();
-  assert.ok(same.result.length, 'The file holds this text');
-  server.send(request(2, definition + '; changed\n'));
-  assert.equal((await server.next()).error.code, -32801);
 });
 
 test('a client without documentChanges receives a plain WorkspaceEdit', async t => {

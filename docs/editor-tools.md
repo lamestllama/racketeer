@@ -30,14 +30,6 @@ and documentation when available. Outline uses the native document-symbol
 view. These services use the editor's current source without running the file's
 ordinary body; compile-time code can execute during analysis.
 
-## References from debugger sources
-
-Find All References works from captured debugger sources, including references
-in unopened workspace files. The request stays with the captured source if
-VS Code closes or reopens the underlying file document during indexing. Open
-buffers remain authoritative; changed source text, cancellation and session
-termination prevent stale results from appearing.
-
 ## New documents before saving
 
 The bundled language server supports untitled Racket documents as upstream
@@ -213,14 +205,10 @@ leaves all but each line's leading space alone. Syntax highlighting, bracket mat
 commenting and two-space indentation also work before the server is ready, and common
 built-in procedures have basic syntax colouring before server analysis completes.
 
-The server supplies semantic highlighting and documentation for ordinary files and
-matching captured debugger sources: for example, `values` is highlighted as a procedure.
-A stop shows the file itself until a saved edit leaves the running text behind. It then
-shows a captured source with that text and basic colouring; language-server results are
-used only when the two versions match.
-Captured debugger sources support hover, Go to Definition and Find References. Navigation
-opens current project files. These features are disabled for that view if its file changes
-or the debug session ends.
+The server supplies semantic highlighting and documentation for ordinary files: for
+example, `values` is highlighted as a procedure. A stop shows the file itself until a saved
+edit leaves the running text behind. It then shows a captured source with that text and
+basic colouring, with no language-server results.
 
 The language server analyses a document 250 ms after its last edit, so typing does not
 start an analysis at every keystroke. Hover, definition, references and the other requests

@@ -182,7 +182,7 @@ function languageTools(executable, starts) {
     './workspace-index': { createWorkspaceIndex: () => ({ cancelStart() {}, async dispose() {} }) },
     './language-process': { ownedArgs: () => [], createLanguageProcess: () => ({ start: async () => { starts.push(executable); },
       cancelStart() {}, ready() {}, dispose: async () => {} }) }
-  }).registerLanguageTools({ subscriptions: [], asAbsolutePath: value => value }, { setLanguageClient() {} });
+  }).registerLanguageTools({ subscriptions: [], asAbsolutePath: value => value });
   return { commands, errors, statuses, tools };
 }
 

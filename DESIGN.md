@@ -474,15 +474,14 @@ the last count and ends straight away. Once the pass has found its files, each
 value carries the share analysed as `percentage` and the count as `message`, such as
 `12/53`. Partial results are not used, since a result is valid only once its pass settles.
 
-Two things have no standard form, so they stay private. They are named under
-`racketeer/`, and negotiated under `experimental`, where a client asks with
-`{ racketeer: { indexStatus: true, sourceReferences: true } }` and the server answers with
-those members and `version: 1`. A generic client asks for neither and sees a standard server.
+One thing has no standard form, so it stays private. It is named under `racketeer/`, and
+negotiated under `experimental`, where a client asks with `{ racketeer: { indexStatus: true } }`
+and the server answers with that member and `version: 1`. A generic client does not ask and
+sees a standard server.
 
 | Message | Direction | Purpose |
 | --- | --- | --- |
 | `racketeer/indexStatus` | Server to client, when asked | The final state of a pass, `{ state, indexed, total, failures }`: `ready`, `partial`, `disabled`, or `outdated` when it was stopped before it finished. |
-| `racketeer/sourceReferences` | Client to server, when offered | `ReferenceParams` plus `text`: references for a captured debugger source, answered only while that text is the file's current source. |
 
 The VS Code client adds two policies of its own. It starts the server at the first request,
 so a workspace where nobody asks has no index process. It sends file events at once only for

@@ -35,7 +35,6 @@
 
 (define operations
   (hash "textDocument/references" 'references
-        "racketeer/sourceReferences" 'references
         "textDocument/prepareRename" 'prepare-rename
         "textDocument/rename" 'rename))
 
@@ -60,7 +59,7 @@
                                       #t)
                   'executeCommandProvider (hasheq 'commands (list refresh-command))
                   'workspace (hasheq 'workspaceFolders (hasheq 'supported #t 'changeNotifications #t))
-                  'experimental (hasheq 'racketeer (hasheq 'version 1 'indexStatus #t 'sourceReferences #t)))
+                  'experimental (hasheq 'racketeer (hasheq 'version 1 'indexStatus #t)))
           'serverInfo (hasheq 'name "racketeer-workspace-index")))
 
 (define (workspace-roots params)
@@ -328,11 +327,9 @@
                  'includeDeclaration (capability params 'context 'includeDeclaration)
                  'newName (hash-ref params 'newName #f)))
        (define bound
-         (if (equal? method "racketeer/sourceReferences")
-             (hash-set common 'text (hash-ref params 'text))
-             (hash-set* common
-                        'identity (and document (hash-ref document 'identity))
-                        'version (and document (hash-ref document 'version)))))
+         (hash-set* common
+                    'identity (and document (hash-ref document 'identity))
+                    'version (and document (hash-ref document 'version))))
        (define applied settled)
        (define cancel (make-semaphore))
        (hash-set! pending id cancel)

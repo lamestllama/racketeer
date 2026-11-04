@@ -135,8 +135,6 @@ From the editor context menu or the Command Palette:
 | **Racket: Set Variable Value** | At a variable | Assigns to the variable under the cursor with `set!`. |
 | **Racket: Cancel Evaluation** | While evaluating | Interrupts a blocked console, watch, condition or logpoint evaluation. |
 
-Hover, Go to Definition and Find References also work in captured debugger sources while they match the file on disk.
-
 **Good to know:** evaluation and assignment take real effect, and cancelling does not roll anything back. Cancellation is cooperative, so code that disables or catches breaks may keep running; **Stop** still ends it. Automatic inspection does not force promises, call custom writers or invoke wrapped accessors, so evaluate an expression in the console to run them. Imported bindings keep Racket's assignment protections. A stopped program's source stays available if its file is edited; start a new session to debug the edited version.
 
 Details: [Evaluation and values](https://github.com/lamestllama/racketeer/blob/main/docs/debugger.md#evaluation-and-values) and [debugger features](https://github.com/lamestllama/racketeer/blob/main/docs/debugger.md).

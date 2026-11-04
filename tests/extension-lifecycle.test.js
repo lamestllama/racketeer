@@ -487,7 +487,7 @@ for (const mode of ['cancel', 'reject', 'timeout']) test({
       assert.equal(lifecycle.timeout, mode === 'timeout' ? 1000 : mode === 'cancel' ? 240000 : 180000);
       return createLanguageProcess(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {}, lifecycle);
     } }
-  }).registerLanguageTools({ subscriptions: [], asAbsolutePath: value => value }, { setLanguageClient() {} });
+  }).registerLanguageTools({ subscriptions: [], asAbsolutePath: value => value });
   t.after(() => language.dispose());
   const first = commands.get('racketdap.restartLanguageServer')();
   while (!starting.length) await Promise.resolve();

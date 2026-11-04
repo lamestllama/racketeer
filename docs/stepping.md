@@ -74,8 +74,7 @@ Continuation transfers outside a step target are identified in the stop descript
 
 A stop shows the source file itself while the file holds the text that is running.
 Once a saved edit leaves that text behind, the stop shows it in a read-only captured
-source tab, until the contents match again or debugging restarts. Language-server
-results are used only while a captured source matches the current file. An unsaved
+source tab, until the contents match again or debugging restarts. An unsaved
 edit does not count, so a stop's line numbers then refer to the saved text.
 
 A breakpoint set in the file after a saved edit stays unverified until a restart, because

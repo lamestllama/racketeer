@@ -135,7 +135,7 @@ async function project(t, env = {}, shared) {
     capabilities: { window: { workDoneProgress: true }, textDocument: { rename: { prepareSupport: true } },
       workspace: { configuration: true, workspaceEdit: { documentChanges: true },
         didChangeWatchedFiles: { dynamicRegistration: true } },
-      experimental: { racketeer: { indexStatus: true, sourceReferences: true } } } });
+      experimental: { racketeer: { indexStatus: true } } } });
   await notify('initialized', {});
   await update();
   return { child, servers, directory, documents, notifications, progress, filename, write, open, origin, update, references, rename, settings, roots, notify,

@@ -81,7 +81,7 @@ function fixture(initialDocuments = [], source = 'bundled', magic) {
     } }
   };
   vm.runInNewContext(fs.readFileSync(filename, 'utf8'), { module, require: name => name === './selected-editor' ? require('../vscode/selected-editor') : dependencies[name] }, { filename });
-  const language = module.exports.registerLanguageTools(context, { setLanguageClient() {} });
+  const language = module.exports.registerLanguageTools(context);
   return { language, vscode, status, clients, indexes, processes, opened, active, changed, commands, context,
     setSettings(value) { settings = value; },
     setEnabled(value) { enabled = value; changed.emit({ affectsConfiguration: key => key === 'racketdap.languageServer' }); } };

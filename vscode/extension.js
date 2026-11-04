@@ -42,7 +42,7 @@ function activate(context) {
   registerFileCommands(context, sessions, testing, registerDebugRepl(sessions, interactions), registerFileRuns(sessions, interactions));
   const debugSources = registerDebugSources(context);
   registerDebugActions(context, debugSources);
-  languageTools = registerLanguageTools(context, debugSources);
+  languageTools = registerLanguageTools(context);
   const provider = {
     provideDebugConfigurations() {
       return [{ type: 'racketdap', request: 'launch', name: 'Debug Racket file', program: '${file}', stopOnEntry: true }];
