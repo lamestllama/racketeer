@@ -164,6 +164,6 @@ exports.run = async function (extension, workspace) {
   } finally {
     context.subscriptions.reverse().forEach(item => item.dispose());
     await settings.update('testing.include', previous, vscode.ConfigurationTarget.Workspace);
-    fs.rmSync(directory, { recursive: true, force: true });
+    fs.rmSync(directory, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
   }
 };

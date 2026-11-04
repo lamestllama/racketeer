@@ -98,7 +98,7 @@ exports.run = async function (workspace, interact) {
   } finally {
     vscode.debug.removeBreakpoints(breakpoints);
     for (const session of sessions) if (!ended.has(session.id)) await vscode.debug.stopDebugging(session);
-    tracker.dispose(); await fs.rm(directory, { recursive: true, force: true });
+    tracker.dispose(); await fs.rm(directory, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
     await files.update('eol', eol, vscode.ConfigurationTarget.Global);
   }
 };
