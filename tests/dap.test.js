@@ -125,7 +125,8 @@ test('Unicode byte framing and captured source survive editing the file during a
   const top = await frame(client, stopped);
   assert.equal(top.column, 2);
   await fs.writeFile(program, '#lang racket/base\n');
-  const captured = await ok(client.request('source', { sourceReference: top.source.sourceReference }));
+  const edited = await frame(client, stopped);
+  const captured = await ok(client.request('source', { sourceReference: edited.source.sourceReference }));
   assert.equal(captured.content, source.replaceAll('\r\n', '\n'));
   assert.equal(captured.mimeType, 'text/x-racket');
   assert.equal((await ok(client.request('evaluate', { frameId: top.id, expression: '"😀λ"', context: 'repl' }, true))).result, '"😀λ"');

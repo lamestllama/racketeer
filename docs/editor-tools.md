@@ -215,8 +215,9 @@ built-in procedures have basic syntax colouring before server analysis completes
 
 The server supplies semantic highlighting and documentation for ordinary files and
 matching captured debugger sources: for example, `values` is highlighted as a procedure.
-If the file is edited while debugging, the captured source keeps its original text and
-basic colouring; language-server results are used only when the two versions match.
+A stop shows the file itself until a saved edit leaves the running text behind. It then
+shows a captured source with that text and basic colouring; language-server results are
+used only when the two versions match.
 Captured debugger sources support hover, Go to Definition and Find References. Navigation
 opens current project files. These features are disabled for that view if its file changes
 or the debug session ends.

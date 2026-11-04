@@ -267,7 +267,14 @@ test('captured source ownership gates Continue to Cursor and output does not upd
       activeDebugSession: session, activeStackItem: { session, threadId: 1, frameId: 2 },
       registerDebugAdapterTrackerFactory(_type, factory) { factories.push(factory); return disposable(); },
       onDidChangeActiveDebugSession: disposable, onDidTerminateDebugSession: terminated.subscribe,
-      asDebugSourceUri: () => uri
+      asDebugSourceUri: () => uri,
+      breakpoints: [
+        { location: { uri: { scheme: 'debug', query: 'session=B&ref=1' } } },
+        { location: { uri: { scheme: 'debug', query: 'session=C&ref=1' } } },
+        { location: { uri: { scheme: 'file', query: '' } } },
+        { functionName: 'no location' }
+      ],
+      removeBreakpoints(removed) { vscode.debug.breakpoints = vscode.debug.breakpoints.filter(item => !removed.includes(item)); }
     },
     window: { showErrorMessage() {}, activeTextEditor: { document: { uri }, selection: { active: { line: 8, character: 2 } } } },
     workspace: { onDidChangeTextDocument: disposable },
@@ -285,6 +292,16 @@ test('captured source ownership gates Continue to Cursor and output does not upd
   assert.equal(sources.pathFor(uri), target.program);
   assert.equal(sources.pathFor(uri, 'A'), undefined);
   assert.equal(sources.pathFor(uri, 'B'), target.program);
+  const framed = factories[0].createDebugAdapterTracker({ id: 'C' });
+  const frameOf = sourceReference => ({ type: 'response', command: 'stackTrace',
+    body: { stackFrames: [{ source: { path: target.program, sourceReference } }, {}] } });
+  terminated.fire({ id: 'B' });
+  assert.deepEqual(vscode.debug.breakpoints.map(item => item.location?.uri.query), ['session=C&ref=1', '', undefined],
+    'A session takes only its own captured breakpoints with it');
+  framed.onDidSendMessage(frameOf(0));
+  assert.equal(sources.pathFor(uri, 'C'), undefined, 'A file needs no captured source');
+  framed.onDidSendMessage(frameOf(1));
+  assert.equal(sources.pathFor(uri, 'C'), target.program, 'A saved edit gives its session a captured source');
   load('debug-actions.js', { vscode }).registerDebugActions(context, sources);
   const tracker = factories[1].createDebugAdapterTracker(session);
   tracker.onDidSendMessage({ type: 'event', event: 'stopped', body: { threadId: 1, racketdapActions: ['racketdap/continueToLocation'] } });

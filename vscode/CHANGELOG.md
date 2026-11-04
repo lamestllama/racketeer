@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.8.52
+
+- Debugging a file no longer opens a second, read-only copy of it in a new tab on every run. A stop shows the file itself, with its own breakpoints. A read-only captured copy appears only when a saved edit has left the running text behind, or for a WXME document.
+- Pressing F9 on a breakpoint removes it, however the file was named: a breakpoint no longer moves to the name the debugger loaded the file under, which added another one on the same line.
+- A breakpoint set in a captured copy ends with its session. Any left over from an earlier version can be removed from the Breakpoints view.
+- A breakpoint set in the file after a saved edit stays unverified and says to restart. It used to take its line number from the new text and apply it to the old, so the program could stop on another expression. One already placed stays where it was.
+
 ## 0.8.51
 
 - When Magic Racket's language server is what keeps Racketeer's language tools off, Racketeer offers to turn off only that server and reload the window. Magic Racket stays installed. The notice waits in the notification list until it is answered or dismissed, and is not shown again after that. A workspace's own value of the setting is changed there, so that it does not override the choice.

@@ -122,10 +122,11 @@
          (for ([target (in-list armed-sites)] #:unless (hash-ref still-wanted target #f))
            (arm-site! target #f))
          (set! armed-sites wanted)))))
-  (define (new-breakpoint request)
-    (define bp (breakpoint (fresh-id) request '() "Pending source loading" #f 0 'before))
-    (with-handlers ([exn:fail? (lambda (e) (set-breakpoint-description! bp (exn-message e)))])
-      (set-breakpoint-rule! bp (compile-breakpoint-rule request)))
+  (define (new-breakpoint request [refusal #f])
+    (define bp (breakpoint (fresh-id) request '() (or refusal "Pending source loading") #f 0 'before))
+    (unless refusal
+      (with-handlers ([exn:fail? (lambda (e) (set-breakpoint-description! bp (exn-message e)))])
+        (set-breakpoint-rule! bp (compile-breakpoint-rule request))))
     bp)
   (define started? #f)
   (define ended? #f)
@@ -197,23 +198,30 @@
                      #:when (same-file? (source-file-path known) path))
             known)))
     (if (null? same-file) path (source-file-path (argmin source-file-id same-file))))
+  ;; An editor ties a source with a reference to its session, so each session would open
+  ;; another tab, and a breakpoint set there would outlive it. So only text the file no
+  ;; longer holds is sent by reference.
   (define (source-json source)
     (hasheq 'name (path->string (file-name-from-path (source-file-path source)))
-            'path (path->string (source-file-path source)) 'sourceReference (source-file-id source)))
+            'path (path->string (source-file-path source))
+            'sourceReference (if (source-current? source) 0 (source-file-id source))))
   (define (location source position span)
+    (hash-set (coordinates source position span) 'source (source-json source)))
+  (define (coordinates source position span)
     (define-values (line column) (source-location source position))
     (define-values (end-line end-column) (source-location source (+ (or position 1) (or span 0))))
-    (hasheq 'source (source-json source) 'line (- line (if lines-one? 0 1))
+    (hasheq 'line (- line (if lines-one? 0 1))
             'column (- column (if columns-one? 0 1))
             'endLine (- end-line (if lines-one? 0 1))
             'endColumn (- end-column (if columns-one? 0 1))))
+  ;; An answer names no source, so the client keeps the name it set the breakpoint on.
   (define (breakpoint-json bp path)
     (define targets (breakpoint-targets bp))
     (define source (hash-ref sources path #f))
     (define base (hasheq 'id (breakpoint-id bp) 'verified (pair? targets)
                          'message (breakpoint-description bp)))
     (if (and source (pair? targets))
-        (for/fold ([result base]) ([(key value) (in-hash (location source (site-boundary-position (car targets) (breakpoint-phase bp))
+        (for/fold ([result base]) ([(key value) (in-hash (coordinates source (site-boundary-position (car targets) (breakpoint-phase bp))
                                                                  (if (eq? (breakpoint-phase bp) 'after) 1 (site-span (car targets)))))])
           (hash-set result key value))
         (hash-set base 'line (arg (breakpoint-request bp) 'line 1))))
@@ -820,14 +828,22 @@
        (for-each validate-breakpoint requested)
        (with-source-lock
         (lambda ()
+         (define path (source-path (hash-ref a 'source)))
+         (unless (equal? path name) (hash-set! loaded-as name path))
+         ;; A path's lines are the file's, so they name no place in text the file no longer
+         ;; holds. A breakpoint already placed there stays where it is.
+         (define stale?
+           (and (path? name) (hash-has-key? sources path) (not (source-current? (hash-ref sources path)))))
          (define old (hash-ref breakpoints name '()))
          (define updated
            (for/list ([b (in-list requested)])
-             (define existing (findf (lambda (o) (equal? (breakpoint-request o) b)) old))
-             (or existing (new-breakpoint b))))
+             (define existing
+               (findf (lambda (o) (and (equal? (breakpoint-request o) b) (or stale? (breakpoint-rule o)))) old))
+             (or existing
+                 (if stale?
+                     (new-breakpoint b "The file has changed since it was loaded. Restart to debug the edit.")
+                     (new-breakpoint b)))))
          (hash-set! breakpoints name updated)
-         (define path (source-path (hash-ref a 'source)))
-         (unless (equal? path name) (hash-set! loaded-as name path))
          (resolve! path)
          (reply request (hasheq 'breakpoints (map (lambda (b) (breakpoint-json b path)) updated)))))]
       [(setExceptionBreakpoints)
@@ -866,7 +882,12 @@
                                                    (attach-hooks-thread-name attach)
                                                    (format "Racket thread ~a" (state-id st)))))))]
       [(source)
-       (define source (referenced-source (arg a 'sourceReference 0)))
+       ;; The protocol names a source by its path or its reference.
+       (define named (arg a 'source (hasheq)))
+       (define source
+         (if (and (hash-has-key? named 'path) (equal? (arg named 'sourceReference 0) 0))
+             (hash-ref sources (source-path named) (lambda () (error 'source "Unknown source.")))
+             (referenced-source (arg named 'sourceReference (arg a 'sourceReference 0)))))
        (reply request (hasheq 'content (source-file-text source) 'mimeType "text/x-racket"))]
       [(loadedSources) (reply request (hasheq 'sources (map source-json (hash-values sources))))]
       [(breakpointLocations)
@@ -892,8 +913,8 @@
                                                [phase (in-list (site-phases s))]
                                               #:when (site-boundary-position s phase)
                                               #:when (in-range? (site-boundary-position s phase)))
-                                     (hash-set (hash-remove (location source (site-boundary-position s phase)
-                                                                    (if (eq? phase 'after) 1 (site-span s))) 'source)
+                                     (hash-set (coordinates source (site-boundary-position s phase)
+                                                                    (if (eq? phase 'after) 1 (site-span s)))
                                                'racketdapPhase (symbol->string phase))))
                                         (lambda (left right)
                                           (or (< (hash-ref left 'line) (hash-ref right 'line))

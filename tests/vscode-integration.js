@@ -36,10 +36,11 @@ exports.run = async function () {
   const variableChecks = await stage('variables', () => require('./vscode-variables').run(workspace));
   const debuggingStarted = Date.now();
   console.log('Integration stage debugging started');
-  // Earlier stages leave captured sources of their ended sessions open. Close
-  // them, so the editor this stage expects is the only captured source.
-  await vscode.window.tabGroups.close(vscode.window.tabGroups.all.flatMap(group => group.tabs)
-    .filter(tab => tab.input?.uri?.scheme === 'debug'));
+  // The WXME stage leaves a captured source of its ended session open. Close it,
+  // so this stage can show that a stop in an unchanged file opens none.
+  const capturedTabs = () => vscode.window.tabGroups.all.flatMap(group => group.tabs)
+    .filter(tab => tab.input?.uri?.scheme === 'debug');
+  await vscode.window.tabGroups.close(capturedTabs());
   const program = path.join(workspace.uri.fsPath, 'demo.rkt');
   const document = await vscode.workspace.openTextDocument(program);
   await vscode.window.showTextDocument(document, { preview: false });
@@ -109,39 +110,61 @@ exports.run = async function () {
     const { stackFrames } = await session.customRequest('stackTrace', { threadId: stopped.body.threadId });
     assert.equal(stackFrames[0].line, 4);
     const frameId = stackFrames[0].id;
-    const capturedUri = vscode.debug.asDebugSourceUri(stackFrames[0].source, session).toString();
-    // The debugger shows the stopped frame's captured source. Whether its
-    // editor also takes focus depends on the window having focus, which a
-    // macOS runner's window need not have; focus it before using it.
+    const stoppedUri = vscode.debug.asDebugSourceUri(stackFrames[0].source, session).toString();
+    assert.equal(stoppedUri, document.uri.toString(), 'A stop in an unchanged file shows the file');
+    // Whether its editor also takes focus depends on the window having focus,
+    // which a macOS runner's window need not have; focus it before using it.
     const shown = await waitUntil(() => vscode.window.visibleTextEditors.find(editor =>
-      editor.document.uri.toString() === capturedUri), 'debugger opens captured source');
-    const capturedEditor = await vscode.window.showTextDocument(shown.document, { viewColumn: shown.viewColumn, preview: false });
-    assert.equal(capturedEditor.document.languageId, 'racket', 'Captured source enables Racket breakpoint controls');
-    const capturedDocument = capturedEditor.document;
-    const highlightedValues = async () => (await semanticTokens(capturedDocument))
+      editor.document.uri.toString() === stoppedUri), 'debugger opens the stopped file');
+    const stoppedEditor = await vscode.window.showTextDocument(shown.document, { viewColumn: shown.viewColumn, preview: false });
+    assert.equal(stoppedEditor.document.languageId, 'racket', 'The stopped file enables Racket breakpoint controls');
+    const stoppedDocument = stoppedEditor.document;
+    const highlightedValues = async () => (await semanticTokens(stoppedDocument))
       .some(token => token.text === 'values' && token.type === 'function');
     const languageDeadline = Date.now() + 20000;
     while (!await highlightedValues()) {
-      assert.ok(Date.now() < languageDeadline, 'Captured source receives semantic function highlighting');
+      assert.ok(Date.now() < languageDeadline, 'The stopped file receives semantic function highlighting');
       await new Promise(resolve => setTimeout(resolve, 100));
     }
     const valuesPosition = new vscode.Position(4, 4);
-    const snapshotHover = await vscode.commands.executeCommand('vscode.executeHoverProvider', capturedDocument.uri, valuesPosition);
+    const snapshotHover = await vscode.commands.executeCommand('vscode.executeHoverProvider', stoppedDocument.uri, valuesPosition);
     assert.ok(snapshotHover.some(item => item.contents.some(content => /values/.test(content.value || content))),
-      'Captured source receives language-server documentation');
+      'The stopped file receives language-server documentation');
     const callPosition = new vscode.Position(7, 31);
-    const definitions = await vscode.commands.executeCommand('vscode.executeDefinitionProvider', capturedDocument.uri, callPosition);
+    const definitions = await vscode.commands.executeCommand('vscode.executeDefinitionProvider', stoppedDocument.uri, callPosition);
     assert.ok(definitions.some(item => (item.targetUri || item.uri).fsPath === program &&
-      (item.targetSelectionRange || item.range).start.line === 2), 'Captured source navigates to the function definition');
+      (item.targetSelectionRange || item.range).start.line === 2), 'The stopped file navigates to the function definition');
     await waitUntil(async () => {
-      const references = await vscode.commands.executeCommand('vscode.executeReferenceProvider', capturedDocument.uri, callPosition);
+      const references = await vscode.commands.executeCommand('vscode.executeReferenceProvider', stoppedDocument.uri, callPosition);
       referenceLocations = references;
       return references.some(item => item.uri.fsPath === program && item.range.start.line === 7);
-    }, 'captured source finds function references');
+    }, 'the stopped file finds function references');
+    // A saved edit leaves the running text behind. The stop then names that text by
+    // reference, and it has no language results, which belong to the file's new text.
     const originalText = document.getText();
+    const originalEnd = document.positionAt(originalText.length);
     const changedSource = new vscode.WorkspaceEdit();
-    changedSource.insert(document.uri, new vscode.Position(0, 0), '; unsaved change while debugging\n');
+    changedSource.insert(document.uri, originalEnd, '; saved while debugging\n');
     assert.equal(await vscode.workspace.applyEdit(changedSource), true);
+    await document.save();
+    const staleFrame = (await session.customRequest('stackTrace', { threadId: stopped.body.threadId })).stackFrames[0];
+    assert.ok(staleFrame.source.sourceReference > 0, 'A saved edit makes the stop name its running text by reference');
+    const capturedDocument = await vscode.workspace.openTextDocument(vscode.debug.asDebugSourceUri(staleFrame.source, session));
+    assert.equal(capturedDocument.getText(), originalText);
+    // Its gutter works on the running text, and a breakpoint there ends with the session.
+    const capturedEditor = await vscode.window.showTextDocument(capturedDocument, { preview: false, selection: new vscode.Range(3, 0, 3, 0) });
+    assert.equal(capturedEditor.document.languageId, 'racket', 'A captured source enables Racket breakpoint controls');
+    const inCaptured = () => vscode.debug.breakpoints.filter(bp => bp.location?.uri.scheme === 'debug');
+    const answersBefore = messages.length;
+    await vscode.commands.executeCommand('workbench.action.focusActiveEditorGroup');
+    await vscode.commands.executeCommand('editor.debug.action.toggleBreakpoint');
+    await waitUntil(() => inCaptured().length === 1, 'F9 adds breakpoint in a captured source');
+    await waitUntil(() => messages.slice(answersBefore).some(m => m.type === 'response' && m.command === 'setBreakpoints' &&
+      m.success && m.body.breakpoints.some(bp => bp.verified && bp.line === 4)), 'adapter verifies a captured source breakpoint');
+    await vscode.commands.executeCommand('editor.debug.action.toggleBreakpoint');
+    await waitUntil(() => inCaptured().length === 0, 'F9 removes breakpoint in a captured source');
+    vscode.debug.addBreakpoints([new vscode.SourceBreakpoint(new vscode.Location(capturedDocument.uri, new vscode.Position(4, 0)), true, '#f')]);
+    await waitUntil(() => inCaptured().length === 1, 'a captured source breakpoint is listed');
     assert.deepEqual(await semanticTokens(capturedDocument), [], 'Mismatched source cannot supply semantic tokens');
     assert.deepEqual(await vscode.commands.executeCommand('vscode.executeHoverProvider', capturedDocument.uri, valuesPosition), [],
       'Mismatched source cannot supply hover documentation');
@@ -150,20 +173,25 @@ exports.run = async function () {
         'Mismatched source cannot supply navigation locations');
     }
     const restore = new vscode.WorkspaceEdit();
-    restore.replace(document.uri, new vscode.Range(document.positionAt(0), document.positionAt(document.getText().length)), originalText);
+    restore.delete(document.uri, new vscode.Range(originalEnd, document.positionAt(document.getText().length)));
     assert.equal(await vscode.workspace.applyEdit(restore), true);
+    assert.equal(document.getText(), originalText);
     await document.save();
+    await waitUntil(async () => (await vscode.commands.executeCommand('vscode.executeHoverProvider', capturedDocument.uri, valuesPosition))
+      .some(item => item.contents.some(content => /values/.test(content.value || content))),
+    'A captured source matching its file receives language results');
     const atReturn = bp => bp instanceof vscode.SourceBreakpoint &&
-      bp.location.uri.toString() === capturedUri && bp.location.range.start.line === 4;
-    await vscode.window.showTextDocument(capturedDocument, { selection: new vscode.Range(4, 0, 4, 0) });
+      bp.location.uri.toString() === stoppedUri && bp.location.range.start.line === 4;
+    const answersBeforeF9 = messages.length;
+    await vscode.window.showTextDocument(stoppedDocument, { selection: new vscode.Range(4, 0, 4, 0) });
     await vscode.commands.executeCommand('workbench.action.focusActiveEditorGroup');
     await vscode.commands.executeCommand('editor.debug.action.toggleBreakpoint');
-    await waitUntil(() => vscode.debug.breakpoints.some(atReturn), 'F9 adds breakpoint in captured source');
-    await waitUntil(() => messages.some(m => m.type === 'response' && m.command === 'setBreakpoints' &&
+    await waitUntil(() => vscode.debug.breakpoints.some(atReturn), 'F9 adds breakpoint in the stopped file');
+    await waitUntil(() => messages.slice(answersBeforeF9).some(m => m.type === 'response' && m.command === 'setBreakpoints' &&
       m.success && m.body.breakpoints.some(bp => bp.verified && bp.line === 5)),
       'adapter verifies the breakpoint added by F9');
     await vscode.commands.executeCommand('editor.debug.action.toggleBreakpoint');
-    await waitUntil(() => !vscode.debug.breakpoints.some(atReturn), 'F9 removes breakpoint in captured source');
+    await waitUntil(() => !vscode.debug.breakpoints.some(atReturn), 'F9 removes breakpoint in the stopped file');
     assert.equal((await session.customRequest('evaluate', { frameId, context: 'repl', expression: '(+ subtotal 20)' })).result, '120');
     const blocked = session.customRequest('evaluate', {
       frameId, context: 'repl', expression: '(begin (displayln "waiting") (flush-output) (sync never-evt))'
@@ -181,7 +209,7 @@ exports.run = async function () {
     assert.equal(after.stackFrames[0].endColumn, after.stackFrames[0].column + 1);
     // By its document: while the window has no focus, the active editor can be another group's.
     await waitUntil(() => {
-      const editor = vscode.window.visibleTextEditors.find(visible => visible.document.uri.toString() === capturedUri);
+      const editor = vscode.window.visibleTextEditors.find(visible => visible.document.uri.toString() === stoppedUri);
       return editor && editor.selection.start.line === 3 &&
         editor.selection.start.character === after.stackFrames[0].column - 1;
     }, 'editor selects the closing parenthesis after evaluation');
@@ -214,6 +242,10 @@ exports.run = async function () {
     assert.equal((await session.customRequest('evaluate', { context: 'repl', expression: '(+ 40 2)' })).result, '42');
     await vscode.debug.stopDebugging(session);
     await event('terminated');
+    await waitUntil(() => inCaptured().length === 0, 'A captured source keeps no breakpoint after its session');
+    assert.deepEqual(await vscode.commands.executeCommand('vscode.executeDefinitionProvider', capturedDocument.uri, callPosition), [],
+      'A completed session no longer supplies navigation from its captured sources');
+    await vscode.window.tabGroups.close(capturedTabs());
     vscode.debug.removeBreakpoints([breakpoint]);
     messages.length = 0;
     assert.equal(await vscode.debug.startDebugging(workspace, {
@@ -234,7 +266,7 @@ exports.run = async function () {
     const multiDocument = await vscode.workspace.openTextDocument(multiProgram);
     await vscode.window.showTextDocument(multiDocument);
     assert.equal(await vscode.debug.startDebugging(workspace, {
-      type: 'racketdap', request: 'launch', name: 'Captured source navigation',
+      type: 'racketdap', request: 'launch', name: 'Navigation at a stop',
       program: multiProgram, stopOnEntry: true
     }), true);
     const multiStop = await event('stopped');
@@ -243,22 +275,22 @@ exports.run = async function () {
     assert.equal(multiStop.body.reason, 'entry');
     assert.equal(multiFrames[0].line, 10, 'Entry starts at the call inside main');
     const multiUri = vscode.debug.asDebugSourceUri(multiFrames[0].source, multiSession);
-    const multiCaptured = await vscode.workspace.openTextDocument(multiUri);
-    await vscode.window.showTextDocument(multiCaptured, { preview: false });
+    const multiStopped = await vscode.workspace.openTextDocument(multiUri);
+    await vscode.window.showTextDocument(multiStopped, { preview: false });
     const orderCall = new vscode.Position(5, 35);
     const ordersPath = path.join(workspace.uri.fsPath, 'multi-file/app/orders.rkt');
     await waitUntil(async () => {
       const locations = await vscode.commands.executeCommand('vscode.executeDefinitionProvider', multiUri, orderCall);
       return locations.some(item => (item.targetUri || item.uri).fsPath === ordersPath &&
         (item.targetSelectionRange || item.range).start.line === 4);
-    }, 'captured source navigates to an imported function');
+    }, 'the stopped file navigates to an imported function');
     await waitUntil(async () => {
       const references = await vscode.commands.executeCommand('vscode.executeReferenceProvider', multiUri, orderCall);
       referenceLocations = references;
       return references.some(item => item.uri.fsPath === multiProgram && item.range.start.line === 5) &&
         references.some(item => item.uri.fsPath === ordersPath && item.range.start.line === 4) &&
         references.some(item => item.uri.fsPath === unopenedConsumer && item.range.start.line === 2);
-    }, 'captured source finds references in unopened files');
+    }, 'the stopped file finds references in unopened files');
     assert.ok(!vscode.workspace.textDocuments.some(item => item.uri.fsPath === unopenedConsumer));
     let stepStop = multiStop;
     for (const [command, file, line, kind] of [
@@ -282,9 +314,7 @@ exports.run = async function () {
     await vscode.debug.stopDebugging(multiSession);
     await event('terminated');
     await waitUntil(() => vscode.debug.activeDebugSession?.id !== multiSession.id, 'navigation session ends');
-    assert.equal(multiCaptured.isClosed, false, 'Keep captured source open to test navigation after termination');
-    assert.deepEqual(await vscode.commands.executeCommand('vscode.executeDefinitionProvider', multiUri, orderCall), [],
-      'A completed session no longer supplies navigation from its captured sources');
+    assert.deepEqual(capturedTabs().map(tab => tab.label), [], 'Stops in unchanged files open no captured copies');
     messages.length = 0;
     assert.equal(await vscode.debug.startDebugging(workspace, {
       type: 'racketdap', request: 'launch', name: 'Debug initialization',
@@ -355,7 +385,7 @@ exports.run = async function () {
     const ownershipProgram = path.join(workspace.uri.fsPath, 'source-ownership.rkt');
     const ownershipSessions = [];
     try {
-      let firstCaptured;
+      let firstThread;
       for (const [index, source] of [
         '#lang racket/base\n(define value (+ 1 2))\n(displayln value)\n',
         '#lang racket/base\n; a different captured version\n(define value (+ 4 5))\n(displayln value)\n'
@@ -380,8 +410,11 @@ exports.run = async function () {
           await vscode.commands.executeCommand('workbench.action.debug.nextConsole');
           await waitUntil(() => vscode.debug.activeDebugSession?.id !== previous, 'debug console selects the next session');
         }
-        if (index === 0) firstCaptured = vscode.debug.asDebugSourceUri(ownerFrames.stackFrames[0].source, owner);
+        if (index === 0) firstThread = ownerStop.body.threadId;
         else {
+          // The second save left the first session's running text behind.
+          const firstFrames = await ownershipSessions[0].customRequest('stackTrace', { threadId: firstThread });
+          const firstCaptured = vscode.debug.asDebugSourceUri(firstFrames.stackFrames[0].source, ownershipSessions[0]);
           const foreignEditor = await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(firstCaptured));
           foreignEditor.selection = new vscode.Selection(2, 0, 2, 0);
           assert.equal(vscode.debug.activeDebugSession.id, owner.id);
@@ -395,9 +428,9 @@ exports.run = async function () {
     }
     const report = { passed: true, extension: extension.id, version: extension.packageJSON.version,
       vscode: vscode.version, checks: [...languageChecks, ...macroChecks, ...rhombusChecks, ...workflowChecks, ...testExplorerChecks, ...packageChecks, ...applicationChecks, ...applicationLogChecks, ...imageChecks, ...plotChecks, ...wxmeChecks, ...variableChecks, 'activation', 'language registration', 'gutter breakpoint', 'stack',
-        'captured source language', 'F9 adds verified breakpoint in captured source', 'F9 removes breakpoint',
-        'captured source semantic highlighting', 'captured source language hover', 'stale source excludes language results',
-        'captured source definitions and references across unopened files', 'completed session excludes source navigation',
+        'stopped file language', 'F9 adds verified breakpoint in the stopped file', 'F9 removes breakpoint',
+        'stopped file semantic highlighting', 'stopped file language hover', 'captured source after a saved edit excludes language results', 'captured source breakpoints end with the session', 'completed session excludes source navigation',
+        'stopped file definitions and references across unopened files', 'stops in unchanged files open no captured copies',
         'editor Step Into reaches the callee initializer', 'editor Step Over advances through internal definitions',
         'editor Step Out returns to the caller',
         'return marker and value count distinguish expression completion',

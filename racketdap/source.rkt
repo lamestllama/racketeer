@@ -2,7 +2,7 @@
 ;; Copyright (c) 2026 Eric Parsonage
 ;; SPDX-License-Identifier: Apache-2.0 OR MIT
 (require racket/file racket/path racket/string racket/list "instrumentation/instrument.rkt")
-(provide (struct-out source-file) capture-source source-location choose-sites same-file? make-within?)
+(provide (struct-out source-file) capture-source source-current? source-location choose-sites same-file? make-within?)
 (struct source-file (path text id starts) #:transparent)
 ;; A path can name a file through a symbolic link or in another case, so two spellings
 ;; name one file when the file system says so. Identity is read each time, because saving
@@ -26,13 +26,28 @@
                      (let-values ([(parent _name _directory?) (split-path path)])
                        (and (path? parent) (within? parent)))))))
   within?)
+;; Racket counted positions treat CRLF as one character.
+(define (counted-text text) (regexp-replace* #rx"\r\n" text "\n"))
 (define (capture-source path id #:text [loaded-text #f])
-  ;; Racket counted positions treat CRLF as one character.
-  (define text (regexp-replace* #rx"\r\n" (or loaded-text (file->string path)) "\n"))
+  (define text (counted-text (or loaded-text (file->string path))))
   (source-file path text id
                (list->vector
                 (cons 0 (for/list ([c (in-string text)] [i (in-naturals)] #:when (char=? c #\newline))
                           (add1 i))))))
+;; Whether the file still holds the captured text. A WXME document's text is never its file's.
+;; Every source reported asks, so the file is read again only when its date or size changes.
+(define current-answers (make-weak-hasheq))
+(define (source-current? source)
+  (with-handlers ([exn:fail? (lambda (_) #f)])
+    (define stat (file-or-directory-stat (source-file-path source)))
+    (define key (cons (hash-ref stat 'modify-time-nanoseconds) (hash-ref stat 'size)))
+    (define known (hash-ref current-answers source #f))
+    (cond
+      [(and known (equal? (car known) key)) (cdr known)]
+      [else
+       (define answer (equal? (source-file-text source) (counted-text (file->string (source-file-path source)))))
+       (hash-set! current-answers source (cons key answer))
+       answer])))
 (define (source-location source position [one-based? #t])
   (define offset (min (string-length (source-file-text source)) (max 0 (sub1 (or position 1)))))
   (define starts (source-file-starts source))

@@ -60,6 +60,7 @@ test('a request by reference leaves the breakpoints set by path', async t => {
   await session({ program: path.join(real, 'main.rkt'), cwd: real }, { [dep]: [4] }, async context => {
     const { client, ok } = context;
     let stopped = await client.event('stopped');
+    fs.appendFileSync(dep, '; saved during the stop\n');
     const frame = await top(context, stopped.body.threadId);
     lines.push(frame.line);
     assert.ok(frame.source.sourceReference > 0);
@@ -87,7 +88,10 @@ test('a request by path leaves the breakpoints set by reference, and each clears
       return next;
     };
     let stopped = await client.event('stopped');
+    // A saved edit gives the source a reference, and saving the old text lets a path name it again.
+    fs.appendFileSync(dep, '; saved during the stop\n');
     const frame = await top(context, stopped.body.threadId);
+    fs.writeFileSync(dep, fourCalls['dep.rkt']);
     lines.push(frame.line);
     await ok(client.request('setBreakpoints', { source: frame.source, breakpoints: [{ line: 5 }] }));
     stopped = await resume(stopped);

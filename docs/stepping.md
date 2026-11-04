@@ -72,10 +72,15 @@ whole function. Tail calls have no artificial return boundary: stepping over a t
 expression follows the enclosing return context and can finish the program.
 Continuation transfers outside a step target are identified in the stop description.
 
-Hover, Go to Definition, and Find References also work in captured debugger
-sources. Navigation opens the current project files. Language-server results
-are used only while the captured source matches the current file; editing that
-file suspends these features until the contents match again or debugging restarts.
+A stop shows the source file itself while the file holds the text that is running.
+Once a saved edit leaves that text behind, the stop shows it in a read-only captured
+source tab, until the contents match again or debugging restarts. Language-server
+results are used only while a captured source matches the current file. An unsaved
+edit does not count, so a stop's line numbers then refer to the saved text.
+
+A breakpoint set in the file after a saved edit stays unverified until a restart, because
+its line is in text that is not running. One already placed stays where it was. A breakpoint
+set in a captured source tab works on the running text and ends with the session.
 
 Internal definitions expand into binding containers whose source range can
 cover the whole function. Those generated containers are not separate stepping

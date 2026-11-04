@@ -64,7 +64,7 @@ Details: [Run, Debug, Test and REPL execution](https://github.com/lamestllama/ra
 
 Stop a program on a line, or at a call or form within one, in any file of the workspace or a chosen package, and look at what it holds.
 
-Click the gutter to the left of a line number, press **F9** or right-click and choose **Add Breakpoint**. Press F9 again to remove it. This works in the source file and in the captured source tab the debugger opens.
+Click the gutter to the left of a line number, press **F9** or right-click and choose **Add Breakpoint**. Press F9 again to remove it. This works in the source file, and in the read-only captured source tab the debugger opens once a saved edit has left the running text behind. A breakpoint set in the file after such an edit stays unverified until you restart, and one set in the captured source tab ends with the session.
 
 - A breakpoint binds to the outermost expression that begins on its line. Use an inline breakpoint to choose a later expression on the line. On the final character of a non-tail expression, an inline breakpoint stops after that expression returns.
 - **Racket: Continue to Cursor** runs to one chosen point, once, and keeps ordinary breakpoints in force.

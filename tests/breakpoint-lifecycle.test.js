@@ -105,6 +105,7 @@ for (const oneBased of [true, false]) {
       '#lang racket/base\n(define result (+ 1 2))\n(displayln result)\n', { oneBased, stopOnEntry: true });
     await ok(client.request('configurationDone'));
     const entry = await client.event('stopped');
+    await fs.appendFile(program, '; saved during the stop\n');
     const stack = await ok(client.request('stackTrace', { threadId: entry.body.threadId }));
     const { sourceReference } = stack.stackFrames[0].source;
     const line = 2 + base;
@@ -114,7 +115,7 @@ for (const oneBased of [true, false]) {
       assert.deepEqual(await ok(client.request('breakpointLocations', { source, line })), expected);
       breakpoint = (await ok(client.request('setBreakpoints', { source, breakpoints: [{ line }] }))).breakpoints[0];
       assert.equal(breakpoint.verified, true);
-      assert.equal(breakpoint.source.sourceReference, sourceReference);
+      assert.equal(breakpoint.source, undefined, 'The client keeps the name it set the breakpoint on');
     }
     assert.equal((await client.request('setBreakpoints', {
       source: { path: program, sourceReference: sourceReference + 10000 }, breakpoints: []
@@ -171,11 +172,69 @@ test('a late breakpoint selects an unloaded external module for instrumentation'
   const stack = await ok(client.request('stackTrace', { threadId: stop.body.threadId }));
   assert.equal(stack.stackFrames[0].source.path, support);
   assert.equal((await ok(client.request('evaluate', { frameId: stack.stackFrames[0].id, expression: 'value' }))).result, '21');
-  const captured = await ok(client.request('source', { sourceReference: stack.stackFrames[0].source.sourceReference }));
+  const captured = await ok(client.request('source', { source: stack.stackFrames[0].source }));
   assert.equal(captured.content, await fs.readFile(support, 'utf8'));
   await ok(client.request('continue', { threadId: stop.body.threadId }));
   assert.equal((await evaluation).result, '42');
   assert.ok((await ok(client.request('loadedSources'))).sources.some(source => source.path === program));
+});
+
+for (const [name, ending] of [['LF', '\n'], ['CRLF', '\r\n']]) {
+  test(`a ${name} source names its file until a saved edit leaves the running text behind`, async t => {
+    const text = ['#lang racket/base', '(define result (+ 1 2))', '(displayln result)', ''].join(ending);
+    const running = text.replaceAll('\r\n', '\n');
+    const { client, program } = await prepare(t, text, { oneBased: true, stopOnEntry: true });
+    await ok(client.request('configurationDone'));
+    const { threadId } = (await client.event('stopped')).body;
+    const reference = async () => (await ok(client.request('stackTrace', { threadId }))).stackFrames[0].source.sourceReference;
+    const loaded = async () => (await ok(client.request('loadedSources'))).sources.find(source => source.path === program);
+    const set = async line => (await ok(client.request('setBreakpoints', {
+      source: { path: program }, breakpoints: [{ line }]
+    }))).breakpoints[0];
+
+    assert.equal(await reference(), 0);
+    assert.equal((await loaded()).sourceReference, 0);
+    const placed = await set(3);
+    assert.equal(placed.verified, true);
+    assert.equal(placed.source, undefined);
+    assert.equal((await ok(client.request('source', { source: { path: program } }))).content, running);
+
+    await fs.writeFile(program, `; saved during the stop${ending}${text}`);
+    const captured = await reference();
+    assert.ok(captured > 0);
+    assert.equal((await loaded()).sourceReference, captured);
+    for (const request of [{ sourceReference: captured }, { source: { sourceReference: captured } }]) {
+      assert.equal((await ok(client.request('source', request))).content, running);
+    }
+    assert.equal((await client.request('source', { source: { path: `${program}.unknown` } })).success, false);
+    assert.equal((await set(3)).verified, true, 'A breakpoint already placed stays');
+    const refused = await set(2);
+    assert.equal(refused.verified, false);
+    assert.match(refused.message, /Restart/);
+    assert.equal(refused.source, undefined);
+
+    await fs.writeFile(program, text);
+    assert.equal(await reference(), 0);
+    assert.equal((await set(2)).verified, true, 'The same request is placed once the file matches again');
+    await ok(client.request('terminate'));
+  });
+}
+
+test('a saved edit that moves a breakpoint does not stop the program on another expression', async t => {
+  const text = '#lang racket/base\n(define x (+ 0 1))\n(define y (+ 1 1))\n(define z (+ 1 2))\n(displayln (+ x y z))\n';
+  const { client, program } = await prepare(t, text, { oneBased: true });
+  await ok(client.request('setBreakpoints', { source: { path: program }, breakpoints: [{ line: 3 }] }));
+  await ok(client.request('configurationDone'));
+  const stopped = await client.event('stopped');
+  assert.equal(stopped.body.reason, 'breakpoint');
+  await fs.writeFile(program, `; saved during the stop\n${text}`);
+  const answer = await ok(client.request('setBreakpoints', {
+    source: { path: program }, breakpoints: [{ line: 4 }], sourceModified: true
+  }));
+  assert.equal(answer.breakpoints[0].verified, false);
+  await ok(client.request('continue', { threadId: stopped.body.threadId }));
+  await client.event('terminated');
+  assert.equal(client.events.filter(event => event.event === 'stopped').length, 0, 'Only the first stop happened');
 });
 
 test('a line whose expansion lost its source location is verified on that line and stops there', async t => {

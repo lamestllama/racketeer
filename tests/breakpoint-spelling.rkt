@@ -46,7 +46,7 @@
     (make-directory real)
     (unless windows? (make-file-or-directory-link real link))
     (define source (build-path real "main.rkt"))
-    (display-to-file text source)
+    (display-to-file long-text source)
     (define recording (make-semaphore))
     (define run-program
       (make-keyword-procedure

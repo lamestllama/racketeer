@@ -83,6 +83,15 @@ function registerDebugSources(context) {
     vscode.debug.registerDebugAdapterTrackerFactory('racketdap', {
       createDebugAdapterTracker(session) {
         return { onDidSendMessage(message) {
+          // A source gains a reference when a saved edit leaves its running text behind.
+          const answered = message.type !== 'response' ? []
+            : message.command === 'stackTrace' ? (message.body?.stackFrames || []).map(frame => frame.source)
+              : message.command === 'loadedSources' ? message.body?.sources || [] : [];
+          for (const named of answered) {
+            if (!(named?.sourceReference > 0 && named.path)) continue;
+            const uri = vscode.debug.asDebugSourceUri(named, session).toString();
+            if (!paths.has(uri)) { paths.set(uri, { path: named.path, session: session.id }); changed.fire(); }
+          }
           if (message.type !== 'event') return;
           const source = message.body?.source;
           if (message.event === 'loadedSource' && source?.path) {
@@ -96,6 +105,10 @@ function registerDebugSources(context) {
     }),
     vscode.debug.onDidTerminateDebugSession(session => {
       for (const [uri, source] of paths) if (source.session === session.id) paths.delete(uri);
+      // A breakpoint in a captured source can reach only that session's running text.
+      vscode.debug.removeBreakpoints(vscode.debug.breakpoints.filter(breakpoint =>
+        breakpoint.location?.uri.scheme === 'debug' &&
+        breakpoint.location.uri.query.split('&').includes(`session=${session.id}`)));
       changed.fire();
     }),
     vscode.workspace.onDidChangeTextDocument(event => {

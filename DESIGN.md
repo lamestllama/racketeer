@@ -644,12 +644,24 @@ that version for display through DAP `sourceReference` and explain that restarti
 is needed to debug the edit. Do not relocate a live breakpoint against new text
 and present it as the running version.
 
+While the file still holds the captured text, a source has no reference. VS Code ties a
+reference to the session, so each session would open another tab. Frames and loaded
+sources check the file whenever they report a source, so a save during a stop shows at
+the next stack trace, and saving the old text again takes the reference away. A check
+reads the file only when its date or size has changed.
+
+A path's lines are the file's, so a new breakpoint named by path while the file differs
+from the running text is answered unverified with the reason, and a breakpoint already
+placed stays where it is. A reference's lines are the running text's, so a captured source
+tab can still set breakpoints. Those end with the session, since they reach nothing else.
+
 A client need not name a file as the loader does: a symbolic link gives another
 spelling, and so does another case on a file system that ignores case. Sources and
 sites keep the loader's spelling. Breakpoints keep the client's name for the file, its
 path as spelled or a captured source's reference number, because an editor keeps one
-list for each and a request replaces only what that name set. A file tab and a captured
-source tab therefore keep their own breakpoints even when the paths agree. A path reaches
+list for each and a request replaces only what that name set. An answer names no source,
+since VS Code would move the breakpoint to the name it found there. A file tab and a
+captured source tab therefore keep their own breakpoints even when the paths agree. A path reaches
 a source through `file-or-directory-identity`, read each time because saving can replace
 a file. A spelling's own source comes first, then the first loaded source of the same file. So a
 file required under two names, through a link of either kind, keeps a breakpoint on the
@@ -659,8 +671,8 @@ the program's thread records a source while requests arrive on another. Recordin
 source, updating breakpoints and resolving sites share a lock, so a request that chose
 another spelling's source cannot link its own spelling to it after that spelling has
 loaded.
-Frames report the loader's spelling with a `sourceReference`, so VS Code shows a stop in
-a captured source tab, as it does when the spellings agree.
+Frames report the loader's spelling, so VS Code shows a stop under that name, in a tab of
+its own if a client opened the file under another.
 
 A source root selects a file by the same identity: the file is selected if the root is
 one of the file's own folders, whichever spelling names it. The walk goes through the
