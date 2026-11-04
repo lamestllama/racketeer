@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const assert = require('node:assert/strict');
-const treeRemoval = require('./support/tree-removal');
 const test = require('./support/node-test');
 const fs = require('node:fs/promises');
 const os = require('node:os');
@@ -18,7 +17,6 @@ async function ok(request) {
 }
 async function prepare(t, source, options = {}) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'racketeer-error-recovery-'));
-  deferCleanup(t, () => fs.rm(directory, treeRemoval));
   const program = path.join(directory, 'recover.rkt');
   await fs.writeFile(program, source);
   const plain = spawnSync('racket', [program], { encoding: 'utf8' });

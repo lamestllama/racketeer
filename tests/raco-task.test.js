@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const assert = require('node:assert/strict');
-const treeRemoval = require('./support/tree-removal');
+const { removeQuietly } = require('./cleanup');
 const { until } = require('./support/wait');
 const test = require('./support/node-test');
 const fs = require('node:fs');
@@ -82,7 +82,7 @@ for (const signal of ['SIGHUP', 'SIGKILL']) {
     const alive = pid => { try { process.kill(pid, 0); return true; } catch (_) { return false; } };
     t.after(() => {
       for (const pid of descendants) if (alive(pid)) process.kill(pid, 'SIGKILL');
-      fs.rmSync(directory, treeRemoval);
+      removeQuietly(directory);
     });
     // A compile-time child that ignores breaks starts a grandchild, then both wait.
     fs.writeFileSync(path.join(directory, 'slow.rkt'), `#lang racket/base

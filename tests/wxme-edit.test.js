@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const test = require('./support/node-test');
-const treeRemoval = require('./support/tree-removal');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -17,7 +16,7 @@ const fixture = name => fs.readFileSync(path.join(__dirname, 'fixtures/wxme', na
 const token = { isCancellationRequested: false, onCancellationRequested: () => ({ dispose() {} }) };
 const uri = file => ({ scheme: 'file', fsPath: file, toString: () => 'file://' + file });
 const parts = [{ kind: 'text', text: 'λ 😀\n' }, { kind: 'comment', parts: [] }, { kind: 'text', text: '\nend' }];
-function directory(t) { const d = fs.mkdtempSync(path.join(os.tmpdir(), 'wxme-edit-')); t.after(() => fs.rmSync(d, treeRemoval)); return d; }
+function directory(t) { const d = fs.mkdtempSync(path.join(os.tmpdir(), 'wxme-edit-')); return d; }
 function harness(t) {
   const root = directory(t), file = path.join(root, 'source.wxme');
   fs.writeFileSync(file, JSON.stringify({ parts }));

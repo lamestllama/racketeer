@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const test = require('./support/node-test');
-const treeRemoval = require('./support/tree-removal');
 const { until } = require('./support/wait');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -19,7 +18,6 @@ const fixture = name => path.join(__dirname, 'fixtures/wxme', `${name}.wxme`);
 const decode = file => decodeWxme(process.env.RACKET || 'racket', helper, file);
 const temporary = t => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'racketeer-wxme-'));
-  t.after(() => fs.rmSync(directory, treeRemoval));
   return directory;
 };
 function emitter() {

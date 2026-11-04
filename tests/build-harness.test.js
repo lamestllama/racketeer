@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const assert = require('node:assert/strict');
-const treeRemoval = require('./support/tree-removal');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -14,7 +13,6 @@ const root = path.resolve(__dirname, '..');
 
 async function fixture(t) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'racketeer-build-'));
-  t.after(() => fs.rmSync(directory, treeRemoval));
   for (const name of ['LICENSE', 'LICENSE-APACHE', 'LICENSE-MIT', 'COPYRIGHT', 'info.rkt']) fs.writeFileSync(path.join(directory, name), name);
   for (const name of ['.vscode', 'examples', 'experiments', 'racketdap', 'scripts', 'tests', 'vendor', 'vscode']) fs.mkdirSync(path.join(directory, name));
   fs.writeFileSync(path.join(directory, 'racketdap/main.rkt'), '#lang racket/base\n');

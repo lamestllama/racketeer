@@ -2,10 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 
+const fs = require('node:fs');
+
 const stacks = new WeakMap();
 
-// Release resources in reverse acquisition order. In particular, a debugger
-// must release its working directory before a fixture can remove it on Windows.
+// Release resources in reverse acquisition order.
 function deferCleanup(t, operation) {
   let stack = stacks.get(t);
   if (!stack) {
@@ -24,4 +25,11 @@ function deferCleanup(t, operation) {
   stack.push(operation);
 }
 
-module.exports = { deferCleanup };
+// For a folder a later test could see. A temporary one stays in the run's scratch
+// folder instead. Cleanup is not what a test checks, so it cannot fail one.
+function removeQuietly(directory) {
+  try { fs.rmSync(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); }
+  catch { /* A folder still busy stays behind. */ }
+}
+
+module.exports = { deferCleanup, removeQuietly };

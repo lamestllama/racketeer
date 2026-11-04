@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const test = require('./support/node-test');
-const treeRemoval = require('./support/tree-removal');
+const { removeQuietly } = require('./cleanup');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -19,8 +19,7 @@ const uses = '#lang racket/base\n(require "definition.rkt")\n(square 3)\n';
 // short name that holds one, such as RUNNER~1.
 const uri = file => pathToFileURL(file).href.replaceAll('%7E', '~');
 const addon = fs.mkdtempSync(path.join(os.tmpdir(), 'racketeer-index-addon-'));
-test.after(() => fs.rmSync(addon, treeRemoval));
-
+tes
 
 // `shared` gives another server's `directory`, `documents` and `settings`, for a
 // server that starts with nothing over the same files and buffers.
@@ -74,7 +73,7 @@ async function project(t, env = {}, shared) {
   servers.push(stop);
   if (!shared) t.after(async () => {
     await Promise.all(servers.map(stop => stop()));
-    fs.rmSync(directory, treeRemoval);
+    removeQuietly(directory);
   });
   const filename = name => path.join(directory, name);
   const write = (name, text) => fs.writeFileSync(filename(name), text);

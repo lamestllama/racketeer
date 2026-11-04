@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const assert = require('node:assert/strict');
-const treeRemoval = require('./support/tree-removal');
 const test = require('./support/node-test');
 const fs = require('node:fs/promises');
 const os = require('node:os');
@@ -16,7 +15,6 @@ const root = path.resolve(__dirname, '..');
 
 async function fixture(t) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'racket-package-'));
-  deferCleanup(t, () => fs.rm(root, treeRemoval));
   const directory = path.join(root, 'racketdap-test-library');
   const workspace = path.join(root, 'workspace');
   const addon = path.join(root, 'addon');

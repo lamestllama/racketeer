@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const assert = require('node:assert/strict');
-const treeRemoval = require('./support/tree-removal');
 const test = require('./support/node-test');
 const fs = require('node:fs/promises');
 const path = require('node:path');
@@ -37,7 +36,6 @@ test('plot windows support zoom, rotation, overlays, current-view saving and own
 
 test('live plot results, multiple results and nested variables open without reevaluation', gui, async t => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'racket-plots-'));
-  deferCleanup(t, () => fs.rm(directory, treeRemoval));
   const program = path.join(directory, 'plots.rkt');
   await fs.writeFile(program, (await fs.readFile(path.join(root, 'examples/interactive-plots.rkt'), 'utf8')) + '\n(define evaluations 0)\n');
   const client = new DapClient();

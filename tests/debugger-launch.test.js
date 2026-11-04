@@ -4,7 +4,6 @@
 // The debugger compiled once into storage, through racketdap/launcher.rkt. Each test
 // runs a copy of the sources, as an installed extension holds them: no compiled files.
 const assert = require('node:assert/strict');
-const treeRemoval = require('./support/tree-removal');
 const { until } = require('./support/wait');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -19,7 +18,6 @@ function folder(t) {
   // A space, because extension and storage folders can hold one.
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'debugger launch-'));
   // A builder that has made its folder visible still tidies before it exits.
-  t.after(() => fs.rmSync(directory, treeRemoval));
   const racketdap = path.join(directory, 'racketdap');
   fs.cpSync(path.join(repository, 'racketdap'), racketdap, { recursive: true, filter: file => path.basename(file) !== 'compiled' });
   const program = path.join(directory, 'program.rkt');
@@ -397,7 +395,7 @@ test('a building folder holds off a second build until it is abandoned', async t
   const { directory, racketdap, storage, program } = files;
   await session(launcherArgs(files), program);
   const [build] = await built(storage);
-  fs.rmSync(path.join(storage, build), { ...treeRemoval, force: false });
+  fs.rmSync(path.join(storage, build), { recursive: true });
   const building = path.join(storage, `${build}.building`);
   fs.mkdirSync(building);
   fs.writeFileSync(path.join(building, 'in progress'), '');

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const assert = require('node:assert/strict'), path = require('node:path');
-const treeRemoval = require('./support/tree-removal');
+const { removeQuietly } = require('./cleanup');
 const { until } = require('./support/wait');
 const fs = require('node:fs/promises'), vscode = require('vscode');
 exports.run = async function (workspace, interact) {
@@ -95,7 +95,7 @@ exports.run = async function (workspace, interact) {
   } finally {
     vscode.debug.removeBreakpoints(breakpoints);
     for (const session of sessions) if (!ended.has(session.id)) await vscode.debug.stopDebugging(session);
-    tracker.dispose(); await fs.rm(directory, treeRemoval);
+    tracker.dispose(); removeQuietly(directory);
     await files.update('eol', eol, vscode.ConfigurationTarget.Global);
   }
 };

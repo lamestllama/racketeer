@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const assert = require('node:assert/strict');
-const treeRemoval = require('./support/tree-removal');
 const test = require('./support/node-test');
 const { execFileSync } = require('node:child_process');
 const fs = require('node:fs/promises');
@@ -18,7 +17,6 @@ async function ok(request) {
 }
 async function fixture(t, source, files = {}) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'racketeer-runtime-'));
-  deferCleanup(t, () => fs.rm(directory, treeRemoval));
   for (const [name, text] of Object.entries({ 'program.rkt': source, ...files })) {
     await fs.writeFile(path.join(directory, name), text);
   }

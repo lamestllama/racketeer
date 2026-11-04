@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const assert = require('node:assert/strict');
-const treeRemoval = require('./support/tree-removal');
+const { removeQuietly } = require('./cleanup');
 const { until } = require('./support/wait');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -29,7 +29,7 @@ async function languageServer(t, { workspace = true, folders, capabilities = {} 
   t.after(async () => {
     connection.dispose(); child.kill('SIGKILL');
     child.stdin.destroy(); child.stdout.destroy(); child.stderr.destroy();
-    await closed; fs.rmSync(directory, treeRemoval);
+    await closed; removeQuietly(directory);
   });
   await connection.sendRequest('initialize', { processId: process.pid, rootPath: workspace ? directory : null, rootUri: workspace ? uri(directory) : null, capabilities, ...(folders ? { workspaceFolders: folders.map(file => ({ uri: uri(file), name: path.basename(file) })) } : {}) });
   await connection.sendNotification('initialized', {});

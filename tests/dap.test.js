@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const assert = require('node:assert/strict');
-const treeRemoval = require('./support/tree-removal');
 const test = require('./support/node-test');
 const path = require('node:path');
 const fs = require('node:fs/promises');
@@ -29,7 +28,6 @@ async function frame(client, stopped) {
 }
 test('standalone adapter: break, inspect, evaluate, mutate, step, results, output, terminate', async t => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'racketeer-standalone-'));
-  deferCleanup(t, () => fs.rm(directory, treeRemoval));
   await fs.cp(path.join(root, 'racketdap'), path.join(directory, 'racketdap'), {
     recursive: true, filter: file => path.basename(file) !== 'compiled'
   });
@@ -112,7 +110,6 @@ test('termination remains responsive while paused evaluation is blocked', async 
 });
 test('Unicode byte framing and captured source survive editing the file during a stop', async t => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'racketdap-unicode-'));
-  t.after(() => fs.rm(dir, treeRemoval));
   const program = path.join(dir, 'λ-😀.rkt');
   const source = '#lang racket/base\r\n(module+ main\r\n\t(displayln "😀λ"))\r\n';
   await fs.writeFile(program, source);
@@ -136,7 +133,6 @@ test('Unicode byte framing and captured source survive editing the file during a
 
 async function temporaryProgram(t, source) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'racketdap-session-'));
-  t.after(() => fs.rm(dir, treeRemoval));
   const program = path.join(dir, 'target.rkt');
   await fs.writeFile(program, source);
   return program;
@@ -391,7 +387,6 @@ test('target exit ends its ordinary subprocess group without hanging inherited o
 });
 test('opaque program structures expose paged fields without invoking user code', async t => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'racketdap-structures-'));
-  t.after(() => fs.rm(dir, treeRemoval));
   const program = path.join(dir, 'main.rkt');
   await fs.writeFile(program, `#lang racket/base
 (define effects 0)

@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const test = require('./support/node-test'), assert = require('node:assert/strict');
-const treeRemoval = require('./support/tree-removal');
 const fs = require('node:fs'), os = require('node:os'), path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { WxmeDocument, normalize } = require('../vscode/wxme-document');
@@ -14,7 +13,7 @@ const helper = path.resolve(__dirname, '../racketdap/tools/wxme-edit.rkt');
 const viewer = path.resolve(__dirname, '../racketdap/tools/wxme-view.rkt');
 const gui = { skip: process.env.RACKETDAP_TEST_WXME_GUI !== '1' };
 const encode = (file, request) => requestWxme('racket', helper, file, request);
-function directory(t) { const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wxme-xml-edit-')); t.after(() => fs.rmSync(root, treeRemoval)); return root; }
+function directory(t) { const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wxme-xml-edit-')); return root; }
 function execute(file, output) {
   const result = spawnSync('racket', [file], { encoding: 'utf8', timeout: 240000 });
   assert.equal(result.status, 0, result.stderr); assert.equal(result.stdout, output);

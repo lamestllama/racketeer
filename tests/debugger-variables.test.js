@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const assert = require('node:assert/strict');
-const treeRemoval = require('./support/tree-removal');
+const { removeQuietly } = require('./cleanup');
 const test = require('./support/node-test');
 const fs = require('node:fs/promises');
 const os = require('node:os');
@@ -38,7 +38,7 @@ async function eachStop(t, lines, visit, config = {}) {
   const program = path.join(directory, 'specimen.rkt');
   await fs.writeFile(program, lines.join('\n') + '\n');
   const client = new DapClient();
-  t.after(async () => { await client.close(); await fs.rm(directory, treeRemoval); });
+  t.after(async () => { await client.close(); removeQuietly(directory); });
   const marks = new Map();
   lines.forEach((line, index) => {
     const mark = /\(void 'stop-([^)]*)\)/.exec(line);
@@ -309,7 +309,6 @@ test('names no source identifier refers to stay hidden', async t => {
 
 test('a warm cache lists the same names as the run that compiled them', async t => {
   const cache = await fs.mkdtemp(path.join(os.tmpdir(), 'racketeer-variables-cache-'));
-  t.after(() => fs.rm(cache, treeRemoval));
   const lines = [
     ...macros,
     '(define (anaphoric v)',
@@ -871,7 +870,7 @@ test('rows are read at every stop and the program prints what it prints without 
   });
   assert.ok(seen.includes('in-long-body') && seen.includes('override') && seen.includes('keyword'), seen.join());
   const program = path.join(await fs.mkdtemp(path.join(os.tmpdir(), 'racketeer-variables-plain-')), 'specimen.rkt');
-  t.after(() => fs.rm(path.dirname(program), treeRemoval));
+  t.after(() => removeQuietly(path.dirname(program)));
   await fs.writeFile(program, lines.join('\n') + '\n');
   const { stdout } = await promisify(execFile)('racket', [program]);
   assert.equal(output, stdout);

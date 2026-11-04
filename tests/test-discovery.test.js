@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const assert = require('node:assert/strict');
-const treeRemoval = require('./support/tree-removal');
 const test = require('./support/node-test');
 const { execFile } = require('node:child_process');
 const { createHash } = require('node:crypto');
@@ -29,7 +28,6 @@ async function ok(request) {
 }
 async function launch(t, text, ids, options = {}) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'racket-cases-'));
-  deferCleanup(t, () => fs.rm(directory, treeRemoval));
   const program = path.join(directory, 'cases.rkt');
   await fs.writeFile(program, text);
   const client = new DapClient();

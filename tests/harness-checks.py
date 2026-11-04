@@ -101,11 +101,11 @@ class EditorIsolation(unittest.TestCase):
                 dependency = second / 'workspace/vendor/collects/example/reader.rkt'
                 self.assertEqual(dependency.exists(), dogfood)
                 if dogfood:
-                    self.assertEqual(dependency.read_text(), 'fixture')
+                    self.assertEqual(dependency.read_text(encoding='utf-8'), 'fixture')
                 for directory in ('workspace', 'harness'):
                     self.assertFalse(list((second / directory).rglob('compiled')))
                     self.assertFalse(list((second / directory).rglob('__pycache__')))
-                latest = json.loads((second.parent / 'latest.json').read_text())
+                latest = json.loads((second.parent / 'latest.json').read_text(encoding='utf-8'))
                 self.assertEqual(latest['run'], str(second))
                 self.assertEqual(latest['report'], str(second / 'vscode-report.json'))
 
@@ -182,7 +182,7 @@ class RhombusFixture(unittest.TestCase):
                     patch.object(runtime, 'run_install', side_effect=OSError('network unavailable')):
                 with self.assertRaisesRegex(RuntimeError, 'network unavailable'):
                     runtime.provision(output, Path('/racket'), {'PLTADDONDIR': '/old'})
-            evidence = json.loads((output / 'rhombus-runtime.json').read_text())
+            evidence = json.loads((output / 'rhombus-runtime.json').read_text(encoding='utf-8'))
             self.assertFalse(evidence['passed'])
             self.assertEqual(evidence['addon'], str((output / 'addon').resolve()))
             self.assertIn('--deps', evidence['installCommand'])

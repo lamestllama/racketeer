@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const test = require('./support/node-test'), assert = require('node:assert/strict');
-const treeRemoval = require('./support/tree-removal');
 const fs = require('node:fs'), path = require('node:path'), os = require('node:os');
 const { spawnSync } = require('node:child_process');
 const { decodeWxme, requestWxme } = require('../vscode/wxme-process');
@@ -57,7 +56,6 @@ test('XML editing without a display preserves every source byte', { skip: proces
 
 test('nested XML streams cannot load a document-supplied reader', async t => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'wxme-reader-'));
-  t.after(() => fs.rmSync(directory, treeRemoval));
   const collection = path.join(directory, 'racketeer-fixture'); fs.mkdirSync(collection);
   const marker = path.join(directory, 'loaded');
   fs.writeFileSync(path.join(collection, 'reader.rkt'), `#lang racket/base\n(call-with-output-file ${JSON.stringify(marker)} (lambda (out) (display "loaded" out)))\n(error "READER LOADED")\n`);

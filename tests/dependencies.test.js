@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const test = require('./support/node-test'), assert = require('node:assert/strict');
-const treeRemoval = require('./support/tree-removal');
 const { until } = require('./support/wait');
 const fs = require('node:fs'), os = require('node:os'), path = require('node:path'), vm = require('node:vm');
 const { createRequire } = require('node:module');
@@ -10,7 +9,7 @@ const { spawnSync } = require('node:child_process');
 const { requestDependencies } = require('../vscode/dependency-process');
 const { dependencyFixture } = require('./support/dependency-fixture');
 const root = path.resolve(__dirname, '..'), helper = path.join(root, 'racketdap/tools/dependency-worker.rkt'), collects = path.join(root, 'vendor/collects');
-function directory(t) { const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'racketeer-dependencies-')); t.after(() => fs.rmSync(dir, treeRemoval)); return dir; }
+function directory(t) { const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'racketeer-dependencies-')); return dir; }
 const request = (file, buffers = [], options) => requestDependencies('racket', helper, collects, { version: 1, path: file, buffers, roots: [path.dirname(file)] }, options);
 const moduleAt = (result, names = []) => result.modules.find(module => JSON.stringify(module.submodules) === JSON.stringify(names));
 function emitter() { const callbacks = new Set(); return { event(fn) { callbacks.add(fn); return { dispose: () => callbacks.delete(fn) }; }, fire(e) { for (const fn of callbacks) fn(e); }, dispose() { callbacks.clear(); } }; }

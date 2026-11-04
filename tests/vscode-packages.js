@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const { until, exited } = require('./support/wait');
+const { removeQuietly } = require('./cleanup');
 const assert = require('node:assert/strict');
-const treeRemoval = require('./support/tree-removal');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
@@ -164,7 +164,7 @@ exports.run = async function (workspace) {
       await vscode.commands.executeCommand('racketdap.removePackage', name);
     }
     tracker.dispose();
-    await fs.rm(directory, treeRemoval);
+    removeQuietly(directory);
     await fs.rm(program, { force: true });
   }
 };

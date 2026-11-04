@@ -3,7 +3,6 @@
 'use strict';
 // What a person with an older Racket is told on each way in, with a stand-in Racket.
 const assert = require('node:assert/strict');
-const treeRemoval = require('./support/tree-removal');
 const { until } = require('./support/wait');
 const test = require('./support/node-test');
 const fs = require('node:fs');
@@ -17,7 +16,6 @@ const { racketPath, versionProblem, racketTooOld } = require('../vscode/racket-v
 const stands = { skip: process.platform === 'win32' && 'a stand-in Racket is a shell script' };
 function standIn(t, version = 'Welcome to Racket v9.0 [cs].') {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'racket version-'));
-  t.after(() => fs.rmSync(directory, treeRemoval));
   const file = path.join(directory, 'racket');
   fs.writeFileSync(file, `#!/bin/sh\necho "${version}"\n`, { mode: 0o755 });
   return file;
@@ -236,7 +234,6 @@ test('the workspace index does not start on a Racket that is too old, and each r
 
 test('a failed version probe gives a reason, and terminates a hung executable', stands, async t => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'racket probe-'));
-  t.after(() => fs.rmSync(directory, treeRemoval));
   const executable = path.join(directory, 'racket');
   fs.writeFileSync(executable, '#!/bin/sh\ntrap "" TERM\nwhile :; do :; done\n', { mode: 0o755 });
   const children = [];

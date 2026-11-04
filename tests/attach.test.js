@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const assert = require('node:assert/strict');
-const treeRemoval = require('./support/tree-removal');
 const test = require('./support/node-test');
 const fs = require('node:fs/promises');
 const path = require('node:path');
@@ -21,7 +20,6 @@ async function ok(result) {
 }
 async function host(t) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'racket-attach-'));
-  deferCleanup(t, () => fs.rm(dir, treeRemoval));
   const program = path.join(dir, 'sample.rkt');
   await fs.writeFile(program, '#lang racket/base\n(provide run)\n(define (run)\n  (define answer (+ 20 22))\n  (+ answer 1))\n');
   const child = spawn('racket', [path.join(root, 'tests/support/attach-host.rkt'), program]);

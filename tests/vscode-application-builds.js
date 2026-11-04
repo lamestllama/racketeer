@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const assert = require('node:assert/strict');
-const treeRemoval = require('./support/tree-removal');
+const { removeQuietly } = require('./cleanup');
 const { until } = require('./support/wait');
 const fs = require('node:fs/promises');
 const path = require('node:path');
@@ -163,7 +163,7 @@ exports.run = async function (workspace, observe = async () => {}) {
     if (childPid) { try { process.kill(childPid, 'SIGKILL'); } catch (error) { if (error.code !== 'ESRCH') throw error; } }
     started.dispose(); ended.dispose(); results.dispose(); processStarts.dispose();
     if (previousTasks) await fs.writeFile(taskConfig, previousTasks); else await fs.rm(taskConfig, { force: true });
-    await fs.rm(root, treeRemoval);
+    removeQuietly(root);
     if (restoreLanguageServer) {
       await settings.update('languageServer.enabled', previousLanguageServer, vscode.ConfigurationTarget.Workspace);
       await vscode.extensions.getExtension('lamestllama.racketeer').exports.languageServerReady();

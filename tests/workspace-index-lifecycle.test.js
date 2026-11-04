@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const assert = require('node:assert/strict');
-const treeRemoval = require('./support/tree-removal');
+const { removeQuietly } = require('./cleanup');
 const test = require('./support/node-test');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -16,7 +16,7 @@ const asking = { experimental: { racketeer: { indexStatus: true, sourceReference
 
 function workspace(t) {
   const directory = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'racketeer-lifecycle-')));
-  t.after(() => fs.rmSync(directory, treeRemoval));
+  t.after(() => removeQuietly(directory));
   fs.writeFileSync(path.join(directory, 'definition.rkt'), definition);
   return directory;
 }

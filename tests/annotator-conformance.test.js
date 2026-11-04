@@ -3,7 +3,7 @@
 'use strict';
 // Behavioral tests: no imports of the instrumentation implementation.
 const assert = require('node:assert/strict');
-const treeRemoval = require('./support/tree-removal');
+const { removeQuietly } = require('./cleanup');
 const test = require('./support/node-test');
 const fs = require('node:fs/promises');
 const os = require('node:os');
@@ -28,7 +28,7 @@ async function prepare(t, lines, breakpoints = []) {
   const client = new DapClient(adapter);
   t.after(async () => {
     await client.close();
-    await fs.rm(directory, treeRemoval);
+    removeQuietly(directory);
   });
   await ok(client.request('initialize', { adapterID: 'racketdap', linesStartAt1: true, columnsStartAt1: true }));
   await ok(client.request('launch', { program, cwd: directory }));

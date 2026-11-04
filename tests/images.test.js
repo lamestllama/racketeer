@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const assert = require('node:assert/strict');
-const treeRemoval = require('./support/tree-removal');
 const test = require('./support/node-test');
 const fs = require('node:fs/promises');
 const path = require('node:path');
@@ -21,7 +20,6 @@ async function ok(request) {
 }
 async function session(t, source) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'racket-images-'));
-  deferCleanup(t, () => fs.rm(directory, treeRemoval));
   const program = path.join(directory, 'images.rkt');
   await fs.writeFile(program, source);
   const client = new DapClient();
@@ -170,7 +168,6 @@ test('image choices include values beyond the text preview and exclude empty or 
 
 test('a paused frame can render a retained image and resuming expires its reference', async t => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'racket-paused-image-'));
-  deferCleanup(t, () => fs.rm(directory, treeRemoval));
   const program = path.join(directory, 'image.rkt');
   await fs.writeFile(program, '#lang racket/base\n(require pict)\n(define picture (disk 8))\n(void)\n');
   const client = new DapClient();

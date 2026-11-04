@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const assert = require('node:assert/strict');
-const treeRemoval = require('./support/tree-removal');
 const { until } = require('./support/wait');
 const test = require('./support/node-test');
 const fs = require('node:fs/promises');
@@ -29,7 +28,6 @@ async function clientFor(t) {
 }
 async function temporary(t) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'racketeer-lifecycle-'));
-  deferCleanup(t, () => fs.rm(directory, treeRemoval));
   return directory;
 }
 async function peer(t, partial) {

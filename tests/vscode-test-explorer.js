@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const assert = require('node:assert/strict');
-const treeRemoval = require('./support/tree-removal');
+const { removeQuietly } = require('./cleanup');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
@@ -151,6 +151,6 @@ exports.run = async function (extension, workspace) {
   } finally {
     context.subscriptions.reverse().forEach(item => item.dispose());
     await settings.update('testing.include', previous, vscode.ConfigurationTarget.Workspace);
-    fs.rmSync(directory, treeRemoval);
+    removeQuietly(directory);
   }
 };

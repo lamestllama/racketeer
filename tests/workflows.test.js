@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const assert = require('node:assert/strict');
-const treeRemoval = require('./support/tree-removal');
 const test = require('./support/node-test');
 const path = require('node:path');
 const fs = require('node:fs/promises');
@@ -29,7 +28,6 @@ async function ok(request) {
 }
 async function fixture(t, source) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'racket-workflow-'));
-  deferCleanup(t, () => fs.rm(directory, treeRemoval));
   const program = path.join(directory, 'tests λ😀.rkt');
   await fs.writeFile(program, source);
   return program;

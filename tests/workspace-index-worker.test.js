@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const assert = require('node:assert/strict');
-const treeRemoval = require('./support/tree-removal');
+const { removeQuietly } = require('./cleanup');
 const { until } = require('./support/wait');
 const test = require('./support/node-test');
 const fs = require('node:fs');
@@ -188,7 +188,7 @@ test('compile-time code that finds the real output reaches only its own worker',
 // A server with a project of its own, to end in ways the shared helper does not.
 async function server(t, command, body) {
   const directory = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'racketeer-worker-')));
-  t.after(() => fs.rmSync(directory, treeRemoval));
+  t.after(() => removeQuietly(directory));
   const pidFile = path.join(directory, 'pid');
   fs.writeFileSync(path.join(directory, 'definition.rkt'), definition);
   fs.writeFileSync(path.join(directory, 'uses.rkt'), uses);

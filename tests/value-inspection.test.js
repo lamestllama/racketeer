@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const assert = require('node:assert/strict');
-const treeRemoval = require('./support/tree-removal');
+const { removeQuietly } = require('./cleanup');
 const test = require('./support/node-test');
 const fs = require('node:fs/promises');
 const os = require('node:os');
@@ -22,7 +22,7 @@ async function prepare(t, lines, breakpoint, config = {}) {
   const program = path.join(directory, 'specimen.rkt');
   await fs.writeFile(program, lines.join('\n') + '\n');
   const client = new DapClient();
-  t.after(async () => { await client.close(); await fs.rm(directory, treeRemoval); });
+  t.after(async () => { await client.close(); removeQuietly(directory); });
   await ok(client.request('initialize', { linesStartAt1: true, columnsStartAt1: true }));
   await ok(client.request('launch', { program, cwd: directory, ...config }));
   await client.event('initialized');

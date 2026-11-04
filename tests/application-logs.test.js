@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const test = require('./support/node-test'), assert = require('node:assert/strict');
-const treeRemoval = require('./support/tree-removal');
 const fs = require('node:fs/promises'), os = require('node:os'), path = require('node:path');
 const { DapClient } = require('./dap-client');
 const { deferCleanup } = require('./cleanup');
@@ -20,7 +19,6 @@ const source = `#lang racket/base
 `;
 async function start(t, extra = {}) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'racket logs λ '));
-  deferCleanup(t, () => fs.rm(directory, treeRemoval));
   const program = path.join(directory, 'main.rkt'); await fs.writeFile(program, source);
   const client = new DapClient(); deferCleanup(t, () => client.close());
   await ok(client.request('initialize')); await ok(client.request('launch', { program, interactive: true, ...extra }));

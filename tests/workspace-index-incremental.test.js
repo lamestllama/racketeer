@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const assert = require('node:assert/strict');
-const treeRemoval = require('./support/tree-removal');
+const { removeQuietly } = require('./cleanup');
 const { until } = require('./support/wait');
 const test = require('./support/node-test');
 const fs = require('node:fs');
@@ -156,7 +156,7 @@ const keeps = '#lang racket/base\n(provide call)\n(define-syntax-rule (call f) (
 const drops = '#lang racket/base\n(provide call)\n(define-syntax-rule (call f) 1)\n';
 function outsideWorkspace(t, ...folders) {
   const outside = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'racketeer-collection-')));
-  t.after(() => fs.rmSync(outside, treeRemoval));
+  t.after(() => removeQuietly(outside));
   return folders.map(folder => {
     fs.mkdirSync(path.join(outside, folder));
     return path.join(outside, folder);

@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const assert = require('node:assert/strict');
-const treeRemoval = require('./support/tree-removal');
 const test = require('./support/node-test');
 const fs = require('node:fs/promises');
 const path = require('node:path');
@@ -12,26 +11,6 @@ const { promisify } = require('node:util');
 const { buildPlan, executablePath } = require('../vscode/application-build');
 const execute = promisify(execFile);
 
-// Windows keeps a deleted file until the last handle to it closes, so a
-// directory can stay nonempty briefly after the processes that used it exit.
-// Retry for a few seconds, report the retries, and name what remains if the
-// directory still cannot be removed.
-async function removeTree(t, directory) {
-  for (let attempt = 0; ; attempt++) {
-    try {
-      await fs.rm(directory, treeRemoval);
-      if (attempt) t.diagnostic(`${directory} was removed after ${attempt} retries`);
-      return;
-    } catch (error) {
-      if (!['ENOTEMPTY', 'EBUSY', 'EPERM'].includes(error.code) || attempt === 20) {
-        const remaining = await fs.readdir(directory, { recursive: true }).catch(() => []);
-        error.message += `; ${attempt} retries; remaining: ${remaining.join(', ') || 'nothing'}`;
-        throw error;
-      }
-      await new Promise(resolve => setTimeout(resolve, 50 * (attempt + 1)));
-    }
-  }
-}
 
 test('build arguments preserve paths and task variables without shell interpretation', () => {
   const source = '/project λ/source $(ignored).rkt', output = '/output λ/app';
@@ -76,7 +55,6 @@ test('invalid build definitions and direct input replacement are rejected', () =
 
 test('public tools build a user-package launcher, embed modules and relocate runtime files', async t => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'racket build λ '));
-  t.after(() => removeTree(t, directory));
   const source = path.join(directory, 'source'), library = path.join(directory, 'library');
   await fs.mkdir(source); await fs.mkdir(library);
   await fs.writeFile(path.join(library, 'info.rkt'), '#lang info\n(define collection "build-example")\n(define deps \'("base"))\n');
@@ -114,7 +92,6 @@ test('public tools build a user-package launcher, embed modules and relocate run
 
 test('explicit dynamic libraries are embedded and compiler errors remain errors', async t => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'racket dynamic build '));
-  t.after(() => removeTree(t, directory));
   const program = path.join(directory, 'dynamic.rkt');
   await fs.writeFile(program, '#lang racket/base\n(displayln ((dynamic-require \'racket/math \'sqr) 7))\n');
   const plan = buildPlan({ action: 'executable', source: program, output: path.join(directory, 'app'), libraries: ['racket/math'] }, directory);

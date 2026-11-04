@@ -8,14 +8,14 @@ for (const name of ['LICENSE', 'LICENSE-APACHE', 'LICENSE-MIT', 'COPYRIGHT']) {
   fs.copyFileSync(path.join(root, name), path.join(root, 'vscode', name));
 }
 const runtime = path.join(root, 'vscode/runtime');
-fs.rmSync(runtime, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+fs.rmSync(runtime, { recursive: true, force: true });
 fs.mkdirSync(runtime, { recursive: true });
 fs.cpSync(path.join(root, 'racketdap'), path.join(runtime, 'racketdap'), {
   recursive: true,
   filter: file => path.basename(file) !== 'compiled'
 });
 const server = path.join(root, 'vscode/language-server');
-fs.rmSync(server, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+fs.rmSync(server, { recursive: true, force: true });
 fs.cpSync(path.join(root, 'vendor'), server, {
   recursive: true,
   filter: file => path.basename(file) !== 'compiled'

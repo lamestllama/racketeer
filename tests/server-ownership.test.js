@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const assert = require('node:assert/strict');
-const treeRemoval = require('./support/tree-removal');
+const { removeQuietly } = require('./cleanup');
 const { until } = require('./support/wait');
 const test = require('./support/node-test');
 const fs = require('node:fs');
@@ -36,7 +36,7 @@ test('the language and workspace index servers end with an extension host that i
   let tree = [];
   t.after(() => {
     for (const pid of tree) if (alive(pid)) process.kill(pid, 'SIGKILL');
-    fs.rmSync(directory, treeRemoval);
+    removeQuietly(directory);
   });
   fs.writeFileSync(path.join(directory, 'busy.rkt'), `#lang racket/base
 (require (for-syntax racket/base))

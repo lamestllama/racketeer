@@ -6,7 +6,6 @@
 // is fetched at test time into the untracked test output folder, never into
 // the source tree or the package.
 const assert = require('node:assert/strict');
-const treeRemoval = require('./support/tree-removal');
 const test = require('./support/node-test');
 const crypto = require('node:crypto');
 const fs = require('node:fs/promises');
@@ -60,7 +59,6 @@ async function extract(t) {
     return null;
   }
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'racketeer-third-party-'));
-  deferCleanup(t, () => fs.rm(directory, treeRemoval));
   await execute('racket', ['-l', 'racket/base', '-l', 'file/unzip', '-e', `(unzip ${JSON.stringify(file)})`], { cwd: directory });
   return path.join(directory, `tetris-${commit}`);
 }

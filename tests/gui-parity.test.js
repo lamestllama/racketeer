@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const assert = require('node:assert/strict');
-const treeRemoval = require('./support/tree-removal');
 const test = require('./support/node-test');
 const fs = require('node:fs/promises');
 const os = require('node:os');
@@ -17,7 +16,7 @@ for (const interactive of [false, true]) test(`GUI callback debugging with inter
     '(send window show #t)', '(queue-callback', ' (lambda ()',
     '   (define x 5)', '   (displayln (+ x 1))', '   (send window show #f)))', ''].join('\n'));
   const client = new DapClient();
-  t.after(async () => { await client.close(); await fs.rm(dir, treeRemoval); });
+  t.after(() => client.close());
   await ok(client.request('initialize'));
   await ok(client.request('launch', { program, cwd: dir, interactive }));
   await client.event('initialized');
@@ -46,7 +45,7 @@ test('unhandled GUI callback exceptions expose live frames before unwinding', { 
     '(send window show #t)', '(queue-callback', ' (lambda ()',
     '   (define x 5)', '   (error "callback boom")', '   (displayln x)))', ''].join('\n'));
   const client = new DapClient();
-  t.after(async () => { await client.close(); await fs.rm(dir, treeRemoval); });
+  t.after(() => client.close());
   await ok(client.request('initialize'));
   await ok(client.request('launch', { program, cwd: dir }));
   await client.event('initialized');
