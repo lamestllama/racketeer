@@ -6,10 +6,11 @@ const fs = require('node:fs/promises'), os = require('node:os'), path = require(
 const { DapClient } = require('./dap-client');
 const { deferCleanup } = require('./cleanup');
 const { InteractionOutput } = require('../vscode/interaction-output');
+const treeRemoval = require('./support/tree-removal');
 const mainSource = '#lang racket/base\n(define (fail) (let ([emoji "😀"]) (/ 1 0)))\n';
 async function start(t, source = mainSource, files = {}) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'racket error λ '));
-  deferCleanup(t, () => fs.rm(directory, { recursive: true, force: true }));
+  deferCleanup(t, () => fs.rm(directory, treeRemoval));
   for (const [name, text] of Object.entries({ 'main λ.rkt': source, ...files })) await fs.writeFile(path.join(directory, name), text);
   const program = path.join(directory, 'main λ.rkt');
   const client = new DapClient(undefined, { timeout: 30000 }); deferCleanup(t, () => client.close());

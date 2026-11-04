@@ -7,10 +7,11 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { racketPath, versionProblem } = require('../vscode/racket-version');
+const treeRemoval = require('./support/tree-removal');
 
 test('a command path skips a file without execute permission', { skip: process.platform === 'win32' }, t => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'racket-path-'));
-  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  t.after(() => fs.rmSync(directory, treeRemoval));
   const early = path.join(directory, 'early'), later = path.join(directory, 'later');
   fs.mkdirSync(early); fs.mkdirSync(later);
   const blocked = path.join(early, 'racket'), executable = path.join(later, 'racket');

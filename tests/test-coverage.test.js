@@ -11,6 +11,7 @@ const { createRequire } = require('node:module');
 const { createHash } = require('node:crypto');
 const { DapClient } = require('./dap-client');
 const { deferCleanup } = require('./cleanup');
+const treeRemoval = require('./support/tree-removal');
 const hash = text => createHash('sha1').update(text.replace(/\r\n/g, '\n')).digest('hex');
 async function ok(request) {
   const response = await request;
@@ -19,7 +20,7 @@ async function ok(request) {
 }
 async function fixture(t, source, helper) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'racket-coverage-'));
-  deferCleanup(t, () => fs.rm(directory, { recursive: true, force: true }));
+  deferCleanup(t, () => fs.rm(directory, treeRemoval));
   const program = path.join(directory, 'main.rkt');
   await fs.writeFile(program, source);
   if (helper) await fs.writeFile(path.join(directory, 'helper.rkt'), helper);

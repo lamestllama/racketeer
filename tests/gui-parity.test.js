@@ -7,6 +7,7 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const { DapClient } = require('./dap-client');
+const treeRemoval = require('./support/tree-removal');
 async function ok(p) { const r = await p; assert.equal(r.success, true, r.message); return r.body; }
 for (const interactive of [false, true]) test(`GUI callback debugging with interactive=${interactive}`, { skip: process.platform === 'linux' && !process.env.DISPLAY }, async t => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'racket-gui-parity-'));
@@ -16,7 +17,7 @@ for (const interactive of [false, true]) test(`GUI callback debugging with inter
     '(send window show #t)', '(queue-callback', ' (lambda ()',
     '   (define x 5)', '   (displayln (+ x 1))', '   (send window show #f)))', ''].join('\n'));
   const client = new DapClient();
-  t.after(async () => { await client.close(); await fs.rm(dir, { recursive: true, force: true }); });
+  t.after(async () => { await client.close(); await fs.rm(dir, treeRemoval); });
   await ok(client.request('initialize'));
   await ok(client.request('launch', { program, cwd: dir, interactive }));
   await client.event('initialized');
@@ -45,7 +46,7 @@ test('unhandled GUI callback exceptions expose live frames before unwinding', { 
     '(send window show #t)', '(queue-callback', ' (lambda ()',
     '   (define x 5)', '   (error "callback boom")', '   (displayln x)))', ''].join('\n'));
   const client = new DapClient();
-  t.after(async () => { await client.close(); await fs.rm(dir, { recursive: true, force: true }); });
+  t.after(async () => { await client.close(); await fs.rm(dir, treeRemoval); });
   await ok(client.request('initialize'));
   await ok(client.request('launch', { program, cwd: dir }));
   await client.event('initialized');

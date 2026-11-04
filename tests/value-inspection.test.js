@@ -7,6 +7,7 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const { DapClient } = require('./dap-client');
+const treeRemoval = require('./support/tree-removal');
 
 async function ok(promise) {
   const response = await promise;
@@ -21,7 +22,7 @@ async function prepare(t, lines, breakpoint, config = {}) {
   const program = path.join(directory, 'specimen.rkt');
   await fs.writeFile(program, lines.join('\n') + '\n');
   const client = new DapClient();
-  t.after(async () => { await client.close(); await fs.rm(directory, { recursive: true, force: true }); });
+  t.after(async () => { await client.close(); await fs.rm(directory, treeRemoval); });
   await ok(client.request('initialize', { linesStartAt1: true, columnsStartAt1: true }));
   await ok(client.request('launch', { program, cwd: directory, ...config }));
   await client.event('initialized');

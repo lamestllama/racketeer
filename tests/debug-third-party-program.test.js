@@ -15,6 +15,7 @@ const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const { DapClient } = require('./dap-client');
 const { deferCleanup } = require('./cleanup');
+const treeRemoval = require('./support/tree-removal');
 
 const execute = promisify(execFile);
 const commit = 'bbf9dc58b8b1606f574ebf1a466eeef278689a68';
@@ -60,7 +61,7 @@ async function extract(t) {
     return null;
   }
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'racketeer-third-party-'));
-  deferCleanup(t, () => fs.rm(directory, { recursive: true, force: true }));
+  deferCleanup(t, () => fs.rm(directory, treeRemoval));
   await execute('racket', ['-l', 'racket/base', '-l', 'file/unzip', '-e', `(unzip ${JSON.stringify(file)})`], { cwd: directory });
   return path.join(directory, `tetris-${commit}`);
 }

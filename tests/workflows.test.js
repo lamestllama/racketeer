@@ -9,6 +9,7 @@ const os = require('node:os');
 const { DapClient } = require('./dap-client');
 const { deferCleanup } = require('./cleanup');
 const { selectTests } = require('../vscode/test-selection');
+const treeRemoval = require('./support/tree-removal');
 
 test('test selection honors excluded ancestors and overlapping selections', () => {
   const parent = { id: 'workspace', children: [] };
@@ -28,7 +29,7 @@ async function ok(request) {
 }
 async function fixture(t, source) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'racket-workflow-'));
-  deferCleanup(t, () => fs.rm(directory, { recursive: true, force: true }));
+  deferCleanup(t, () => fs.rm(directory, treeRemoval));
   const program = path.join(directory, 'tests λ😀.rkt');
   await fs.writeFile(program, source);
   return program;

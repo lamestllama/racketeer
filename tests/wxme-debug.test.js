@@ -5,11 +5,12 @@ const test = require('./support/node-test'), assert = require('node:assert/stric
 const fs = require('node:fs'), path = require('node:path'), os = require('node:os');
 const { DapClient } = require('./dap-client');
 const expected = require('./fixtures/wxme-debug/expected.json');
+const treeRemoval = require('./support/tree-removal');
 const ok = async p => { const r = await p; assert.equal(r.success, true, r.message); return r.body; };
 async function launch(t, name, configuration = {}) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'wxme-debug-'));
   const file = path.join(directory, 'λ😀.rkt'); fs.copyFileSync(path.join(__dirname, 'fixtures/wxme-debug', name + '.wxme'), file);
-  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  t.after(() => fs.rmSync(directory, treeRemoval));
   const client = new DapClient(); t.after(() => client.close());
   await ok(client.request('initialize', { adapterID: 'racketdap', linesStartAt1: true, columnsStartAt1: true }));
   await ok(client.request('launch', { program: file, cwd: directory, ...configuration })); await client.event('initialized');

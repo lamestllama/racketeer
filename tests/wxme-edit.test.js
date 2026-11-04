@@ -11,12 +11,13 @@ const { createRequire } = require('node:module');
 const { WxmeDocument, normalize, hash } = require('../vscode/wxme-document');
 const { requestWxme, decodeWxme } = require('../vscode/wxme-process');
 const { spawnSync } = require('node:child_process');
+const treeRemoval = require('./support/tree-removal');
 const helper = path.resolve(__dirname, '../racketdap/tools/wxme-edit.rkt');
 const fixture = name => fs.readFileSync(path.join(__dirname, 'fixtures/wxme', name + '.wxme'));
 const token = { isCancellationRequested: false, onCancellationRequested: () => ({ dispose() {} }) };
 const uri = file => ({ scheme: 'file', fsPath: file, toString: () => 'file://' + file });
 const parts = [{ kind: 'text', text: 'λ 😀\n' }, { kind: 'comment', parts: [] }, { kind: 'text', text: '\nend' }];
-function directory(t) { const d = fs.mkdtempSync(path.join(os.tmpdir(), 'wxme-edit-')); t.after(() => fs.rmSync(d, { recursive: true, force: true })); return d; }
+function directory(t) { const d = fs.mkdtempSync(path.join(os.tmpdir(), 'wxme-edit-')); t.after(() => fs.rmSync(d, treeRemoval)); return d; }
 function harness(t) {
   const root = directory(t), file = path.join(root, 'source.wxme');
   fs.writeFileSync(file, JSON.stringify({ parts }));

@@ -9,6 +9,7 @@ const { spawn } = require('node:child_process');
 const { once } = require('node:events');
 const rpc = require(require.resolve('vscode-jsonrpc/node', { paths: [require('node:path').join(__dirname, '../vscode')] }));
 const { root, uri, addon } = require('./workspace-index-project');
+const treeRemoval = require('./support/tree-removal');
 
 async function until(check, description, diagnostics = () => '', timeout = 15000) {
   const deadline = Date.now() + timeout;
@@ -36,7 +37,7 @@ async function languageServer(t, { workspace = true, folders, capabilities = {} 
   t.after(async () => {
     connection.dispose(); child.kill('SIGKILL');
     child.stdin.destroy(); child.stdout.destroy(); child.stderr.destroy();
-    await closed; fs.rmSync(directory, { recursive: true, force: true });
+    await closed; fs.rmSync(directory, treeRemoval);
   });
   await connection.sendRequest('initialize', { processId: process.pid, rootPath: workspace ? directory : null, rootUri: workspace ? uri(directory) : null, capabilities, ...(folders ? { workspaceFolders: folders.map(file => ({ uri: uri(file), name: path.basename(file) })) } : {}) });
   await connection.sendNotification('initialized', {});

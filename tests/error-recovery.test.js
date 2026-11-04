@@ -9,6 +9,7 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { DapClient } = require('./dap-client');
 const { deferCleanup } = require('./cleanup');
+const treeRemoval = require('./support/tree-removal');
 
 async function ok(request) {
   const response = await request;
@@ -17,7 +18,7 @@ async function ok(request) {
 }
 async function prepare(t, source, options = {}) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'racketeer-error-recovery-'));
-  deferCleanup(t, () => fs.rm(directory, { recursive: true, force: true }));
+  deferCleanup(t, () => fs.rm(directory, treeRemoval));
   const program = path.join(directory, 'recover.rkt');
   await fs.writeFile(program, source);
   const plain = spawnSync('racket', [program], { encoding: 'utf8' });

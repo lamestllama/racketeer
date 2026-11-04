@@ -12,6 +12,7 @@ const { createInterface } = require('node:readline');
 const net = require('node:net');
 const { DapClient } = require('./dap-client');
 const { deferCleanup } = require('./cleanup');
+const treeRemoval = require('./support/tree-removal');
 const root = path.resolve(__dirname, '..');
 async function ok(result) {
   const response = await result;
@@ -20,7 +21,7 @@ async function ok(result) {
 }
 async function host(t) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'racket-attach-'));
-  deferCleanup(t, () => fs.rm(dir, { recursive: true, force: true }));
+  deferCleanup(t, () => fs.rm(dir, treeRemoval));
   const program = path.join(dir, 'sample.rkt');
   await fs.writeFile(program, '#lang racket/base\n(provide run)\n(define (run)\n  (define answer (+ 20 22))\n  (+ answer 1))\n');
   const child = spawn('racket', [path.join(root, 'tests/support/attach-host.rkt'), program]);

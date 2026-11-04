@@ -9,12 +9,13 @@ const os = require('node:os');
 const path = require('node:path');
 const test = require('./support/node-test.js');
 const { session } = require('./support/dap-trace.js');
+const treeRemoval = require('./support/tree-removal');
 
 const skip = process.platform === 'win32';
 // A project in a folder, and a link to that folder.
 function project(t, files) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'path-spellings-'));
-  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  t.after(() => fs.rmSync(directory, treeRemoval));
   const real = path.join(directory, 'real');
   const link = path.join(directory, 'link');
   fs.mkdirSync(real);
@@ -166,7 +167,7 @@ test('Step In stays out of a dependency outside a source root reached through a 
 
 test('a relative program is relative to the working directory', async t => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'path-spellings-'));
-  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  t.after(() => fs.rmSync(directory, treeRemoval));
   fs.mkdirSync(path.join(directory, 'sub'));
   const dep = path.join(directory, 'sub', 'dep.rkt');
   fs.writeFileSync(path.join(directory, 'sub', 'main.rkt'), called['main.rkt']);

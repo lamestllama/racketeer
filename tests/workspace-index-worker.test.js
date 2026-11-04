@@ -11,6 +11,7 @@ const { once } = require('node:events');
 const { setTimeout: delay } = require('node:timers/promises');
 const rpc = require(require.resolve('vscode-jsonrpc/node', { paths: [path.join(__dirname, '../vscode')] }));
 const { definition, uses, uri, root, addon, project } = require('./workspace-index-project');
+const treeRemoval = require('./support/tree-removal');
 
 const windows = process.platform === 'win32';
 // Above what these tests' own small files need, and quick for a macro to pass.
@@ -198,7 +199,7 @@ test('compile-time code that finds the real output reaches only its own worker',
 // A server with a project of its own, to end in ways the shared helper does not.
 async function server(t, command, body) {
   const directory = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'racketeer-worker-')));
-  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  t.after(() => fs.rmSync(directory, treeRemoval));
   const pidFile = path.join(directory, 'pid');
   fs.writeFileSync(path.join(directory, 'definition.rkt'), definition);
   fs.writeFileSync(path.join(directory, 'uses.rkt'), uses);

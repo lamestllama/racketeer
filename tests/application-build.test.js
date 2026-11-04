@@ -9,6 +9,7 @@ const os = require('node:os');
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const { buildPlan, executablePath } = require('../vscode/application-build');
+const treeRemoval = require('./support/tree-removal');
 const execute = promisify(execFile);
 
 // Windows keeps a deleted file until the last handle to it closes, so a
@@ -18,7 +19,7 @@ const execute = promisify(execFile);
 async function removeTree(t, directory) {
   for (let attempt = 0; ; attempt++) {
     try {
-      await fs.rm(directory, { recursive: true, force: true });
+      await fs.rm(directory, treeRemoval);
       if (attempt) t.diagnostic(`${directory} was removed after ${attempt} retries`);
       return;
     } catch (error) {

@@ -12,12 +12,13 @@ const { createRequire } = require('node:module');
 const { spawn, spawnSync } = require('node:child_process');
 const { once } = require('node:events');
 const { decodeWxme } = require('../vscode/wxme-process');
+const treeRemoval = require('./support/tree-removal');
 const helper = path.resolve(__dirname, '../racketdap/tools/wxme-view.rkt');
 const fixture = name => path.join(__dirname, 'fixtures/wxme', `${name}.wxme`);
 const decode = file => decodeWxme(process.env.RACKET || 'racket', helper, file);
 const temporary = t => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'racketeer-wxme-'));
-  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  t.after(() => fs.rmSync(directory, treeRemoval));
   return directory;
 };
 function emitter() {

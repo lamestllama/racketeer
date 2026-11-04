@@ -10,6 +10,7 @@ const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const { DapClient } = require('./dap-client');
 const { deferCleanup } = require('./cleanup');
+const treeRemoval = require('./support/tree-removal');
 const execute = promisify(execFile);
 const root = path.resolve(__dirname, '..');
 const gui = { skip: process.platform === 'linux' && !process.env.DISPLAY, timeout: 120000 };
@@ -36,7 +37,7 @@ test('plot windows support zoom, rotation, overlays, current-view saving and own
 
 test('live plot results, multiple results and nested variables open without reevaluation', gui, async t => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'racket-plots-'));
-  deferCleanup(t, () => fs.rm(directory, { recursive: true, force: true }));
+  deferCleanup(t, () => fs.rm(directory, treeRemoval));
   const program = path.join(directory, 'plots.rkt');
   await fs.writeFile(program, (await fs.readFile(path.join(root, 'examples/interactive-plots.rkt'), 'utf8')) + '\n(define evaluations 0)\n');
   const client = new DapClient(undefined, { timeout: 60000 });

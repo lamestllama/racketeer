@@ -8,12 +8,13 @@ const { WxmeDocument, normalize } = require('../vscode/wxme-document');
 const { renderEditor } = require('../vscode/wxme-editor-view');
 const { decodeWxme, requestWxme } = require('../vscode/wxme-process');
 const expected = require('./fixtures/wxme-xml/expected.json');
+const treeRemoval = require('./support/tree-removal');
 const fixture = name => path.join(__dirname, 'fixtures/wxme-xml', name + '.wxme');
 const helper = path.resolve(__dirname, '../racketdap/tools/wxme-edit.rkt');
 const viewer = path.resolve(__dirname, '../racketdap/tools/wxme-view.rkt');
 const gui = { skip: process.env.RACKETDAP_TEST_WXME_GUI !== '1' };
 const encode = (file, request) => requestWxme('racket', helper, file, request);
-function directory(t) { const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wxme-xml-edit-')); t.after(() => fs.rmSync(root, { recursive: true, force: true })); return root; }
+function directory(t) { const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wxme-xml-edit-')); t.after(() => fs.rmSync(root, treeRemoval)); return root; }
 function execute(file, output) {
   const result = spawnSync('racket', [file], { encoding: 'utf8', timeout: 15000 });
   assert.equal(result.status, 0, result.stderr); assert.equal(result.stdout, output);

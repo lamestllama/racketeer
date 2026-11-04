@@ -11,13 +11,14 @@ const { spawn, spawnSync } = require('node:child_process');
 const test = require('./support/node-test');
 const { DapClient } = require('./dap-client');
 const { debuggerArgs } = require('../vscode/language-process');
+const treeRemoval = require('./support/tree-removal');
 
 const repository = path.resolve(__dirname, '..');
 function folder(t) {
   // A space, because extension and storage folders can hold one.
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'debugger launch-'));
   // A builder that has made its folder visible still tidies before it exits.
-  t.after(() => fs.rmSync(directory, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }));
+  t.after(() => fs.rmSync(directory, treeRemoval));
   const racketdap = path.join(directory, 'racketdap');
   fs.cpSync(path.join(repository, 'racketdap'), racketdap, { recursive: true, filter: file => path.basename(file) !== 'compiled' });
   const program = path.join(directory, 'program.rkt');
@@ -406,7 +407,7 @@ test('a building folder holds off a second build until it is abandoned', { timeo
   const { directory, racketdap, storage, program } = files;
   await session(launcherArgs(files), program);
   const [build] = await built(storage);
-  fs.rmSync(path.join(storage, build), { recursive: true });
+  fs.rmSync(path.join(storage, build), { ...treeRemoval, force: false });
   const building = path.join(storage, `${build}.building`);
   fs.mkdirSync(building);
   fs.writeFileSync(path.join(building, 'in progress'), '');

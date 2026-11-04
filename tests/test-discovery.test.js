@@ -12,6 +12,7 @@ const os = require('node:os');
 const { DapClient } = require('./dap-client');
 const { deferCleanup } = require('./cleanup');
 const { selectTests } = require('../vscode/test-selection');
+const treeRemoval = require('./support/tree-removal');
 
 function discover(text) {
   return new Promise((resolve, reject) => {
@@ -28,7 +29,7 @@ async function ok(request) {
 }
 async function launch(t, text, ids, options = {}) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'racket-cases-'));
-  deferCleanup(t, () => fs.rm(directory, { recursive: true, force: true }));
+  deferCleanup(t, () => fs.rm(directory, treeRemoval));
   const program = path.join(directory, 'cases.rkt');
   await fs.writeFile(program, text);
   const client = new DapClient();

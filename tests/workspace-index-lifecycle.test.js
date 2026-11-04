@@ -8,6 +8,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { setTimeout: delay } = require('node:timers/promises');
 const { root, definition, uri, rawServer } = require('./workspace-index-project');
+const treeRemoval = require('./support/tree-removal');
 
 const invalidRequest = -32600, serverNotInitialized = -32002, requestFailed = -32803;
 const exitCode = async server => (await server.closed)[0];
@@ -15,7 +16,7 @@ const asking = { experimental: { racketeer: { indexStatus: true, sourceReference
 
 function workspace(t) {
   const directory = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'racketeer-lifecycle-')));
-  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  t.after(() => fs.rmSync(directory, treeRemoval));
   fs.writeFileSync(path.join(directory, 'definition.rkt'), definition);
   return directory;
 }

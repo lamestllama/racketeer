@@ -7,6 +7,7 @@ const path = require('node:path');
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const vscode = require('vscode');
+const treeRemoval = require('./support/tree-removal');
 const execute = promisify(execFile);
 
 exports.run = async function (workspace, observe = async () => {}) {
@@ -169,7 +170,7 @@ exports.run = async function (workspace, observe = async () => {}) {
     if (childPid) { try { process.kill(childPid, 'SIGKILL'); } catch (error) { if (error.code !== 'ESRCH') throw error; } }
     started.dispose(); ended.dispose(); results.dispose(); processStarts.dispose();
     if (previousTasks) await fs.writeFile(taskConfig, previousTasks); else await fs.rm(taskConfig, { force: true });
-    await fs.rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+    await fs.rm(root, treeRemoval);
     if (restoreLanguageServer) {
       await settings.update('languageServer.enabled', previousLanguageServer, vscode.ConfigurationTarget.Workspace);
       await vscode.extensions.getExtension('lamestllama.racketeer').exports.languageServerReady();

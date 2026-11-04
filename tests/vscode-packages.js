@@ -8,6 +8,7 @@ const path = require('node:path');
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const vscode = require('vscode');
+const treeRemoval = require('./support/tree-removal');
 const execute = promisify(execFile);
 
 exports.run = async function (workspace) {
@@ -196,7 +197,7 @@ exports.run = async function (workspace) {
       await vscode.commands.executeCommand('racketdap.removePackage', name);
     }
     tracker.dispose();
-    await fs.rm(directory, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+    await fs.rm(directory, treeRemoval);
     await fs.rm(program, { force: true });
   }
 };

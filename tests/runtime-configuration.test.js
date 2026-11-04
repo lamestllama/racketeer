@@ -9,6 +9,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { DapClient } = require('./dap-client');
 const { deferCleanup } = require('./cleanup');
+const treeRemoval = require('./support/tree-removal');
 
 async function ok(request) {
   const response = await request;
@@ -17,7 +18,7 @@ async function ok(request) {
 }
 async function fixture(t, source, files = {}) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'racketeer-runtime-'));
-  deferCleanup(t, () => fs.rm(directory, { recursive: true, force: true }));
+  deferCleanup(t, () => fs.rm(directory, treeRemoval));
   for (const [name, text] of Object.entries({ 'program.rkt': source, ...files })) {
     await fs.writeFile(path.join(directory, name), text);
   }

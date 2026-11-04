@@ -8,6 +8,7 @@ const path = require('node:path');
 const os = require('node:os');
 const { DapClient } = require('./dap-client');
 const { deferCleanup } = require('./cleanup');
+const treeRemoval = require('./support/tree-removal');
 async function ok(request) {
   const response = await request;
   assert.equal(response.success, true, response.message);
@@ -15,7 +16,7 @@ async function ok(request) {
 }
 async function launch(t, text, options = {}) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'racket-teaching-tests-'));
-  deferCleanup(t, () => fs.rm(directory, { recursive: true, force: true }));
+  deferCleanup(t, () => fs.rm(directory, treeRemoval));
   const program = path.join(directory, 'checks.rkt');
   await fs.writeFile(program, text);
   const client = new DapClient();

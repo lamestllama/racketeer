@@ -6,10 +6,11 @@ const fs = require('node:fs/promises'), os = require('node:os'), path = require(
 const { DapClient } = require('./dap-client');
 const { InteractionOutput } = require('../vscode/interaction-output');
 const { deferCleanup } = require('./cleanup');
+const treeRemoval = require('./support/tree-removal');
 async function ok(request) { const response = await request; assert.equal(response.success, true, response.message); return response.body; }
 async function start(t, source) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'racket interactions λ '));
-  deferCleanup(t, () => fs.rm(directory, { recursive: true, force: true }));
+  deferCleanup(t, () => fs.rm(directory, treeRemoval));
   const program = path.join(directory, 'main.rkt'); await fs.writeFile(program, source);
   const client = new DapClient(undefined, { timeout: 60000 }); deferCleanup(t, () => client.close());
   await ok(client.request('initialize'));

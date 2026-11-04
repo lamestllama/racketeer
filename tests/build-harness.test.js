@@ -9,11 +9,12 @@ const test = require('./support/node-test');
 const { spawnSync } = require('node:child_process');
 const { sourceIdentity, recordArtifact, verifyArtifact, archiveContents } = require('../scripts/artifact');
 const { inventory } = require('../scripts/test-headless');
+const treeRemoval = require('./support/tree-removal');
 const root = path.resolve(__dirname, '..');
 
 async function fixture(t) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'racketeer-build-'));
-  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  t.after(() => fs.rmSync(directory, treeRemoval));
   for (const name of ['LICENSE', 'LICENSE-APACHE', 'LICENSE-MIT', 'COPYRIGHT', 'info.rkt']) fs.writeFileSync(path.join(directory, name), name);
   for (const name of ['.vscode', 'examples', 'experiments', 'racketdap', 'scripts', 'tests', 'vendor', 'vscode']) fs.mkdirSync(path.join(directory, name));
   fs.writeFileSync(path.join(directory, 'racketdap/main.rkt'), '#lang racket/base\n');

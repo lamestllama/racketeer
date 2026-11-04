@@ -10,6 +10,7 @@ const path = require('node:path');
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const { DapClient } = require('./dap-client');
+const treeRemoval = require('./support/tree-removal');
 const execute = promisify(execFile);
 const adapter = process.env.RACKETDAP_CONFORMANCE_ADAPTER;
 
@@ -27,7 +28,7 @@ async function prepare(t, lines, breakpoints = []) {
   const client = new DapClient(adapter);
   t.after(async () => {
     await client.close();
-    await fs.rm(directory, { recursive: true, force: true });
+    await fs.rm(directory, treeRemoval);
   });
   await ok(client.request('initialize', { adapterID: 'racketdap', linesStartAt1: true, columnsStartAt1: true }));
   await ok(client.request('launch', { program, cwd: directory }));

@@ -10,12 +10,13 @@ const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const { DapClient } = require('./dap-client');
 const { deferCleanup } = require('./cleanup');
+const treeRemoval = require('./support/tree-removal');
 const execute = promisify(execFile);
 const root = path.resolve(__dirname, '..');
 
 async function fixture(t) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'racket-package-'));
-  deferCleanup(t, () => fs.rm(root, { recursive: true, force: true }));
+  deferCleanup(t, () => fs.rm(root, treeRemoval));
   const directory = path.join(root, 'racketdap-test-library');
   const workspace = path.join(root, 'workspace');
   const addon = path.join(root, 'addon');

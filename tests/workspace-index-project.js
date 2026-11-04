@@ -10,6 +10,7 @@ const { spawn } = require('node:child_process');
 const { once } = require('node:events');
 const { edited } = require('./text-edits');
 const rpc = require(require.resolve('vscode-jsonrpc/node', { paths: [require('node:path').join(__dirname, '../vscode')] }));
+const treeRemoval = require('./support/tree-removal');
 const root = path.resolve(__dirname, '..');
 const definition = '#lang racket/base\n(provide square)\n(define (square x) (* x x))\n';
 const uses = '#lang racket/base\n(require "definition.rkt")\n(square 3)\n';
@@ -18,7 +19,7 @@ const uses = '#lang racket/base\n(require "definition.rkt")\n(square 3)\n';
 // short name that holds one, such as RUNNER~1.
 const uri = file => pathToFileURL(file).href.replaceAll('%7E', '~');
 const addon = fs.mkdtempSync(path.join(os.tmpdir(), 'racketeer-index-addon-'));
-test.after(() => fs.rmSync(addon, { recursive: true, force: true }));
+test.after(() => fs.rmSync(addon, treeRemoval));
 
 
 // `shared` gives another server's `directory`, `documents` and `settings`, for a
@@ -73,7 +74,7 @@ async function project(t, env = {}, shared) {
   servers.push(stop);
   if (!shared) t.after(async () => {
     await Promise.all(servers.map(stop => stop()));
-    fs.rmSync(directory, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+    fs.rmSync(directory, treeRemoval);
   });
   const filename = name => path.join(directory, name);
   const write = (name, text) => fs.writeFileSync(filename(name), text);

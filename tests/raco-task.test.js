@@ -6,6 +6,7 @@ const test = require('./support/node-test');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
+const treeRemoval = require('./support/tree-removal');
 
 function harness() {
   const listeners = { process: new Set(), task: new Set(), cancel: new Set() };
@@ -80,7 +81,7 @@ for (const signal of ['SIGHUP', 'SIGKILL']) {
     const alive = pid => { try { process.kill(pid, 0); return true; } catch (_) { return false; } };
     t.after(() => {
       for (const pid of descendants) if (alive(pid)) process.kill(pid, 'SIGKILL');
-      fs.rmSync(directory, { recursive: true, force: true });
+      fs.rmSync(directory, treeRemoval);
     });
     // A compile-time child that ignores breaks starts a grandchild, then both wait.
     fs.writeFileSync(path.join(directory, 'slow.rkt'), `#lang racket/base

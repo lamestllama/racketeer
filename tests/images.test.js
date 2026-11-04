@@ -10,6 +10,7 @@ const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const { DapClient } = require('./dap-client');
 const { deferCleanup } = require('./cleanup');
+const treeRemoval = require('./support/tree-removal');
 const execute = promisify(execFile);
 const root = path.resolve(__dirname, '..');
 
@@ -20,7 +21,7 @@ async function ok(request) {
 }
 async function session(t, source) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'racket-images-'));
-  deferCleanup(t, () => fs.rm(directory, { recursive: true, force: true }));
+  deferCleanup(t, () => fs.rm(directory, treeRemoval));
   const program = path.join(directory, 'images.rkt');
   await fs.writeFile(program, source);
   const client = new DapClient(undefined, { timeout: 60000 });
@@ -169,7 +170,7 @@ test('image choices include values beyond the text preview and exclude empty or 
 
 test('a paused frame can render a retained image and resuming expires its reference', async t => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'racket-paused-image-'));
-  deferCleanup(t, () => fs.rm(directory, { recursive: true, force: true }));
+  deferCleanup(t, () => fs.rm(directory, treeRemoval));
   const program = path.join(directory, 'image.rkt');
   await fs.writeFile(program, '#lang racket/base\n(require pict)\n(define picture (disk 8))\n(void)\n');
   const client = new DapClient();

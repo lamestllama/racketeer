@@ -8,6 +8,7 @@ const { decodeWxme, requestWxme } = require('../vscode/wxme-process');
 const { renderWxme } = require('../vscode/wxme-render');
 const { DapClient } = require('./dap-client');
 const expected = require('./fixtures/wxme-xml/expected.json');
+const treeRemoval = require('./support/tree-removal');
 const fixture = name => path.join(__dirname, 'fixtures/wxme-xml', name + '.wxme');
 const viewer = path.resolve(__dirname, '../racketdap/tools/wxme-view.rkt');
 const editor = path.resolve(__dirname, '../racketdap/tools/wxme-edit.rkt');
@@ -56,7 +57,7 @@ test('XML editing without a display preserves every source byte', { skip: proces
 
 test('nested XML streams cannot load a document-supplied reader', async t => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'wxme-reader-'));
-  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  t.after(() => fs.rmSync(directory, treeRemoval));
   const collection = path.join(directory, 'racketeer-fixture'); fs.mkdirSync(collection);
   const marker = path.join(directory, 'loaded');
   fs.writeFileSync(path.join(collection, 'reader.rkt'), `#lang racket/base\n(call-with-output-file ${JSON.stringify(marker)} (lambda (out) (display "loaded" out)))\n(error "READER LOADED")\n`);

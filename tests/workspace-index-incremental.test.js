@@ -8,6 +8,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { addon, uri, project } = require('./workspace-index-project');
+const treeRemoval = require('./support/tree-removal');
 
 const from = (locations, source) => locations.filter(location => location.uri === source);
 
@@ -154,7 +155,7 @@ const keeps = '#lang racket/base\n(provide call)\n(define-syntax-rule (call f) (
 const drops = '#lang racket/base\n(provide call)\n(define-syntax-rule (call f) 1)\n';
 function outsideWorkspace(t, ...folders) {
   const outside = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'racketeer-collection-')));
-  t.after(() => fs.rmSync(outside, { recursive: true, force: true }));
+  t.after(() => fs.rmSync(outside, treeRemoval));
   return folders.map(folder => {
     fs.mkdirSync(path.join(outside, folder));
     return path.join(outside, folder);

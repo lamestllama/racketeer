@@ -7,6 +7,7 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const { DapClient } = require('./dap-client');
+const treeRemoval = require('./support/tree-removal');
 async function ok(promise) {
   const response = await promise;
   assert.equal(response.success, true, response.message);
@@ -17,7 +18,7 @@ async function prepare(t, lines, config = {}) {
   const program = path.join(dir, 'main.rkt');
   await fs.writeFile(program, lines.join('\n') + '\n');
   const client = new DapClient(undefined, { timeout: 30000 });
-  t.after(async () => { await client.close(); await fs.rm(dir, { recursive: true, force: true }); });
+  t.after(async () => { await client.close(); await fs.rm(dir, treeRemoval); });
   await ok(client.request('initialize'));
   await ok(client.request('launch', { program, cwd: dir, stopOnEntry: true, ...config }));
   await client.event('initialized');

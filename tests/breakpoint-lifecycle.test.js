@@ -7,6 +7,7 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const { DapClient } = require('./dap-client');
+const treeRemoval = require('./support/tree-removal');
 
 async function ok(request) {
   const response = await request;
@@ -18,7 +19,7 @@ async function prepare(t, source, { oneBased = true, ...config } = {}) {
   const program = path.join(directory, 'main.rkt');
   await fs.writeFile(program, source);
   const client = new DapClient();
-  t.after(async () => { try { await client.close(); } finally { await fs.rm(directory, { recursive: true, force: true }); } });
+  t.after(async () => { try { await client.close(); } finally { await fs.rm(directory, treeRemoval); } });
   await ok(client.request('initialize', { linesStartAt1: oneBased, columnsStartAt1: oneBased }));
   await ok(client.request('launch', { program, sourceRoots: [], ...config }));
   await client.event('initialized');
@@ -151,7 +152,7 @@ for (const oneBased of [true, false]) {
 test('a late breakpoint selects an unloaded external module for instrumentation', async t => {
   const { client, program, directory } = await prepare(t, '#lang racket/base\n(define marker 1)\n', { interactive: true });
   const external = await fs.mkdtemp(path.join(os.tmpdir(), 'racket-late-external-'));
-  t.after(() => fs.rm(external, { recursive: true, force: true }));
+  t.after(() => fs.rm(external, treeRemoval));
   const support = path.join(external, 'support.rkt');
   await fs.writeFile(support, '#lang racket/base\n(provide twice)\n(define (twice value)\n  (* value 2))\n');
   await ok(client.request('configurationDone'));

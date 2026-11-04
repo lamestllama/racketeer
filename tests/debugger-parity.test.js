@@ -7,13 +7,14 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const { DapClient } = require('./dap-client');
+const treeRemoval = require('./support/tree-removal');
 async function ok(p) { const r = await p; assert.equal(r.success, true, r.message); return r.body; }
 async function prepare(t, lines, config = {}) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'racket-parity-'));
   const program = path.join(dir, 'target.rkt');
   await fs.writeFile(program, lines.join('\n') + '\n');
   const client = new DapClient();
-  t.after(async () => { await client.close(); await fs.rm(dir, { recursive: true, force: true }); });
+  t.after(async () => { await client.close(); await fs.rm(dir, treeRemoval); });
   await ok(client.request('initialize', { linesStartAt1: true, columnsStartAt1: true }));
   await ok(client.request('launch', { program, cwd: dir, ...config }));
   await client.event('initialized');

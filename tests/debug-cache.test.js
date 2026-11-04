@@ -7,6 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 const test = require('./support/node-test.js');
 const { session, normalized, normalizedByFile } = require('./support/dap-trace.js');
+const treeRemoval = require('./support/tree-removal');
 
 const files = {
   'deep.rkt': `#lang racket/base
@@ -63,7 +64,7 @@ const racket = (expression, cwd) => require('node:child_process').execFileSync('
 const lineIn = (file, text) => fs.readFileSync(file, 'utf8').split('\n').findIndex(l => l.includes(text)) + 1;
 function project(t) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'debug cache-'));
-  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  t.after(() => fs.rmSync(directory, treeRemoval));
   const source = path.join(directory, 'project');
   fs.mkdirSync(source);
   for (const [name, text] of Object.entries(files)) fs.writeFileSync(path.join(source, name), text);
@@ -426,7 +427,7 @@ const debugCacheModule = path.resolve(__dirname, '../racketdap/worker/debug-cach
 
 test('the key changes with the instrumenter, its location and the library paths', { timeout: 300000 }, async t => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'debug cache key-'));
-  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  t.after(() => fs.rmSync(directory, treeRemoval));
   const key = (module, setup = '') => racket(`(require (file ${JSON.stringify(module)})) ${setup}
     (let-values ([(base name dir?) (split-path (cache-root "/x"))]) (display name))`);
   const copyRoot = path.join(directory, 'copy');
@@ -445,7 +446,7 @@ test('the key changes with the instrumenter, its location and the library paths'
 
 test('over its limit the cache drops the least recently used entries first', async t => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'debug cache evict-'));
-  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  t.after(() => fs.rmSync(directory, treeRemoval));
   const put = (name, age) => {
     fs.writeFileSync(path.join(directory, `${name}.zo`), Buffer.alloc(1000));
     fs.writeFileSync(path.join(directory, `${name}.dep`), Buffer.alloc(100));

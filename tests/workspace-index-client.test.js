@@ -7,6 +7,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const rpc = require(require.resolve('vscode-jsonrpc/node', { paths: [require('node:path').join(__dirname, '../vscode')] }));
 const { root, definition, uses, uri, addon } = require('./workspace-index-project');
+const treeRemoval = require('./support/tree-removal');
 
 function event() {
   const listeners = new Set();
@@ -47,7 +48,7 @@ function client(t, processFactory, timeout = 60000) {
   const index = module.exports.createWorkspaceIndex({ asAbsolutePath: file => path.join(root, 'vscode', file) }, {
     executable: 'racket', timeout, output: { append() {}, appendLine() {} }, onStatus: value => statuses.push(value)
   });
-  t.after(async () => { await index.dispose(); fs.rmSync(directory, { recursive: true, force: true }); });
+  t.after(async () => { await index.dispose(); fs.rmSync(directory, treeRemoval); });
   const open = (name, text) => {
     const document = { uri: parse(uri(path.join(directory, name))), languageId: 'racket', version: 1,
       isClosed: false, getText: () => text };
@@ -418,7 +419,7 @@ test('a file event outside the source suffixes waits for the next request and ar
 
 test('moving in or deleting a folder with a dot in its name marks the index out of date', { timeout: 120000 }, async t => {
   const c = client(t), elsewhere = fs.mkdtempSync(path.join(root, '.test-output', 'dotted-'));
-  t.after(() => fs.rmSync(elsewhere, { recursive: true, force: true }));
+  t.after(() => fs.rmSync(elsewhere, treeRemoval));
   fs.writeFileSync(path.join(c.directory, 'definition.rkt'), definition);
   const doc = c.open('definition.rkt', definition);
   const folder = path.join(c.directory, 'my.project'), inside = path.join(folder, 'uses.rkt');
@@ -431,7 +432,7 @@ test('moving in or deleting a folder with a dot in its name marks the index out 
   fs.renameSync(prepared, folder);
   c.disk.emit(c.parse(uri(folder)));
   assert.equal(await count(), 1, 'A folder moved in is analysed');
-  fs.rmSync(folder, { recursive: true });
+  fs.rmSync(folder, { ...treeRemoval, force: false });
   c.disk.emit(c.parse(uri(folder)));
   assert.equal(await count(), 0, 'A folder deleted is gone');
 });
@@ -446,7 +447,7 @@ test('an event for an excluded folder with a dot in its name does not displace o
   const doc = c.open('definition.rkt', definition);
   const count = async () => (await c.refs(doc)).filter(location => location.uri.fsPath === inside).length;
   assert.equal(await count(), 1);
-  fs.rmSync(folder, { recursive: true });
+  fs.rmSync(folder, { ...treeRemoval, force: false });
   c.disk.emit(c.parse(uri(folder)));
   const excluded = path.join(c.directory, 'ignored.project');
   fs.mkdirSync(excluded);

@@ -9,6 +9,7 @@ const path = require('node:path');
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const { DapClient } = require('./dap-client');
+const treeRemoval = require('./support/tree-removal');
 
 async function ok(promise) {
   const response = await promise;
@@ -37,7 +38,7 @@ async function eachStop(t, lines, visit, config = {}) {
   const program = path.join(directory, 'specimen.rkt');
   await fs.writeFile(program, lines.join('\n') + '\n');
   const client = new DapClient(undefined, { timeout: 60000 });
-  t.after(async () => { await client.close(); await fs.rm(directory, { recursive: true, force: true }); });
+  t.after(async () => { await client.close(); await fs.rm(directory, treeRemoval); });
   const marks = new Map();
   lines.forEach((line, index) => {
     const mark = /\(void 'stop-([^)]*)\)/.exec(line);
@@ -308,7 +309,7 @@ test('names no source identifier refers to stay hidden', async t => {
 
 test('a warm cache lists the same names as the run that compiled them', async t => {
   const cache = await fs.mkdtemp(path.join(os.tmpdir(), 'racketeer-variables-cache-'));
-  t.after(() => fs.rm(cache, { recursive: true, force: true }));
+  t.after(() => fs.rm(cache, treeRemoval));
   const lines = [
     ...macros,
     '(define (anaphoric v)',
@@ -870,7 +871,7 @@ test('rows are read at every stop and the program prints what it prints without 
   });
   assert.ok(seen.includes('in-long-body') && seen.includes('override') && seen.includes('keyword'), seen.join());
   const program = path.join(await fs.mkdtemp(path.join(os.tmpdir(), 'racketeer-variables-plain-')), 'specimen.rkt');
-  t.after(() => fs.rm(path.dirname(program), { recursive: true, force: true }));
+  t.after(() => fs.rm(path.dirname(program), treeRemoval));
   await fs.writeFile(program, lines.join('\n') + '\n');
   const { stdout } = await promisify(execFile)('racket', [program]);
   assert.equal(output, stdout);

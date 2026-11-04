@@ -7,6 +7,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 const { createRequire } = require('node:module');
 const vscode = require('vscode');
+const treeRemoval = require('./support/tree-removal');
 
 // Use the artifact's verified source snapshot with real TestItems, TestRuns,
 // tasks and the installed adapter. Capture public API calls under a separate
@@ -164,6 +165,6 @@ exports.run = async function (extension, workspace) {
   } finally {
     context.subscriptions.reverse().forEach(item => item.dispose());
     await settings.update('testing.include', previous, vscode.ConfigurationTarget.Workspace);
-    fs.rmSync(directory, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+    fs.rmSync(directory, treeRemoval);
   }
 };

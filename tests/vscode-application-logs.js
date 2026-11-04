@@ -3,6 +3,7 @@
 'use strict';
 const assert = require('node:assert/strict'), path = require('node:path');
 const fs = require('node:fs/promises'), vscode = require('vscode');
+const treeRemoval = require('./support/tree-removal');
 exports.run = async function (workspace, interact) {
   const sessions = [], events = [], ended = new Set(), checks = [];
   const directory = await fs.mkdtemp(path.join(workspace.uri.fsPath, 'application-logs-'));
@@ -98,7 +99,7 @@ exports.run = async function (workspace, interact) {
   } finally {
     vscode.debug.removeBreakpoints(breakpoints);
     for (const session of sessions) if (!ended.has(session.id)) await vscode.debug.stopDebugging(session);
-    tracker.dispose(); await fs.rm(directory, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+    tracker.dispose(); await fs.rm(directory, treeRemoval);
     await files.update('eol', eol, vscode.ConfigurationTarget.Global);
   }
 };

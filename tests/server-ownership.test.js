@@ -8,6 +8,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawn, execFileSync } = require('node:child_process');
 const { pathToFileURL } = require('node:url');
+const treeRemoval = require('./support/tree-removal');
 
 const root = path.resolve(__dirname, '..');
 const alive = pid => { try { process.kill(pid, 0); return true; } catch (_) { return false; } };
@@ -34,7 +35,7 @@ test('the language and workspace index servers end with an extension host that i
   let tree = [];
   t.after(() => {
     for (const pid of tree) if (alive(pid)) process.kill(pid, 'SIGKILL');
-    fs.rmSync(directory, { recursive: true, force: true });
+    fs.rmSync(directory, treeRemoval);
   });
   fs.writeFileSync(path.join(directory, 'busy.rkt'), `#lang racket/base
 (require (for-syntax racket/base))

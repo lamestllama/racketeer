@@ -27,7 +27,7 @@ async function clientFor(t) {
 }
 async function temporary(t) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'racketeer-lifecycle-'));
-  deferCleanup(t, () => fs.rm(directory, { recursive: true, force: true }));
+  deferCleanup(t, () => fs.rm(directory, treeRemoval));
   return directory;
 }
 async function peer(t, partial) {
@@ -35,6 +35,7 @@ async function peer(t, partial) {
   const executable = path.join(directory, 'worker');
   await fs.writeFile(executable, `#!${process.execPath}\n` + (partial ? `
 const net = require('node:net');
+const treeRemoval = require('./support/tree-removal');
 let input = Buffer.alloc(0);
 process.stdin.on('data', chunk => { input = Buffer.concat([input, chunk]); });
 process.stdin.on('end', () => {
