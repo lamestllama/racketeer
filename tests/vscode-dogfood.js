@@ -27,7 +27,7 @@ exports.run = async function () {
     ['tests/continuation-reentry.rkt', 5],
     ['tests/debug-cache-links.rkt', 3],
     ['tests/definition-allocation.rkt', 14],
-    ['tests/generated-code.rkt', 6],
+    ['tests/generated-code.rkt', 7],
     ['tests/site-gate.rkt', 7],
     ['tests/headless.rkt', 22],
     ['tests/inspect-counts.rkt', 1],
