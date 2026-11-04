@@ -363,15 +363,18 @@ test('another Racket setup gets a folder of its own and leaves the first', async
 test('the build waits until the worker has connected, or has failed to', { skip: process.platform === 'win32' }, async t => {
   const files = folder(t);
   const { directory, storage, program } = files;
-  // A worker as slow to start as a slow machine's.
+  // A worker held at its start, as a slow machine's is, until the test lets it go.
   const slowRacket = path.join(directory, 'slow-racket');
-  fs.writeFileSync(slowRacket, '#!/bin/sh\nsleep 4\nexec racket "$@"\n', { mode: 0o755 });
+  const holding = path.join(directory, 'holding'), release = path.join(directory, 'release');
+  fs.writeFileSync(slowRacket, `#!/bin/sh\n: > "${holding}"\nwhile [ ! -e "${release}" ]; do sleep 0.1; done\nexec racket "$@"\n`, { mode: 0o755 });
   const client = new DapClient(undefined, { spawn: (command, _args, options) => spawn(command, launcherArgs(files), options) });
   t.after(() => client.close().catch(() => {}));
   await client.request('initialize', { adapterID: 'racketdap' });
   const launched = client.request('launch', { program, cwd: path.dirname(program), racketExecutable: slowRacket });
+  await until(() => fs.existsSync(holding));
   await new Promise(resolve => setTimeout(resolve, 3000));
   assert.deepEqual(entries(storage), [], 'Nothing compiles while the worker is starting');
+  fs.writeFileSync(release, '');
   await client.event('initialized');
   await launched;
   await client.request('configurationDone');

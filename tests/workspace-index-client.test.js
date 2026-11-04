@@ -279,8 +279,9 @@ test('a file event reaches the server at once only for a source file or a name w
   const c = indexPeer(t);
   c.open('definition.rkt', definition);
   await c.index.start();
+  // The next event's arrival shows that the ones before it sent nothing.
   const updated = async expected => {
-    await new Promise(resolve => setTimeout(resolve, 100));
+    await until(() => c.snapshots.length >= expected);
     assert.equal(c.snapshots.length, expected);
   };
   const event = name => c.disk.emit(c.parse(`file://${path.join(c.directory, name)}`));
