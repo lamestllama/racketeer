@@ -291,7 +291,8 @@ test('captured references survive source document replacement and reject changed
   vscode.EventEmitter = class { event = event().listen; fire() {} dispose() {} };
   vscode.debug = {
     registerDebugAdapterTrackerFactory(_type, factory) { tracker = factory.createDebugAdapterTracker({ id: 'session' }); return disposable(); },
-    asDebugSourceUri: () => captured.uri, onDidTerminateDebugSession: terminated.listen
+    asDebugSourceUri: () => captured.uri, onDidTerminateDebugSession: terminated.listen,
+    breakpoints: [], removeBreakpoints() {}
   };
   vscode.languages = {
     onDidChangeDiagnostics: event().listen,
