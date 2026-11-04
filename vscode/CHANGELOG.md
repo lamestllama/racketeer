@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.53
+
+- Programs that use the `#%foreign-inline` form added in Racket 9.2 can be debugged. The debugger refused them with "unsupported expanded runtime form".
+- A read-only captured source tab has basic colouring only. It no longer offers hover, Go to Definition or Find References, which worked only in the rare case that its text matched the file.
+- The bundled language server moves to the upstream commit that holds the fixes it carried as patches.
+
 ## 0.8.52
 
 - Debugging a file no longer opens a second, read-only copy of it in a new tab on every run. A stop shows the file itself, with its own breakpoints. A read-only captured copy appears only when a saved edit has left the running text behind, or for a WXME document.
