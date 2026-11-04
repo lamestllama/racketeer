@@ -161,12 +161,12 @@ outermost expression. An inline breakpoint selects a later expression on the lin
 and on a non-tail expression's final character it stops after that expression
 returns. **Racket: Continue to Cursor** runs to one selected boundary once while
 retaining ordinary breakpoints. A breakpoint stays pending until its module is
-loaded; if there is no expression at that location it remains unverified with an
-explanation. A constant, a bare variable, a definition of either, a `struct` form,
-quoted data and compile-time code have no place to stop, so a breakpoint there remains
-unverified with an explanation. A `require`, and a line that holds only a function's
-header, have none either. Breakpoints do not silently move into another function. A breakpoint
-added to an already loaded, uninstrumented dependency needs a fresh launch.
+loaded. An empty line, a comment, a `require`, a constant, a bare variable, a definition of
+either, a `struct` form, quoted data, compile-time code and a line that holds only a
+function's header have no place to stop, so a breakpoint there moves to the next line that
+has one, which can be in the next function. With none later, or set inline where the line has
+none, it remains unverified with an explanation. A breakpoint added to an already loaded,
+uninstrumented dependency needs a fresh launch.
 
 - Conditions are Racket expressions in the current lexical environment, such as
   `(> subtotal 100)`. Only `#f` is false. A condition must return one value.

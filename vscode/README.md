@@ -68,8 +68,8 @@ Click the gutter to the left of a line number, press **F9** or right-click and c
 
 - A breakpoint binds to the outermost expression that begins on its line. Use an inline breakpoint to choose a later expression on the line. On the final character of a non-tail expression, an inline breakpoint stops after that expression returns.
 - **Racket: Continue to Cursor** runs to one chosen point, once, and keeps ordinary breakpoints in force.
-- A breakpoint stays pending until its module loads. With no expression at that place, it stays unverified and says why. It never moves into another function.
-- A constant, a bare variable, a definition of either, a `struct` form, quoted data and compile-time code have no place to stop, so a breakpoint there remains unverified with an explanation. A `require`, and a line that holds only a function's header, have none either, so set the breakpoint on a line of its body.
+- A breakpoint stays pending until its module loads.
+- An empty line, a comment, a `require`, a constant, a bare variable, a definition of either, a `struct` form, quoted data, compile-time code and a line that holds only a function's header have no place to stop. A breakpoint there moves to the next line that has one, which can be in the next function. With none later, it stays unverified and says why.
 
 Right-click a breakpoint to add a condition, a hit count or a log message:
 

@@ -236,6 +236,36 @@ test('a saved edit that moves a breakpoint does not stop the program on another 
   assert.equal(client.events.filter(event => event.event === 'stopped').length, 0, 'Only the first stop happened');
 });
 
+test('a breakpoint on a line with no stop moves to the next line that has one', async t => {
+  const { client, program } = await prepare(t, [
+    '#lang racket/base',
+    '(require racket/list)',
+    '',
+    '; a comment',
+    '(define (twice value)',
+    '',
+    '  (* value 2))',
+    '(struct point (x))',
+    '(displayln (twice (first (list 21))))',
+    ''
+  ].join('\n'));
+  const breakpoints = [{ line: 2 }, { line: 3 }, { line: 4 }, { line: 5 }, { line: 6 }, { line: 8 }, { line: 10 }, { line: 3, column: 1 }];
+  const request = () => ok(client.request('setBreakpoints', { source: { path: program }, breakpoints }));
+  const { breakpoints: set } = await request();
+  await ok(client.request('configurationDone'));
+  const hit = stopped => [...stopped.body.hitBreakpointIds].sort();
+  const called = await client.event('stopped');
+  assert.deepEqual(hit(called), [set[5].id]);
+  const { breakpoints: placed } = await request();
+  assert.deepEqual(placed.map(breakpoint => breakpoint.line), [7, 7, 7, 7, 7, 9, 10, 3]);
+  assert.deepEqual(placed.map(breakpoint => breakpoint.verified), [true, true, true, true, true, true, false, false]);
+  assert.deepEqual(placed.map(breakpoint => breakpoint.id), set.map(breakpoint => breakpoint.id));
+  await ok(client.request('continue', { threadId: called.body.threadId }));
+  const inside = await client.event('stopped', event => event.body.hitBreakpointIds?.includes(set[0].id));
+  assert.deepEqual(hit(inside), set.slice(0, 5).map(breakpoint => breakpoint.id).sort());
+  await ok(client.request('terminate'));
+});
+
 test('a line whose expansion lost its source location is verified on that line and stops there', async t => {
   const { client, program } = await prepare(t, [
     '#lang racket/base',

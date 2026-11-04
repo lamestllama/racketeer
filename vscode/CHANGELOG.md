@@ -2,6 +2,7 @@
 
 ## 0.8.53
 
+- A breakpoint on a line with no place to stop, such as an empty line or a comment, moves to the next line that has one. It used to stay unverified.
 - Programs that use the `#%foreign-inline` form added in Racket 9.2 can be debugged. The debugger refused them with "unsupported expanded runtime form".
 - A read-only captured source tab has basic colouring only. It no longer offers hover, Go to Definition or Find References, which worked only in the rare case that its text matched the file.
 - The bundled language server moves to the upstream commit that holds the fixes it carried as patches.

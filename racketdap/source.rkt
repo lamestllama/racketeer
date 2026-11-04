@@ -61,13 +61,20 @@
       (if (> (char->integer (string-ref (source-file-text source) i)) #xffff) 2 1)))
   (values (+ line (if one-based? 1 0)) (+ column (if one-based? 1 0))))
 (define (choose-sites sites source line column #:phase [phase 'before] #:exact? [exact? #f])
+  ;; A line with no stop takes the next line that has one. A column names one place.
+  (define target
+    (for/fold ([next (if column line +inf.0)])
+              ([site (in-list sites)]
+               #:when (and (not column) (memq phase (site-phases site)) (site-boundary-position site phase)))
+      (let-values ([(l c) (source-location source (site-boundary-position site phase))])
+        (if (>= l line) (min l next) next))))
   (define candidates
     (filter
      (lambda (site)
        (and (memq phase (site-phases site))
             (site-boundary-position site phase)
             (let-values ([(l c) (source-location source (site-boundary-position site phase))])
-              (and (= l line) (or (not column) (if exact? (= c column) (>= c column))))))) sites))
+              (and (= l target) (or (not column) (if exact? (= c column) (>= c column))))))) sites))
   (if (null? candidates) '()
       (let* ([ordered (sort candidates
                             (lambda (a b)

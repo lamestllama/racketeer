@@ -60,9 +60,10 @@ the applicable inspector permits access.
   optional columns. A breakpoint on a definition binds to an executable part
   of that definition, with its actual location returned to the editor.
 - For a line-only request, prefer the outermost visible expression beginning
-  on that line; otherwise choose the next visible expression entry in the same
-  enclosing source form. If none exists, return an unverified breakpoint with
-  an explanation. Never silently move into a different function.
+  on that line. A line with none takes the next line that has one, which can be
+  in another function, and the reply gives that line. If no later line has one,
+  return an unverified breakpoint with an explanation. A request with a column
+  stays on its line.
 - Before a module is instrumented, its breakpoints are pending. Emit breakpoint
   change events when their locations become known. `breakpointLocations` uses
   the same executable-site table as `setBreakpoints`.
