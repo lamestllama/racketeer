@@ -28,7 +28,7 @@ IDENTITY_EXPRESSION = '''
 
 
 def read_lock(path=LOCK):
-    data = json.loads(path.read_text())
+    data = json.loads(path.read_text(encoding='utf-8'))
     if data.get('schema') != 1:
         raise ValueError('Unsupported Rhombus fixture lock schema.')
     names = [package['name'] for package in data['packages']]

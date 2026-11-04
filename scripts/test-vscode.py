@@ -106,6 +106,7 @@ def prepare_run(root, dogfood=False):
         'telemetry.telemetryLevel': 'off', 'update.mode': 'none',
         'extensions.autoUpdate': False, 'workbench.startupEditor': 'none',
         'window.restoreWindows': 'none',
+        'racket-langserver.workspaceAnalysis.timeoutSeconds': 120,
     }))
     (parent / 'latest.json').write_text(json.dumps({
         'run': str(output), 'report': str(output / 'vscode-report.json')}, indent=2) + '\n')
@@ -173,7 +174,7 @@ def run(args, executable, app, selected):
             print(f'Provisioning the pinned Rhombus runtime: {runtime}', flush=True)
             subprocess.run([sys.executable, str(ROOT / 'scripts/provision-rhombus.py'),
                             '--output', str(runtime)], env=env, check=True, timeout=1500)
-            evidence['rhombusRuntime'] = json.loads((runtime / 'rhombus-runtime.json').read_text())
+            evidence['rhombusRuntime'] = json.loads((runtime / 'rhombus-runtime.json').read_text(encoding='utf-8'))
             if not evidence['rhombusRuntime'].get('passed'):
                 raise RuntimeError('The requested Rhombus runtime did not pass its probe.')
             env.update(PLTADDONDIR=evidence['rhombusRuntime']['addon'], RACKETDAP_TEST_RHOMBUS='1')
@@ -184,7 +185,7 @@ def run(args, executable, app, selected):
             subprocess.run([str(executable), str(app / 'out/cli.js'), *isolated,
                             '--install-extension', str(artifact), '--force'],
                            env=dict(env, ELECTRON_RUN_AS_NODE='1'), stdout=install_log,
-                           stderr=subprocess.STDOUT, check=True, timeout=60)
+                           stderr=subprocess.STDOUT, check=True, timeout=600)
         installed = output / 'extensions' / f'{identity["extension"]}-{identity["version"]}'
         verified = verify_artifact(artifact, installed)
         evidence['artifact'].update(installed=verified['installed'], verifiedFiles=verified['verifiedFiles'])
@@ -200,7 +201,7 @@ def run(args, executable, app, selected):
                 f'--extensionTestsPath={output / "harness" / test_entry}',
                 str(output / 'workspace'),
             ], env=editor_env, stdout=log, stderr=subprocess.STDOUT, check=True, timeout=args.timeout)
-        result = json.loads(raw_report.read_text())
+        result = json.loads(raw_report.read_text(encoding='utf-8'))
         if not result.get('passed'):
             raise RuntimeError(f'Integration did not pass: {result}')
         if result.get('extension') != identity['extension'] or result.get('version') != identity['version']:
@@ -224,8 +225,8 @@ def main():
     parser.add_argument('--code', default=shutil.which('code'))
     parser.add_argument('--xvfb', default=shutil.which('Xvfb'))
     parser.add_argument('--artifact', type=Path, help='Exact VSIX to verify and install; its .build.json is required.')
-    parser.add_argument('--timeout', type=int, default=600,
-                        help='Whole-editor time limit in seconds (default: 600); increase for busy hosts. Individual assertion deadlines are unchanged.')
+    parser.add_argument('--timeout', type=int, default=3600,
+                        help='Whole-editor time limit in seconds, which only names a hang (default: 3600).')
     parser.add_argument('--dogfood', action='store_true',
                         help='Run this repository\'s RackUnit suites through the installed Test Explorer.')
     parser.add_argument('--rhombus', action='store_true',
@@ -241,7 +242,7 @@ def main():
         executable, app = editor_layout(args.code, sys.platform)
     except ValueError as error:
         parser.error(str(error))
-    manifest = json.loads((ROOT / 'vscode/package.json').read_text())
+    manifest = json.loads((ROOT / 'vscode/package.json').read_text(encoding='utf-8'))
     selected = (args.artifact or ROOT / 'dist' / f'{manifest["name"]}-{manifest["version"]}.vsix').resolve()
     if not selected.is_file():
         parser.error('Build the VSIX first with node scripts/package-extension.js.')

@@ -14,7 +14,7 @@ import urllib.request
 import zipfile
 
 root = Path(__file__).resolve().parent.parent
-packages = json.loads((root / 'vendor/sources.json').read_text())
+packages = json.loads((root / 'vendor/sources.json').read_text(encoding='utf-8'))
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--package', choices=[package['name'] for package in packages],
                     help='Regenerate only this package.')

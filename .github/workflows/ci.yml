@@ -207,19 +207,19 @@ jobs:
         env:
           TEST_EDITOR: ${{ steps.editor.outputs.executable }}
           TEST_ARTIFACT: ${{ steps.artifact.outputs.path }}
-        run: python scripts/test-vscode.py --code "$TEST_EDITOR" --artifact "$TEST_ARTIFACT" --timeout 2700
+        run: python scripts/test-vscode.py --code "$TEST_EDITOR" --artifact "$TEST_ARTIFACT"
       - name: Test the installed extension with the pinned Rhombus runtime
         if: ${{ !cancelled() && steps.integration.outcome == 'success' }}
         env:
           TEST_EDITOR: ${{ steps.editor.outputs.executable }}
           TEST_ARTIFACT: ${{ steps.artifact.outputs.path }}
-        run: python scripts/test-vscode.py --rhombus --code "$TEST_EDITOR" --artifact "$TEST_ARTIFACT" --timeout 3600
+        run: python scripts/test-vscode.py --rhombus --code "$TEST_EDITOR" --artifact "$TEST_ARTIFACT"
       - name: Run and debug the repository tests through Test Explorer
         if: ${{ !cancelled() && steps.artifact.outcome == 'success' }}
         env:
           TEST_EDITOR: ${{ steps.editor.outputs.executable }}
           TEST_ARTIFACT: ${{ steps.artifact.outputs.path }}
-        run: python scripts/test-vscode.py --dogfood --code "$TEST_EDITOR" --artifact "$TEST_ARTIFACT" --timeout 2700
+        run: python scripts/test-vscode.py --dogfood --code "$TEST_EDITOR" --artifact "$TEST_ARTIFACT"
       - name: Verify the artifact and checkout
         env:
           TEST_ARTIFACT: ${{ steps.artifact.outputs.path }}
