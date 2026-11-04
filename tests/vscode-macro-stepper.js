@@ -68,7 +68,6 @@ exports.run = async function (extension, workspace) {
     terminal = await launch('racketdap.openFileInMacroStepper');
     assert.ok(terminal, 'Whole-file command returns its owned terminal');
     await timeout(() => markerWritten(marker, 'expanded buffer'), 'dirty module expands with relative macro import');
-    assert.equal(fs.readFileSync(marker, 'utf8'), 'expanded buffer');
     assert.equal(fs.existsSync(runtime), false, 'Module runtime body was not instantiated');
     assert.match(fs.readFileSync(source, 'utf8'), /on-disk version/, 'Command does not save the document');
     assert.equal(document.isDirty, true, 'Macro inspection preserves the dirty editor');
@@ -86,14 +85,12 @@ exports.run = async function (extension, workspace) {
     terminal = await launch('racketdap.openMacroStepper');
     assert.ok(terminal, 'Untitled current-line command returns its owned terminal');
     await timeout(() => markerWritten(lineMarker, '2'), 'current line expands in its owned worker');
-    assert.equal(fs.readFileSync(lineMarker, 'utf8'), '2');
     assert.equal(fs.existsSync(selectionMarker), false, 'Only the current line was expanded');
     // Launch a second independently owned selection before stopping the first.
     await vscode.window.showTextDocument(untitled, { selection: new vscode.Range(2, 0, 2, selection.length) });
     const second = await launch('racketdap.openMacroStepper');
     assert.ok(second);
     await timeout(() => markerWritten(selectionMarker, '3'), 'selected fragment expands in its owned worker');
-    assert.equal(fs.readFileSync(selectionMarker, 'utf8'), '3');
     await closeTerminal();
     assert.equal(ended.has(second), false, 'Stopping one stepper preserves another terminal');
     terminal = second;
