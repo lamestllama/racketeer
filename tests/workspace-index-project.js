@@ -19,7 +19,6 @@ const uses = '#lang racket/base\n(require "definition.rkt")\n(square 3)\n';
 // short name that holds one, such as RUNNER~1.
 const uri = file => pathToFileURL(file).href.replaceAll('%7E', '~');
 const addon = fs.mkdtempSync(path.join(os.tmpdir(), 'racketeer-index-addon-'));
-tes
 
 // `shared` gives another server's `directory`, `documents` and `settings`, for a
 // server that starts with nothing over the same files and buffers.

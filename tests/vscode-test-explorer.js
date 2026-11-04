@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const assert = require('node:assert/strict');
+const { until, exited } = require('./support/wait');
 const { removeQuietly } = require('./cleanup');
 const fs = require('node:fs');
 const path = require('node:path');
