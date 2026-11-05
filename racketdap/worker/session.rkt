@@ -225,6 +225,13 @@
                                                                  (if (eq? (breakpoint-phase bp) 'after) 1 (site-span (car targets)))))])
           (hash-set result key value))
         (hash-set base 'line (arg (breakpoint-request bp) 'line 1))))
+  ;; What the client last heard of each breakpoint. A file's sites arrive a form at a time,
+  ;; and most forms change nothing about a breakpoint.
+  (define answers (make-weak-hasheq))
+  (define (answered bp path)
+    (define answer (breakpoint-json bp path))
+    (hash-set! answers bp answer)
+    answer)
   ;; Where a hovered name is written, when the editor says and the file still holds it.
   (define (hover-place a)
     (define path (and (arg a 'source) (arg a 'line) (arg a 'column) (source-path (hash-ref a 'source))))
@@ -299,7 +306,10 @@
        (for ([path (in-list (remove-duplicates (map site-source more)))])
          (resolve! path)
          (for ([bp (in-list (breakpoints-in path))])
-           (event "breakpoint" (hasheq 'reason "changed" 'breakpoint (breakpoint-json bp path))))))))
+           (define before (hash-ref answers bp #f))
+           (define answer (answered bp path))
+           (unless (equal? answer before)
+             (event "breakpoint" (hasheq 'reason "changed" 'breakpoint answer))))))))
   (define (register-thread [target (current-thread)])
     (hash-ref!
      states target
@@ -855,7 +865,7 @@
                      (new-breakpoint b)))))
          (hash-set! breakpoints name updated)
          (resolve! path)
-         (reply request (hasheq 'breakpoints (map (lambda (b) (breakpoint-json b path)) updated)))))]
+         (reply request (hasheq 'breakpoints (map (lambda (b) (answered b path)) updated)))))]
       [(setExceptionBreakpoints)
        (define filters (arg a 'filters '()))
        (unless (andmap (lambda (f) (equal? f "uncaught")) filters)

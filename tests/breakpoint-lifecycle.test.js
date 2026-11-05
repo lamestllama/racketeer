@@ -266,6 +266,24 @@ test('a breakpoint on a line with no stop moves to the next line that has one', 
   await ok(client.request('terminate'));
 });
 
+test('a breakpoint is announced when its answer changes, not for each form that follows it', async t => {
+  const { client, program } = await prepare(t, [
+    '#lang racket/base',
+    '(define first (+ 1 1))',
+    '(define second (+ 2 2))',
+    '(define third (+ 3 3))',
+    '(displayln (list first second third))',
+    ''
+  ].join('\n'));
+  const { breakpoints: [placed] } = await ok(client.request('setBreakpoints', { source: { path: program }, breakpoints: [{ line: 2 }] }));
+  await ok(client.request('configurationDone'));
+  await client.event('stopped');
+  const heard = client.events.filter(event => event.event === 'breakpoint' && event.body.breakpoint.id === placed.id);
+  assert.equal(heard.length, 1, JSON.stringify(heard));
+  assert.equal(heard[0].body.breakpoint.verified, true);
+  await ok(client.request('terminate'));
+});
+
 test('a line whose expansion lost its source location is verified on that line and stops there', async t => {
   const { client, program } = await prepare(t, [
     '#lang racket/base',
