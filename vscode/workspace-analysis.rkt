@@ -105,7 +105,7 @@
 
 (define (analysis-failure result)
   (match result
-    [(cons 'failed message) message]
+    [(cons (or 'failed 'changed) message) message]
     [(cons 'stopped reason) reason]
     [(cons 'timeout seconds) (format "analysis exceeded its ~a second time limit" seconds)]
     [_ "analysis worker stopped without a result"]))
@@ -120,8 +120,11 @@
 ;; Why a worker of this run did not finish, for a rename the partial index then
 ;; refuses: a limit is not an error in the file that its author could resolve.
 (define worker-stops (make-weak-hasheq))
+;; Runs with a file that changed under its analysis, whose change notice may be yet to come.
+(define changed-under (make-weak-hasheq))
 (define (note-stop! run request result)
   (match result
+    [(cons 'changed _) (hash-set! changed-under run #t)]
     [(cons 'stopped reason) (hash-ref! worker-stops run reason)]
     [(cons 'timeout _)
      (hash-ref! worker-stops run (format "~a: ~a" (request-label request) (analysis-failure result)))]
@@ -225,6 +228,7 @@
 ;; What a worker does: everything that reads, expands or runs a user's code.
 (define (answer request observe)
   (with-handlers ([out-of-memory? (lambda (_) out-of-memory)]
+                  [(lambda (e) (and (pair? e) (eq? (car e) 'changed))) values]
                   [(lambda (_) #t)
                    (lambda (e) (cons 'failed (if (exn? e) (exn-message e) (format "~s" e))))])
     (parameterize ([current-output-port (open-output-nowhere)]
@@ -486,7 +490,7 @@
                 (with-handlers ([exn:fail:filesystem? (lambda (_) #f)])
                   (equal? bytes (call-with-input-file* path
                                   (lambda (in) (read-bytes (add1 max-bytes) in))))))
-      (error 'workspace-analysis "file changed during analysis: ~a" path))
+      (raise (cons 'changed (format "workspace-analysis: file changed during analysis: ~a" path))))
     (list contribution text facts
           (and query
                (let ([result (doc-references doc (car query) (jsexpr->Pos (cadr query)) (caddr query))])
@@ -796,9 +800,9 @@
      ((WorkspaceAnalysis-notify engine) (status run))]))
 
 ;; The same source view, to be analysed when next asked for. The caller holds the lock.
-(define (renew-run! engine run)
+(define (renew-run! engine run #:changed? [changed? #f])
   (replace-run! engine (Run-generation run) (Run-documents run) (Run-buffers run)
-                (Run-settings run) (Run-roots run) #:changed? #f))
+                (Run-settings run) (Run-roots run) #:changed? changed?))
 
 ;; Waits with `wait` for what a run's pass decides. The first to wait starts the
 ;; pass, and the last to leave an unfinished one stops it: its completed files
@@ -965,6 +969,13 @@
            (sync cancel (semaphore-peek-evt (Run-done run)) (semaphore-peek-evt (Run-cancel run)) retired)))
        (cond
          [(or (cancelled? run) (sync/timeout 0 cancel) (sync/timeout 0 retired)) (retry)]
+         ;; Such a file has no errors to resolve. Sources that keep changing end in their refusal.
+         [(and (not (eq? operation 'references)) (hash-ref changed-under run #f))
+          (call-with-semaphore (WorkspaceAnalysis-lock engine)
+            (lambda ()
+              (when (eq? run (WorkspaceAnalysis-current-run engine))
+                (renew-run! engine run #:changed? #t))))
+          (retry)]
          [(not (eq? operation 'references))
           (define result
             (if (not (equal? (Run-state run) "ready"))

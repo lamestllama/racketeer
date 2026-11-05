@@ -312,6 +312,20 @@ test('a rename whose own work outlasts the time limit is not refused for two cha
   assert.ok(value.changes[uri(p.filename('uses.rkt'))]);
 });
 
+test('a file that changes under its analysis, with no notice yet, does not refuse a rename', async t => {
+  const p = await project(t, { RACKETEER_INDEX_WORKERS: '1' });
+  const held = gatedSource(p, 'generated.rkt');
+  t.after(held.release);
+  await p.update();
+  const renaming = p.rename(p.origin, 'squared').then(value => ({ value }), error => ({ error }));
+  await held.reached();
+  p.write('generated.rkt', `${fs.readFileSync(p.filename('generated.rkt'), 'utf8')}; changed\n`);
+  held.release();
+  const { value, error } = await renaming;
+  assert.equal(error, undefined);
+  assert.ok(value.changes[uri(p.filename('uses.rkt'))]);
+});
+
 test('a rename cut short each time it starts is still refused', async t => {
   const p = await project(t, { RACKETEER_INDEX_WORKERS: '1' });
   p.settings.timeoutSeconds = 4;
