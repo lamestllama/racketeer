@@ -63,7 +63,7 @@ async function eachStop(t, lines, visit, config = {}) {
     const { scopes } = await ok(client.request('scopes', { frameId: frame.id }));
     const locals = scopes.find(scope => scope.name === 'Locals').variablesReference;
     const stop = {
-      client, frame, locals,
+      client, frame, locals, threadId,
       rows: async (args = {}) => (await ok(client.request('variables', { variablesReference: locals, ...args }))).variables,
       hover: expression => client.request('evaluate', { expression, frameId: frame.id, context: 'hover' }),
       watch: expression => client.request('evaluate', { expression, frameId: frame.id, context: 'watch' }),
@@ -874,4 +874,46 @@ test('rows are read at every stop and the program prints what it prints without 
   await fs.writeFile(program, lines.join('\n') + '\n');
   const { stdout } = await promisify(execFile)('racket', [program]);
   assert.equal(output, stdout);
+});
+
+test('a hover shows the binding that name refers to where it is written', async t => {
+  const lines = [
+    '#lang racket/base',
+    '(define limit 1)',
+    '(define (other x) (void x))',
+    '(define (callee x)',
+    '  (let ([x (* x 10)])',
+    "    (void 'stop-inner)",
+    '    x))',
+    '(define (caller y)',
+    '  (void limit)',
+    '  (let ([limit (* y 2)])',
+    '    (callee y)',
+    '    (+ limit limit)))',
+    '(caller 1)'
+  ];
+  const { seen } = await eachStop(t, lines, async (name, stop) => {
+    const { client, frame } = stop;
+    const { stackFrames: [, caller] } = await ok(client.request('stackTrace', { threadId: stop.threadId }));
+    const hover = (expression, line, frameId = frame.id) => {
+      const column = lines[line - 1].indexOf(expression, hover.after?.[line] || 0) + 1;
+      return client.request('evaluate', {
+        expression, frameId, context: 'hover', source: { path: frame.source.path }, line, column
+      });
+    };
+    const value = async (...place) => (await ok(hover(...place))).result;
+    assert.equal((await ok(stop.hover('x'))).result, '10', 'Without a place, the name in view');
+    assert.equal(await value('x', 4), '1', 'The parameter');
+    hover.after = { 5: 12 };
+    assert.equal(await value('x', 5), '1', 'The use in the initialiser, which the new x hides');
+    hover.after = {};
+    assert.equal(await value('x', 5), '10', 'The new binding');
+    assert.equal(await value('x', 7), '10', 'A use of the new binding');
+    assert.equal(await value('limit', 12), '2', 'A caller holds this one');
+    assert.equal(await value('limit', 2), '1', 'The module variable');
+    assert.equal(await value('limit', 9, caller.id), '1', 'A use of the module variable, with a local of its name');
+    assert.equal(await value('limit', 12, caller.id), '2', 'The local, with a module variable of its name');
+    assert.equal((await hover('x', 3)).success, false, 'A function not running has no x to show');
+  });
+  assert.deepEqual(seen, ['inner']);
 });

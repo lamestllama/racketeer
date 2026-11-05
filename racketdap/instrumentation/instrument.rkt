@@ -272,6 +272,21 @@
        (collect-bindings (cdr stx))]
       [else (void)]))
   (collect-bindings expanded)
+  ;; What each name written here refers to, as (position . binding number), with #f for a
+  ;; module's variable. Only this tells two bindings of one name apart at a stop.
+  (define binding-numbers (make-free-id-table))
+  (define written '())
+  (define (note-written! id number)
+    (when (and (not coverage?) (original-binding? id source))
+      (set! written (cons (cons (syntax-position id) number) written))))
+  (define (note-reference! id)
+    (define number (free-id-table-ref binding-numbers id #f))
+    (when (or number (list? (identifier-binding id))) (note-written! id number)))
+  (define (number-binding! id)
+    (define number (add1 (free-id-table-count binding-numbers)))
+    (free-id-table-set! binding-numbers id number)
+    (note-written! id number)
+    number)
   (define form-id (car (generate-temporaries '(form))))
   (define gate-id (car (generate-temporaries '(gate))))
   (define armed-id (car (generate-temporaries '(armed))))
@@ -288,12 +303,12 @@
                                            (syntax-e id)
                                            (free-id-table-ref lexical-aliases id #f)))]
                        #:when name)
-             #`(#%plain-app make-live-binding '#,name
+             #`(#%plain-app make-live-binding '#,name '#,(number-binding! id)
                             (case-lambda [() #,id] [(replacement) (set! #,id replacement)])))
            ;; After the source's names, one of which may be this. A class cannot assign
            ;; its object, so this code does not either and the variable stays immutable.
            (for*/list ([id (in-list ids)] #:when (class-object? id)
-                       [row (in-list (cons #`(#%plain-app make-live-binding 'this (case-lambda [() #,id]))
+                       [row (in-list (cons #`(#%plain-app make-live-binding 'this '#f (case-lambda [() #,id]))
                                            (field-rows id)))])
              row))))
     (if (null? live-bindings)
@@ -585,6 +600,7 @@
                     free-identifier=?
         [id (identifier? #'id)
          (let ([accessor (accessor-of #'id)])
+           (note-reference! #'id)
            (if accessor #`(#%plain-app #,accessor) expression))]
         [(quote . ignored) expression]
         [(quote-syntax . ignored) expression]
@@ -650,7 +666,7 @@
                              #,@rhss)
                #,@(mark bodies)))]
         [(set! id rhs)
-         (let ([accessor (accessor-of #'id)]
+         (let ([accessor (begin (note-reference! #'id) (accessor-of #'id))]
                [value (walk #'rhs environment act #f (syntax-e #'id))])
            (if accessor #`(#%plain-app #,accessor #,value) #`(set! id #,value)))]
         [(with-continuation-mark key value result)
@@ -795,7 +811,8 @@
                                            '#,(and module-context (module-binding-context-key module-context))
                                            (#%plain-lambda ()
                                              (#%plain-app variable-reference->namespace
-                                                          #,(datum->syntax expanded (list #'#%variable-reference) expanded))))])
+                                                          #,(datum->syntax expanded (list #'#%variable-reference) expanded)))
+                                           '#,written)])
                   (let-values ([(#,gate-id) (#%plain-app form-gate #,form-id)]
                                [(#,armed-id) (#%plain-app form-armed #,form-id)])
                     #,@register-context

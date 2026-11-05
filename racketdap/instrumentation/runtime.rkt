@@ -74,7 +74,7 @@
            (and (exact-positive-integer? span) (+ position span -1)))))
 (struct unavailable (reason) #:transparent)
 ;; object is the object a field's row reads, or #f.
-(struct live-binding (name access object) #:transparent)
+(struct live-binding (name number access object) #:transparent)
 ;; A frame is one function call, or the run of one module-level form. It is a vector
 ;; that generated code makes with `vector` and writes with unsafe-vector*-set!, so
 ;; these are the only costs a site has: slot 1 is the site running now, as a frame
@@ -133,16 +133,16 @@
              (registered gate armed (list->vector (cons #f descriptors)) callback on-thread)))
 ;; One instance of a form. module-bindings, context and namespace are what stops need
 ;; from the program; they can differ between instances of one registration.
-(struct form (gate armed descriptors callback on-thread module-bindings context namespace))
-(define (form-sites unit index size module-bindings context namespace)
+(struct form (gate armed descriptors callback on-thread module-bindings context namespace written))
+(define (form-sites unit index size module-bindings context namespace written)
   (define forms (and runtime-phase-zero? (hash-ref form-tables unit #f)))
   (define entry (and forms (hash-ref forms index #f)))
   (if entry
       (form (registered-gate entry) (registered-armed entry) (registered-descriptors entry)
             (registered-callback entry) (registered-on-thread entry)
-            module-bindings context namespace)
+            module-bindings context namespace written)
       (form (box #f) (make-vector (add1 size) #f) (make-vector (add1 size) #f) #f #f
-            module-bindings context namespace)))
+            module-bindings context namespace written)))
 ;; Who has been told about the running thread. Starting a call compares threads,
 ;; and a thread running instrumented code for the first time is reported, which
 ;; sites are too quiet to do.
@@ -212,8 +212,8 @@
     (error 'stop-evaluate "module binding context has not been registered"))
   owner-namespace)
 
-(define (make-live-binding name access) (live-binding name access #f))
-(define make-field-binding live-binding)
+(define (make-live-binding name number access) (live-binding name number access #f))
+(define (make-field-binding name access object) (live-binding name #f access object))
 ;; An impersonator that might run program code. A class whose object may be seen before its
 ;; fields are set makes each object a chaperone, whose only effect is to refuse to read an
 ;; unset field. The machine tells that record from a program's chaperone over the object.
@@ -385,7 +385,8 @@
   (parameterize ([current-namespace namespace]) (namespace-symbol->identifier name)))
 (define (find-source-binding scoped name who [scope 'visible])
   (or
-   (findf (lambda (b) (eq? name (live-binding-name b))) (visible-bindings scoped))
+   (and (not (eq? scope 'module))
+        (findf (lambda (b) (eq? name (live-binding-name b))) (visible-bindings scoped)))
    (and (eq? scope 'lexical) (error who "no lexical binding named ~a" name))
    (let* ([namespace ((form-namespace (frame-form (car scoped))))]
           [entry (findf (lambda (entry) (eq? name (entry-name entry)))
@@ -414,10 +415,46 @@
                       [exn:fail:syntax?
                        (lambda (_) (error who "binding ~a is syntax, not a variable" name))])
         (namespace-variable-value (cdr binding) #t #f (car binding)))))
-(define (stop-binding-value s name [i 0])
+;; Whether a frame's form holds a place in a file: it wrote a name there, or a site covers it.
+(define (frame-holds? scoped path position)
+  (define f (frame-form (car scoped)))
+  (define sites (for/list ([d (in-vector (form-descriptors f))]
+                           #:when (and d (equal? (site-source d) path)))
+                  d))
+  (and (pair? sites)
+       (or (assv position (form-written f))
+           (for/or ([d (in-list sites)])
+             (<= (site-position d) position (+ (site-position d) (site-span d) -1))))))
+;; The binding a name refers to where it is written. Another of the same name can hide it
+;; from the frame in view, or only a caller may still hold it. A place no running frame
+;; holds has no locals to show. A name with no record, as a macro can leave, goes by name.
+(define (written-binding s i name path position)
+  (define who 'stop-binding-value)
+  (define frames (list-tail (stop-frames s) i))
+  (define (holds? scoped) (frame-holds? scoped path position))
+  (define here (findf holds? frames))
+  (define numbers
+    (if here
+        (for/list ([entry (in-list (form-written (frame-form (car here))))]
+                   #:when (= (car entry) position))
+          (cdr entry))
+        '()))
+  (cond
+    [(not here) (find-source-binding (car frames) name who 'module)]
+    [(null? numbers) (find-source-binding here name who)]
+    [(memq #f numbers) (find-source-binding here name who 'module)]
+    [else
+     (or (for*/first ([scoped (in-list (memq here frames))] #:when (holds? scoped)
+                      [b (in-list (scoped-bindings scoped))]
+                      #:when (and (eq? name (live-binding-name b)) (memv (live-binding-number b) numbers)))
+           b)
+         (error who "no running call holds this ~a" name))]))
+(define (stop-binding-value s name [i 0] #:at [at #f])
   (define scoped (selected-frame s i 'stop-binding-value))
   (define symbol (binding-name name 'stop-binding-value))
-  (source-binding-value (find-source-binding scoped symbol 'stop-binding-value)
+  (source-binding-value (if at
+                            (written-binding s i symbol (car at) (cdr at))
+                            (find-source-binding scoped symbol 'stop-binding-value))
                         symbol 'stop-binding-value))
 (define (stop-set-binding! s name datum [i 0] #:scope [scope 'visible])
   (define scoped (selected-frame s i 'stop-set-binding!))

@@ -225,6 +225,16 @@
                                                                  (if (eq? (breakpoint-phase bp) 'after) 1 (site-span (car targets)))))])
           (hash-set result key value))
         (hash-set base 'line (arg (breakpoint-request bp) 'line 1))))
+  ;; Where a hovered name is written, when the editor says and the file still holds it.
+  (define (hover-place a)
+    (define path (and (arg a 'source) (arg a 'line) (arg a 'column) (source-path (hash-ref a 'source))))
+    (define source (and path (hash-ref sources path #f)))
+    (define position
+      (and source (source-current? source)
+           (source-position source
+                            (+ (coordinate a 'line line-base) (if lines-one? 0 1))
+                            (+ (coordinate a 'column column-base) (if columns-one? 0 1)))))
+    (and position (cons path position)))
   (define (select-targets path request)
     (define source (hash-ref sources path #f))
     (define phase (arg request 'phase #f))
@@ -487,7 +497,7 @@
        (define expression (hash-ref a 'expression))
        (define result
          (if (equal? (arg a 'context) "hover")
-             (list (stop-binding-value stop expression index))
+             (list (stop-binding-value stop expression index #:at (hover-place a)))
              (call-with-values (lambda () (stop-evaluate stop (read-interaction expression) index)) list)))
        (interaction-results request pause result)]
       [(setVariable)

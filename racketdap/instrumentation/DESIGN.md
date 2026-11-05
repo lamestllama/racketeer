@@ -155,7 +155,8 @@ The ordinary-expansion hook's introduction scope is removed only for the
 syntax-original? source-classification check.
 
 stop-binding-value reads a single symbol/string binding without evaluating user
-syntax. It checks lexical getters first, then source module aliases and ordinary
+syntax. Given a place in a file, it reads the binding written there: each form quotes the
+binding number of each name it writes, and each live binding carries its number. It checks lexical getters first, then source module aliases and ordinary
 namespace mappings. Direct namespace reads reject syntax-only bindings without
 invoking macro or set!-transformer bodies. Real top-level variables are recognised
 through identifier-binding's top-level-symbol? option. Uninitialised variables

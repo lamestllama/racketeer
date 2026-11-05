@@ -781,7 +781,8 @@ local to debugger-requested evaluation. Ordinary program execution remains
 unrestricted. A running interactive-console call, by contrast, executes as a
 normal debuggable interaction and may stop at breakpoints.
 
-Hover is binding lookup and structural preview only. Watches are explicit Racket
+Hover is binding lookup and structural preview only. Given the place it was asked about, it
+looks up the binding the name refers to there, not the one in view with that name. Watches are explicit Racket
 expressions evaluated at stops and can have side effects. Console evaluation,
 conditions, and logpoints can also perform I/O, mutate state, block, or raise.
 Use cooperative cancellation; there is no rollback guarantee. An unresponsive

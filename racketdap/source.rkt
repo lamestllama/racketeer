@@ -2,7 +2,7 @@
 ;; Copyright (c) 2026 Eric Parsonage
 ;; SPDX-License-Identifier: Apache-2.0 OR MIT
 (require racket/file racket/path racket/string racket/list "instrumentation/instrument.rkt")
-(provide (struct-out source-file) capture-source source-current? source-location choose-sites same-file? make-within?)
+(provide (struct-out source-file) capture-source source-current? source-location source-position choose-sites same-file? make-within?)
 (struct source-file (path text id starts) #:transparent)
 ;; A path can name a file through a symbolic link or in another case, so two spellings
 ;; name one file when the file system says so. Identity is read each time, because saving
@@ -60,6 +60,15 @@
     (for/sum ([i (in-range (vector-ref starts line) offset)])
       (if (> (char->integer (string-ref (source-file-text source) i)) #xffff) 2 1)))
   (values (+ line (if one-based? 1 0)) (+ column (if one-based? 1 0))))
+;; The position at a one-based line and column, counted as source-location counts them.
+(define (source-position source line column)
+  (define starts (source-file-starts source))
+  (define text (source-file-text source))
+  (and (<= 1 line (vector-length starts))
+       (let loop ([i (vector-ref starts (sub1 line))] [at 1])
+         (cond [(= at column) (add1 i)]
+               [(or (> at column) (>= i (string-length text))) #f]
+               [else (loop (add1 i) (+ at (if (> (char->integer (string-ref text i)) #xffff) 2 1)))]))))
 (define (choose-sites sites source line column #:phase [phase 'before] #:exact? [exact? #f])
   ;; A line with no stop takes the next line that has one. A column names one place.
   (define target

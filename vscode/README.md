@@ -119,7 +119,7 @@ Read and change the live state of a stopped program.
 
 - Select a frame in **Call Stack** to see its lexical variables in **Variables → Locals**.
 - Evaluate Racket in the **Debug Console** or **Watch**: for example, `(+ subtotal 20)` or `(set! subtotal 200)`.
-- Hover over a variable to read it. Hover does not expand user macros.
+- Hover over a variable to read it. Hover does not expand user macros. It shows the binding that name refers to where it is written, so a use that a later binding of the name hides shows its own value.
 - Open a pair, vector, box, hash or visible structure to see inside it. A long container opens in groups of rows. Fields of a structure are numbered, since Racket does not record their names at run time.
 - A variable a macro binds is listed when the source refers to it, such as `it` from an anaphoric macro. Temporaries such as `tmp` are not.
 - In a class's methods and initialisers, **Locals** has a row named `this` that opens to the object's fields. A field the method reads or assigns also has a row under its own name, which **Set Value** writes.

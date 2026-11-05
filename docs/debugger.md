@@ -198,7 +198,10 @@ as diagnostics rather than source-level exception stops.
 Evaluation uses the live variables of the selected frame. `set!` and other
 evaluation effects are real; selected module definitions remain editable, while
 imported bindings retain Racket's assignment protections. Watch also evaluates Racket
-code. Hover reads lexical or module variables without expanding user macros.
+code. Hover reads lexical or module variables without expanding user macros. It reads the binding
+the name refers to where it is written: a use that a later binding of the name hides shows its
+own value, and a caller's variable shows while its callee is stopped. A local of a function
+that is not running shows nothing, or the module variable of its name if there is one.
 
 Variable actions use the selected stack frame. Expression actions use the executing
 frame. Replacement expressions can return `(values ...)`, including `(values)` for
