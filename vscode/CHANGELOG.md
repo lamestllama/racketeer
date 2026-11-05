@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.54
+
+- Hovering over a variable shows the binding that name refers to where it is written. A use that a later binding of the name hides shows its own value, a caller's variable shows while the function it called is stopped, and a local of a function that is not running shows nothing, or the module variable of its name if there is one.
+- A rename while a file is being saved runs a fresh pass. It could be refused with "Resolve its errors" when the file had none.
+- The debugger tells the editor about a breakpoint only when its answer changes.
+
 ## 0.8.53
 
 - A breakpoint on a line with no place to stop, such as an empty line or a comment, moves to the next line that has one. It used to stay unverified.

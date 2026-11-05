@@ -2,7 +2,7 @@
   "name": "racketeer",
   "displayName": "Racketeer: Organised Racket",
   "description": "A Racket IDE for VS Code: debug, run, test, navigate and package Racket in one extension, with images, plots and Test Explorer, and nothing to install but Racket itself.",
-  "version": "0.8.53",
+  "version": "0.8.54",
   "publisher": "lamestllama",
   "author": {
     "name": "Eric Parsonage"
