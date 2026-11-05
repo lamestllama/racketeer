@@ -10,6 +10,19 @@ subdirectories and are not separate tests. `node scripts/test-headless.js --list
 shows the current native and Node suite inventory. Editor dogfooding also checks
 each native suite's expected case count in `tests/vscode-dogfood.js`.
 
+A test must not depend on how fast the machine is:
+
+- Wait for a condition with `until` from `tests/support/wait.js`, which ends as soon as the
+  condition holds. Its one long deadline only names a hang.
+- Do not put a time bound on a test that passes. To check that something does not wait, assert
+  that it did not report a deadline.
+- To test a product's deadline, hold it with a mocked timer and advance it. `until` keeps polling
+  while timers are mocked.
+- To hold a worker or a fixture at one point, have it wait for a file the test removes, as
+  `gatedSource` does in `tests/workspace-index-on-demand.test.js`, rather than pausing for a time.
+- A temporary folder stays in the run's scratch folder, which the runner removes at the end, so
+  cleanup cannot fail a test. Use `removeQuietly` only for a folder a later test could see.
+
 Each file is an ordinary Racket module with a `module+ test` submodule:
 
 ```racket

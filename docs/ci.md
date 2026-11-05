@@ -20,9 +20,19 @@ file timestamps so bundled bytecode remains valid. The core jobs run `scripts/te
 entry point used by the local npm and editor tasks. Platform-specific tests
 retain explicit skips. Native process ownership and macro-stepper cancellation
 results are recorded in the [quality requirements](quality.md).
-Racket and Node test files have a three-minute timeout; individual protocol
-requests retain their shorter deadlines. A blocked suite fails before the
-overall job deadline.
+No test step has a time limit of its own. A Node test has a five-minute deadline and a Racket
+test file a ten-minute one, and these only name a hang, so a slow machine does not fail a test.
+A blocked suite fails at that deadline, before the overall job deadline.
+
+A failure that comes and goes is found by running one commit several times. A dispatch with its
+own round runs beside the others:
+
+```sh
+gh workflow run ci.yml --ref BRANCH -f platforms=linux -f round=1
+```
+
+Tests are not retried automatically, since a retry can hide a real race in the debugger. Only a
+job that never ran its tests, such as one that found no runner, is run again.
 
 Editor jobs download VS Code through the locked `@vscode/test-electron` development
 dependency. The declared minimum is 1.91.0, the oldest version supported by
