@@ -35,6 +35,7 @@ exports.run = async function () {
   const plotChecks = await stage('plots', () => require('./vscode-plots').run(workspace));
   const wxmeChecks = await stage('WXME', () => require('./vscode-wxme').run(extension, workspace));
   const variableChecks = await stage('variables', () => require('./vscode-variables').run(workspace));
+  const hoverChecks = await stage('hover', () => require('./vscode-hover').run(workspace));
   const debuggingStarted = Date.now();
   console.log('Integration stage debugging started');
   // The WXME stage leaves a captured source of its ended session open. Close it,
@@ -401,7 +402,7 @@ exports.run = async function () {
       for (const owner of ownershipSessions) await vscode.debug.stopDebugging(owner);
     }
     const report = { passed: true, extension: extension.id, version: extension.packageJSON.version,
-      vscode: vscode.version, checks: [...languageChecks, ...macroChecks, ...rhombusChecks, ...workflowChecks, ...testExplorerChecks, ...packageChecks, ...applicationChecks, ...applicationLogChecks, ...imageChecks, ...plotChecks, ...wxmeChecks, ...variableChecks, 'activation', 'language registration', 'gutter breakpoint', 'stack',
+      vscode: vscode.version, checks: [...languageChecks, ...macroChecks, ...rhombusChecks, ...workflowChecks, ...testExplorerChecks, ...packageChecks, ...applicationChecks, ...applicationLogChecks, ...imageChecks, ...plotChecks, ...wxmeChecks, ...variableChecks, ...hoverChecks, 'activation', 'language registration', 'gutter breakpoint', 'stack',
         'stopped file language', 'F9 adds verified breakpoint in the stopped file', 'F9 removes breakpoint',
         'stopped file semantic highlighting', 'stopped file language hover', 'captured source breakpoints end with the session', 'completed session excludes source navigation',
         'stopped file definitions and references across unopened files', 'stops in unchanged files open no captured copies',
