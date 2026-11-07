@@ -10,3 +10,6 @@
 ;; Continue to report the error in Results, then click its source location.
 ;; Run Current File reports the error without stopping.
 (module+ main (broken))
+
+;; Copyright (c) 2026 Eric Parsonage
+;; SPDX-License-Identifier: Apache-2.0 OR MIT

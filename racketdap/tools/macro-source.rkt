@@ -30,7 +30,7 @@
      (unless (and (= (length forms) 1)
                   (let ([parts (syntax->list (car forms))])
                     (and parts (>= (length parts) 4) (eq? (syntax-e (car parts)) 'module))))
-       (error 'macro-stepper "Open File requires a single #lang or module declaration."))
+       (error 'macro-stepper "Stepping through a file requires a single #lang or module declaration."))
      (car forms)]
     [(null? (cdr forms)) (car forms)]
     [else (datum->syntax #f (cons 'begin forms) (car forms))]))

@@ -12,3 +12,6 @@
   (test-case "price returns both total and tax"
     (check-equal? (call-with-values (lambda () (price-with-tax 180)) list)
                   '(198 18))))
+
+;; Copyright (c) 2026 Eric Parsonage
+;; SPDX-License-Identifier: Apache-2.0 OR MIT

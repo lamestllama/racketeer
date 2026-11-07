@@ -13,3 +13,6 @@
 ;; For a plain terminal REPL, enable separate windows before plotting:
 ;; (plot-new-window? #t)
 ;; (plot (function sin -6 6))
+
+;; Copyright (c) 2026 Eric Parsonage
+;; SPDX-License-Identifier: Apache-2.0 OR MIT

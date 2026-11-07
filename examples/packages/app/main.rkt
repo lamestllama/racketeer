@@ -14,3 +14,6 @@
   (check-equal? (answer 21) 42))
 
 ;; In Debug REPL: (answer 7)
+
+;; Copyright (c) 2026 Eric Parsonage
+;; SPDX-License-Identifier: Apache-2.0 OR MIT

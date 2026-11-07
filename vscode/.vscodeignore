@@ -1,3 +1,5 @@
+# Copyright (c) 2026 Eric Parsonage
+# SPDX-License-Identifier: Apache-2.0 OR MIT
 node_modules/**
 **/compiled/**
 *.vsix
@@ -24,6 +26,7 @@ interaction-output.js
 error-sources.js
 packages.js
 macro-stepper.js
+macro-token-colors.js
 macro-process.js
 wxme-process.js
 wxme-viewer.js
@@ -39,3 +42,11 @@ application-build.js
 application-builds.js
 application-logs.js
 raco-task.js
+macro-view-data.js
+macro-stepper-codec.js
+macro-view/monaco-entry.js
+macro-steps/**
+selected-editor.js
+test-coverage.js
+macro-session-pool.js
+language-server/collects/**/tests/**

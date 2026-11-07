@@ -73,9 +73,11 @@
                                  '()))
                  (super syncheck:add-arrow/name-dup/pxpy from left right px py
                         to start end qx qy actual? phase imported? dup?)))
-             [source (path->source path)] [doc-text buffer] [lexer-state lexer]))
+             [source (path->source path)] [doc-text buffer] [lexer-state lexer]
+             [contribution-only? #t]))
       (define expand? (Language-Policy-expand? (LexerState-language-policy lexer)))
-      (define result (expand-source (path->source path) (open-input-string text) trace #:expand? expand?))
+      (define result (expand-source (path->source path) (open-input-string text) trace #:expand? expand?
+                                    #:contribution-only? #t))
       ;; Not a fault in the file, so it is not reported as one below.
       (for ([problem (in-list (list (ExpandResult-pre-exn result) (ExpandResult-post-exn result)))])
         (when (exn:fail:out-of-memory? problem) (raise problem)))

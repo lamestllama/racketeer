@@ -522,6 +522,7 @@ for (const mode of ['cancel', 'reject', 'timeout']) test({
 
 function configurationProvider(version = 'Welcome to Racket v9.1 [cs].', context = {}) {
   let provider;
+  let probes = 0;
   const errors = [];
   const vscode = { workspace: { isTrusted: true, getConfiguration: () => ({ get: (_key, fallback) => fallback }) },
     window: { showErrorMessage: async message => { errors.push(message); } },
@@ -529,6 +530,7 @@ function configurationProvider(version = 'Welcome to Racket v9.1 [cs].', context
       registerDebugAdapterDescriptorFactory: disposable, registerDebugAdapterTrackerFactory: disposable },
     commands: { registerCommand: disposable } };
   const dependencies = { vscode, 'node:child_process': { execFile(_file, _args, _options, done) {
+    probes++;
     done(null, { stdout: version, stderr: '' });
   } } };
   for (const [name, methods] of Object.entries({
@@ -541,8 +543,27 @@ function configurationProvider(version = 'Welcome to Racket v9.1 [cs].', context
   })) dependencies[`./${name}`] = Object.fromEntries(methods.map(method => [method, () => ({})]));
   dependencies['./application-logs'].filterError = () => undefined;
   load('extension.js', dependencies).activate({ subscriptions: [], ...context });
-  return { provider, errors, vscode };
+  return { provider, errors, vscode, probes: () => probes };
 }
+
+test('debug configurations share and reuse a successful executable version check', async () => {
+  const { provider, errors, probes } = configurationProvider();
+  const resolve = () => provider.resolveDebugConfigurationWithSubstitutedVariables(undefined,
+    { request: 'attach', racketExecutable: process.execPath });
+  assert.ok((await Promise.all([resolve(), resolve()])).every(Boolean));
+  assert.ok(await resolve());
+  assert.equal(probes(), 1);
+  assert.deepEqual(errors, []);
+});
+
+test('a launch stops at its start unless it says otherwise, and an attach has no start', async () => {
+  const { provider } = configurationProvider();
+  const resolve = extra => provider.resolveDebugConfigurationWithSubstitutedVariables(
+    { uri: { fsPath: path.dirname(__filename) } }, { type: 'racketdap', program: __filename, ...extra });
+  assert.equal((await resolve({ request: 'launch' })).stopOnEntry, true);
+  assert.equal((await resolve({ request: 'launch', stopOnEntry: false })).stopOnEntry, false);
+  assert.equal((await resolve({ request: 'attach', port: 12345, token: 'private' })).stopOnEntry, undefined);
+});
 
 test('attach resolves without a program and inherits workspace selection', async () => {
   const { provider, errors } = configurationProvider();

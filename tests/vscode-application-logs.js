@@ -31,7 +31,7 @@ exports.run = async function (workspace, interact) {
     return i >= 0 && events.splice(i, 1)[0];
   }, name);
   async function start(name, logFilter) {
-    assert.equal(await vscode.debug.startDebugging(workspace, { type: 'racketdap', request: 'launch', name, program, interactive: true, submodule: [], logFilter }), true);
+    assert.equal(await vscode.debug.startDebugging(workspace, { type: 'racketdap', request: 'launch', name, program, stopOnEntry: false, interactive: true, submodule: [], logFilter }), true);
     const session = await until(() => sessions.find(session => session.name === name), 'session starts');
     await event(session, 'racketdap/ready'); return session;
   }

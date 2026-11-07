@@ -52,7 +52,11 @@ for package in packages:
     print(f"Verified and copied {package['name']}")
 
 server_patches = ('tail-position-hover.patch', 'predicted-bindings.patch',
-                  'clamp-protocol-columns.patch', 'analysis-wait.patch')
+                  'clamp-protocol-columns.patch', 'analysis-wait.patch',
+                  'lazy-documentation.patch', 'url-string.patch',
+                  'source-snapshot-cache.patch', 'contribution-only.patch',
+                  'source-snapshot-observations.patch', 'source-snapshot-external-reads.patch',
+                  'contribution-only-resources.patch')
 for patch_name in server_patches if any(p['name'] == 'racket-langserver' for p in packages) else ():
     patch = root / 'vendor/patches' / patch_name
     subprocess.run(['git', 'apply', '--directory=vendor/collects/racket-langserver', str(patch)],

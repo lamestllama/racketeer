@@ -46,7 +46,7 @@ exports.run = async function (workspace) {
   try {
     vscode.debug.addBreakpoints([breakpoint]);
     assert.equal(await vscode.debug.startDebugging(workspace, {
-      type: 'racketdap', request: 'launch', name: 'Variables panel', program, submodule: []
+      type: 'racketdap', request: 'launch', name: 'Variables panel', program, submodule: [], stopOnEntry: false
     }), true);
     await until(() => events.some(event => event.event === 'stopped'), 'the program stops at its breakpoint');
     await list('workbench.debug.action.focusVariablesView');

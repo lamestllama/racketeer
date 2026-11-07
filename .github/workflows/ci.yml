@@ -187,13 +187,13 @@ jobs:
       - name: Check editor orchestration
         run: python tests/harness-checks.py
       - name: Compile standalone GUI test programs
-        run: raco make racketdap/main.rkt racketdap/worker/main.rkt racketdap/tools/macro-stepper.rkt tests/support/macro-stepper-gui.rkt
+        run: raco make racketdap/main.rkt racketdap/worker/main.rkt racketdap/tools/macro-stepper.rkt
       - name: Run GUI regressions
         run: |
           if [ "$RUNNER_OS" = Linux ]; then
             python scripts/test-gui.py 2>&1 | tee .test-output/ci/gui.log
           else
-            node --test --test-concurrency=1 tests/gui-parity.test.js tests/macro-stepper-gui.test.js 2>&1 | tee .test-output/ci/gui.log
+            node --test --test-concurrency=1 tests/gui-parity.test.js 2>&1 | tee .test-output/ci/gui.log
           fi
       - name: Run bundled language-server regressions
         if: runner.os == 'Linux'

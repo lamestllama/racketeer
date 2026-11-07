@@ -19,6 +19,7 @@ exports.run = async function () {
   await extension.exports.languageServerReady();
   const expected = new Map([
     ['experiments/lexical-eval.rkt', 10],
+    ['tests/application-log.rkt', 1],
     ['tests/attach.rkt', 28],
     ['tests/breakpoint-rearming.rkt', 2],
     // Its second case needs a link, which can take a privilege on Windows.
@@ -27,23 +28,32 @@ exports.run = async function () {
     ['tests/continuation-reentry.rkt', 5],
     ['tests/debug-cache-links.rkt', 3],
     ['tests/definition-allocation.rkt', 14],
+    ['tests/deferred-imports.rkt', 3],
     ['tests/generated-code.rkt', 7],
     ['tests/site-gate.rkt', 7],
     ['tests/headless.rkt', 22],
     ['tests/inspect-counts.rkt', 1],
     ['tests/instrumentation-lifetime.rkt', 10],
     ['tests/loader-isolation.rkt', 14],
-    ['tests/macro-stepper.rkt', 10],
+    ['tests/macro-stepper-answer.rkt', 8],
+    ['tests/macro-stepper-facts.rkt', 19],
+    ['tests/macro-stepper-policy.rkt', 15],
+    ['tests/macro-stepper-printing.rkt', 24],
+    ['tests/macro-stepper-session.rkt', 15],
+    ['tests/macro-stepper-source.rkt', 10],
     ['tests/packages.rkt', 3],
+    ['tests/packages-lazy.rkt', 1],
     ['tests/parity-languages.rkt', 13],
     ['tests/predicted-bindings.rkt', 7],
+    ['tests/plots-scalars.rkt', 1],
     ['tests/protocol-inspection.rkt', 25],
     ['tests/source-positions.rkt', 5],
     ['tests/step-stops.rkt', 44],
     ['tests/stepping.rkt', 12],
     ['tests/source-loading.rkt', 10],
     ['tests/thread-pause.rkt', 10],
-    ['tests/wxme-source.rkt', 9]
+    ['tests/wxme-source.rkt', 9],
+    ['tests/wxme-lazy.rkt', 1]
   ]);
   const sessions = [], messages = [], checks = [];
   const active = new Set();

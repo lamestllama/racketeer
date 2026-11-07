@@ -3,7 +3,7 @@
 ;; SPDX-License-Identifier: Apache-2.0 OR MIT
 
 ;; Workspace analysis accepts complete source views and returns domain results.
-;; Each instance owns its runs and disposable workers. No editor connection or
+;; Each instance owns its runs and workers for each pass. No editor connection or
 ;; request transport is required to use the engine.
 (require compiler/compilation-path
          compiler/module-suffix
@@ -24,6 +24,7 @@
          racket-langserver/doclib/internal-types
          racket-langserver/workspace/api
          racket-langserver/lsp/compose/references
+         "workspace-memory.rkt"
          "workspace-rename.rkt"
          "workspace-wire.rkt")
 
@@ -59,14 +60,29 @@
   (WorkspaceAnalysis (make-semaphore 1) (for/list ([_ (in-range (worker-limit))]) (make-semaphore 1))
                      notify #f #f (make-hasheq) (hash) (make-hash)))
 
-;; How many worker processes an instance runs at once: half the processors, which
-;; leaves room for the editor and the language server, and at most three. On 52 files
-;; a pass took 62 s with one, 34 s with two, 26 s with three and 21 s with four, and
-;; each worker added about 260 MB at the peak, so a fourth costs more than it saves.
-(define (default-workers processors) (max 1 (min 3 (quotient processors 2))))
+(define mebibyte (* 1024 1024))
+;; Leave memory for the editor/server as well as each worker's baseline and its
+;; per-request allocation allowance. An explicit worker count remains an override.
+(define default-recycle-megabytes 288)
+(define (default-workers processors [available #f])
+  (define cpu-limit (max 1 (min 3 (quotient processors 2))))
+  (if available
+      (max 1 (min cpu-limit
+                  (quotient (max 0 (- available (* 512 mebibyte)))
+                            (* (+ (worker-megabytes) default-recycle-megabytes) mebibyte))))
+      cpu-limit))
 (define (worker-limit)
   (define configured (string->number (or (getenv "RACKETEER_INDEX_WORKERS") "")))
-  (if (exact-positive-integer? configured) configured (default-workers (processor-count))))
+  ;; Tests supply a fixed reading without depending on host or cgroup headroom.
+  (define test-memory (string->number (or (getenv "RACKETEER_TEST_AVAILABLE_MEMORY_BYTES") "")))
+  (if (exact-positive-integer? configured) configured
+      (default-workers (processor-count)
+                       (if (exact-nonnegative-integer? test-memory) test-memory
+                           (available-memory-bytes)))))
+
+(define (recycle-bytes)
+  (define configured (string->number (or (getenv "RACKETEER_INDEX_RECYCLE_MEGABYTES") "")))
+  (* mebibyte (if (exact-positive-integer? configured) configured default-recycle-megabytes)))
 
 (define (accepted run value)
   (AnalysisResult (Run-generation run) value))
@@ -84,8 +100,8 @@
         (map car active))))
   (for ([done (in-list runs)]) (sync (semaphore-peek-evt done)))
   ;; Queries belong to their callers, but their worker processes belong here.
-  ;; Every run is now cancelled, so no worker can start. A slot that has been free
-  ;; since then held no worker, so one look at each shows that all were reaped.
+  ;; Every run is now cancelled and its pass has ended, so no worker can start.
+  ;; Waiting for each slot also reaps any query's worker.
   (for ([slot (in-list (WorkspaceAnalysis-slots engine))]) (call-with-semaphore slot void)))
 
 (define (bounded config key fallback low high)
@@ -146,6 +162,15 @@
                            (set-Run-failures! run failures)
                            ((WorkspaceAnalysis-notify engine) (status run))))))
 
+;; Only a pass shares workers; a query's own work still owns a disposable process.
+(define pass-workers (make-parameter #f))
+;; A slot can be borrowed by another pass or a query; retire its idle process first.
+(define slot-workers (make-weak-hasheq))
+(define (discard-worker! held)
+  (when (and held (unbox held))
+    ((Worker-stop (unbox held)))
+    (set-box! held #f)))
+
 (define (compute engine run seconds request [cancel never-evt] #:note-stop? [note-stop? #t])
   (define slots (WorkspaceAnalysis-slots engine))
   (define taken (apply sync (semaphore-peek-evt (Run-cancel run)) cancel slots))
@@ -153,8 +178,13 @@
     [(memq taken slots)
      (dynamic-wind void
                    (lambda ()
+                     (define held (and (pass-workers) (hash-ref! (pass-workers) taken (lambda () (box #f)))))
+                     (define previous (hash-ref slot-workers taken #f))
+                     (unless (eq? previous held) (discard-worker! previous))
+                     (hash-set! slot-workers taken held)
                      (define result
-                       (and (not (cancelled? run)) (not (sync/timeout 0 cancel)) (compute/slot run seconds request cancel)))
+                       (and (not (cancelled? run)) (not (sync/timeout 0 cancel))
+                            (compute/slot run seconds request cancel held)))
                      (when note-stop? (note-stop! run request result))
                      result)
                    (lambda () (semaphore-post taken)))]
@@ -202,9 +232,10 @@
       (log-diagnostic "timer" now "running"))
     (loop now (add1 ticks))))
 
-;; One worker holds one analysis, and its memory ends with it. The limit protects
-;; the machine from compile-time code that keeps what it allocates: such code passes
-;; a gigabyte in seconds, and a time limit alone would let it reach tens of gigabytes.
+;; Each request has its own custodians; their resources end before the next request.
+;; The limit protects the machine from compile-time code that keeps what it allocates:
+;; such code passes a gigabyte in seconds, and a time limit alone would let it reach
+;; tens of gigabytes.
 ;; It counts what the analysis adds to the worker's own libraries, and it is set to
 ;; stop only a runaway: analysing a file of 1 MiB, the largest indexed by default,
 ;; was measured at about 1 GB. Collections are when it is checked, so a worker's
@@ -226,7 +257,7 @@
       (and (exn? e) (regexp-match? #rx"struct:exn:fail:out-of-memory" (exn-message e)))))
 
 ;; What a worker does: everything that reads, expands or runs a user's code.
-(define (answer request observe)
+(define (answer request observe [cache #f])
   (with-handlers ([out-of-memory? (lambda (_) out-of-memory)]
                   [(lambda (e) (and (pair? e) (eq? (car e) 'changed))) values]
                   [(lambda (_) #t)
@@ -243,7 +274,7 @@
                        (for/hash ([form (in-list forms)]) (values form (resolved-form form)))))]
         [(list 'analyse path max-bytes buffer query buffers roots before)
          (observe path)
-         (match-define (list contribution text count references record) (analyse path max-bytes buffer query buffers roots before))
+         (match-define (list contribution text count references record) (analyse path max-bytes buffer query buffers roots before cache))
          (list 'ok (contribution->datum contribution) text count references record)]
         [(list 'rename sources roots excluded limit buffers path position name)
          (define (check-snapshot!)
@@ -259,14 +290,7 @@
 ;; code has neither. The analysis runs under two custodians of its own. Its code can
 ;; shut down the inner one but not the outer, so only the memory limit ends the outer,
 ;; and this thread survives either to say which happened.
-(module+ worker
-  (define from-server (current-input-port))
-  (define to-server (current-output-port))
-  (define request (read-worker-message from-server))
-  ;; The server closes this pipe when it no longer wants the worker, or when it ends.
-  (void (thread (lambda ()
-                  (let wait () (unless (eof-object? (read-byte from-server)) (wait)))
-                  (exit 0))))
+(define (answer-worker-request request to-server [cache #f] #:recycle? [recycle? #f])
   (define megabytes (worker-megabytes))
   (define limited (make-custodian))
   (custodian-limit-memory limited (* megabytes 1024 1024) limited)
@@ -274,7 +298,7 @@
   (define result #f)
   (define analysis
     (parameterize ([current-custodian (make-custodian limited)])
-      (thread (lambda () (set! result (answer request (lambda (path) (set! at path))))))))
+      (thread (lambda () (set! result (answer request (lambda (path) (set! at path)) cache))))))
   (void (sync (thread-dead-evt analysis)))
   (define reply
     (cond
@@ -286,13 +310,32 @@
        (cons 'stopped (format "analysis~a went over the ~a MB memory limit for one worker"
                               (if at (format " of ~a" at) "") megabytes))]
       [else (cons 'stopped (format "compile-time code~a ended the analysis" (if at (format " in ~a" at) "")))]))
+  (custodian-shutdown-all limited)
+  ;; Tell the server before it can send another request. Exiting after an ordinary
+  ;; reply would race that next request and could lose a file's analysis.
+  (define retire? (and recycle? (>= (worker-memory-bytes) (recycle-bytes))))
   (void (with-handlers ([exn:fail? (lambda (e)
                                      (write-worker-message (cons 'stopped (format "analysis worker could not send its result: ~a" (exn-message e)))
                                                            to-server))])
-          (write-worker-message reply to-server)))
-  (flush-output to-server)
-  ;; Keep a successful reply distinguishable from an abnormal early exit.
-  (void (sync never-evt)))
+          (write-worker-message (if retire? (list 'retire reply) reply) to-server)))
+  (flush-output to-server))
+
+(module+ worker
+  (define from-server (current-input-port))
+  (define to-server (current-output-port))
+  ;; A process belongs to one pass. Its replacement starts with an empty cache.
+  (define dependency-code (make-hash))
+  (define requests (make-channel))
+  ;; The server closes this pipe when it no longer wants the worker, or when it ends.
+  (void (thread (lambda ()
+                  (let wait ()
+                    (sync from-server)
+                    (when (eof-object? (peek-byte from-server)) (exit 0))
+                    (channel-put requests (read-worker-message from-server))
+                    (wait)))))
+  (let loop ()
+    (answer-worker-request (channel-get requests) to-server dependency-code #:recycle? #t)
+    (loop)))
 
 (define-runtime-path worker-program "workspace-worker.rkt")
 (define-runtime-path this-module "workspace-analysis.rkt")
@@ -310,15 +353,20 @@
   (if said (format "~a: ~a" stated (car said)) stated))
 
 (define decoding-bytes (* 512 1024 1024))
-(define (compute/slot run seconds request cancel)
+;; A slot holds its process until the pass ends, an exchange stops it or it
+;; requests replacement after reaching its memory bound.
+(struct Worker (process from to errors owner stop))
+(define (compute/slot run seconds request cancel [held #f])
   ;; Cancellation must discard the runtime doing the work, including its module
   ;; loading state, and a worker stopped this way cannot hold up anything else: the
   ;; system ends the process wherever its code is. It is one process in the tree
   ;; that owns the server, so it ends with that tree on every platform.
+  (when (and held (unbox held) (sync/timeout 0 (Worker-process (unbox held))))
+    (discard-worker! held))
   (define label (request-label request))
   (define starting (monotonic))
   (log-worker label "starting")
-  (define owner (make-custodian))
+  (define owner (if (and held (unbox held)) (Worker-owner (unbox held)) (make-custodian)))
   (define (stop! process)
     (define stopping (monotonic))
     (log-worker label "kill requested")
@@ -327,23 +375,30 @@
     (unless (sync/timeout 10 process)
       (log-diagnostic "worker" (monotonic) (format "~a: still running 10 s after it was killed" label)))
     (log-worker label "reaped" stopping))
-  (define (exchange process from-worker to-worker errors)
+  (define (exchange process from-worker to-worker errors fresh?)
     (define said (open-output-bytes))
+    (define bytes (make-bytes 4096))
+    ;; Discard output left by the previous request before sending this one.
+    (unless fresh?
+      (let drain ()
+        (define count (read-bytes-avail!* bytes errors))
+        (when (and (exact-integer? count) (positive? count)) (drain))))
     (define (bounded-copy)
       (let loop ()
-        (define bytes (read-bytes 4096 errors))
-        (unless (eof-object? bytes)
-          (when (< (file-position said) 4096) (write-bytes bytes said))
+        (define count (read-bytes-avail! bytes errors))
+        (unless (eof-object? count)
+          (when (< (file-position said) 4096) (write-bytes bytes said 0 count))
           (loop))))
     (void (thread bounded-copy))
     ;; Each of these can wait on the worker, so neither holds up the wait below.
     (void (thread (lambda ()
                     (with-handlers ([exn:fail? void])
-                      (write (list (map path->bytes (current-library-collection-paths))
+                      (when fresh?
+                        (write (list (map path->bytes (current-library-collection-paths))
                                    (for/list ([root (in-list (current-compiled-file-roots))])
                                      (if (path? root) (path->bytes root) root))
                                    (path->bytes this-module))
-                             to-worker)
+                               to-worker))
                       (write-worker-message request to-worker)
                       (flush-output to-worker)))))
     (define reply #f)
@@ -373,23 +428,42 @@
        (or reply (no-reply))]
       [(thread-dead? reader) (or reply (no-reply))]
       [else #f]))
+  (define worker (and held (unbox held)))
+  (define retire? #f)
   (define result
     (with-handlers ([exn:fail? (lambda (e)
                                  (cons 'stopped (format "analysis worker could not run: ~a" (exn-message e))))])
-      (parameterize ([current-custodian owner]
-                     [current-subprocess-custodian-mode 'kill])
-        (define-values (process from-worker to-worker errors)
-          (subprocess #f #f #f
-                      (or (find-executable-path (find-system-path 'exec-file))
-                          (find-system-path 'exec-file))
-                      (path->string worker-program)))
-        (log-worker label "started" starting)
-        (dynamic-wind
-          void
-          (lambda () (exchange process from-worker to-worker errors))
-          (lambda ()
-            (stop! process)
-            (custodian-shutdown-all owner))))))
+      (unless worker
+        (parameterize ([current-custodian owner]
+                       [current-subprocess-custodian-mode 'kill])
+          (define-values (process from-worker to-worker errors)
+            (subprocess #f #f #f
+                        (or (find-executable-path (find-system-path 'exec-file))
+                            (find-system-path 'exec-file))
+                        (path->string worker-program)))
+          (log-worker label "started" starting)
+          (set! worker (Worker process from-worker to-worker errors owner
+                               (lambda () (stop! process) (custodian-shutdown-all owner))))))
+      ;; Readers and writers end after each exchange; the process and its pipes
+      ;; stay under their original owner until the slot discards them.
+      (define exchange-owner (make-custodian))
+      (dynamic-wind
+        void
+        (lambda ()
+          (parameterize ([current-custodian exchange-owner])
+            (match (exchange (Worker-process worker) (Worker-from worker) (Worker-to worker)
+                             (Worker-errors worker) (not (and held (unbox held))))
+              [(list 'retire reply) (set! retire? #t) reply]
+              [reply reply])))
+        (lambda () (custodian-shutdown-all exchange-owner)))))
+  (log-worker label "finished" starting)
+  (when retire? (log-worker label "recycling after memory bound"))
+  (cond
+    [(and held (not retire?) (pair? result) (memq (car result) '(ok failed changed)))
+     (set-box! held worker)]
+    [else
+     (if worker ((Worker-stop worker)) (custodian-shutdown-all owner))
+     (when held (set-box! held #f))])
   (match result
     [(cons 'stopped reason)
      (log-diagnostic "worker" (monotonic) (format "~a: ~a" label reason))]
@@ -456,7 +530,7 @@
                        (call-with-input-file* file
                          (lambda (in) (read-string (add1 (string-length text)) in)))))))))
 
-(define (analyse path max-bytes buffer query buffers roots before)
+(define (analyse path max-bytes buffer query buffers roots before cache)
   (define bytes
     (if buffer (string->bytes/utf-8 buffer)
         (call-with-input-file* path (lambda (in) (read-bytes (add1 max-bytes) in)))))
@@ -476,11 +550,19 @@
                   (if query (current-module-name-resolver)
                       (recording-resolver (current-module-name-resolver) resolutions))])
   (call-with-source-snapshot buffers
+    #:cache (and (not query) cache)
     #:source? (lambda (file) (for/or ([root (in-list roots)]) (directory-contains? root file)))
     #:on-load (if query void (lambda (file) (record-load! reads file buffers)))
+    #:on-reuse (lambda (_file entries)
+                 ;; The code describes its original reads, even after a disk edit.
+                 ;; Never label old code with the new contents of a dependency.
+                 (for ([entry (in-list entries)])
+                   (hash-update! reads (car entry)
+                                 (lambda (old) (if (equal? old (cdr entry)) old 'changing))
+                                 (cdr entry))))
     (lambda ()
     (define doc (make-doc (path->uri path) text 0))
-    (unless (doc-expand! doc) (error 'workspace-analysis "analysis failed: ~a" path))
+    (unless (doc-expand! doc #:contribution-only? #t) (error 'workspace-analysis "analysis failed: ~a" path))
     (define contribution (Doc-contribution doc))
     (define facts
       (+ (hash-count (Doc-Contribution-definitions contribution))
@@ -515,12 +597,14 @@
 ;; A .ss file is loaded only while the .rkt beside it is absent, so that absence
 ;; is read as well.
 (define (record-load! reads file buffers)
+  (define recorded (make-hash))
   (define (record! file)
-    (hash-ref! reads file
-               (lambda ()
-                 (if (hash-has-key? buffers file)
-                     (buffer-fingerprint (hash-ref buffers file))
-                     (disk-fingerprint file)))))
+    (hash-set! recorded file
+               (hash-ref! reads file
+                          (lambda ()
+                            (if (hash-has-key? buffers file)
+                                (buffer-fingerprint (hash-ref buffers file))
+                                (disk-fingerprint file))))))
   (record! file)
   ;; With no source to read, what the loader reads is the compiled code.
   (unless (or (hash-has-key? buffers file) (file-exists? file))
@@ -528,7 +612,8 @@
            [mode (in-list (use-compiled-file-paths))])
       (record! (get-compilation-bytecode-file file #:modes (list mode) #:roots (list root)))))
   (when (equal? (path-get-extension file) #".ss")
-    (record! (path-replace-extension file #".rkt"))))
+    (record! (path-replace-extension file #".rkt")))
+  (hash->list recorded))
 
 ;; Where a collection path leads depends on the links and on which directories
 ;; hold the file, so what it found is read as well. A relative path leads to one file.
@@ -676,6 +761,15 @@
       (for-each thread-wait threads))))
 
 (define (run-index engine run)
+  (parameterize ([pass-workers (make-hasheq)])
+    (dynamic-wind
+      void
+      (lambda () (run-index/pass engine run))
+      (lambda ()
+        (for ([(slot held) (in-hash (pass-workers))])
+          (call-with-semaphore slot (lambda () (discard-worker! held))))))))
+
+(define (run-index/pass engine run)
   (define config (Run-settings run))
   (define indexed 0)
   (define failures (count not (hash-values (Run-buffers run))))

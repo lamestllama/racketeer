@@ -19,7 +19,7 @@
 
 ;; Distinguish readers with incompatible replay records even when a running
 ;; extension is replaced at its existing path.
-(define replay-format 2)
+(define replay-format 3)
 ;; Keep the identity of this loaded implementation when its files are replaced.
 (define instrumenter-hashes
   (for/list ([file (in-list instrumenter-files)])

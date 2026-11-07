@@ -266,6 +266,46 @@ test('a breakpoint on a line with no stop moves to the next line that has one', 
   await ok(client.request('terminate'));
 });
 
+for (const [what, body] of [
+  ['macros', '(provide m)\n(define-syntax-rule (m) (displayln "x"))\n'],
+  ['functions', '(provide f)\n(define (f) (displayln "x"))\n']
+]) {
+  test(`a file that only defines ${what} says it found nowhere to stop at its start`, async t => {
+    const { client } = await prepare(t, `#lang racket/base\n${body}`, { stopOnEntry: true });
+    await ok(client.request('configurationDone'));
+    await client.event('terminated');
+    const said = client.events.filter(event => event.event === 'output' && event.body.category === 'important');
+    assert.equal(said.length, 1);
+    assert.match(said[0].body.output, /^The debugger found nowhere to stop at the start of main\.rkt, so it ran to the end\./);
+  });
+}
+
+test('a module body prints even when its main submodule has nowhere to stop', async t => {
+  const { client } = await prepare(t,
+    '#lang racket/base\n(displayln "YES RAN")\n(module+ main (define (f) 42))\n', { stopOnEntry: true });
+  await ok(client.request('configurationDone'));
+  await client.event('terminated');
+  const output = client.events.filter(event => event.event === 'output');
+  assert.match(output.filter(event => event.body.category === 'stdout').map(event => event.body.output).join(''), /YES RAN\n/);
+  assert.deepEqual(output.filter(event => event.body.category === 'important').map(event => event.body.output), [
+    'The debugger found nowhere to stop at the start of main.rkt, so it ran to the end. A file that only defines macros or functions runs when another file uses it, so debug that file.'
+  ]);
+});
+
+test('a file that runs says nothing of the kind', async t => {
+  for (const stopOnEntry of [true, false]) {
+    const { client } = await prepare(t, '#lang racket/base\n(displayln "x")\n', { stopOnEntry });
+    await ok(client.request('configurationDone'));
+    if (stopOnEntry) {
+      const { body: { threadId } } = await client.event('stopped');
+      await ok(client.request('continue', { threadId }));
+    }
+    await client.event('terminated');
+    assert.equal(client.events.filter(event => event.body?.category === 'important').length, 0);
+    await client.close();
+  }
+});
+
 test('a breakpoint is announced when its answer changes, not for each form that follows it', async t => {
   const { client, program } = await prepare(t, [
     '#lang racket/base',

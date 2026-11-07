@@ -33,3 +33,6 @@
   (values values-result zero-result (map void? void-result) (factorial 8)
           rest-result escape-result composable-result marked-result raised-result
           macro-result (reverse effects)))
+
+;; Copyright (c) 2026 Eric Parsonage
+;; SPDX-License-Identifier: Apache-2.0 OR MIT

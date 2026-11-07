@@ -18,3 +18,6 @@
 ;; Load this file in Debug REPL, then enter (quote-order) in Debug Console.
 ;; Or select just the expression below (without ;;) and evaluate the selection.
 ;; (quote-order 3)
+
+;; Copyright (c) 2026 Eric Parsonage
+;; SPDX-License-Identifier: Apache-2.0 OR MIT

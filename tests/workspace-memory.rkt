@@ -1,0 +1,97 @@
+#lang racket/base
+;; Copyright (c) 2026 Eric Parsonage
+;; SPDX-License-Identifier: Apache-2.0 OR MIT
+(require rackunit racket/file racket/list racket/path racket/runtime-path
+         "../vscode/workspace-memory.rkt")
+
+(define-runtime-path environment "../vscode/racket-environment.rkt")
+(define-runtime-path analysis "../vscode/workspace-analysis.rkt")
+(dynamic-require environment #f)
+(dynamic-require analysis #f)
+(define (get name)
+  (parameterize ([current-namespace (module->namespace analysis)]) (eval name)))
+(define MiB (* 1024 1024))
+
+(module+ test
+  (test-case "available memory includes ancestor limits in both cgroup layouts"
+    (define root (make-temporary-file "workspace-memory~a" 'directory))
+    (define meminfo (build-path root "meminfo"))
+    (define membership (build-path root "membership"))
+    (define mount (build-path root "groups"))
+    (define (write-file path text)
+      (make-directory* (path-only path))
+      (display-to-file text path #:exists 'truncate))
+    (define (remaining) (available-memory-bytes meminfo membership mount))
+    (dynamic-wind void
+      (lambda ()
+        (write-file meminfo "MemAvailable: 8388608 kB\n")
+        (write-file membership "0::/parent/child\n")
+        (write-file (build-path mount "memory.max") "max\n")
+        (write-file (build-path mount "parent/memory.max") "1073741824\n")
+        (write-file (build-path mount "parent/memory.current") "268435456\n")
+        (write-file (build-path mount "parent/child/memory.max") "max\n")
+        (check-equal? (remaining) (* 768 MiB))
+        (write-file (build-path mount "parent/child/memory.max") "536870912\n")
+        (write-file (build-path mount "parent/child/memory.current") "402653184\n")
+        (check-equal? (remaining) (* 128 MiB))
+        (write-file (build-path mount "parent/child/memory.current") "805306368\n")
+        (check-equal? (remaining) 0)
+        (write-file membership "4:cpu,memory:/parent/child\n")
+        (write-file (build-path mount "memory/parent/memory.limit_in_bytes") "2147483648\n")
+        (write-file (build-path mount "memory/parent/memory.usage_in_bytes") "1073741824\n")
+        (check-equal? (remaining) (* 1024 MiB))
+        (write-file membership "0::/../../outside\n")
+        (check-equal? (remaining) (* 8192 MiB))
+        (delete-file membership)
+        (check-equal? (remaining) (* 8192 MiB))
+        (delete-file meminfo)
+        (check-false (remaining)))
+      (lambda () (delete-directory/files root))))
+
+  (test-case "default worker count respects processors and available memory"
+    (define workers (get 'default-workers))
+    (check-equal? (map workers '(1 2 3 4 6 64)) '(1 1 1 2 3 3))
+    (check-equal? (workers 64 0) 1)
+    (check-equal? (workers 64 (* 2500 MiB)) 1)
+    (check-equal? (workers 64 (* 6000 MiB)) 2)
+    (check-equal? (workers 64 (* 12000 MiB)) 3)
+    (check-equal? (workers 2 (* 12000 MiB)) 1))
+
+  (test-case "recycling preserves results and replaces the process before the next file"
+    (define root (make-temporary-file "workspace-recycle~a" 'directory))
+    (define pids (build-path root "pids"))
+    (define (pass bound)
+      (define env (environment-variables-copy (current-environment-variables)))
+      (environment-variables-set! env #"RACKETEER_INDEX_WORKERS" #"1")
+      (environment-variables-set! env #"RACKETEER_INDEX_RECYCLE_MEGABYTES" bound)
+      (parameterize ([current-environment-variables env])
+        (define engine ((get 'make-workspace-analysis)))
+        (dynamic-wind void
+          (lambda ()
+            ((get 'workspace-analysis-update!) engine
+             (hasheq 'revision 1 'roots (list ((get 'path->uri) root)) 'documents '()))
+            (define run ((get 'WorkspaceAnalysis-current-run) engine))
+            ((get 'run-index) engine run)
+            (check-equal? ((get 'Run-state) run) "ready")
+            (check-equal? ((get 'Run-indexed) run) 2)
+            (for/hash ([(path result) (in-hash ((get 'WorkspaceAnalysis-results) engine))])
+              (values path ((get 'Result-contribution) result))))
+          (lambda () ((get 'workspace-analysis-close!) engine)))))
+    (dynamic-wind void
+      (lambda ()
+        (define text
+          (format "#lang racket/base\n(require (for-syntax racket/base ffi/unsafe))\n(begin-for-syntax (call-with-output-file ~s #:exists 'append (lambda (out) (writeln ((get-ffi-obj ~s ~a (_fun -> _int))) out))))\n"
+                  (path->string pids) (if (eq? (system-type 'os) 'windows) "_getpid" "getpid")
+                  (if (eq? (system-type 'os) 'windows) "(ffi-lib \"msvcrt\")" "#f")))
+        (for ([name '("a.rkt" "b.rkt")]) (display-to-file text (build-path root name)))
+        (define ordinary (pass #"10000"))
+        (define reused (file->lines pids))
+        (check-equal? (length reused) 2)
+        (check-equal? (car reused) (cadr reused))
+        (delete-file pids)
+        (define recycled (pass #"1"))
+        (define replaced (file->lines pids))
+        (check-equal? (length replaced) 2)
+        (check-not-equal? (car replaced) (cadr replaced))
+        (check-equal? ordinary recycled))
+      (lambda () (delete-directory/files root)))))

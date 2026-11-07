@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const vscode = require('vscode');
+const { pngBytes } = require('./interaction-output');
 
 function registerDebugImages(context) {
   const scheme = 'racketeer-image';
@@ -66,13 +67,9 @@ function registerDebugImages(context) {
     } catch (error) { vscode.window.showErrorMessage(error.message); throw error; }
   }
   async function openSnapshot(rendered) {
-    if (rendered?.mimeType !== 'image/png' || typeof rendered.data !== 'string' || rendered.data.length > 12 * 1024 * 1024) {
-      throw new Error('The debugger returned an invalid image response.');
-    }
-    const data = Buffer.from(rendered.data, 'base64');
-    if (data.length > 8 * 1024 * 1024 || !data.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) {
-      throw new Error('The debugger returned an invalid PNG image.');
-    }
+    let data;
+    try { data = pngBytes(rendered); }
+    catch (error) { throw new Error(`The debugger returned an invalid image: ${error.message}`); }
     const name = `Racket image ${++nextImage}.png`;
     const uri = vscode.Uri.from({ scheme, path: `/${name}` });
     images.set(uri.toString(), { data, time: Date.now(), name, uri });

@@ -34,14 +34,18 @@
          racket/set
          racket/list
          racket/string
+         racket/lazy-require
          data/interval-map
          "check-syntax.rkt"
          "hover.rkt"
          "service/hover/types.rkt"
          "external/resyntax.rkt"
-         "docs-helpers.rkt"
-         "documentation-parser.rkt"
          racket/format)
+
+;; Documentation is optional for clients that only analyse bindings.
+(lazy-require ["docs-helpers.rkt"
+               (get-docs-for-tag id-to-tag make-proper-url-for-online-documentation)]
+              ["documentation-parser.rkt" (extract-documentation-for-selected-element)])
 
 (struct/contract Doc
   ([source Source?]
@@ -235,9 +239,9 @@
                                 (text-edit-end doc edit)
                                 (TextEdit-newText edit)))))
 
-(define/contract (doc-expand source doc-text lexer-state)
-  (-> Source? (is-a?/c lsp-editor%) LexerState? CSResult?)
-  (check-syntax source doc-text lexer-state))
+(define/contract (doc-expand source doc-text lexer-state #:contribution-only? [contribution-only? #f])
+  (->* (Source? (is-a?/c lsp-editor%) LexerState?) (#:contribution-only? boolean?) CSResult?)
+  (check-syntax source doc-text lexer-state #:contribution-only? contribution-only?))
 
 (define/contract (doc-update-trace! doc new-trace new-contribution new-version)
   (-> Doc?
@@ -275,9 +279,9 @@
                                               (hash)))])
     (values binding (Location-range location))))
 
-(define/contract (doc-expand! doc)
-  (-> Doc? boolean?)
-  (define result (doc-check-syntax doc))
+(define/contract (doc-expand! doc #:contribution-only? [contribution-only? #f])
+  (->* (Doc?) (#:contribution-only? boolean?) boolean?)
+  (define result (doc-check-syntax doc #:contribution-only? contribution-only?))
   (define new-trace (CSResult-trace result))
   (cond [(CSResult-succeed? result)
          (define new-contribution (send new-trace get-contribution))
@@ -288,9 +292,10 @@
          #t]
         [else #f]))
 
-(define/contract (doc-check-syntax doc)
-  (-> Doc? CSResult?)
-  (doc-expand (Doc-source doc) (Doc-text doc) (doc-lexer-state doc)))
+(define/contract (doc-check-syntax doc #:contribution-only? [contribution-only? #f])
+  (->* (Doc?) (#:contribution-only? boolean?) CSResult?)
+  (doc-expand (Doc-source doc) (Doc-text doc) (doc-lexer-state doc)
+              #:contribution-only? contribution-only?))
 
 (define/contract (doc-pos->abs-pos doc pos)
   (-> Doc? Pos? exact-nonnegative-integer?)

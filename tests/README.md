@@ -1,3 +1,4 @@
+<!-- Copyright (c) 2026 Eric Parsonage. SPDX-License-Identifier: Apache-2.0 OR MIT -->
 # Testing the extension with itself
 
 [Continuous integration](../docs/ci.md) uses these same suites and installed
@@ -120,14 +121,14 @@ directories without these extra language packages. Macro-stepper command
 acceptance runs with the ordinary installed-editor checks on the isolated
 display. Package identities and provisioning logs accompany the Rhombus report.
 
-The GUI command includes callback debugging, event-loop Pause/Continue, macro-stepper windows, interactive
+The GUI command includes callback debugging, event-loop Pause/Continue, interactive
 plots and WXME text, object and XML/Racket-box editing.
 
 The headless command stages the bundled runtime and analysis dependencies before
 running tests, so a fresh checkout does not need an earlier package build. It
 discovers top-level `tests/*.rkt`, the lexical-evaluation
 experiment, and every `tests/*.test.js` except the explicit GUI suites
-`gui-parity.test.js`, `macro-stepper-gui.test.js`, `plots-gui.test.js`, and the display-dependent
+`gui-parity.test.js`, `plots-gui.test.js`, and the display-dependent
 cases in `debug-third-party-program.test.js`, `pause.test.js`, `wxme-edit.test.js`, `wxme-structure.test.js` and `wxme-xml-edit.test.js`. The first debugs a pinned external program downloaded into `.test-output/`; offline it skips, and in CI a failed download fails. The WXME cases cover
 object insertion and removal, structural undo, versioned recovery, source spans,
 styled Unicode and tabs, object-preserving saves, reader refusal and evaluation

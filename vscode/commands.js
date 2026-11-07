@@ -79,10 +79,10 @@ function registerFileCommands(context, sessions, testing, debugRepl, fileRuns) {
     }
   };
   const commands = {
-    openMacroStepper: () => macroStepper(),
-    openFileInMacroStepper: () => macroStepper(true),
+    stepMacros: () => macroStepper(),
     ...Object.fromEntries(Object.entries(fileCommands).map(([name, command]) =>
       [name, async () => command(await activeTarget({ allowWxme: ['runFile', 'runFileInTerminal', 'debugFile'].includes(name) }))])),
+    stepMacrosInFile: () => macroStepper(true),
     sendSelectionToDebugRepl: async () => {
       const expressions = selectedExpressions(selectedEditor(vscode.window));
       return debugRepl.evaluate(await activeTarget(), expressions);

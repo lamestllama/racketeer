@@ -2,10 +2,12 @@
 
 (require "interface.rkt"
          racket/class
-         "../docs-helpers.rkt"
+         racket/lazy-require
          data/interval-map
-         net/url
+         net/url-string
          drracket/check-syntax)
+
+(lazy-require ["../docs-helpers.rkt" (def-tag->html-anchor-tag)])
 
 (provide docs%)
 

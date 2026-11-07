@@ -15,9 +15,9 @@ test('a traced index names each worker and every wait it passes, with a monotoni
   const p = await project(t, traced);
   await p.references(p.origin);
   const worker = /Workspace analysis worker at (\d+) ms: analyse \S*definition\.rkt: (.*)/g;
-  const events = [...p.diagnostics().matchAll(worker)].slice(0, 5);
+  const events = [...p.diagnostics().matchAll(worker)].slice(-6);
   assert.deepEqual(events.map(event => event[2].replace(/ after \d+ ms$/, '')),
-    ['starting', 'started', 'kill requested', 'killed', 'reaped'], p.diagnostics());
+    ['starting', 'started', 'finished', 'kill requested', 'killed', 'reaped'], p.diagnostics());
   const times = events.map(event => Number(event[1]));
   assert.deepEqual(times, [...times].sort((a, b) => a - b), p.diagnostics());
   assert.match(p.diagnostics(), /worker at \d+ ms: discover: starting/);

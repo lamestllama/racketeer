@@ -823,6 +823,13 @@
           (set! exit-code 1)
           (call-with-continuation-prompt abort-thunk)))
        (flush-program-output #:final? #t)
+       ;; A stop was asked for, but the entry point had nowhere to stop.
+       (when (and entry-pending? (zero? exit-code)
+                  (not (arg config 'noDebug #f)) (not (arg config 'testMode #f)))
+         (let-values ([(_base name _dir?) (split-path (arg config 'program))])
+           (event "output"
+                  (hasheq 'category "important"
+                          'output (format "The debugger found nowhere to stop at the start of ~a, so it ran to the end. A file that only defines macros or functions runs when another file uses it, so debug that file." name)))))
        (set! ended? #t)
        (send (hasheq 'type "workerExit" 'exitCode exit-code)))))
     (thread
@@ -985,7 +992,8 @@
         (set-state-pause?! st #f))
       (rearm!)
       (refresh-gate!)
-      (forget-noted-thread!)))
+      (forget-noted-thread!))
+    (application-log-close! application-log))
   (define (run-attached-code thunk step-in?)
     (define t (current-thread))
     (define previous (hash-ref attached-calls t #f))
@@ -1029,4 +1037,6 @@
           (unless (eof-object? request)
             (with-handlers ([exn:fail? (lambda (e) (reply request (hasheq) (exn-message e)))]) (dispatch request))
             (loop)))))
-    (lambda () (when attach (close-session!)))))
+    (lambda ()
+      (when attach (close-session!))
+      (application-log-close! application-log))))

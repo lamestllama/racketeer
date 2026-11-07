@@ -15,3 +15,6 @@
                            #'(+ 1 2)))])
            (expression)))]))
 (define-run run)
+
+;; Copyright (c) 2026 Eric Parsonage
+;; SPDX-License-Identifier: Apache-2.0 OR MIT

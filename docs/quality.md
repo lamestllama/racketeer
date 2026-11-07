@@ -1,3 +1,4 @@
+<!-- Copyright (c) 2026 Eric Parsonage. SPDX-License-Identifier: Apache-2.0 OR MIT -->
 # Release quality requirements
 
 A passing test count is evidence for
@@ -7,8 +8,8 @@ of production readiness on other platforms or configurations.
 ## Required evidence for each release
 
 1. Build the VSIX from the reviewed tree and record its SHA256. Install that
-   artifact in an isolated editor profile and test the installed code.
-2. Run the RackUnit suites both directly and through our Test Explorer's Run
+   artefact in an isolated editor profile and test the installed code.
+2. Run the RackUnit suites both directly and through Racketeer's Test Explorer Run
    and Debug profiles. Verify the expected suite inventory and case counts,
    a real breakpoint with live lexical variables, a deliberate assertion failure and its
    source location, and a successful rerun after correction.
@@ -45,18 +46,28 @@ APIs does not make their implementations original Racketeer code.
 
 ## Current support and outstanding validation
 
-The recorded [0.8.0 local release environment](releases/0.8.0.md) is Linux
-ARM64, full Racket 9.1 CS, VS Code 1.98.1.
-Before declaring broader production support, run the installed-artifact tests
-on Windows, macOS, and Linux x64, on the advertised minimum and current editor
-versions, and on each supported Racket version. The editor harness supports
-Linux, Windows and macOS; record passing results for each selected configuration.
+The [0.8.54 validation record](releases/0.8.54.md) records passing core and
+installed-extension jobs on Linux x64, Windows x64 and macOS ARM64. It includes Racket
+9.1 and 9.3 core jobs, the minimum VS Code 1.91.0 and the recorded stable editor.
+Earlier records describe their own revisions and environments.
 
-Package tests use local links and archives without depending on the network.
-Catalog and Git installation, interrupted downloads, proxy/authentication
-failures, and simultaneous external package changes need dedicated integration
-coverage. So do long-running sessions and resource/performance measurements on
-representative large projects.
+Release 0.8.55 needs the same checks on its final packaged revision. Its [release
+record](releases/0.8.55.md) lists the changes and measured gains; it does not record a
+completed release matrix. Record passing results for each selected configuration before
+extending a support claim.
+
+Macro-stepper checks cover both panes, navigation, hiding, binding connections, colours,
+selection, details, display options, checkpoints, duplication and worker recovery.
+Packaging checks load the shipped page modules and bundled editor resources without
+development dependencies. Installed-editor checks exercise the commands in the packaged
+extension. Documentation checks cover British spelling and the index server's documented
+capabilities.
+
+Package tests use local links and archives without depending on the network. Catalogue
+and Git installation, interrupted downloads, proxy/authentication failures, and
+simultaneous external package changes need dedicated integration coverage. So do
+long-running sessions and resource/performance measurements on representative large
+projects.
 
 The [CI workflow](../.github/workflows/ci.yml) builds the extension and runs the
 core suites on Linux x64, Windows x64 and macOS ARM64, with Racket 9.1 and the
@@ -77,19 +88,22 @@ Stop, Disconnect, worker and adapter crashes, preservation of unrelated processe
 and cancellation of a stuck macro transformer with a child process. These checks
 are separate from installed VS Code extension checks.
 
-The [native validation run](https://github.com/lamestllama/racketeer/actions/runs/36855276354)
-at revision `a5ad68e` passes all eleven jobs. The six core configurations use
-Racket 9.1 and 9.3 on Linux x64, Windows x64 and macOS ARM64. Each runs all
-110 RackUnit cases and 138 Node tests, with the recorded platform-specific skips. Each of the five
-editor configurations passes 91 ordinary checks, 100 checks with the pinned
-Rhombus runtime, GUI regressions, and all 110 RackUnit cases through each
-Test Explorer profile. The recorded editors are VS Code 1.90.0 for the minimum
-version and 1.140.0 for stable; [CI details](ci.md) list the selected combinations.
+The earlier [native validation
+run](https://github.com/lamestllama/racketeer/actions/runs/36855276354) at revision
+`a5ad68e` passes all eleven jobs. The six core configurations use Racket 9.1 and 9.3 on
+Linux x64, Windows x64 and macOS ARM64. Each runs all 110 RackUnit cases and 138 Node
+tests, with the recorded platform-specific skips. Each of the five editor configurations
+passes 91 ordinary checks, 100 checks with the pinned Rhombus runtime, GUI regressions,
+and all 110 RackUnit cases through each Test Explorer profile. The recorded editors are
+VS Code 1.90.0 for the minimum version and 1.140.0 for stable; [CI details](ci.md) list
+the selected combinations.
 
 The macOS installation now preserves source and bytecode timestamps, preventing
 the installation itself from invalidating bundled bytecode. Workspace discovery
-and analysis run in disposable places so cancelling work does not terminate a
-thread sharing the controller's module-loading state. Regression checks cover
+and analysis reuse worker processes within each pass, with a fresh namespace and
+custodians for each file, and end those processes with the pass,
+so cancelling work terminates its worker without sharing the controller's
+module-loading state. Regression checks cover
 active expansion cancellation, worker failure and recovery, and references across
 unopened files.
 
@@ -116,5 +130,5 @@ Known product boundaries remain explicit:
   that tested scope.
 
 Production release review must resolve the applicable gaps or define a narrower
-supported configuration with evidence. Development artifacts remain useful for
-testing while that work continues.
+supported configuration with evidence. Development artefacts remain useful for testing
+while that work continues.

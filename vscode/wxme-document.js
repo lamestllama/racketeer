@@ -170,7 +170,6 @@ class WxmeDocument {
       node.kind === 'xml' ? 'Change XML whitespace' : 'Change Racket splicing', true);
   }
   changed() { return this.tree !== this.initial && JSON.stringify(this.tree) !== JSON.stringify(this.initial); }
-  snapshot() { return { bytes: this.bytes, tree: this.tree, parts: this.parts, revision: this.revision }; }
   request() { return { version: 1, bytes: this.bytes.toString('base64'), tree: this.tree }; }
   backup() { return Buffer.from(JSON.stringify({ version: 2, bytes: this.bytes.toString('base64'), diskHash: this.diskHash, nextId: this.nextId, tree: this.tree })); }
   restore(backup) {

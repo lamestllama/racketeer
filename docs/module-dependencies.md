@@ -1,3 +1,4 @@
+<!-- Copyright (c) 2026 Eric Parsonage. SPDX-License-Identifier: Apache-2.0 OR MIT -->
 # Module dependencies
 
 Run **Racket: Browse Module Dependencies** with a named source file open, or from
@@ -49,9 +50,10 @@ tree. A smaller module can be selected as a new root.
 
 `dependency-worker.rkt` owns the JSON boundary. The shared tool supervisor keeps
 compilation and its ordinary subprocesses in an owned process group. Completion,
-cancellation, timeout or loss of the extension host releases that group. The
-macro stepper uses the same supervisor. The existing workspace index and LSP
-protocol are unchanged.
+cancellation, timeout or loss of the extension host releases that group. The macro
+stepper uses the same supervisor. Dependency browsing remains separate from the
+workspace indexing server. Both that index and the language server use LSP; the
+dependency view uses its own bounded JSON requests.
 
 References: [module inspection](https://docs.racket-lang.org/reference/Module_Names_and_Loading.html),
 [module-processing helpers](https://docs.racket-lang.org/syntax/module-helpers.html),

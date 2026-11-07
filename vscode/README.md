@@ -1,16 +1,20 @@
 # Racketeer: Organised Racket
 
-**A Racket IDE for VS Code.** Debug, run, test, navigate and package Racket in one extension, with nothing to install but Racket itself.
+**A Racket IDE for VS Code and VSCodium.** Debug, run, test, navigate and package Racket in one extension, with nothing to install but Racket itself.
+
+Racketeer provides a language server and a workspace indexing server, both over LSP, and a debug adapter over DAP.
 
 By [Eric Parsonage](https://github.com/lamestllama).
 
-- **Debug** with breakpoints on lines and on the calls within a line, stepping across files and chosen packages, and live variables. Racketeer is the only Racket extension on the VS Code Marketplace that debugs Racket source.
+- **Debug** with breakpoints on lines and on the calls within a line, stepping across files and chosen packages, and live variables.
+- **Attach the debugger to a running Racket program that embeds the debug host.** Inspect servers, long-running jobs and programs started outside the editor.
 - **See results beside the code:** text, images, picts and plots as a program prints them. While debugging, zoom and rotate a plot in its own window.
 - **Test** from VS Code's Testing view: run, debug or measure coverage of a file, or of a single RackUnit case in plain modules and suites.
 - **Work interactively** in an Interactions window, with pictures inline and errors that link to their source, or in a plain Racket REPL in the terminal.
 - **Navigate** with hover documentation, completion, go to definition and live diagnostics, from the bundled [racket-langserver](https://github.com/jeapostrophe/racket-langserver).
-- **Find and rename across a project's module files,** including ones that are not open, with an index that uses no CPU until asked. Folders such as `build` and `dist` are left out by default.
-- **Expand and build** with the macro stepper, package management, executables and distributions.
+- **Find and rename across a project's module files,** including ones that are not open, with an index that uses no CPU until asked. Default exclusions include: `build` and `dist`.
+- **Macro stepping inside VS Code:** step through macros in two linked panes beside the code, Before and After, in the editor theme, with syntax colouring, scope colours, binding arrows and term details. Choose which macros and renaming steps appear, factor out common context or show one term at a time. Duplicate the stepper to compare expansions.
+- **Build** with package management, executables and distributions.
 - **Edit** WXME documents with embedded boxes, and Rhombus with the separate `rhombus` package.
 
 ![A Racket file beside its Results: a curve, a 3D surface and a picture](https://raw.githubusercontent.com/lamestllama/racketeer/main/docs/images/results-with-plots.png)
@@ -19,18 +23,23 @@ By [Eric Parsonage](https://github.com/lamestllama).
 
 ![The Testing view with one failed case, and its failure shown in the editor](https://raw.githubusercontent.com/lamestllama/racketeer/main/docs/images/test-explorer.png)
 
+![Source beside linked Before and After macro panes, with the swap! rewrite highlighted and binding arrows connecting tmp to its uses](https://raw.githubusercontent.com/lamestllama/racketeer/release-0.8.55/docs/images/macro-steps.png)
+
+
 ## Install and start
 
+Racketeer needs **VS Code or VSCodium 1.91 or newer**.
+
 1. Install [Racket 9.1 or newer](https://download.racket-lang.org/), the full distribution, and put it on PATH or set `racketdap.racketExecutable`.
-2. Install **Racketeer** from the Extensions view.
-3. Open a trusted folder and a saved `.rkt` file. **Racket: ready** appears in the status bar when the language tools have started. With Magic Racket installed, the status bar shows **Racket: external LSP** until it is disabled and the window reloaded, and the language tools and workspace index stay off.
+2. Install **Racketeer** from the Extensions view: VS Code installs it from the [Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=lamestllama.racketeer), and VSCodium from [Open VSX](https://open-vsx.org/extension/lamestllama/racketeer).
+3. Open a trusted folder and a saved `.rkt` file. **Racket: ready** appears in the status bar when the language tools have started. While Magic Racket's language server is enabled, the status bar shows **Racket: external LSP**, and Racketeer's language tools and workspace index stay off. Disable that server and reload, or accept **Use Racketeer's Tools**.
 4. Click the play icon at the top right of the editor to see its Results, or the debug icon beside it to stop and inspect it.
 
 Debugging uses F5, F10, F11 and Shift+F11 for Continue, Step Over, Step Into and Step Out.
 
 If Racket is not on PATH, set `racketdap.racketExecutable` in Settings. An older Racket is refused on Run, Debug, Test Explorer, the language server and the workspace index, with a message naming its version, its path and that setting. Minimal Racket alone lacks standard libraries and documentation the language tools use.
 
-Resyntax suggestions are optional and need the separate `resyntax` package. The macro stepper, interactive plots and the WXME editor need a graphical display.
+Resyntax suggestions are optional and need the separate `resyntax` package. Interactive plots and the WXME editor need a graphical display.
 
 Racketeer needs no separate `racket-langserver`, Magic Racket, Node.js or npm, and installs no packages into Racket by itself. To install from a package file, choose **Install from VSIX…** in the Extensions view. Remove the earlier `lamestllama.racketdap` development extension first; existing `racketdap` launch configurations and settings keep working.
 
@@ -64,12 +73,13 @@ Details: [Run, Debug, Test and REPL execution](https://github.com/lamestllama/ra
 
 Stop a program on a line, or at a call or form within one, in any file of the workspace or a chosen package, and look at what it holds.
 
-Click the gutter to the left of a line number, press **F9** or right-click and choose **Add Breakpoint**. Press F9 again to remove it. This works in the source file, and in the read-only captured source tab the debugger opens once a saved edit has left the running text behind. A breakpoint set in the file after such an edit stays unverified until you restart, and one set in the captured source tab ends with the session.
+Click the gutter to the left of a line number, press **F9** or right-click and choose **Add Breakpoint**. Press F9 again to remove it. This works in the source file, and in the read-only captured source tab the debugger opens once a saved edit has left the running text behind. A breakpoint set in the file after such an edit stays unverified until the session restarts, and one set in the captured source tab ends with the session.
 
 - A breakpoint binds to the outermost expression that begins on its line. Use an inline breakpoint to choose a later expression on the line. On the final character of a non-tail expression, an inline breakpoint stops after that expression returns.
 - **Racket: Continue to Cursor** runs to one chosen point, once, and keeps ordinary breakpoints in force.
 - A breakpoint stays pending until its module loads.
-- An empty line, a comment, a `require`, a constant, a bare variable, a definition of either, a `struct` form, quoted data, compile-time code and a line that holds only a function's header have no place to stop. A breakpoint there moves to the next line that has one, which can be in the next function. With none later, it stays unverified and says why.
+- A macro's template in the program's own files, under the source roots, has stops where it is written. A breakpoint there stops at each use of the macro, and stepping goes into its file and back.
+- An empty line, a comment, a `require`, an atomic definition initialiser, a `struct` form, compile-time code and a line that holds only a function's header have no place to stop. A breakpoint there moves to the next line that has one, which can be in the next function. With none later, it stays unverified and says why. Standalone constants, variable references and quoted data do have stops.
 
 Right-click a breakpoint to add a condition, a hit count or a log message:
 
@@ -102,11 +112,12 @@ Stepping goes expression by expression and shows both the start of an expression
 | **Step Over** (F10) | Evaluates the expression with its calls, then stops at the call site when it returns. |
 | **Step Out** (Shift+F11) | Leaves the current function. With no caller to return to, it finishes the evaluation around the stop. |
 
-**Call Stack** marks each stop **Before evaluation** or **Returned N values**. After a return, the marker sits on the closing parenthesis; open **Return values** to read the values. Its heading gives the count, such as **Return values (2)**, so zero values and one `#<void>` stay distinct. **Waiting for return** marks a caller whose calculation is still pending.
+**Call Stack** marks each stop **Before evaluation** or **Returned N values**. After a return, the marker sits on the closing parenthesis; open **Return values** to read the values. Its heading gives the count, for example: **Return values (2)**, so zero values and one `#<void>` stay distinct. **Waiting for return** marks a caller whose calculation is still pending.
 
 **Choose where a session first stops.** The default launch stops before the first instrumented expression inside `module+ main`, or in the module body when there is no `main`. An explicit submodule selection or a test launch uses that submodule. Explicit breakpoints still work during initialisation, including in required files.
 
 - Set `stopOnEntry` to `false` to run directly to a breakpoint.
+- A session that finds nowhere to stop at its start says so. If the file only defines macros or functions, debug a file that uses it.
 - Set `"stopOnEntryMode": "firstExpression"` beside `"stopOnEntry": true`, or choose **Racket: debug initialization** from **Add Configuration**, to pause before `main`, at the first instrumented expression, including initialisation in debugged dependencies. The default mode is `"entryPoint"`.
 
 **Good to know:** the debugger does not stop in macro-time code or in code that is not instrumented, and Run Without Debugging ignores both stop modes. Several stops can share a source line, and some stops highlight a whole function. A tail call has no return stop of its own, so stepping over a tail expression can finish the program. Code a macro generates has no stops at the place of an expression written there, so the value shown against that expression is its own.
@@ -118,10 +129,10 @@ Details: [Understanding the stops](https://github.com/lamestllama/racketeer/blob
 Read and change the live state of a stopped program.
 
 - Select a frame in **Call Stack** to see its lexical variables in **Variables → Locals**.
-- Evaluate Racket in the **Debug Console** or **Watch**: for example, `(+ subtotal 20)` or `(set! subtotal 200)`.
+- Evaluate Racket in the **Debug Console** or **Watch**. For example: `(+ subtotal 20)` or `(set! subtotal 200)`.
 - Hover over a variable to read it. Hover does not expand user macros. It shows the binding that name refers to where it is written, so a use that a later binding of the name hides shows its own value.
 - Open a pair, vector, box, hash or visible structure to see inside it. A long container opens in groups of rows. Fields of a structure are numbered, since Racket does not record their names at run time.
-- A variable a macro binds is listed when the source refers to it, such as `it` from an anaphoric macro. Temporaries such as `tmp` are not.
+- A variable a macro binds is listed when the source refers to it. For example: `it` from an anaphoric macro. Template temporaries appear only while stopped in a macro's template in the program's own files. For example: `tmp`.
 - In a class's methods and initialisers, **Locals** has a row named `this` that opens to the object's fields. A field the method reads or assigns also has a row under its own name, which **Set Value** writes.
 
 From the editor context menu or the Command Palette:
@@ -164,9 +175,9 @@ Keep the way a program starts in `launch.json`:
 | --- | --- |
 | `program`, `args`, `cwd`, `env` | The file, its arguments, working directory and environment. |
 | `racketExecutable` | The Racket executable for this launch. |
-| `submodule` | The submodule to run, such as `["test"]`. `[]` loads only the root module. By default `main` runs when present. |
-| `entry` | An exported zero-argument procedure to call after loading, such as `"run"`. |
-| `language` | The language for a plain file without `#lang` or a module declaration, such as `"racket/base"` or `"r5rs"`. Leave it unset for module programs. |
+| `submodule` | The submodule to run. For example: `["test"]`. `[]` loads only the root module. By default `main` runs when present. |
+| `entry` | An exported zero-argument procedure to call after loading, for example: `"run"`. |
+| `language` | The language for a plain file without `#lang` or a module declaration. For example: `"racket/base"` or `"r5rs"`. Leave it unset for module programs. |
 | `testMode` | Runs tests and reports them. It cannot be combined with `interactive`, `submodule`, `entry` or `language`. |
 | `interactive` | Keeps the module loaded until **Stop**, so the Debug Console can call into it. Calls can hit breakpoints and be stepped through. |
 | `console` | `integratedTerminal` for line input and output in a **Racket: …** terminal. The default, `internalConsole`, sends output to the Debug Console and gives the program end of input. |
@@ -181,9 +192,33 @@ In the integrated terminal, Enter submits a line, Ctrl+D on an empty line sends 
 
 Instrumented code is kept between sessions, so a program that has not changed starts without being expanded and compiled again. `racketdap.debug.compiledCache`, on by default, turns this off for new sessions. A macro that reads a file should register it with `register-external-file` so that a change to the file is seen.
 
-A program that embeds the debugger library can be reached with `"request": "attach"`, its `port` and its secret `token`. This does not attach to an arbitrary process.
-
 Details: [launching a program](https://github.com/lamestllama/racketeer/blob/main/docs/debugger.md#launching-a-program), [compiled code](https://github.com/lamestllama/racketeer/blob/main/docs/debugger.md#compiled-code) and [attaching](https://github.com/lamestllama/racketeer/blob/main/docs/debugger.md#attach-to-an-embedded-racket-program).
+
+## Attach to a running program
+
+Attach the debugger to a running Racket program that embeds the debug host.
+This suits servers, long-running jobs and programs started outside the editor.
+
+The host loads `racketdap/worker/attach.rkt` and supplies a loopback port and a
+secret token. Connect with a `racketdap` configuration in `launch.json`:
+
+```json
+{
+  "type": "racketdap",
+  "request": "attach",
+  "name": "Attach to Racket host",
+  "port": 49152,
+  "token": "replace-with-the-host-token"
+}
+```
+
+Use the port and token returned by the host. No `program` is required.
+Breakpoints, stepping, source selection and inspection use the embedded debug
+host. Code must be instrumented through that host; an arbitrary Racket process
+cannot be attached. Disconnect and Stop release debugger stops and leave the
+host running. Input, output and thread lifetime stay with the host.
+
+Details: [Attaching to an embedded Racket program](https://github.com/lamestllama/racketeer/blob/main/docs/debugger.md#attach-to-an-embedded-racket-program).
 
 ## Work interactively
 
@@ -248,7 +283,7 @@ VS Code's **Testing** view finds workspace `.rkt` files without executing anythi
 
 - Expand a file or open it to see its direct, literal-named RackUnit `test-case` forms, in a plain `#lang racket` or `#lang racket/base` module that holds only definitions and those cases. Run a `run-tests` suite to see its nested cases with individual results.
 - Run or debug a case from its gutter control, the Testing view or VS Code's **Test at Cursor** commands.
-- Results show check counts, test output and clickable failure locations. Teaching-language checks such as `check-expect` report counts and failure locations too.
+- Results show check counts, test output and clickable failure locations. Teaching-language checks report counts and failure locations too. For example: `check-expect`.
 - Choose **Run Tests with Coverage** to see executed and unexecuted expressions in the Test Coverage view and the editor.
 - Choose **Run with package policies (raco test)** on files to apply `info.rkt` omissions, arguments and timeouts. This reports per file, in a task terminal.
 
@@ -297,7 +332,7 @@ Click the status bar item or run **Racket: Show Language Server Output** to see 
 
 | Setting | Default | What it does |
 | --- | --- | --- |
-| `racket-langserver.analysisWaitMilliseconds` | `250` | How long the bundled server waits after an edit before analysing, from 0 to 10000. A request a person makes, such as hover, starts analysis at once. |
+| `racket-langserver.analysisWaitMilliseconds` | `250` | How long the bundled server waits after an edit before analysing, from 0 to 10000. A request a person makes starts analysis at once. For example: hover. |
 | `racket-langserver.formatting.documentFormatter` | `fixw` | Formatter for whole documents: `fixw` or `language`. |
 | `racket-langserver.formatting.indentationFormatter` | `fixw` | Formatter for selections and typing: `fixw` or `language`. |
 | `racket-langserver.resyntax.enable` | `false` | Offers Resyntax suggestions. Needs the separately installed `resyntax` package. |
@@ -305,15 +340,15 @@ Click the status bar item or run **Racket: Show Language Server Output** to see 
 | `racketdap.languageServer.source` | `bundled` | `installed` uses a `racket-langserver` package installed separately. |
 | `racketdap.languageServer.startupTimeoutSeconds` | `180` | Startup deadline, from 1 to 3600. Raise it for a slow first start on a busy machine. |
 
-**Good to know:** Magic Racket is not required. If its language client is enabled, Racketeer leaves the language server to it, to avoid duplicate providers, and offers, until you answer or dismiss it, to turn off only Magic Racket's language server and reload the window. To use Racketeer alone, disable Magic Racket and reload. No other extension or global Racket package is changed automatically. A new file not yet saved gets the bundled server's tools within that file; a relative import needs a save location, and references across a project need the file saved. Analysis runs readers and macros, which is why Racketeer works only in a trusted folder.
+**Good to know:** Magic Racket is not required. If its language client is enabled, Racketeer leaves the language server to it, to avoid duplicate providers, and offers, until it is answered or dismissed, to turn off only Magic Racket's language server and reload the window. To use Racketeer alone, disable Magic Racket and reload. No other extension or global Racket package is changed automatically. A new file not yet saved gets the bundled server's tools within that file; a relative import needs a save location, and references across a project need the file saved. Analysis runs readers and macros, which is why Racketeer works only in a trusted folder.
 
 Details: [Language server](https://github.com/lamestllama/racketeer/blob/main/docs/editor-tools.md#language-server) and [editing and macro expansion](https://github.com/lamestllama/racketeer/blob/main/docs/editor-tools.md).
 
 ## Find and rename across a project
 
-**Find All References** and **Rename Symbol** (F2) follow references through the module files of a trusted workspace, including files that are not open: `.rkt`, `.ss`, `.scm` and `.scrbl`, up to 1,000 files of 1 MiB each and 16 MiB in all. Unsaved buffers count as their files' text. Nothing is analysed until a request asks: the first request after a change waits for a pass, which can be cancelled and keeps what it finished, and while the window stays open the next pass analyses again only what changed. A pass analyses three files at once on six or more processors, two on four or five, and one on fewer. The status bar counts the files of a pass and warns when references are partial.
+**Find All References** and **Rename Symbol** (F2) follow references through the module files of a trusted workspace, including files that are not open: `.rkt`, `.ss`, `.scm` and `.scrbl`, up to 1,000 files of 1 MiB each and 16 MiB in all. Unsaved buffers count as their files' text. Nothing is analysed until a request asks: the first request after a change waits for a pass, which can be cancelled and keeps what it finished, and while the window stays open the next pass analyses again only what changed. A pass uses at most three workers and half the processors, with at least one worker. Available memory can reduce the default count on Linux. The status bar counts the files of a pass and warns when references are partial.
 
-**What a rename leaves unchanged.** By default the index leaves out folders named `.git`, `compiled`, `node_modules`, `.test-output`, `dist` and `build` at any depth, symbolic links, and files of other types such as `.rktl`. A rename does not change callers in those folders and files, and the index still reports ready, so check them by hand. A module in an excluded folder counts only while it is open in the editor. To change the folders, set `racket-langserver.workspaceAnalysis.excludedDirectories`: its value replaces the whole list. No setting changes the file types.
+**What a rename leaves unchanged.** By default the index leaves out folders named `.git`, `compiled`, `node_modules`, `.test-output`, `dist` and `build` at any depth, symbolic links, and other file types. For example: `.rktl`. A rename does not change callers in those folders and files, and the index still reports ready, so check them by hand. A module in an excluded folder counts only while it is open in the editor. To change the folders, set `racket-langserver.workspaceAnalysis.excludedDirectories`: its value replaces the whole list. No setting changes the file types.
 
 A file over a limit is different: it makes the index partial, and rename then refuses.
 
@@ -329,7 +364,7 @@ Rename shows VS Code's usual preview and checks that identifiers keep their bind
 | `racket-langserver.workspaceAnalysis.maxFileBytes` | `1048576` | Largest source file analysed. |
 | `racket-langserver.workspaceAnalysis.timeoutSeconds` | `20` | Time limit per file. A request also stops waiting, and says so, once sources keep changing for this long with no more files analysed. |
 
-**Good to know:** a file that fails analysis, or a file over a limit, makes the index partial, and rename then refuses. The **Racket Language Server** output names a file that failed or went over the size limit. The limits on file count and file size are settings; the 16 MiB in all is not. Rename can also refuse a selector over composed imports, a phase-shifted use, or a selector shared by several export phases. Compile-time code in different files can run at the same moment. Each extra worker adds about 260 MB while a pass runs. A macro that reads a file it does not register sees that file only at the next change to a file loaded with it, after **Racket: Refresh Workspace References**, or after a restart. Excluded files, environment changes and nondeterministic macros also need a refresh.
+**Good to know:** a file that fails analysis, or a file over a limit, makes the index partial, and rename then refuses. The **Racket Language Server** output names a file that failed or went over the size limit. The limits on file count and file size are settings; the 16 MiB in all is not. Rename can also refuse a selector over composed imports, a phase-shifted use, or a selector shared by several export phases. Compile-time code in different files can run at the same moment. Workers reuse their processes within a pass, with a fresh namespace and custodians for each file. A worker that grows past its memory target is replaced between files; all workers end with the pass. Available memory also limits the default worker count on Linux. A macro that reads a file it does not register sees that file only at the next change to a file loaded with it, after **Racket: Refresh Workspace References**, or after a restart. Excluded files, environment changes and nondeterministic macros also need a refresh.
 
 Details: [Workspace references](https://github.com/lamestllama/racketeer/blob/main/docs/editor-tools.md#workspace-references) and [rename across files](https://github.com/lamestllama/racketeer/blob/main/docs/editor-tools.md#rename-across-files).
 
@@ -348,16 +383,83 @@ Details: [Module dependencies](https://github.com/lamestllama/racketeer/blob/mai
 
 ## Expand macros
 
-See what a macro does, step by step, in Racket's macro-stepper window.
+Open two linked macro panes beside the source: **Before** above **After**.
+Move either tab to another editor group. Closing either closes the pair.
+The panes use the editor's font, syntax colours, bracket colours and text
+selection. Each program starts its line numbers at 1. The Before title counts
+steps, including completion; After names the rewrite, Finished or Error.
 
 | Command | What it does |
 | --- | --- |
-| **Racket: Open Line or Selection in Macro Stepper** (**Alt+Shift+Enter**) | Opens the complete selected forms, or the current line, in a fresh Racket namespace. |
-| **Racket: Open File in Macro Stepper** | Expands the entire module with its own imports and macro definitions. |
+| **Racket: Step Through Macros on This Line** (**Alt+Shift+M**) | Opens at the first step on the current line or selection. |
+| **Racket: Step Through Macros in This File** | Opens at the file's first step. |
+| **First Macro Step**, **Previous Macro Step**, **Next Macro Step**, **Finish Macro Steps** | Navigate the captured expansion. **Alt+Left** goes back; **F10** or **Alt+Right** advances. During debugging, F10 remains Step Over. |
+| **Racket: Jump to Macro Step** | Enter a position number or `end`. |
+| **Racket: Copy** | Copy selected text, or the term at the cursor with no text selection. |
+| **Racket: Go to Source** | Open the selected term's source. |
+| **Racket: Go to Binder**, **Racket: Show Uses** | Follow visible binding connections: **F12** and **Shift+F12**. |
+| **Racket: Keep Arrows**, **Racket: Release Kept Arrows**, **Racket: Clear Kept Arrows** | Keep or release connections in the active pane. Stepping clears them. |
+| **Racket: Clear Macro Term Selection** | Clear selected syntax: **Escape**. |
+| **Racket: Show Details**, **Racket: Inspect More Phases** | Inspect bindings, implicit bindings, source, scopes, tamper status and syntax properties. The inspector also has more/fewer phase links. |
+| **Racket: Refresh Macro Steps** | Capture the current source again. |
+| **Racket: Open Saved Macro Source** | Open and expand an untitled source's saved file. |
+| **Racket: Duplicate Stepper**, **Racket: Duplicate Stepper (Current Term Only)** | Open an independent pair on the same recording, at position 1, without running transformers again. Each pair holds one term, so both copy that term. |
+| **Racket: Remove Selected Term** | Empty the pair without closing it. |
+| **Racket: Reset Mark Numbering** | Reset scope numbers while keeping position, grouping, selection and kept arrows. |
+| **Racket: Foreground Colors** | Group colours **By macro scopes** or **By all scopes**. Changing grouping resets numbering. |
 
-Both use the current buffer, including unsaved edits, and do not save it. Close the stepper window to finish, or close its **Racket Macro Stepper** terminal to cancel. Startup and expansion errors appear in that terminal. Try [examples/macro-stepper.rkt](https://github.com/lamestllama/racketeer/blob/main/examples/macro-stepper.rkt) from [the repository](https://github.com/lamestllama/racketeer).
+Scope colours distinguish macro-introduced syntax. Hover shows binding arrows
+and a sentence beneath the program. Binders are underlined. Definite arrows are
+green; possible arrows are yellow and carry `?`. Source highlights follow the
+current step. Edits mark the recording out of date until Refresh.
 
-**Good to know:** expansion runs compile-time code, but not the module's runtime body. The stepper is a separate window that needs the full Racket installation and a graphical desktop.
+The tab menu offers these display options. Saved settings use the prefix
+`racketdap.macroSteps`:
+
+| Option | Setting and default | What it does |
+| --- | --- | --- |
+| **Include Renaming Steps** | `includeRenamingSteps`: `false` | Include named scope and identifier-resolution transitions. |
+| **Always Suffix Marked Identifiers** | Per pair; off | Add `:N` to each identifier in a nonzero scope group. Otherwise only groups above the 17 available colours get suffixes. |
+| **Highlight Redex/Contractum** | `highlightRedexContractum`: `true` | Highlight changed forms in Before and After. |
+| **Draw Binding Arrows** | `drawBindingArrows`: `true` | Show arrows. Turning it off clears kept arrows. |
+| **One Term at a Time** | `oneTermAtATime`: `false` | Show Before and After as consecutive positions, with the other pane empty. |
+| **Factor Out Common Context** | `factorCommonContext`: `false` | Show changed fragments and shared outer syntax under `In context:`, with `[ HOLE ]` at the insertion site. Inactive while One Term at a Time is on. |
+| **Taint Icons** | `taintIcons`: `codicons` | Choose Codicons, Unicode or Do not show (`codicons`, `unicode`, `none`). Armed, disarmed and tainted syntax use a lock, unlock and zap, or 🔒, 🔓 and 💥. Marks are excluded from copied text. |
+
+Layout toggles apply to the active pair and save defaults for future pairs.
+Other ordinary open pairs keep their layout. Duplicated pairs keep independent
+live controls and fresh numbering. Refresh replaces only the addressed pair's
+recording. Removing its term leaves other copies available.
+
+The eye button opens **Macro Hiding...**: **Ctrl+K H** (**Cmd+K H** on macOS).
+**Standard** hides Racket and library syntax, contract-generated names and uses
+above phase 0. **Disable** shows every macro. **Custom...** offers **Enable macro
+hiding**, **Hide racket syntax**, **Hide library syntax**, **Hide contracts
+(heuristic)** and **Hide phase>0**, all initially checked. **Hide This Macro** and
+**Show This Macro** add binding-specific rules. The newest matching rule wins;
+**Macro Hiding Rules...** deletes selected rules. Ordinary Custom pairs share
+rules in memory; duplicates have independent policies. The compatibility
+commands **Show Racket's Macros Too** and **Show Only My Macros** select Disable
+and Standard. Hiding changes the display, not which macros execute.
+
+Both source commands use unsaved buffer text without saving it. A module expands
+with its own language, imports and macros. Try
+[examples/macro-stepper.rkt](https://github.com/lamestllama/racketeer/blob/main/examples/macro-stepper.rkt).
+
+At 40,000 macro applications a warning offers **Continue** or **Stop**. Continue
+doubles the next threshold; Stop retains completed steps and reports an error.
+The progress notification can cancel expansion. Each recording has a 1000 MiB
+memory ceiling; each worker answer has a 64 MiB text ceiling. An internal error's
+**[details]** link offers **Copy Details**, **Show Error**, **Dump Debugging File**
+and **Cancel**.
+
+**Good to know:** expansion runs compile-time code and requires workspace trust.
+It does not run the module's ordinary body. The full Racket installation is
+required; a graphical display is not. Two unshared worker sessions can remain
+resident. A pair hidden for 60 seconds releases its worker. Later navigation
+or inspection can rebuild that captured expansion and rerun transformers, with
+recorded checkpoint decisions replayed. Shared duplicated recordings stay
+resident until their last retained term is released.
 
 Details: [Macro stepper](https://github.com/lamestllama/racketeer/blob/main/docs/editor-tools.md#macro-stepper).
 
@@ -384,7 +486,7 @@ Details: [Package development](https://github.com/lamestllama/racketeer/blob/mai
 
 ## Build applications
 
-Turn a module into something that runs on its own. With a source module open, run a command, choose Console or GUI mode and select the output path. Builds run as VS Code tasks; **Tasks: Terminate Task** cancels one.
+Turn a module into something that runs on its own. For a launcher or executable, open a source module, run the command, choose Console or GUI mode and select the output path. For a distribution, select an existing executable and its output directory. Builds run as VS Code tasks; **Tasks: Terminate Task** cancels one.
 
 | Command | What it makes |
 | --- | --- |
@@ -408,7 +510,7 @@ See what a program logs through Racket's logger, filtered by level and topic, in
 | **Racket: Set Application Log Filter…** | Changes capture for a running session. |
 | **Racket: Clear Application Log** | Clears the retained messages. |
 
-A filter starts with `none`, `fatal`, `error`, `warning`, `info` or `debug`, then optionally adds overrides by topic. For example, this captures warnings and more severe messages generally, all network messages and no storage messages:
+A filter starts with `none`, `fatal`, `error`, `warning`, `info` or `debug`, then optionally adds overrides by topic. This example captures warnings and more severe messages generally, all network messages and no storage messages:
 
 ```text
 warning debug@network none@storage

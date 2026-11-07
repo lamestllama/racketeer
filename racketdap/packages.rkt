@@ -2,8 +2,10 @@
 ;; Copyright (c) 2026 Eric Parsonage
 ;; SPDX-License-Identifier: Apache-2.0 OR MIT
 
-(require json pkg/lib racket/list racket/path)
+(require json racket/lazy-require racket/list racket/path)
 (provide package-source-roots installed-packages)
+(lazy-require [pkg/lib (pkg-directory get-all-pkg-scopes get-pkgs-dir installed-pkg-table
+                                    path->pkg+subpath+scope pkg-info-orig-pkg pkg-info-auto?)])
 
 ;; Resolve in the process that will execute the program, so the selected
 ;; Racket installation, environment, scopes, and linked packages all agree.

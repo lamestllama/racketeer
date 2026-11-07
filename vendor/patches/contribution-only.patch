@@ -1,0 +1,182 @@
+diff --git a/doclib/check-syntax.rkt b/doclib/check-syntax.rkt
+--- a/doclib/check-syntax.rkt
++++ b/doclib/check-syntax.rkt
+@@ -83,7 +83,8 @@
+      (resolve module relative-to stx load?)]))
+ 
+ ;; TODO: cache the namespace with some strategy
+-(define (expand-source source in collector #:expand? [expand? #t])
++(define (expand-source source in collector #:expand? [expand? #t]
++                       #:contribution-only? [contribution-only? #f])
+   (define src-dir (source-analysis-directory source))
+   (define ns (make-base-namespace))
+   (define-values (add-syntax done)
+@@ -104,16 +105,19 @@
+           (λ () (read-syntax (source-syntax-source source) in)))))
+ 
+     (define expand-logs '())
++    (define (expand-input)
++      (with-handlers ([exn:fail? (λ (exn) exn)])
++        (parameterize ([current-output-port (open-output-nowhere)])
++          (if (and expand? (syntax? stx))
++              (expand stx)
++              #f))))
+     (define expanded-stx
+-      (with-intercepted-logging
+-        (λ (log) (set! expand-logs (cons log expand-logs)))
+-        (λ ()
+-          (with-handlers ([exn:fail? (λ (exn) exn)])
+-            (parameterize ([current-output-port (open-output-nowhere)])
+-              (if (and expand? (syntax? stx))
+-                  (expand stx)
+-                  #f))))
+-        'info))
++      (if contribution-only?
++          (expand-input)
++          (with-intercepted-logging
++            (λ (log) (set! expand-logs (cons log expand-logs)))
++            expand-input
++            'info)))
+ 
+     (when (syntax? expanded-stx)
+       (add-syntax expanded-stx)
+@@ -130,7 +134,7 @@
+    [succeed? boolean?])
+   #:transparent)
+ 
+-(define (check-syntax source doc-text lexer-state)
++(define (check-syntax source doc-text lexer-state #:contribution-only? [contribution-only? #f])
+   (define text (send doc-text get-text))
+   (define active-policy (LexerState-language-policy lexer-state))
+   (define expand? (Language-Policy-expand? active-policy))
+@@ -138,10 +142,12 @@
+     (new build-trace%
+       [source source]
+       [doc-text doc-text]
+-      [lexer-state lexer-state]))
++      [lexer-state lexer-state]
++      [contribution-only? contribution-only?]))
+ 
+   (define in (open-input-text text))
+-  (define er (expand-source source in new-trace #:expand? expand?))
++  (define er (expand-source source in new-trace #:expand? expand?
++                            #:contribution-only? contribution-only?))
+ 
+   (send new-trace walk-stx er)
+   (send new-trace walk-log (ExpandResult-logs er))
+@@ -154,6 +160,7 @@
+   (struct-out CSResult)
+   (contract-out
+     [expand-source (->* (Source? input-port? (is-a?/c syncheck-annotations<%>))
+-                        (#:expand? boolean?)
++                        (#:expand? boolean? #:contribution-only? boolean?)
+                         ExpandResult?)]
+-    [check-syntax (-> Source? (is-a?/c lsp-editor%) LexerState? CSResult?)]))
++    [check-syntax (->* (Source? (is-a?/c lsp-editor%) LexerState?)
++                       (#:contribution-only? boolean?) CSResult?)]))
+diff --git a/doclib/doc-trace.rkt b/doclib/doc-trace.rkt
+--- a/doclib/doc-trace.rkt
++++ b/doclib/doc-trace.rkt
+@@ -24,7 +24,7 @@
+ 
+ (define build-trace%
+   (class (check-syntax-annotations-mixin object%)
+-    (init-field source doc-text lexer-state)
++    (init-field source doc-text lexer-state [contribution-only? #f])
+     (define src (source-syntax-source source))
+     (define docs (new docs%))
+     (define completions (new completion%))
+@@ -54,8 +54,12 @@
+         [typed-racket typed-racket]))
+     (define tails (new tail% [src src] [lexer-state lexer-state]))
+ 
++    ;; Contributions and binding queries read only declaration%. It consumes
++    ;; Check Syntax callbacks and walk-stx, independently of the other services.
+     (define services
+-      (list hovers
++      (if contribution-only?
++          (list decls)
++          (list hovers
+             docs
+             completions
+             requires
+@@ -64,7 +68,7 @@
+             decls
+             semantic-tokens
+             inlay-hints
+-            tails))
++            tails)))
+ 
+     (define/public (reset)
+       (for ([s services])
+@@ -89,7 +93,7 @@
+     (define/public (walk-log text)
+       (for ([s services])
+         (send s walk-log text))
+-      (for ([log (in-list text)]
++      (for ([log (in-list (if contribution-only? '() text))]
+             #:when (online-tooltip-log? log))
+         (define tooltips
+           (online-tooltip-log-tooltips log src))
+@@ -109,7 +113,7 @@
+       ;; Last: inlay hints are read from the pre-expand syntax and from what
+       ;; the services above have just been filled with, this document's
+       ;; inferred types included.
+-      (send inlay-hints build!))
++      (unless contribution-only? (send inlay-hints build!)))
+ 
+     ;; Named reads for services. Do not add getters that expose interval-maps.
+     (define/public (get-hover) hovers)
+@@ -235,7 +239,8 @@
+               require-arrow? _name-dup?)))
+ 
+     (define/override (syncheck:add-tail-arrow from-source from to-source to)
+-      (send tails syncheck:add-tail-arrow from-source from to-source to))
++      (unless contribution-only?
++        (send tails syncheck:add-tail-arrow from-source from to-source to)))
+ 
+     ;; Unused requires
+     (define/override (syncheck:add-unused-require src left right)
+diff --git a/doclib/doc.rkt b/doclib/doc.rkt
+--- a/doclib/doc.rkt
++++ b/doclib/doc.rkt
+@@ -239,9 +239,9 @@
+                                 (text-edit-end doc edit)
+                                 (TextEdit-newText edit)))))
+ 
+-(define/contract (doc-expand source doc-text lexer-state)
+-  (-> Source? (is-a?/c lsp-editor%) LexerState? CSResult?)
+-  (check-syntax source doc-text lexer-state))
++(define/contract (doc-expand source doc-text lexer-state #:contribution-only? [contribution-only? #f])
++  (->* (Source? (is-a?/c lsp-editor%) LexerState?) (#:contribution-only? boolean?) CSResult?)
++  (check-syntax source doc-text lexer-state #:contribution-only? contribution-only?))
+ 
+ (define/contract (doc-update-trace! doc new-trace new-contribution new-version)
+   (-> Doc?
+@@ -279,9 +279,9 @@
+                                               (hash)))])
+     (values binding (Location-range location))))
+ 
+-(define/contract (doc-expand! doc)
+-  (-> Doc? boolean?)
+-  (define result (doc-check-syntax doc))
++(define/contract (doc-expand! doc #:contribution-only? [contribution-only? #f])
++  (->* (Doc?) (#:contribution-only? boolean?) boolean?)
++  (define result (doc-check-syntax doc #:contribution-only? contribution-only?))
+   (define new-trace (CSResult-trace result))
+   (cond [(CSResult-succeed? result)
+          (define new-contribution (send new-trace get-contribution))
+@@ -292,9 +292,10 @@
+          #t]
+         [else #f]))
+ 
+-(define/contract (doc-check-syntax doc)
+-  (-> Doc? CSResult?)
+-  (doc-expand (Doc-source doc) (Doc-text doc) (doc-lexer-state doc)))
++(define/contract (doc-check-syntax doc #:contribution-only? [contribution-only? #f])
++  (->* (Doc?) (#:contribution-only? boolean?) CSResult?)
++  (doc-expand (Doc-source doc) (Doc-text doc) (doc-lexer-state doc)
++              #:contribution-only? contribution-only?))
+ 
+ (define/contract (doc-pos->abs-pos doc pos)
+   (-> Doc? Pos? exact-nonnegative-integer?)

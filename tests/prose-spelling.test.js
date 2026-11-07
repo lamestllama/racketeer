@@ -20,17 +20,20 @@ function prose(line) {
 }
 
 // Racketeer's own text describes behaviour on its own terms. What stays is what code must
-// spell: Racket's module path, the module a test refuses to load and the bundled server's
+// spell: Racket's module paths, the module a test refuses to load and the bundled server's
 // value for a formatter. Upstream sources and binary
 // fixtures are not its own text.
 const application = /dr\s*racket/i;
 const wxmeFixture = /^tests\/fixtures\/wxme(?:-debug|-xml)?\/[^/]+\.wxme$/;
-const modulePath = /dr\s*racket\/check-syntax/gi, refusedModule = /#rx"dr\s*racket/gi, serverValue = /'dr\s*racket'/gi;
+const modulePath = /dr\s*racket\/check-syntax/gi, standInPath = /dr\s*racket\/private\/syncheck\/xref/gi, refusedModule = /#rx"dr\s*racket/gi, serverValue = /'dr\s*racket'/gi;
 const spelled = new Map([
   ['vscode/workspace-rename.rkt', modulePath],
+  ['vscode/workspace-worker.rkt', standInPath],
   ['tests/predicted-bindings.rkt', modulePath],
   ['tests/source-positions.rkt', modulePath],
   ['vendor/patches/tail-position-hover.patch', modulePath],
+  ['vendor/patches/lazy-documentation.patch', modulePath],
+  ['vendor/patches/url-string.patch', modulePath],
   ['tests/dependencies.test.js', refusedModule],
   ['tests/plots-gui.test.js', refusedModule],
   ['tests/wxme-xml-edit.test.js', refusedModule],

@@ -41,7 +41,7 @@ exports.run = async function (workspace) {
   try {
     vscode.debug.addBreakpoints([breakpoint]);
     assert.equal(await vscode.debug.startDebugging(workspace, {
-      type: 'racketdap', request: 'launch', name: 'Hover binding', program, submodule: []
+      type: 'racketdap', request: 'launch', name: 'Hover binding', program, submodule: [], stopOnEntry: false
     }), true);
     await until(() => stopped && vscode.debug.activeStackItem, 'the program stops at its breakpoint');
     const editor = await vscode.window.showTextDocument(document, { preview: false });

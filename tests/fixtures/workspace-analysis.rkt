@@ -110,3 +110,6 @@
         (close! one) (close! two)
         (when pending (sync/timeout 5 pending))
         (delete-directory/files first) (delete-directory/files second)))))
+
+;; Copyright (c) 2026 Eric Parsonage
+;; SPDX-License-Identifier: Apache-2.0 OR MIT

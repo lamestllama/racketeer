@@ -7,10 +7,11 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const root = path.resolve(__dirname, '..');
 function inventory(directory = root) {
+  // Feature suites are discovered by filename, including the macro stepper suites.
   const tests = fs.readdirSync(path.join(directory, 'tests')).sort();
   return {
     racket: [...tests.filter(name => name.endsWith('.rkt')).map(name => `tests/${name}`), 'experiments/lexical-eval.rkt'],
-    node: tests.filter(name => name.endsWith('.test.js') && !['gui-parity.test.js', 'macro-stepper-gui.test.js', 'plots-gui.test.js'].includes(name)).map(name => `tests/${name}`)
+    node: tests.filter(name => name.endsWith('.test.js') && !['gui-parity.test.js', 'plots-gui.test.js'].includes(name)).map(name => `tests/${name}`)
   };
 }
 function run() {

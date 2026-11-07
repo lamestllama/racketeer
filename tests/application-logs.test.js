@@ -60,8 +60,13 @@ test('sessions and restarts keep separate capture settings and messages', async 
   const a = await start(t, { logFilter: 'none debug@network' });
   const b = await start(t, { logFilter: 'none info@storage' }); a.drain(); b.drain();
   await Promise.all([a.evaluate('(sample "session-a")'), b.evaluate('(sample "session-b")')]);
-  assert.ok(a.drain().entries.every(entry => entry.topic === 'network' && entry.message.includes('session-a')));
-  assert.ok(b.drain().entries.every(entry => entry.topic === 'storage' && entry.message.includes('session-b')));
+  const network = a.drain().entries, storage = b.drain().entries;
+  assert.deepEqual(network.map(entry => [entry.topic, entry.message]), [
+    ['network', 'network: debug session-a λ'], ['network', 'network: warning session-a']
+  ]);
+  assert.deepEqual(storage.map(entry => [entry.topic, entry.message]), [
+    ['storage', 'storage: info session-b'], ['storage', 'storage: error session-b']
+  ]);
   await ok(a.client.request('disconnect'));
   await b.evaluate('(sample "survivor")'); assert.equal(b.drain().entries.length, 2);
   const restarted = await start(t); assert.equal(restarted.drain().entries.length, 1);

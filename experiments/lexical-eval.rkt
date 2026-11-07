@@ -99,3 +99,6 @@
     (define captured (frame-eval '(lambda () x) bindings target-namespace))
     (set! live-x 30)
     (check-equal? (captured) 30)))
+
+;; Copyright (c) 2026 Eric Parsonage
+;; SPDX-License-Identifier: Apache-2.0 OR MIT

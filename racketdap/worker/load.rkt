@@ -187,6 +187,7 @@
             (instrument-module expanded selected-source fresh-id
                                #:form (cons unit index) #:module-context bindings
                                #:coverage? coverage? #:source-operands source-operands
+                               #:template-source? (lambda (file) (and (path? file) (selected-source? file)))
                                #:expression-boundary? expression-boundary?))
           (define module-path (hash-ref module-paths bindings '()))
           (when live?
@@ -199,7 +200,9 @@
                                  (define s (car entry))
                                  (vector (site-line s) (site-column s) (site-position s) (site-span s)
                                          (site-tail? s) (site-parent s) (cdr entry)
-                                         (site-value-shown? s))))))
+                                         (site-value-shown? s)
+                                         (and (not (equal? (site-source s) selected-source))
+                                              (path->bytes (site-source s))))))))
           annotated)
         (define (make-transform bindings)
           (lambda (kind stx)
@@ -470,9 +473,10 @@
         [(form)
          (define descriptors
            (for/list ([entry (in-list (cadddr event))])
-             (define-values (line column position span tail? parent visible? value-shown?)
+             (define-values (line column position span tail? parent visible? value-shown? file)
                (vector->values entry))
-             (cons (site (fresh-id) resolved line column position span tail? #f parent visible? value-shown?)
+             (cons (site (fresh-id) (if file (bytes->path file) resolved)
+                         line column position span tail? #f parent visible? value-shown?)
                    visible?)))
          (register-form-sites! unit (caddr event) (form-callback resolved (cadr event))
                                (map car descriptors)

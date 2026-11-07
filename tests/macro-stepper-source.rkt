@@ -2,16 +2,15 @@
 ;; Copyright (c) 2026 Eric Parsonage
 ;; SPDX-License-Identifier: Apache-2.0 OR MIT
 
-(require rackunit racket/file racket/path "../racketdap/tools/macro-source.rkt")
-
-(define (request text #:mode [mode "fragment"] #:prefix [prefix ""]
-                 #:source [source "untitled:Untitled-1"] #:directory [directory (current-directory)]
-                 #:cwd [cwd directory])
-  (hasheq 'text text 'mode mode 'prefix prefix 'source (if (path? source) (path->string source) source)
-          'sourceIsFile (path? source) 'directory (path->string directory) 'cwd (path->string cwd)))
-(define (expanded input) (syntax->datum (call-with-macro-source input expand)))
+;; Macro steps source tests.
+(require racket/file
+         rackunit
+         (only-in "../racketdap/tools/macro-source.rkt" call-with-macro-source read-macro-source)
+         (only-in "support/macro-stepper.rkt" request))
 
 (module+ test
+  (define (expanded input) (syntax->datum (call-with-macro-source input expand)))
+
   (test-case "selection locations retain Unicode, CRLF and tab coordinates"
     (define stx (read-macro-source (request "(or #f 42)" #:prefix "; 😀\r\n\tλ ")))
     (check-equal? (syntax-source stx) "untitled:Untitled-1")
@@ -76,4 +75,5 @@
 
   (test-case "module expansion errors retain buffer source locations"
     (check-exn #rx"untitled:Untitled-1:3:1"
-               (lambda () (expanded (request "#lang racket/base\n\n(missing-macro)\n" #:mode "module"))))))
+               (lambda () (expanded (request "#lang racket/base\n\n(missing-macro)\n" #:mode "module")))))
+)

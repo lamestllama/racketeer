@@ -12,7 +12,7 @@
          stop-token stop-contexts stop-enclosing-evaluation stop-within? stop-return-token
          call-with-exception-stop call-with-pause-stop
          call-with-thread-stop debugger-active-key
-         make-live-binding make-field-binding program-wrapped? frame-key context-key note-thread
+         make-live-binding make-field-binding make-template-binding program-wrapped? frame-key context-key note-thread
          announce-before announce-after leave-with-values announce-visit register-module-context!
          form-sites form-gate form-armed register-form-sites! forget-noted-thread!
          plain-procedure-name
@@ -74,7 +74,7 @@
            (and (exact-positive-integer? span) (+ position span -1)))))
 (struct unavailable (reason) #:transparent)
 ;; object is the object a field's row reads, or #f.
-(struct live-binding (name number access object) #:transparent)
+(struct live-binding (name number access object template?) #:transparent)
 ;; A frame is one function call, or the run of one module-level form. It is a vector
 ;; that generated code makes with `vector` and writes with unsafe-vector*-set!, so
 ;; these are the only costs a site has: slot 1 is the site running now, as a frame
@@ -212,8 +212,9 @@
     (error 'stop-evaluate "module binding context has not been registered"))
   owner-namespace)
 
-(define (make-live-binding name number access) (live-binding name number access #f))
-(define (make-field-binding name access object) (live-binding name #f access object))
+(define (make-live-binding name number access) (live-binding name number access #f #f))
+(define (make-field-binding name access object) (live-binding name #f access object #f))
+(define (make-template-binding name access) (live-binding name #f access #f #t))
 ;; An impersonator that might run program code. A class whose object may be seen before its
 ;; fields are set makes each object a chaperone, whose only effect is to refuse to read an
 ;; unset field. The machine tells that record from a program's chaperone over the object.
@@ -352,8 +353,11 @@
 
 (define (visible-bindings scoped)
   (define seen (make-hasheq))
+  (define f (car scoped))
+  (define in-template? (memv (frame-slot f) (cadr (form-written (frame-form f)))))
   (for/list ([b (in-list (scoped-bindings scoped))]
-             #:unless (hash-ref seen (live-binding-name b) #f))
+             #:unless (or (and (live-binding-template? b) (not in-template?))
+                          (hash-ref seen (live-binding-name b) #f)))
     (hash-set! seen (live-binding-name b) #t)
     b))
 (define (read-binding b)
@@ -415,6 +419,13 @@
                       [exn:fail:syntax?
                        (lambda (_) (error who "binding ~a is syntax, not a variable" name))])
         (namespace-variable-value (cdr binding) #t #f (car binding)))))
+;; What a form wrote at a place. It records this for its own file, the first of the list,
+;; and the slots of the sites its macros' templates hold are second.
+(define (written-at f path position)
+  (define written (form-written f))
+  (if (equal? (car written) (path->string (simplify-path path #f)))
+      (for/list ([entry (in-list (cddr written))] #:when (= (car entry) position)) (cdr entry))
+      '()))
 ;; Whether a frame's form holds a place in a file: it wrote a name there, or a site covers it.
 (define (frame-holds? scoped path position)
   (define f (frame-form (car scoped)))
@@ -422,7 +433,7 @@
                            #:when (and d (equal? (site-source d) path)))
                   d))
   (and (pair? sites)
-       (or (assv position (form-written f))
+       (or (pair? (written-at f path position))
            (for/or ([d (in-list sites)])
              (<= (site-position d) position (+ (site-position d) (site-span d) -1))))))
 ;; The binding a name refers to where it is written. Another of the same name can hide it
@@ -433,12 +444,7 @@
   (define frames (list-tail (stop-frames s) i))
   (define (holds? scoped) (frame-holds? scoped path position))
   (define here (findf holds? frames))
-  (define numbers
-    (if here
-        (for/list ([entry (in-list (form-written (frame-form (car here))))]
-                   #:when (= (car entry) position))
-          (cdr entry))
-        '()))
+  (define numbers (if here (written-at (frame-form (car here)) path position) '()))
   (cond
     [(not here) (find-source-binding (car frames) name who 'module)]
     [(null? numbers) (find-source-binding here name who)]

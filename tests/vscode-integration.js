@@ -224,7 +224,7 @@ exports.run = async function () {
     vscode.debug.removeBreakpoints([breakpoint]);
     messages.length = 0;
     assert.equal(await vscode.debug.startDebugging(workspace, {
-      type: 'racketdap', request: 'launch', name: 'Packaged Racket terminal test',
+      type: 'racketdap', request: 'launch', name: 'Packaged Racket terminal test', stopOnEntry: false,
       program: path.join(workspace.uri.fsPath, 'input.rkt'), console: 'integratedTerminal'
     }), true);
     await event('racketdap/terminalOutput', m => m.body.output.includes('Name:'));

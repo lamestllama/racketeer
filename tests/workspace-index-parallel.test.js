@@ -54,14 +54,14 @@ ${comment}(require (for-syntax racket/base) "definition.rkt")
 }
 
 // What the trace says, in the order it happened.
-const label = name => new RegExp(`analyse \\S*${name.replace('.', '\\.')}: reaped`);
-const reaped = (p, name) => until(() => label(name).test(p.diagnostics()), () => `${name} did not end\n${p.diagnostics()}`);
-const reapedAt = (p, name) => p.diagnostics().search(label(name));
+const label = name => new RegExp(`analyse \\S*${name.replace('.', '\\.')}: finished`);
+const finished = (p, name) => until(() => label(name).test(p.diagnostics()), () => `${name} did not end\n${p.diagnostics()}`);
+const finishedAt = (p, name) => p.diagnostics().search(label(name));
 const most = p => {
   let now = 0, peak = 0;
   for (const line of p.diagnostics().split('\n')) {
     if (/: starting$/.test(line)) peak = Math.max(peak, ++now);
-    else if (/: reaped/.test(line)) now--;
+    else if (/: finished/.test(line)) now--;
   }
   return peak;
 };
@@ -84,11 +84,14 @@ const answers = async p => {
   return JSON.stringify({ references, withDeclaration, status, incomplete, progress, rename }, null, 1);
 };
 
-const defaults = () => {
+const ampleMemory = 12000 * 1024 * 1024;
+const scarceMemory = 2500 * 1024 * 1024;
+const defaults = (available = ampleMemory) => {
   const result = spawnSync('racket', ['-l', 'racket/base', '-l', 'racket/future', '-e', `
     (dynamic-require (string->path ${quoted(path.join(root, 'vscode/racket-environment.rkt'))}) #f)
     (define default-workers (dynamic-require (string->path ${quoted(path.join(root, 'vscode/workspace-analysis.rkt'))}) 'default-workers))
-    (write (cons (default-workers (processor-count)) (map default-workers '(1 2 3 4 6 8 16 64))))`],
+    (define (workers processors) (default-workers processors ${available}))
+    (write (cons (workers (processor-count)) (map workers '(1 2 3 4 6 8 16 64))))`],
   { env: { ...process.env, PLTADDONDIR: addon }, encoding: 'utf8' });
   assert.equal(result.status, 0, result.stderr);
   const [here, ...table] = result.stdout.slice(1, -1).split(' ').map(Number);
@@ -99,11 +102,18 @@ test('a default is half the processors, within a cap', () => {
   assert.deepEqual(defaults().table, [1, 1, 1, 2, 3, 3, 3, 3]);
 });
 
+test('a default also follows available memory', () => {
+  assert.deepEqual(defaults(scarceMemory).table, [1, 1, 1, 1, 1, 1, 1, 1]);
+  assert.deepEqual(defaults(6000 * 1024 * 1024).table, [1, 1, 1, 2, 2, 2, 2, 2]);
+});
+
 // Every gated file is reached at once, and the one after them only when one ends.
-for (const [count, describe] of [[3, 'three workers'], [undefined, 'the default']]) {
+for (const [count, describe, available = ampleMemory] of [
+  [3, 'three workers'], [undefined, 'the default'], [undefined, 'the default with scarce memory', scarceMemory]
+]) {
   test(`a pass runs as many workers at once as it may, and no more (${describe})`, async t => {
-    const p = await project(t, workers(count));
-    const g = gates(p), limit = count || defaults().here;
+    const p = await project(t, { ...workers(count), RACKETEER_TEST_AVAILABLE_MEMORY_BYTES: String(available) });
+    const g = gates(p), limit = count || defaults(available).here;
     const names = ['a.rkt', 'b.rkt', 'c.rkt', 'd.rkt', 'e.rkt', 'f.rkt'];
     for (const name of names) g.write(name);
     p.settings.timeoutSeconds = 90;
@@ -140,14 +150,14 @@ test('workers ending in another order give what one worker gives, to the byte', 
   const asking = p.references(p.origin);
   for (const name of ['a.rkt', 'b.rkt', 'c.rkt']) await g.entered(name);
   // Each ends only when the one after it has gone, so nothing ends in the order of the files.
-  g.open('c.rkt'); await reaped(p, 'c.rkt');
-  g.open('b.rkt'); await reaped(p, 'b.rkt');
-  for (const name of ['d-bad.rkt', 'e.rkt', 'f-bad.rkt', 'uses.rkt']) await reaped(p, name);
+  g.open('c.rkt'); await finished(p, 'c.rkt');
+  g.open('b.rkt'); await finished(p, 'b.rkt');
+  for (const name of ['d-bad.rkt', 'e.rkt', 'f-bad.rkt', 'uses.rkt']) await finished(p, name);
   assert.ok(finishedFiles(p) <= 1, `Only the definition can be counted before a.rkt ends: ${counted(p)}`);
   g.open('a.rkt');
   assert.equal((await asking).length, 6);
   for (const [earlier, later] of [['c.rkt', 'b.rkt'], ['b.rkt', 'a.rkt'], ['f-bad.rkt', 'a.rkt'], ['uses.rkt', 'a.rkt']])
-    assert.ok(reapedAt(p, earlier) < reapedAt(p, later), `${earlier} must end before ${later}`);
+    assert.ok(finishedAt(p, earlier) < finishedAt(p, later), `${earlier} must end before ${later}`);
   assert.deepEqual(counted(p).map(message => Number(message.split('/')[0])), [1, 2, 3, 4, 4, 5, 5, 6]);
   assert.deepEqual({ ...p.notifications.at(-1) }, { state: 'partial', indexed: 6, total: 8, failures: 2 });
   const parallel = await answers(p);
@@ -213,8 +223,8 @@ test('a pass stopped at a limit gives what one worker gives and keeps nothing fo
   await p.update();
   const asking = p.references(p.origin);
   await g.entered('big-2.rkt');
-  await reaped(p, 'later.rkt');
-  await reaped(p, 'uses.rkt');
+  await finished(p, 'later.rkt');
+  await finished(p, 'uses.rkt');
   const pid = await pidFrom(pidFile, p.diagnostics);
   assert.ok(running(pid));
   assert.equal(expansions(), 1, 'The worker ran ahead of the pass');

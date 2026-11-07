@@ -1,10 +1,12 @@
+<!-- Copyright (c) 2026 Eric Parsonage. SPDX-License-Identifier: Apache-2.0 OR MIT -->
 # Debugger features
 
 What the debugger does, and the regression evidence for each behaviour.
 
 | Feature | Behaviour | Regression evidence |
 | --- | --- | --- |
-| Start paused | Debug Current File / `stopOnEntry` | DAP and editor suites |
+| Start paused | Debug Current File and extension launches default to `stopOnEntry: true`; `entryPoint` selects the entry module | DAP and editor suites |
+| Attach to a running host | Embedded debug host, token-authenticated loopback connection, host survives disconnect | attach native and protocol suites |
 | Continue, Stop | Continue runs to the next stop; Stop terminates the worker and descendants | DAP suite |
 | Step Into | Visits expression starts and completions | debugger-parity suite |
 | Step Over, Step Out | Follow expression/activation return targets; bounded tail frames | stepping and conformance suites |
@@ -25,35 +27,38 @@ What the debugger does, and the regression evidence for each behaviour.
 | GUI programs | Eventspace lifetime, callback stops, interactive dispatch | GUI suite under Xvfb |
 
 The native VS Code names Continue, Step Into, Step Over, Step Out, Call Stack,
-Variables, and Watch remain unchanged. Locals contains the selected frame's
-lexical variables. A binding a macro generated is one of them when an identifier
-in the file refers to it, anywhere in its scope and also after the stop: `it` from
-an anaphoric macro, a name made by `format-id`, `local-pt-x` from a local structure
-whose accessor the source reads. It is the binding that identifier refers to, not
-another of the same name. Hover, Watch, the Debug Console and assignment reach it as
-they reach any variable. Names no source identifier refers to, such as `tmp`,
-`or-part` and `for-loop`, stay hidden. In a class's methods and initialisers, and in
-closures made there, Locals has a row named `this` for the object, read by hover,
-Watch and the Debug Console too. It cannot be assigned, and a parameter the source
-names `this` is what the row shows. It opens to the object's fields as the program's
-inspector allows: numbered, because the object holds no field names, and shown as
-`<uninitialized>` until set. A field that a method's code reads or assigns, public,
-private or inherited, is also a row of that method and its closures, with its name in
-the source: hover, Watch and the Debug Console read it, and Set Value goes through
-the field's mutator. A method's own variable of that name wins, a field that method
-does not touch stays a numbered row under `this`, and `get-field` and `set-field!`
-make no row. An inherited field can be assigned only if its class assigns it, and an
-inherited field the class only assigns has no row, since the expansion names no
-accessor for it. A row over an object a program has chaperoned shows it is wrapped
-rather than run the program's code; the Debug Console runs it when asked. A request with no
-count returns every row of a scope, however many, and Variables asks that way. A
-container reports its size as `indexedVariables` or `namedVariables`, so a client pages
-a long one by `start` and `count`, as the Variables panel does; a list opens to its
-`car` and `cdr`, so it reports two named rows. A container's reply to a request with
-no count stops at 10,000 rows, with a last row saying how many more there are. The Return values scope includes the number of returned
-values, including zero; assignment to a variable uses Racket's `set!` semantics.
-Racketeer deliberately retains the completion stop at a function's call site
-after it returns, so its return values can be inspected before advancing.
+Variables, and Watch remain unchanged. Locals contains the selected frame's lexical
+variables. A binding a macro generated is one of them when an identifier in the file
+refers to it, anywhere in its scope and also after the stop: `it` from an anaphoric
+macro, a name made by `format-id`, `local-pt-x` from a local structure whose accessor
+the source reads. It is the binding that identifier refers to, not another of the same
+name. Hover, Watch, the Debug Console and assignment reach it as they reach any
+variable. Names no source identifier refers to stay hidden. For example: `or-part` and
+`for-loop`. A macro in the program's own files is the exception: while a stop is in its
+template, the template's own variables are listed too. For example: `tmp` in a swap
+macro. They do not show in the code passed to the macro, so they hide no name of that
+code. In a class's methods and initialisers, and in closures made there, Locals has a
+row named `this` for the object, read by hover, Watch and the Debug Console too. It
+cannot be assigned, and a parameter the source names `this` is what the row shows. It
+opens to the object's fields as the program's inspector allows: numbered, because the
+object holds no field names, and shown as `<uninitialized>` until set. A field that a
+method's code reads or assigns, public, private or inherited, is also a row of that
+method and its closures, with its name in the source: hover, Watch and the Debug Console
+read it, and Set Value goes through the field's mutator. A method's own variable of that
+name wins, a field that method does not touch stays a numbered row under `this`, and
+`get-field` and `set-field!` make no row. An inherited field can be assigned only if its
+class assigns it, and an inherited field the class only assigns has no row, since the
+expansion names no accessor for it. A row over an object a program has chaperoned shows
+it is wrapped rather than run the program's code; the Debug Console runs it when asked.
+A request with no count returns every row of a scope, however many, and Variables asks
+that way. A container reports its size as `indexedVariables` or `namedVariables`, so a
+client pages a long one by `start` and `count`, as the Variables panel does; a list
+opens to its `car` and `cdr`, so it reports two named rows. A container's reply to a
+request with no count stops at 10,000 rows, with a last row saying how many more there
+are. The Return values scope includes the number of returned values, including zero;
+assignment to a variable uses Racket's `set!` semantics. Racketeer deliberately retains
+the completion stop at a function's call site after it returns, so its return values can
+be inspected before advancing.
 
 The language loader retains each language's module-begin processing and annotates
 runtime forms. Regression languages include `scheme/base`, `scheme`,
@@ -124,15 +129,20 @@ are not covered by them.
 
 ## Launching a program
 
+Extension launches stop on entry by default. Set `stopOnEntry` to false to run to a
+breakpoint. The default `entryPoint` mode starts in the selected entry module;
+`firstExpression` starts before initialisation. See [Understanding the
+stops](stepping.md) for the full sequence.
+
 The root module loads first, then its `main` submodule runs when present. Use
-`"submodule": ["test"]` for tests or `"submodule": []` to load only the root.
-Use `"entry": "run"` to call an exported zero-argument procedure afterwards.
-`args`, `cwd`, `env` and `sourceRoots` are also configurable. `"testMode": true`
-selects test execution and reporting; it cannot be combined with `interactive`,
-`submodule`, `entry` or `language`. For a plain file without a `#lang` or module
-declaration, set `"language": "racket/base"` (or another language module such as
-`r5rs`). Leave `language` unset for module programs. A relative `program` is
-relative to its `cwd` or the workspace folder.
+`"submodule": ["test"]` for tests or `"submodule": []` to load only the root. Use
+`"entry": "run"` to call an exported zero-argument procedure afterwards. `args`, `cwd`,
+`env` and `sourceRoots` are also configurable. `"testMode": true` selects test execution
+and reporting; it cannot be combined with `interactive`, `submodule`, `entry` or
+`language`. For a plain file without a `#lang` or module declaration, set `"language":
+"racket/base"` or another language module. For example: `r5rs`. Leave `language` unset
+for module programs. A relative `program` is relative to its `cwd` or the workspace
+folder.
 
 By default, the session ends after the entry action and GUI work complete; visible
 windows, timers and queued callbacks keep GUI programs alive. With
@@ -161,14 +171,15 @@ outermost expression. An inline breakpoint selects a later expression on the lin
 and on a non-tail expression's final character it stops after that expression
 returns. **Racket: Continue to Cursor** runs to one selected boundary once while
 retaining ordinary breakpoints. A breakpoint stays pending until its module is
-loaded. An empty line, a comment, a `require`, a constant, a bare variable, a definition of
-either, a `struct` form, quoted data, compile-time code and a line that holds only a
+loaded. An empty line, a comment, a `require`, an atomic definition initialiser,
+a `struct` form, compile-time code and a line that holds only a
 function's header have no place to stop, so a breakpoint there moves to the next line that
 has one, which can be in the next function. With none later, or set inline where the line has
 none, it remains unverified with an explanation. A breakpoint added to an already loaded,
-uninstrumented dependency needs a fresh launch.
+uninstrumented dependency needs a fresh launch. Standalone constants, variable
+references and quoted data do have stops.
 
-- Conditions are Racket expressions in the current lexical environment, such as
+- Conditions are Racket expressions in the current lexical environment. For example:
   `(> subtotal 100)`. Only `#f` is false. A condition must return one value.
 - Hit counts accept `N`, `=N`, `>=N`, `>N`, `<=N`, `<N` and `%N`, where N is a
   positive integer. `%3` means every third hit. Counts include all encounters
@@ -241,8 +252,8 @@ instrumentation. GUI callbacks continue to dispatch while an interactive session
 waits for console input.
 
 Caught-exception tracing, transformer-phase stepping, arbitrary-process attach,
-reverse execution, full TTY input and a graphical source editor are outside this
-release. Standard text sources are used in VS Code.
+reverse execution, full TTY input and a graphical source editor apart from WXME
+documents are outside this release. Standard text sources are used in VS Code.
 
 ## Compiled code
 
@@ -252,15 +263,28 @@ was compiled against, and runs from source when one changes. Windows has no
 status-change time, so a library replaced there with the same size and date goes
 unseen by the compiled debugger.
 
-Instrumented code is kept in the extension's storage between debug sessions and
-reused while the hashes of each source and of everything it depends on match. Like
-`raco make`, a macro's output is reused until a file it depends on changes, so a
-macro that reads a file should register it with `register-external-file`.
-`racketdap.debug.compiledCache` and the `debugCache` launch attribute turn this off.
-Instrumentation uses a fresh namespace and custodian, bypasses selected bytecode
-caches and does not overwrite `.zo` files.
+Instrumented code is kept in the extension's storage between debug sessions and reused
+while the hashes of each source and of everything it depends on match. Like `raco make`,
+a macro's output is reused until a file it depends on changes, so a macro that reads a
+file should register it with `register-external-file`. `racketdap.debug.compiledCache`
+and the `debugCache` launch attribute turn this off. Instrumentation uses a fresh
+namespace and custodian, bypasses selected bytecode caches on a cache miss and does not
+overwrite the project's `.zo` files.
+
+The debugger loads package-management and WXME decoding libraries on first use. Ordinary
+text programs avoid the WXME and test libraries. Successful executable-version checks
+are reused while executable identity and the environment match. Application log capture
+waits for messages or its flush deadline without idle polling. Its thread and custodian
+close with the session.
+
+Measured launch to first stop about halved: about 470 ms to 220 ms with the compile
+cache. Memory use fell by about a third: 169 MB to 115 MB.
 
 ## Attach to an embedded Racket program
+
+Attach the debugger to a running Racket program that embeds the debug host. This suits
+servers, long-running jobs and programs started outside the editor. Racket's own editor
+cannot attach to a running process.
 
 An embedding host can load `racketdap/worker/attach.rkt` and expose a loopback
 listener. Connect with a `racketdap` debug configuration whose `request` is `attach`,
@@ -269,24 +293,39 @@ and `debugPackages` select source as for a launch, with the host's exclusions ta
 precedence even over breakpoints. The extension fills roots from the workspace and
 packages from `racketdap.debug.packages`.
 
-This is cooperative attachment to a host using the library, rather than attachment to
-an arbitrary process. The host owns program input, output and thread lifetime.
+For example:
+
+```json
+{
+  "type": "racketdap",
+  "request": "attach",
+  "name": "Attach to Racket host",
+  "port": 49152,
+  "token": "replace-with-the-host-token"
+}
+```
+
+Code must be loaded through the embedded host's instrumentation hooks. Already loaded,
+uninstrumented code does not gain stops retroactively. This is cooperative attachment to
+a host using the library. The host owns program input, output and thread lifetime.
 Interrupt is refused. Disconnect and Terminate close only the debugger connection and
-release held stops; they never kill the host. Host disconnection produces
-`terminated`, without `exited`.
+release held stops; they never kill the host. Host disconnection produces `terminated`,
+without `exited`.
 
 See the [host contract](../racketdap/instrumentation/DESIGN.md#embedding-host-contract)
 for API and inspector, thread and lock requirements. Keep tokens private.
 
 ## How the pieces connect
 
-`racketdap/main.rkt` speaks DAP over stdio. It launches `racketdap/worker/main.rkt` as
-a separate Racket process and communicates over an authenticated loopback connection.
+`racketdap/main.rkt` speaks DAP over stdio. It launches `racketdap/worker/main.rkt` as a
+separate Racket process and communicates over an authenticated loopback connection.
 Program output has separate pipes. The VS Code extension registers the debugger and
-launches this adapter. It separately starts the source-bundled language server through
-`vscode/language-server.rkt`, adding private collection paths only in that process.
-Language analysis may run expansion-time code, so VS Code workspace trust applies to
-the entire extension.
+launches this adapter. Racketeer also provides a language server and a workspace
+indexing server, both over LSP. The language server starts through
+`vscode/language-server.rkt`; the index server starts on the first references or rename
+request through `vscode/workspace-index-server.rkt`. Each uses private collection paths
+in its own process. Language analysis may run expansion-time code, so VS Code workspace
+trust applies to the entire extension.
 
 The headless `run-module` API remains available from `worker/load.rkt`. Its single
 `#:on-event` callback receives live stops; `stop-kind` selects `before` or `after`

@@ -297,11 +297,12 @@ test('names no source identifier refers to stay hidden', async t => {
     "(keyword-form 1) (case-form 'a)"
   ], async (name, stop) => {
     const expected = {
-      swap: ['x', 'y'], template: [], or: ['a'], for: ['element'], 'for-vector': ['element'],
+      swap: ['tmp', 'x', 'y'], template: [], or: ['a'], for: ['element'], 'for-vector': ['element'],
       match: ['a', 'b', 'v'], keyword: ['a', 'k', 'o'], case: ['v']
     };
     assert.deepEqual(names(await stop.rows()), expected[name].sort(), name);
-    for (const hidden of ['tmp', 'template-var', 'or-part', 'for-loop', 'pos']) {
+    // A name the program's own macro writes shows only while its template runs.
+    for (const hidden of [...(name === 'swap' ? [] : ['tmp']), 'template-var', 'or-part', 'for-loop', 'pos']) {
       assert.equal((await stop.hover(hidden)).success, false, `${name}: ${hidden}`);
     }
   });

@@ -1,0 +1,55 @@
+diff --git a/doclib/doc.rkt b/doclib/doc.rkt
+--- a/doclib/doc.rkt
++++ b/doclib/doc.rkt
+@@ -34,14 +34,18 @@
+          racket/set
+          racket/list
+          racket/string
++         racket/lazy-require
+          data/interval-map
+          "check-syntax.rkt"
+          "hover.rkt"
+          "service/hover/types.rkt"
+          "external/resyntax.rkt"
+-         "docs-helpers.rkt"
+-         "documentation-parser.rkt"
+          racket/format)
++
++;; Documentation is optional for clients that only analyse bindings.
++(lazy-require ["docs-helpers.rkt"
++               (get-docs-for-tag id-to-tag make-proper-url-for-online-documentation)]
++              ["documentation-parser.rkt" (extract-documentation-for-selected-element)])
+ 
+ (struct/contract Doc
+   ([source Source?]
+diff --git a/doclib/documentation-parser.rkt b/doclib/documentation-parser.rkt
+--- a/doclib/documentation-parser.rkt
++++ b/doclib/documentation-parser.rkt
+@@ -6,7 +6,9 @@
+   net/url-string
+   html-parsing
+   racket/function
+-  "docs-helpers.rkt")
++  racket/lazy-require)
++
++(lazy-require ["docs-helpers.rkt" (make-proper-url-for-online-documentation)])
+ 
+ 
+ ;; ------------------------------------------
+diff --git a/doclib/service/docs.rkt b/doclib/service/docs.rkt
+--- a/doclib/service/docs.rkt
++++ b/doclib/service/docs.rkt
+@@ -2,10 +2,12 @@
+ 
+ (require "interface.rkt"
+          racket/class
+-         "../docs-helpers.rkt"
++         racket/lazy-require
+          data/interval-map
+          net/url
+          drracket/check-syntax)
++
++(lazy-require ["../docs-helpers.rkt" (def-tag->html-anchor-tag)])
+ 
+ (provide docs%)
+ 

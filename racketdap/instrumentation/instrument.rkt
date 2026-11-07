@@ -156,6 +156,7 @@
                            #:module-context [module-context #f]
                            #:expression-boundary? [expression-boundary? #f]
                            #:source-operands [source-operands '()]
+                           #:template-source? [template-source? (lambda (_file) #f)]
                            #:coverage? [coverage? #f]
                            #:tail? [initial-tail? #f])
   (define descriptors '())
@@ -276,6 +277,7 @@
   ;; module's variable. Only this tells two bindings of one name apart at a stop.
   (define binding-numbers (make-free-id-table))
   (define written '())
+  (define template-slots '())
   (define (note-written! id number)
     (when (and (not coverage?) (original-binding? id source))
       (set! written (cons (cons (syntax-position id) number) written))))
@@ -304,6 +306,13 @@
                                            (free-id-table-ref lexical-aliases id #f)))]
                        #:when name)
              #`(#%plain-app make-live-binding '#,name '#,(number-binding! id)
+                            (case-lambda [() #,id] [(replacement) (set! #,id replacement)])))
+           ;; A macro's own variables, which show only while its template runs, so they
+           ;; hide no name of the code written around them.
+           (for/list ([id (in-list ids)]
+                      #:unless (or (original-binding? id source) (free-id-table-ref lexical-aliases id #f))
+                      #:when (in-source? id))
+             #`(#%plain-app make-template-binding '#,(syntax-e id)
                             (case-lambda [() #,id] [(replacement) (set! #,id replacement)])))
            ;; After the source's names, one of which may be this. A class cannot assign
            ;; its object, so this code does not either and the variable stays immutable.
@@ -356,12 +365,16 @@
          (bound-form? (car parts) binding-forms)
          (not (syntax-source (car parts)))
          (not (syntax-property expression 'origin))))
+  ;; A macro's template in another of the program's own files stops as one in this file does.
+  (define template-files (make-hash))
   (define (in-source? stx)
     (and (syntax-position stx) (syntax-span stx)
-         (equal? (source-name source) (source-name (syntax-source stx)))))
+         (let ([file (syntax-source stx)])
+           (or (equal? (source-name source) (source-name file))
+               (hash-ref! template-files file (lambda () (template-source? file)))))))
   ;; The syntax whose location an expression reports. A macro use written here
-  ;; can expand to code located in the macro's own file or nowhere. The top of
-  ;; that expansion reports the use instead, through the macro name that the
+  ;; can expand to code located outside the program's own files or nowhere. The top
+  ;; of that expansion reports the use instead, through the macro name that the
   ;; expander records in its origin.
   (define (location-of expression)
     (if (in-source? expression)
@@ -401,8 +414,13 @@
   ;; before the authored code, or sit apart from it. A constant or a variable cannot stop,
   ;; so an operation written around one is the only stop its text has, and keeps it.
   (define authored-ranges (make-hash (map (lambda (range) (cons range 'operand)) source-operands)))
+  ;; Each file's positions lie apart, so a range in one cannot be taken for a range in another.
+  (define file-offsets (make-hash (list (cons (source-name source) 0))))
+  (define (file-offset file)
+    (hash-ref! file-offsets (source-name file) (lambda () (* (hash-count file-offsets) (expt 2 48)))))
   (define (range-of located)
-    (and located (cons (syntax-position located) (syntax-span located))))
+    (and located (cons (+ (file-offset (syntax-source located)) (syntax-position located))
+                       (syntax-span located))))
   (define (authored-here? expression)
     (define range (range-of (location-of expression)))
     (and range (not (binding-container? expression)) (authored? expression range) range))
@@ -713,6 +731,7 @@
                tail? (and (not (binding-container? expression)) (syntax->datum expression)) enclosing
                visible? (not (and range (shows-other-value? expression range)))))
        (when visible? (set! descriptors (cons descriptor descriptors)))
+       (unless (authored? expression range) (set! template-slots (cons slot template-slots)))
        (set! table (cons (cons slot (cons descriptor visible?)) table))
        (unless coverage?
          (set-activation-used?! act #t)
@@ -812,7 +831,7 @@
                                            (#%plain-lambda ()
                                              (#%plain-app variable-reference->namespace
                                                           #,(datum->syntax expanded (list #'#%variable-reference) expanded)))
-                                           '#,written)])
+                                           '#,(list* (source-name source) template-slots written))])
                   (let-values ([(#,gate-id) (#%plain-app form-gate #,form-id)]
                                [(#,armed-id) (#%plain-app form-armed #,form-id)])
                     #,@register-context

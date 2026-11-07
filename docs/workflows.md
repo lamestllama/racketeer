@@ -1,3 +1,4 @@
+<!-- Copyright (c) 2026 Eric Parsonage. SPDX-License-Identifier: Apache-2.0 OR MIT -->
 # Run, Debug, Test, and REPL execution
 
 The extension uses VS Code's task, testing, terminal, and debug APIs. File
@@ -5,11 +6,11 @@ actions share a target resolver: saved program URI, owning workspace, working
 directory, and Racket executable. The File Actions picker retains its selected
 target while the picker is open.
 
-Run, Debug, Debug REPL, and both test profiles share the existing adapter and
-worker. File and test Run set DAP `noDebug`; the loader disables instrumentation
-and exception stops. Debug uses the same module selection with instrumentation
-enabled. Run in Terminal uses a process task. Plain REPL terminals retain
-Racket's ordinary `racket/enter` behaviour.
+Run, Debug, Debug REPL, and the Test Explorer Run, Debug and Coverage profiles share the
+adapter and worker. The package-policy profile uses a native task. File and test Run set
+DAP `noDebug`; the loader disables instrumentation and exception stops. Debug uses the
+same module selection with instrumentation enabled. Run in Terminal uses a process task.
+Plain REPL terminals retain Racket's ordinary `racket/enter` behaviour.
 
 Run Current File and Debug Current File save the source and execute its root
 module and optional `main` submodule. A Results view retains text, images and
@@ -245,11 +246,10 @@ and is not saved when the view closes.
 
 ## REPL terminals
 
-**Racket: Start REPL** opens a persistent Racket terminal for the workspace.
-**Racket: Load Current File in REPL** saves and uses `racket/enter` to load or reload
-the module and enter its namespace, including its private definitions.
-**Racket: Evaluate Selection in REPL** sends the selected complete expression to the
-current workspace REPL.
+**Racket: Start REPL** opens a persistent Racket terminal for the workspace. **Racket:
+Load Current File in REPL** saves and uses `racket/enter` to load or reload the module
+and enter its namespace, including its private definitions. **Racket: Evaluate Selection
+in REPL** sends selected complete expressions in source order to the current REPL.
 
 The default `racketdap.repl.sessionScope`, `workspace`, shares a REPL within each
 workspace folder. Set it to `file` to keep a separate plain REPL for each saved file.
@@ -304,7 +304,7 @@ several sessions open, the Debug Console's session selector chooses where manual
 expressions go. Selection commands always target the source file's Debug REPL. Cancel
 Evaluation interrupts evaluation in the active Racket debug session; Stop ends the
 session. Plain REPL terminals continue to run ordinary Racket through `racket/enter`.
-Debug REPL program input uses its associated integrated terminal.
+Debug REPL program input uses **Program input** in Interactions.
 
 ## Images and plots
 
@@ -315,10 +315,10 @@ native image preview available by clicking the picture. The workflow follows Rac
 Debug Console remains textual.
 
 **Racket: View Image** opens a PNG snapshot in VS Code's built-in image editor. If an
-expression returns several image values, such as `(values tile drawing chart)`, the
-command asks which one to view. The labels retain each value's position in the complete
-result, including any non-image values. The picker lists up to 200 images from that
-result; evaluate a particular value separately to view one beyond that limit.
+expression returns several image values, the command asks which one to view. For
+example: `(values tile drawing chart)`. The labels retain each value's position in the
+complete result, including any non-image values. The picker lists up to 200 images from
+that result; evaluate a particular value separately to view one beyond that limit.
 
 While paused, it also works from **Variables**, for image fields inside expanded
 structures and images in the **Return values** scope. It uses the selected value
@@ -357,13 +357,15 @@ topic overrides. The last override for a repeated topic wins. Filters affect new
 earlier messages remain visible. `none` disables capture. `racketdap.logs.filter` applies
 to new sessions, and `logFilter` in a launch configuration overrides that setting.
 
-Capture begins before module loading. Stopped sessions keep their received logs; new
-sessions start with a fresh log and their configured filter. Up to ten stopped session
-logs are retained until the editor reloads. Each session retains at most 1,000 messages
-and 1 MiB of message text, with omission notices. Individual messages are truncated at
-16,384 characters. Large pending bursts can be omitted at filter changes or program exit;
-those omissions are reported. Forced termination can lose messages still waiting in the
-worker.
+Capture begins before module loading. The capture service waits for messages, commands
+or its flush deadline without idle polling. Its thread and custodian close with the
+session, including after an attached debugger disconnects. Stopped sessions keep their
+received logs; new sessions start with a fresh log and their configured filter. Up to
+ten stopped session logs are retained until the editor reloads. Each session retains at
+most 1,000 messages and 1 MiB of message text, with omission notices. Individual
+messages are truncated at 16,384 characters. Large pending bursts can be omitted at
+filter changes or program exit; those omissions are reported. Forced termination can
+lose messages still waiting in the worker.
 
 Capture uses the public [Racket logging API](https://docs.racket-lang.org/reference/logging.html)
 for the program's current logger and descendants, including child threads and REPL

@@ -3,7 +3,7 @@
 ;; Lexically normalized file paths, standard file URI encoding, suffixes, and
 ;; folder membership.
 
-(require net/url
+(require net/url-string
          racket/contract
          racket/list
          racket/path

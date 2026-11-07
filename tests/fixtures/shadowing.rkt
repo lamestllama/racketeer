@@ -16,3 +16,6 @@
       (hidden-x (+ x private-value))))
   (define after (callee x))
   (list before after x mutable-value (f x)))
+
+;; Copyright (c) 2026 Eric Parsonage
+;; SPDX-License-Identifier: Apache-2.0 OR MIT
