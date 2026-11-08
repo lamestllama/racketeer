@@ -1,19 +1,19 @@
 # Racketeer: Organised Racket
 
-Racketeer brings macro stepping, workspace navigation, debugger attachment and rich results to Racket development in VS Code and VSCodium.
+Racketeer brings source-level debugging, macro stepping, workspace navigation and rich results to Racket development in VS Code and VSCodium.
 
+- **Source-level debugging:** set line and inline breakpoints, step through expressions across files and chosen packages, and inspect or change live values.
+- **Attach the debugger to a running Racket program:** inspect servers and jobs started outside the editor. The program must embed Racketeer's debug host; disconnecting leaves the host running.
 - **Macro stepping inside VS Code:** follow expansion in linked Before and After panes beside the source, with syntax colouring, scope colours, binding arrows and term details.
 - **Vastly improved workspace indexing:** find references and rename across files, including unopened modules. On a measured 53-file project, indexing fell from **97.9 s to 8.9 s with one worker**, and from **37.0 s to 5.3 s with three workers**, with identical results. The index runs on request and reanalyses only files whose text or dependencies changed on later passes while the window stays open.
-- **Attach the debugger to a running Racket program:** inspect servers and jobs started outside the editor. The program must embed Racketeer's debug host; disconnecting leaves the host running.
 - **Language and debugging servers included:** Racketeer provides a language server and a workspace indexing server over the Language Server Protocol (LSP), and a debug adapter over the Debug Adapter Protocol (DAP).
-- **Debug expressions:** set line and inline breakpoints, step across files and chosen packages, and inspect or change live values.
 - **See results beside the code:** display text, images, picts and plots in Results or Interactions; zoom and rotate plots during debugging.
 - **Test in Test Explorer:** run, debug or measure coverage, with individual RackUnit cases available in supported modules and suites.
 - **Navigate, edit and experiment:** use hover documentation, completion, go to definition, live diagnostics and formatting, plus an Interactions window or a terminal REPL.
 - **Package and build:** manage Racket packages and create launchers, executables and distributions.
 - **Edit WXME and Rhombus:** edit WXME documents with embedded boxes, and Rhombus with the separate `rhombus` package.
 
-![Macro stepping beside the source, with linked Before and After panes and binding arrows](https://raw.githubusercontent.com/lamestllama/racketeer/main/docs/images/macro-steps.png)
+![Stopped at a breakpoint, with local variables, an expanded structure, watch expressions and the call stack visible](https://raw.githubusercontent.com/lamestllama/racketeer/main/docs/images/debugging.png)
 
 Indexing measurements: [0.8.55 release record](https://github.com/lamestllama/racketeer/blob/main/docs/releases/0.8.55.md#measured-gains). These figures describe the measured project; timings vary with the workload.
 
@@ -32,23 +32,33 @@ If the status bar shows **Racket: external LSP**, select **Use Racketeer’s Too
 
 For version errors, installing a VSIX or replacing the earlier development extension, see [installation troubleshooting](https://github.com/lamestllama/racketeer/blob/main/docs/workflows.md#installation-troubleshooting). The [release record](https://github.com/lamestllama/racketeer/blob/main/docs/releases/0.8.55.md#platform-coverage) records platform coverage.
 
-## Expand macros
+## Debug with breakpoints
 
-Open linked **Before** and **After** panes beside the source, with scope colours, binding arrows and term details. Choose which macros appear, or duplicate the stepper to compare expansions independently.
+Stop on a line or at an expression within it, across workspace files and chosen packages, and inspect the program's state.
 
-Use **Racket: Step Through Macros on This Line** (**Alt+Shift+M**) for the current line or selection, or **Racket: Step Through Macros in This File** for the whole file. Both use unsaved buffer text without saving it. Try [the macro example](https://github.com/lamestllama/racketeer/blob/main/examples/macro-stepper.rkt).
+Run **Racket: Debug Current File**, then select the gutter beside a line number or press **F9** to add a breakpoint. Right-click it to add a condition, hit count or log message. **Racket: Continue to Cursor** runs to one chosen point.
 
-Expansion runs readers and compile-time code and requires a trusted workspace. It does not run the module's ordinary body. A graphical display is not required.
+Uncaught runtime exceptions stop by default so their details, lexical variables and Call Stack can be inspected. Choose **Continue** to let the same exception propagate.
 
-The [macro-stepper guide](https://github.com/lamestllama/racketeer/blob/main/docs/editor-tools.md#macro-stepper) covers navigation, display and hiding options, worker lifetime, limits and error controls.
+See [breakpoints](https://github.com/lamestllama/racketeer/blob/main/docs/debugger.md#breakpoints) for binding rules and edge cases, and [uncaught exceptions](https://github.com/lamestllama/racketeer/blob/main/docs/debugger.md#uncaught-exceptions) for exception behaviour.
 
-## Find and rename across a project
+## Step through expressions
 
-**Find All References** and **Rename Symbol** (F2) include unopened `.rkt`, `.ss`, `.scm` and `.scrbl` modules in a trusted workspace. The index runs on request; the first request after a change waits for a cancellable pass. While the window stays open, later passes reanalyse only files whose text or dependencies changed. Unsaved buffers supply their files' text.
+Use **Step Into** (F11), **Step Over** (F10), **Step Out** (Shift+F11) and **Continue** (F5). Stops show both expression starts and returned values; open **Return values** in Variables after a return.
 
-The defaults allow **1,000 files**, **1 MiB per file** and **16 MiB total**. The status bar reports progress and partial references. Rename requires a complete, current index and refuses incomplete or stale results. Excluded folders and unscanned file types remain outside a rename, so check those callers separately; default exclusions include `build` and `dist`.
+By default a launch stops in `main`, the selected submodule or the module body. See [Understanding the stops](https://github.com/lamestllama/racketeer/blob/main/docs/stepping.md) for entry modes, tail calls, source markers and stepping limits.
 
-Use **Racket: Refresh Workspace References** after external package changes or to retry a failed analysis. See the [measured indexing gains](https://github.com/lamestllama/racketeer/blob/main/docs/releases/0.8.55.md#measured-gains), [workspace-reference settings and limits](https://github.com/lamestllama/racketeer/blob/main/docs/editor-tools.md#workspace-references) and [rename rules](https://github.com/lamestllama/racketeer/blob/main/docs/editor-tools.md#rename-across-files).
+## Inspect and change values
+
+Select a frame in **Call Stack**, then expand **Variables → Locals**, hover a variable, or evaluate Racket in the **Debug Console** or **Watch**. For example: `(+ subtotal 20)` or `(set! subtotal 200)`.
+
+**Racket: Set Variable Value** changes the variable under the cursor in the selected frame. Evaluation and assignment take real effect. See [evaluation and values](https://github.com/lamestllama/racketeer/blob/main/docs/debugger.md#evaluation-and-values) for expression replacement, printing, cancellation and inspection boundaries.
+
+## Save a launch configuration
+
+Use **Add Configuration** in `launch.json` to save a program's arguments, environment, console, entry behaviour and source selection.
+
+See [launching a program](https://github.com/lamestllama/racketeer/blob/main/docs/debugger.md#launching-a-program) for an example and the attribute reference, and [compiled code](https://github.com/lamestllama/racketeer/blob/main/docs/debugger.md#compiled-code) for cache settings and external-file dependencies.
 
 ## Attach to a running program
 
@@ -76,6 +86,26 @@ host running. Input, output and thread lifetime stay with the host.
 
 Details: [Attaching to an embedded Racket program](https://github.com/lamestllama/racketeer/blob/main/docs/debugger.md#attach-to-an-embedded-racket-program).
 
+## Expand macros
+
+![Macro stepping beside the source, with linked Before and After panes and binding arrows](https://raw.githubusercontent.com/lamestllama/racketeer/main/docs/images/macro-steps.png)
+
+Open linked **Before** and **After** panes beside the source, with scope colours, binding arrows and term details. Choose which macros appear, or duplicate the stepper to compare expansions independently.
+
+Use **Racket: Step Through Macros on This Line** (**Alt+Shift+M**) for the current line or selection, or **Racket: Step Through Macros in This File** for the whole file. Both use unsaved buffer text without saving it. Try [the macro example](https://github.com/lamestllama/racketeer/blob/main/examples/macro-stepper.rkt).
+
+Expansion runs readers and compile-time code and requires a trusted workspace. It does not run the module's ordinary body. A graphical display is not required.
+
+The [macro-stepper guide](https://github.com/lamestllama/racketeer/blob/main/docs/editor-tools.md#macro-stepper) covers navigation, display and hiding options, worker lifetime, limits and error controls.
+
+## Find and rename across a project
+
+**Find All References** and **Rename Symbol** (F2) include unopened `.rkt`, `.ss`, `.scm` and `.scrbl` modules in a trusted workspace. The index runs on request; the first request after a change waits for a cancellable pass. While the window stays open, later passes reanalyse only files whose text or dependencies changed. Unsaved buffers supply their files' text.
+
+The defaults allow **1,000 files**, **1 MiB per file** and **16 MiB total**. The status bar reports progress and partial references. Rename requires a complete, current index and refuses incomplete or stale results. Excluded folders and unscanned file types remain outside a rename, so check those callers separately; default exclusions include `build` and `dist`.
+
+Use **Racket: Refresh Workspace References** after external package changes or to retry a failed analysis. See the [measured indexing gains](https://github.com/lamestllama/racketeer/blob/main/docs/releases/0.8.55.md#measured-gains), [workspace-reference settings and limits](https://github.com/lamestllama/racketeer/blob/main/docs/editor-tools.md#workspace-references) and [rename rules](https://github.com/lamestllama/racketeer/blob/main/docs/editor-tools.md#rename-across-files).
+
 ## Run a file and see its results
 
 Use **Racket: Run Current File** to save the file, run its root module and `main` submodule when present, and show text and images in **Results** beside the source. Results stays open after the program exits.
@@ -85,36 +115,6 @@ Use **Racket: Run Current File** to save the file, run its root module and `main
 The editor toolbar also offers **Racket: Debug Current File** and **Racket: File Actions…**. Use **Racket: Run Current File in Terminal** for terminal applications and native process streams.
 
 See [Results controls, input and lifetime](https://github.com/lamestllama/racketeer/blob/main/docs/workflows.md#results-view), and [images and plots](https://github.com/lamestllama/racketeer/blob/main/docs/workflows.md#images-and-plots) for printing rules, image saving and interactive plot controls.
-
-## Debug with breakpoints
-
-Stop on a line or at an expression within it, across workspace files and chosen packages, and inspect the program's state.
-
-![Stopped at a breakpoint with Variables and Call Stack visible](https://raw.githubusercontent.com/lamestllama/racketeer/main/docs/images/debugging.png)
-
-Run **Racket: Debug Current File**, then select the gutter beside a line number or press **F9** to add a breakpoint. Right-click it to add a condition, hit count or log message. **Racket: Continue to Cursor** runs to one chosen point.
-
-Uncaught runtime exceptions stop by default so their details, lexical variables and Call Stack can be inspected. Choose **Continue** to let the same exception propagate.
-
-See [breakpoints](https://github.com/lamestllama/racketeer/blob/main/docs/debugger.md#breakpoints) for binding rules and edge cases, and [uncaught exceptions](https://github.com/lamestllama/racketeer/blob/main/docs/debugger.md#uncaught-exceptions) for exception behaviour.
-
-## Step through expressions
-
-Use **Step Into** (F11), **Step Over** (F10), **Step Out** (Shift+F11) and **Continue** (F5). Stops show both expression starts and returned values; open **Return values** in Variables after a return.
-
-By default a launch stops in `main`, the selected submodule or the module body. See [Understanding the stops](https://github.com/lamestllama/racketeer/blob/main/docs/stepping.md) for entry modes, tail calls, source markers and stepping limits.
-
-## Inspect and change values
-
-Select a frame in **Call Stack**, then expand **Variables → Locals**, hover a variable, or evaluate Racket in the **Debug Console** or **Watch**. For example: `(+ subtotal 20)` or `(set! subtotal 200)`.
-
-**Racket: Set Variable Value** changes the variable under the cursor in the selected frame. Evaluation and assignment take real effect. See [evaluation and values](https://github.com/lamestllama/racketeer/blob/main/docs/debugger.md#evaluation-and-values) for expression replacement, printing, cancellation and inspection boundaries.
-
-## Save a launch configuration
-
-Use **Add Configuration** in `launch.json` to save a program's arguments, environment, console, entry behaviour and source selection.
-
-See [launching a program](https://github.com/lamestllama/racketeer/blob/main/docs/debugger.md#launching-a-program) for an example and the attribute reference, and [compiled code](https://github.com/lamestllama/racketeer/blob/main/docs/debugger.md#compiled-code) for cache settings and external-file dependencies.
 
 ## Test
 

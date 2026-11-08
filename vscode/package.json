@@ -1,7 +1,7 @@
 {
   "name": "racketeer",
   "displayName": "Racketeer: Organised Racket",
-  "description": "Racket for VS Code and VSCodium: macro stepping, faster workspace indexing, debugger attachment and language tools.",
+  "description": "Racket for VS Code and VSCodium: source-level debugging, macro stepping, faster workspace indexing and language tools.",
   "version": "0.8.55",
   "publisher": "lamestllama",
   "author": {

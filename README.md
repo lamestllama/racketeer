@@ -1,19 +1,19 @@
 # Racketeer: Organised Racket
 
-Racketeer brings macro stepping, workspace navigation, debugger attachment and rich results to Racket development in VS Code and VSCodium.
+Racketeer brings source-level debugging, macro stepping, workspace navigation and rich results to Racket development in VS Code and VSCodium.
 
+- **Source-level debugging:** set line and inline breakpoints, step through expressions across files and chosen packages, and inspect or change live values.
+- **Attach the debugger to a running Racket program:** inspect servers and jobs started outside the editor. The program must embed Racketeer's debug host; disconnecting leaves the host running.
 - **Macro stepping inside VS Code:** follow expansion in linked Before and After panes beside the source, with syntax colouring, scope colours, binding arrows and term details.
 - **Vastly improved workspace indexing:** find references and rename across files, including unopened modules. On a measured 53-file project, indexing fell from **97.9 s to 8.9 s with one worker**, and from **37.0 s to 5.3 s with three workers**, with identical results. The index runs on request and reanalyses only files whose text or dependencies changed on later passes while the window stays open.
-- **Attach the debugger to a running Racket program:** inspect servers and jobs started outside the editor. The program must embed Racketeer's debug host; disconnecting leaves the host running.
 - **Language and debugging servers included:** Racketeer provides a language server and a workspace indexing server over the Language Server Protocol (LSP), and a debug adapter over the Debug Adapter Protocol (DAP).
-- **Debug expressions:** set line and inline breakpoints, step across files and chosen packages, and inspect or change live values.
 - **See results beside the code:** display text, images, picts and plots in Results or Interactions; zoom and rotate plots during debugging.
 - **Test in Test Explorer:** run, debug or measure coverage, with individual RackUnit cases available in supported modules and suites.
 - **Navigate, edit and experiment:** use hover documentation, completion, go to definition, live diagnostics and formatting, plus an Interactions window or a terminal REPL.
 - **Package and build:** manage Racket packages and create launchers, executables and distributions.
 - **Edit WXME and Rhombus:** edit WXME documents with embedded boxes, and Rhombus with the separate `rhombus` package.
 
-![Macro stepping beside the source, with linked Before and After panes and binding arrows](docs/images/macro-steps.png)
+![Stopped at a breakpoint, with local variables, an expanded structure, watch expressions and the call stack visible](docs/images/debugging.png)
 
 Indexing measurements: [0.8.55 release record](docs/releases/0.8.55.md#measured-gains). These figures describe the measured project; timings vary with the workload.
 
@@ -33,17 +33,27 @@ Open a trusted folder and a saved `.rkt` file: the language tools start automati
 
 The extension ID is `lamestllama.racketeer`; the debugger type and settings prefix are `racketdap`. See [installation troubleshooting](docs/workflows.md#installation-troubleshooting) before replacing the earlier development extension. While Magic Racket's language server is enabled, the status bar shows **Racket: external LSP**, and Racketeer's language tools and workspace index stay off. Disable that server and reload, or accept **Use Racketeer’s Tools**.
 
+## Debug with breakpoints
+
+Use **Racket: Debug Current File** to stop and inspect a program with line and inline breakpoints, Call Stack and Variables.
+
+Try [examples/demo.rkt](examples/demo.rkt) from the repository: place a breakpoint on line 4, evaluate `(+ subtotal 20)` in the Debug Console, then `(set! subtotal 200)`. Step Over displays `20` in the Return values scope; continuing prints `220` and `20`.
+
+See [breakpoints](docs/debugger.md#breakpoints), [expression stepping](docs/stepping.md) and [evaluation and values](docs/debugger.md#evaluation-and-values).
+
+## Attach to a running program
+
+Attach to a running Racket program that embeds Racketeer's debug host; disconnecting leaves the host running. See [the attachment configuration and host requirements](docs/debugger.md#attach-to-an-embedded-racket-program).
+
 ## Expand macros
+
+![Macro stepping beside the source, with linked Before and After panes and binding arrows](docs/images/macro-steps.png)
 
 Use **Racket: Step Through Macros on This Line** (**Alt+Shift+M**) or **Racket: Step Through Macros in This File** to open linked Before and After panes. Expansion uses unsaved text and runs compile-time code in a trusted workspace. See [the macro-stepper guide](docs/editor-tools.md#macro-stepper).
 
 ## Find and rename across a project
 
 **Find All References** and **Rename Symbol** include unopened workspace modules. The index runs on request and reanalyses files whose text or dependencies changed. Defaults allow 1,000 files, 1 MiB per file and 16 MiB total; rename refuses incomplete or stale results. See [workspace references](docs/editor-tools.md#workspace-references) for settings and exclusions.
-
-## Attach to a running program
-
-Attach to a running Racket program that embeds Racketeer's debug host; disconnecting leaves the host running. See [the attachment configuration and host requirements](docs/debugger.md#attach-to-an-embedded-racket-program).
 
 ## Run a file and see its results
 
@@ -52,16 +62,6 @@ Use **Racket: Run Current File** to save and run the file, showing text and imag
 ![Source beside Results containing images and plots](docs/images/results-with-plots.png)
 
 See [Results controls and lifetime](docs/workflows.md#results-view) and [images and plots](docs/workflows.md#images-and-plots) for input, saving and interactive plot controls.
-
-## Debug with breakpoints
-
-Use **Racket: Debug Current File** to stop and inspect a program with line and inline breakpoints, Call Stack and Variables.
-
-![Stopped at a breakpoint with Variables and Call Stack visible](docs/images/debugging.png)
-
-Try [examples/demo.rkt](examples/demo.rkt) from the repository: place a breakpoint on line 4, evaluate `(+ subtotal 20)` in the Debug Console, then `(set! subtotal 200)`. Step Over displays `20` in the Return values scope; continuing prints `220` and `20`.
-
-See [breakpoints](docs/debugger.md#breakpoints), [expression stepping](docs/stepping.md) and [evaluation and values](docs/debugger.md#evaluation-and-values).
 
 ## Test
 
