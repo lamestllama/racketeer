@@ -14,3 +14,6 @@ chart
 
 ;; Click Run Current File to see these images beside the source.
 ;; Click a picture in Results to enlarge it, or choose Save image….
+
+;; Copyright (c) 2026 Eric Parsonage
+;; SPDX-License-Identifier: Apache-2.0 OR MIT

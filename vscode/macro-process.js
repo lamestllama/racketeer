@@ -3,7 +3,7 @@
 'use strict';
 const { spawn } = require('node:child_process');
 
-// The Racket supervisor owns its GUI worker and process-group lease. Closing
+// The Racket supervisor owns its worker and process-group lease. Closing
 // stdin also releases it after an abrupt extension-host exit, without keeping
 // a numeric process-group id in JavaScript after its leader might have exited.
 function createMacroProcess(command, helper, request, { output, failure, finished }) {
@@ -18,7 +18,7 @@ function createMacroProcess(command, helper, request, { output, failure, finishe
     if (!cancelled && (spawnError || code !== 0)) {
       failure(spawnError
         ? `Cannot start Racket macro stepper: ${spawnError.message}. Check racketdap.racketExecutable.`
-        : `Racket macro stepper failed: ${stderr.trim() || `process exited with code ${code}`}. A full Racket installation with macro-debugger and a working graphical display is required.`);
+        : `Racket macro stepper failed: ${stderr.trim() || `process exited with code ${code}`}. A full Racket installation with macro-debugger is required.`);
     }
     finished(cancelled ? 0 : code || 0);
     resolveDone();
@@ -34,7 +34,7 @@ function createMacroProcess(command, helper, request, { output, failure, finishe
       } catch (error) { spawnError = error; finish(1); return; }
       child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
       child.stdout.on('data', output);
-      child.stderr.on('data', text => { stderr = (stderr + text).slice(-8192); output(text); });
+      child.stderr.on('data', text => { stderr = (stderr + text).slice(-8192); });
       child.on('error', error => { spawnError = error; });
       child.stdin.on('error', error => {
         // EPIPE accompanies a worker's early failure; stderr/exit provide the
@@ -43,6 +43,12 @@ function createMacroProcess(command, helper, request, { output, failure, finishe
       });
       child.once('close', code => finish(code ?? 1));
       child.stdin.write(JSON.stringify(request) + '\n');
+    },
+    // Session requests use the existing owned worker and input lease.
+    send(request) {
+      if (!started || cancelled || ended || !child?.stdin.writable) return false;
+      child.stdin.write(JSON.stringify(request) + '\n');
+      return true;
     },
     stop() {
       cancelled = true;

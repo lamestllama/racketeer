@@ -3,6 +3,7 @@
 'use strict';
 const assert = require('node:assert/strict');
 const { until: wait } = require('./support/wait');
+const { sessionWait } = require('./support/session-wait');
 const fs = require('node:fs');
 const path = require('node:path');
 const vscode = require('vscode');
@@ -19,48 +20,76 @@ exports.run = async function () {
   await extension.exports.languageServerReady();
   const expected = new Map([
     ['experiments/lexical-eval.rkt', 10],
-    ['tests/attach.rkt', 28],
+    ['tests/application-log.rkt', 1],
+    ['tests/attach.rkt', 30],
     ['tests/breakpoint-rearming.rkt', 2],
     // Its second case needs a link, which can take a privilege on Windows.
     ['tests/breakpoint-spelling.rkt', process.platform === 'win32' ? 1 : 2],
     ['tests/cache-identity.rkt', 1],
     ['tests/continuation-reentry.rkt', 5],
+    ['tests/contribution-only.rkt', 3],
     ['tests/debug-cache-links.rkt', 3],
+    ['tests/debugger-test-mode.rkt', 2],
     ['tests/definition-allocation.rkt', 14],
+    ['tests/deferred-imports.rkt', 3],
     ['tests/generated-code.rkt', 7],
     ['tests/site-gate.rkt', 7],
     ['tests/headless.rkt', 22],
     ['tests/inspect-counts.rkt', 1],
     ['tests/instrumentation-lifetime.rkt', 10],
     ['tests/loader-isolation.rkt', 14],
-    ['tests/macro-stepper.rkt', 10],
+    ['tests/macro-stepper-answer.rkt', 8],
+    ['tests/macro-stepper-certainty.rkt', 9],
+    ['tests/macro-stepper-checkpoint.rkt', 5],
+    ['tests/macro-stepper-facts.rkt', 21],
+    ['tests/macro-stepper-internal.rkt', 30],
+    ['tests/macro-stepper-options.rkt', 17],
+    ['tests/macro-stepper-policy.rkt', 15],
+    ['tests/macro-stepper-printing.rkt', 24],
+    ['tests/macro-stepper-renaming.rkt', 5],
+    ['tests/macro-stepper-session.rkt', 15],
+    ['tests/macro-stepper-source.rkt', 10],
+    ['tests/macro-stepper-suffixes.rkt', 2],
+    ['tests/macro-stepper-taint.rkt', 4],
     ['tests/packages.rkt', 3],
+    ['tests/packages-lazy.rkt', 1],
     ['tests/parity-languages.rkt', 13],
     ['tests/predicted-bindings.rkt', 7],
-    ['tests/protocol-inspection.rkt', 25],
+    ['tests/plots-scalars.rkt', 1],
+    ['tests/protocol-inspection.rkt', 26],
     ['tests/source-positions.rkt', 5],
     ['tests/step-stops.rkt', 44],
     ['tests/stepping.rkt', 12],
-    ['tests/source-loading.rkt', 10],
+    ['tests/source-loading.rkt', 12],
     ['tests/thread-pause.rkt', 10],
-    ['tests/wxme-source.rkt', 9]
+    ['tests/workspace-incremental.rkt', 1],
+    ['tests/workspace-memory.rkt', 3],
+    ['tests/workspace-worker.rkt', 6],
+    ['tests/wxme-source.rkt', 9],
+    ['tests/wxme-lazy.rkt', 1]
   ]);
   const sessions = [], messages = [], checks = [];
-  const active = new Set();
-  const onEnded = vscode.debug.onDidTerminateDebugSession(session => active.delete(session));
+  const active = new Set(), ended = new Set();
+  const onEnded = vscode.debug.onDidTerminateDebugSession(session => {
+    active.delete(session); ended.add(session.id);
+  });
   const tracker = vscode.debug.registerDebugAdapterTrackerFactory('racketdap', {
     createDebugAdapterTracker(session) {
       sessions.push(session);
       active.add(session);
-      return { onDidSendMessage(message) { messages.push({ session, ...message }); } };
+      return {
+        onDidSendMessage(message) { messages.push({ session, ...message }); },
+        onError(error) { messages.push({ session, error: error.message }); ended.add(session.id); },
+        onExit(code, signal) { messages.push({ session, exit: { code, signal } }); ended.add(session.id); }
+      };
     }
   });
   const until = (check, description) => wait(check, description, () => JSON.stringify(messages.slice(-10)));
-  function event(session, name, predicate = () => true) {
-    return until(() => messages.find(message => message.session.id === session.id &&
-      message.event === name && predicate(message)), name);
-  }
   const relative = session => path.relative(workspace.uri.fsPath, session.configuration.program).split(path.sep).join('/');
+  const inSession = sessionWait(messages, ended, relative);
+  function event(session, name, predicate = () => true) {
+    return inSession(session, own => own.find(message => message.event === name && predicate(message)), name);
+  }
   let breakpoint;
   async function removeBreakpoint(session) {
     const start = messages.length;
@@ -68,7 +97,7 @@ exports.run = async function () {
     breakpoint = undefined;
     // Removing an editor breakpoint schedules a DAP request asynchronously.
     // Finish that request before allowing the target to exit or stopping it.
-    await until(() => messages.slice(start).some(message => message.session.id === session.id &&
+    await inSession(session, own => own.some(message => messages.indexOf(message) >= start &&
       message.type === 'response' && message.command === 'setBreakpoints' && message.success &&
       message.body.breakpoints.length === 0), 'adapter acknowledges breakpoint removal');
   }
@@ -183,7 +212,7 @@ exports.run = async function () {
     ]) {
       const start = messages.length;
       const evaluated = repl.session.customRequest('evaluate', { context: 'repl', expression });
-      const stop = await until(() => messages.slice(start).find(m => m.session.id === repl.session.id && m.event === 'stopped'),
+      const stop = await inSession(repl.session, own => own.find(m => messages.indexOf(m) >= start && m.event === 'stopped'),
         'breakpoint in nested module');
       const { stackFrames } = await repl.session.customRequest('stackTrace', { threadId: stop.body.threadId });
       assert.deepEqual(stackFrames.slice(0, 4).map(frame => path.relative(example, frame.source.path).split(path.sep).join('/')),

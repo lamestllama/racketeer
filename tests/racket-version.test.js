@@ -82,7 +82,7 @@ test('Run or Debug says the Racket found is too old, and offers the setting', st
     'application-builds': 'registerApplicationBuilds', 'wxme-viewer': 'registerWxmeViewer', 'wxme-editor': 'registerWxmeEditor',
     dependencies: 'registerDependencies' })) dependencies[`./${name}`] = { [method]: () => ({}) };
   dependencies['./application-logs'] = { registerApplicationLogs: () => ({}), filterError: () => undefined };
-  load('extension.js', dependencies).activate({ subscriptions: [] });
+  load('extension.js', dependencies).activate({ subscriptions: [], asAbsolutePath: file => path.join('/extension', file) });
   const program = path.resolve(__dirname, '../examples/demo.rkt');
   const launch = { request: 'launch', program, racketExecutable: old };
   assert.equal(await provider.resolveDebugConfigurationWithSubstitutedVariables(undefined, launch), undefined);

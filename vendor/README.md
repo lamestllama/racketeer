@@ -1,9 +1,10 @@
 # Bundled language server sources
 
-`collects/` contains upstream source packages with the patches noted below. `sources.json` pins
-each archive URL and SHA-256. Run `python3 scripts/vendor-language-server.py`
-to reproduce these directories. The VSIX includes these sources, this file,
-the manifest and the license texts. No Racket package is installed globally.
+`collects/` contains upstream source packages with the patches noted below.
+`sources.json` pins each archive URL and SHA-256. Run `python3
+scripts/vendor-language-server.py` to reproduce these directories. The VSIX includes
+these sources, this file, the manifest and the licence texts. No Racket package is
+installed globally.
 
 The server is pinned to upstream commit
 `23e19894f1a11ce38bc56028ee048adb984bca06`, which includes the background analysis
@@ -41,13 +42,58 @@ applies Racketeer's own patches in order:
   does, and any other value is the default of 250. Meant for upstream, as a pull request
   not yet made.
 
-Workspace indexing belongs to Racketeer, in `vscode/workspace-analysis.rkt`,
-its request adapter `vscode/workspace-index.rkt` and the VS Code client. The
-separate process reuses the pinned analyser, the source-snapshot loader and the
-workspace store as libraries, and indexes saved files only. It gives each
-analysis a fresh namespace and the file's directory, which the source-snapshot
-loader leaves to its caller. No indexing hooks
-or index state are added to the language server.
+- `lazy-documentation.patch`: load the documentation helpers on their first use
+  from the document, documentation parser and documentation callback service.
+  The document also loads the HTML documentation parser only on its first use.
+  Binding analysis in an indexer worker never uses them; language-server hover
+  and signature help keep the same documentation lookup and rendering.
+
+- `url-string.patch`: use `net/url-string` in the path utilities and documentation
+  callback service. These use URL parsing, encoding and structures, all re-exported
+  unchanged by `net/url`, without its HTTP and TLS implementations.
+
+- `source-snapshot-cache.patch`: accept an optional compiled dependency cache for
+  one fixed source snapshot. The indexer gives each worker a fresh cache for one
+  pass, reusing compiled code in each file's fresh namespace. Module loading still
+  records dependencies. Language-server callers omit the cache and load as before.
+
+- `contribution-only.patch`: add an optional contribution-only expansion mode,
+  disabled by default. The indexer uses only the declaration service's binding
+  graph for contributions and reference and rename queries. This mode skips
+  expansion log interception and the hover, documentation, completion, require
+  menu, diagnostic, Typed Racket, semantic highlighting, inlay hint and tail
+  services. Declaration callbacks and syntax processing still run. Language-server
+  callers retain all services and expansion logs.
+
+- `source-snapshot-observations.patch`: retain the original load observations with
+  per-pass compiled code, including dependencies used only during compilation.
+  The indexer replays their original fingerprints when it reuses code, so an edit
+  during a pass cannot label an old result with new dependency contents. Callers
+  without a cache keep their existing loading behaviour.
+
+- `source-snapshot-external-reads.patch`: compile normally when a module or a
+  transitive dependency registers an external file during compilation. Those
+  reads must be observed again; compiled code alone cannot replay their contents.
+  This restriction applies only to the optional per-pass cache.
+
+- `contribution-only-resources.patch`: propagate allocation failures from the
+  optional contribution-only analysis to the worker controller. Skipping diagnostic
+  construction must preserve the indexer's resource failure reporting. Full
+  document analysis retains its existing diagnostics.
+
+Racketeer provides a language server and a workspace indexing server, both over LSP, and
+a debug adapter over DAP. The sources here supply the language server and the libraries
+used by the index. The index does not start until references or rename asks for it.
+
+Workspace indexing belongs to Racketeer, in `vscode/workspace-analysis.rkt`, its request
+adapter `vscode/workspace-index.rkt` and the VS Code client. The separate process reuses
+the pinned analyser, the source-snapshot loader and the workspace store as libraries,
+and indexes saved files only. It gives each analysis a fresh namespace, custodians and
+the file's directory. A worker lasts for discovery and one pass and reuses compiled
+dependencies only within that snapshot. Cached code retains its original load
+fingerprints. Registered external reads compile again. Workers are replaced between
+files when they reach their memory threshold; completed contributions remain. No
+indexing hooks or index state are added to the language server.
 
 Regression tests exercise these patches. Reproduction fails if any no longer
 applies. It does not change debugger instrumentation.
@@ -63,7 +109,7 @@ For offline regeneration, supply the pinned ZIP with `--package racket-langserve
 - **fixw**: Copyright 2023 6cdh; upstream
   <https://github.com/6cdh/racket-fixw>, commit
   `036d0f2cd2d6e061f5acf0835662f194509f2a46`. MIT or Apache 2.0;
-  both license texts are included in its directory.
+  both licence texts are included in its directory.
 - **html-parsing 11.0**, **mcfly 2.2** and **overeasy 4.3**:
   Copyright Neil Van Dyke, with exact notices in each package's `info.rkt`.
   LGPL version 3 or later. Full LGPLv3 and GPLv3 texts are in `licenses/`.

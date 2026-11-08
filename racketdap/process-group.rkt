@@ -2,10 +2,9 @@
 ;; Copyright (c) 2026 Eric Parsonage
 ;; SPDX-License-Identifier: Apache-2.0 OR MIT
 
-(require racket/runtime-path "launcher.rkt")
+(require racket/runtime-path)
 (provide start-process-group stop-process-group! process-group-name join-process-group!)
 
-(define-runtime-path anchor-path "process-group.rkt")
 (struct process-group (leader lease output error) #:transparent)
 
 ;; Racket cannot signal a group after observing its leader's exit: the numeric
@@ -17,11 +16,14 @@
     [(eq? (system-type 'os) 'windows)
      (values ((dynamic-require windows-job 'create-job)) 'new)]
     [else
-     (define command (or (find-executable-path executable)
-                         (error 'process-group "Cannot resolve the Racket executable: ~a" executable)))
+     (unless (find-executable-path executable)
+       (error 'process-group "Cannot resolve the Racket executable: ~a" executable))
      (define-values (leader output lease stderr)
        (parameterize ([current-subprocess-keep-file-descriptors '()])
-         (apply subprocess #f #f #f 'new command (debugger-command anchor-path))))
+         ;; A shell builtin waits on the lease and signals its own live group.
+         ;; No Racket runtime, library loading or FFI is needed for this guard.
+         (subprocess #f #f #f 'new "/bin/sh" "-c"
+                     "while IFS= read -r lease; do :; done; kill -KILL 0")))
      (values (process-group leader lease output stderr) leader)]))
 
 (define (process-group-name group)
@@ -113,14 +115,3 @@
       (checked 'CloseHandle (CloseHandle handle)))))
 
 (define-runtime-module-path windows-job (submod "." windows-job))
-
-(module+ main
-  (require ffi/unsafe)
-  (define libc (ffi-lib #f))
-  (define getpid (get-ffi-obj "getpid" libc (_fun -> _int)))
-  (define getpgrp (get-ffi-obj "getpgrp" libc (_fun -> _int)))
-  (define kill-group (get-ffi-obj "kill" libc (_fun _int _int -> _int)))
-  (unless (= (getpid) (getpgrp)) (error 'process-group "Expected an owned process group"))
-  (let loop () (unless (eof-object? (read-byte)) (loop)))
-  ;; Only the live group leader signals its own group; pid reuse is impossible.
-  (kill-group 0 9))

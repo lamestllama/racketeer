@@ -1,0 +1,24 @@
+diff --git a/common/path-util.rkt b/common/path-util.rkt
+--- a/common/path-util.rkt
++++ b/common/path-util.rkt
+@@ -3,7 +3,7 @@
+ ;; Lexically normalized file paths, standard file URI encoding, suffixes, and
+ ;; folder membership.
+ 
+-(require net/url
++(require net/url-string
+          racket/contract
+          racket/list
+          racket/path
+diff --git a/doclib/service/docs.rkt b/doclib/service/docs.rkt
+--- a/doclib/service/docs.rkt
++++ b/doclib/service/docs.rkt
+@@ -4,7 +4,7 @@
+          racket/class
+          racket/lazy-require
+          data/interval-map
+-         net/url
++         net/url-string
+          drracket/check-syntax)
+ 
+ (lazy-require ["../docs-helpers.rkt" (def-tag->html-anchor-tag)])

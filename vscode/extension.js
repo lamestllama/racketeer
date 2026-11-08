@@ -10,7 +10,7 @@ const execute = promisify(execFile);
 const { createProgramTerminal } = require('./terminal');
 const { registerLanguageTools } = require('./language-client');
 const { debuggerArgs } = require('./language-process');
-const { versionProblem } = require('./racket-version');
+const { createDebugVersionCheck } = require('./debug-version');
 const { registerFileCommands } = require('./commands');
 const { registerDebugActions } = require('./debug-actions');
 const { registerDebugImages } = require('./debug-images');
@@ -29,6 +29,12 @@ const { registerDependencies } = require('./dependencies');
 let languageTools;
 
 function activate(context) {
+  if (vscode.workspace.isTrusted) {
+    const executable = vscode.workspace.getConfiguration('racketdap', vscode.workspace.workspaceFolders?.[0]?.uri)
+      .get('racketExecutable', 'racket');
+    execFile(executable, debuggerArgs(context, 'tools/start-debugger-build.rkt'), () => {});
+  }
+  const checkVersion = createDebugVersionCheck(execute);
   const sessions = registerSessions(context);
   const testing = registerTesting(context, sessions);
   registerPackages(context);
@@ -59,6 +65,7 @@ function activate(context) {
         vscode.window.showErrorMessage('Racket DAP supports launch and attach sessions.');
         return undefined;
       }
+      if (config.request === 'launch') config.stopOnEntry ??= true;
       const programBase = config.cwd || folder?.uri.fsPath;
       if (config.request === 'launch' && config.program && programBase) config.program = path.resolve(programBase, config.program);
       if (config.request === 'launch' && (!config.program || !fs.existsSync(config.program) || !fs.statSync(config.program).isFile())) {
@@ -82,8 +89,7 @@ function activate(context) {
         return undefined;
       };
       try {
-        const { stdout } = await execute(config.racketExecutable, ['--version'], { timeout: 5000, killSignal: 'SIGKILL', windowsHide: true });
-        const problem = versionProblem(stdout, config.racketExecutable);
+        const problem = await checkVersion(config.racketExecutable);
         if (problem) return refuse(problem);
       } catch (error) {
         return refuse(`Cannot start Racket DAP: ${error.message} Set racketdap.racketExecutable to your Racket executable.`);

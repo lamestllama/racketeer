@@ -1,102 +1,61 @@
 // Copyright (c) 2026 Eric Parsonage
 // SPDX-License-Identifier: Apache-2.0 OR MIT
+// Registers the macro stepper and connects its focused components.
 'use strict';
 const vscode = require('vscode');
-const { selectedEditor } = require('./selected-editor');
-const path = require('node:path');
-const os = require('node:os');
-const { createMacroProcess } = require('./macro-process');
-const { debuggerArgs } = require('./language-process');
-
-function macroTarget(editor, wholeFile) {
-  const document = editor?.document;
-  if (!document || document.languageId !== 'racket') throw new Error('Open a Racket editor first.');
-  if (!['file', 'untitled'].includes(document.uri.scheme)) {
-    throw new Error('Open a local or untitled Racket document to use the macro stepper.');
-  }
-  const buffer = document.getText();
-  const range = wholeFile ? undefined : editor.selection.isEmpty
-    ? document.lineAt(editor.selection.active.line).range : editor.selection;
-  const start = range ? document.offsetAt(range.start) : 0;
-  const end = range ? document.offsetAt(range.end) : buffer.length;
-  const text = buffer.slice(start, end);
-  if (!text.trim()) throw new Error('The current line, selection, or file contains no Racket forms.');
-  const file = document.uri.scheme === 'file';
-  const folder = vscode.workspace.getWorkspaceFolder(document.uri) ||
-    (!file ? vscode.workspace.workspaceFolders?.[0] : undefined);
-  const settings = vscode.workspace.getConfiguration('racketdap', document.uri);
-  const cwd = folder?.uri.fsPath || (file ? path.dirname(document.uri.fsPath) : os.homedir());
-  return {
-    executable: settings.get('racketExecutable', 'racket'),
-    request: {
-      mode: wholeFile ? 'module' : 'fragment', text, prefix: buffer.slice(0, start), cwd,
-      source: file ? document.uri.fsPath : document.uri.toString(), sourceIsFile: file,
-      // Relative module imports belong to the source directory, independent
-      // of the process cwd. Untitled sources use their workspace.
-      directory: file ? path.dirname(document.uri.fsPath) : folder?.uri.fsPath || os.homedir()
-    }
-  };
-}
+const { macroTarget } = require('./macro-steps/target');
+const { panelHtml, viewType } = require('./macro-steps/html');
+const { sourceOffsets } = require('./macro-view/model');
+const { createSession } = require('./macro-steps/session');
+const { createHiding } = require('./macro-steps/hiding');
+const { createSource } = require('./macro-steps/source');
+const { createProtocol } = require('./macro-steps/protocol');
+const { createColors } = require('./macro-steps/colors');
+const { createPanes } = require('./macro-steps/panes');
+const { createCommands } = require('./macro-steps/commands');
+const { createNavigation } = require('./macro-steps/navigation');
+const { createOptions } = require('./macro-steps/options');
+const { createInternalError } = require('./macro-steps/internal-error');
+const { createTestHooks } = require('./macro-steps/test-hooks');
 
 function registerMacroStepper(context) {
-  const owned = new Set();
-  let disposed = false;
-  context.subscriptions.push({ dispose() {
-    disposed = true;
-    for (const entry of owned) { void entry.process.stop(); entry.terminal?.dispose(); }
-  } });
-  return async function open(wholeFile = false) {
-    if (!vscode.workspace.isTrusted) throw new Error('Trust this workspace before expanding Racket macros.');
-    if (disposed) throw new Error('The macro-stepper command has stopped.');
-    const target = macroTarget(selectedEditor(vscode.window), wholeFile);
-    const written = new vscode.EventEmitter();
-    const closed = new vscode.EventEmitter();
-    const entry = {};
-    let opened = false;
-    let ended;
-    entry.process = createMacroProcess(target.executable,
-      debuggerArgs(context, 'tools/macro-stepper.rkt'), target.request, {
-        output: text => written.fire(text.replace(/\r?\n/g, '\r\n')),
-        failure: message => { void vscode.window.showErrorMessage(message); },
-        finished: code => {
-          ended = code;
-          if (opened) closed.fire(code);
-          owned.delete(entry);
-          if (opened) { written.dispose(); closed.dispose(); }
-        }
-      });
-    owned.add(entry);
-    const pty = {
-      onDidWrite: written.event, onDidClose: closed.event,
-      open() {
-        opened = true;
-        if (ended !== undefined) {
-          closed.fire(ended); written.dispose(); closed.dispose();
-          return;
-        }
-        written.fire(wholeFile
-          ? 'Expanding the current module buffer with Racket\'s macro stepper.\r\n'
-          : 'Expanding in a fresh Racket namespace. Enclosing module bindings are unavailable; use Open File in Macro Stepper for module imports and macros.\r\n');
-        entry.process.start();
-      },
-      close() { void entry.process.stop(); }
-    };
-    try {
-      // Tasks auto-save dirty editors and have no per-task save override.
-      // A transient owned terminal keeps inspection independent of saving.
-      entry.terminal = vscode.window.createTerminal({
-        name: `Racket Macro Stepper: ${path.basename(target.request.source)}`,
-        pty, isTransient: true
-      });
-      if (disposed) { void entry.process.stop(); entry.terminal.dispose(); }
-      else entry.terminal.show(true);
-      return entry.terminal;
-    } catch (error) {
-      void entry.process.stop();
-      if (!opened) { owned.delete(entry); written.dispose(); closed.dispose(); }
-      throw error;
-    }
-  };
-}
+  let active, disposed = false;
+  const runtime = { context, get active() { return active; }, set active(value) { active = value; },
+    get disposed() { return disposed; }, set disposed(value) { disposed = value; } };
+  Object.defineProperties(runtime, Object.getOwnPropertyDescriptors(createSession(runtime)));
+  Object.defineProperties(runtime, Object.getOwnPropertyDescriptors(createHiding(runtime)));
+  Object.defineProperties(runtime, Object.getOwnPropertyDescriptors(createSource(runtime)));
+  Object.defineProperties(runtime, Object.getOwnPropertyDescriptors(createProtocol(runtime)));
+  Object.defineProperties(runtime, Object.getOwnPropertyDescriptors(createColors(runtime)));
+  Object.defineProperties(runtime, Object.getOwnPropertyDescriptors(createPanes(runtime)));
+  Object.defineProperties(runtime, Object.getOwnPropertyDescriptors(createInternalError(runtime)));
+  Object.defineProperties(runtime, Object.getOwnPropertyDescriptors(createCommands(runtime)));
+  Object.defineProperties(runtime, Object.getOwnPropertyDescriptors(createNavigation(runtime)));
+  Object.defineProperties(runtime, Object.getOwnPropertyDescriptors(createOptions(runtime)));
+  Object.defineProperties(runtime, Object.getOwnPropertyDescriptors(createTestHooks(runtime)));
+  context.subscriptions.push(runtime.sourceStyle,
+    vscode.window.onDidChangeActiveColorTheme(runtime.themeChanged),
+    vscode.workspace.onDidChangeConfiguration(event => {
+      if (['workbench.colorTheme', 'workbench.colorCustomizations', 'editor.tokenColorCustomizations'].some(key => event.affectsConfiguration(key)) ||
+          [...runtime.views.values()].some(v => ['editor.bracketPairColorization', 'editor.minimap.enabled', 'editor.fontFamily', 'editor.fontSize', 'editor.fontWeight', 'editor.lineHeight', 'editor.tabSize'].some(key => event.affectsConfiguration(key, { uri: v.source, languageId: 'racket' })))) runtime.themeChanged();
+    }),
+    vscode.workspace.onDidChangeTextDocument(({ document }) => runtime.sourceChanged(document.uri, true)),
+    vscode.workspace.onDidCloseTextDocument(document => { runtime.sourceChanged(document.uri, true); for (const v of runtime.views.values()) {
+      if (!runtime.affected(v, document.uri)) continue;
+      if (document.uri.toString() === v.source.toString() && v.source.scheme === 'untitled') v.closedText = document.getText();
+      runtime.state(v);
+    } }),
+    vscode.workspace.onDidSaveTextDocument(document => { for (const v of runtime.views.values()) {
+      if (v.source.scheme === 'untitled' && document.uri.scheme === 'file' && !runtime.sourceDocument(v) &&
+          document.getText() === (v.closedText || v.mainDocument?.getText())) { v.savedSource = document.uri; runtime.state(v); }
+    } }),
+    vscode.window.onDidChangeTextEditorSelection(e => { const v = runtime.views.get(e.textEditor.document.uri.toString()); if (v && !runtime.panes(v).some(p => p.panel.active)) v.sourceSelection = e.selections[0]; }),
+    vscode.window.onDidChangeActiveTextEditor(editor => {
+      if (editor && active && !active.panel.active) { active = null; runtime.clearFocus(); runtime.contexts(); }
+    }),
+    { dispose() { disposed = true; for (const v of runtime.views.values()) { clearTimeout(v.hiddenTimer); for (const pane of runtime.panes(v)) runtime.abortTransfer(pane, 'Extension stopped'); runtime.stopWorker(v); }
+      for (const p of runtime.workers) void p.stop(); runtime.clearFocus(); runtime.views.clear(); } });
 
-module.exports = { registerMacroStepper, macroTarget };
+  return runtime.open;
+}
+module.exports = { registerMacroStepper, macroTarget, sourceOffsets, panelHtml, viewType };

@@ -1,3 +1,4 @@
+<!-- Copyright (c) 2026 Eric Parsonage. SPDX-License-Identifier: Apache-2.0 OR MIT -->
 # Runtime-expression instrumentation: current unified API
 
 This component instruments expanded Racket expressions and exposes execution
@@ -135,7 +136,8 @@ scopes shadow outer names; generated macro bindings do not hide source-authored
 identifiers merely because their printed names coincide. A generated binding is
 source-visible when an original identifier of the file refers to it, found by binding
 identity in one walk of the form before instrumenting it, so a reference after a stop
-counts and a generated binding of the same name without a reference stays hidden.
+counts and a generated binding of the same name without a reference stays hidden, except that
+a binding written in a template in the program's own files shows while that template runs.
 The class form's object variable is shown as `this` whether or not the source reads it,
 known by its gensym in the lexical context of the class implementation. Its binding has
 no setter, so the variable stays immutable, and it follows the source's names in its

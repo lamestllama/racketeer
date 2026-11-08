@@ -46,7 +46,7 @@ function harness(t) {
   const filename = path.join(__dirname, '../vscode/debug-images.js');
   const module = { exports: {} };
   vm.runInNewContext(fs.readFileSync(filename, 'utf8'), {
-    module, require: name => { assert.equal(name, 'vscode'); return vscode; }, Buffer
+    module, require: name => name === 'vscode' ? vscode : require('../vscode/' + name), Buffer
   }, { filename });
   const context = { subscriptions: [] };
   module.exports.registerDebugImages(context);

@@ -14,3 +14,6 @@
     (define-values (total tax) (price 100 1/10))
     (check-equal? total 110)
     (check-equal? tax 10)))
+
+;; Copyright (c) 2026 Eric Parsonage
+;; SPDX-License-Identifier: Apache-2.0 OR MIT

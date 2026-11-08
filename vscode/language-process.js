@@ -4,9 +4,37 @@
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 
+// A server can die before cleaning up its children, and a worker can block in
+// native code instead of reading EOF. Keep two tiny /bin/sh guards on POSIX:
+// one waits for the server, the other for the editor's private pipe. Either
+// ending kills their own group. The live guard pins the group identity, so no
+// saved numeric group id is ever signalled after its owner has exited.
+// Save stdin before backgrounding: the shell otherwise replaces it with /dev/null.
+const supervise = `
+exec 4<&0
+(while IFS= read -r lease; do :; done; kill -KILL 0) <&3 3<&- 4<&- &
+"$@" <&4 3<&- 4<&- &
+exec 3<&- 4<&-
+wait "$!"
+kill -KILL 0
+`;
+
+function spawnLanguageProcess(command, args, options, owned) {
+  const settings = { ...options, windowsHide: true, stdio: 'pipe' };
+  if (!owned || process.platform === 'win32') return spawn(command, args, settings);
+  const child = spawn('/bin/sh', ['-c', supervise, 'racketeer-server', command, ...args], {
+    ...settings, detached: true, stdio: ['pipe', 'pipe', 'pipe', 'pipe']
+  });
+  // Also release the lease when the waiting shell is killed by editor stop.
+  // Descendants never inherit its writing endpoint or keep this pipe open.
+  child.once('exit', () => child.stdio[3].destroy());
+  child.once('error', () => child.stdio[3]?.destroy());
+  return child;
+}
+
 // LanguageClient cannot stop an initializing connection. Own its process so
 // a stalled initialize request can be cancelled before awaiting client.stop().
-function createLanguageProcess(command, args, options, { timeout = 180000, onTimeout = () => {}, name = 'Language server' } = {}) {
+function createLanguageProcess(command, args, options, { timeout = 180000, onTimeout = () => {}, name = 'Language server', owned = false } = {}) {
   let process;
   let closed = Promise.resolve();
   let timer;
@@ -38,7 +66,7 @@ function createLanguageProcess(command, args, options, { timeout = 180000, onTim
       // A disconnected server need not have exited when the client restarts.
       if (process) { terminate(); await closed; }
       if (cancelled) throw new Error(`${name} startup was cancelled.`);
-      const child = spawn(command, args, { ...options, windowsHide: true, stdio: 'pipe' });
+      const child = spawnLanguageProcess(command, args, options, owned);
       process = child;
       closed = new Promise(resolve => child.once('close', () => {
         if (process === child) { process = undefined; clearDeadline(); starting = false; }
@@ -74,11 +102,12 @@ function debuggerArgs(context, file) {
   return storage ? [context.asAbsolutePath('runtime/racketdap/launcher.rkt'), path.join(storage, 'debugger'), target] : [target];
 }
 
-// A server runs in a process tree the extension owns. The tree ends when the
-// server ends, which it does when its input closes, including when the
-// extension host exits without warning.
+// POSIX ownership lives in spawnLanguageProcess. Windows needs the Racket
+// supervisor's kill-on-close job object; taskkill cannot run after host death.
 function ownedArgs(context, args) {
-  return [...debuggerArgs(context, 'tools/owned-command.rkt'), ...args];
+  return process.platform === 'win32'
+    ? [...debuggerArgs(context, 'tools/owned-command.rkt'), '--supervise-input', ...args]
+    : args;
 }
 
 module.exports = { createLanguageProcess, debuggerArgs, ownedArgs };

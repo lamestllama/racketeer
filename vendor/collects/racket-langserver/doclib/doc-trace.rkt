@@ -24,7 +24,7 @@
 
 (define build-trace%
   (class (check-syntax-annotations-mixin object%)
-    (init-field source doc-text lexer-state)
+    (init-field source doc-text lexer-state [contribution-only? #f])
     (define src (source-syntax-source source))
     (define docs (new docs%))
     (define completions (new completion%))
@@ -54,8 +54,12 @@
         [typed-racket typed-racket]))
     (define tails (new tail% [src src] [lexer-state lexer-state]))
 
+    ;; Contributions and binding queries read only declaration%. It consumes
+    ;; Check Syntax callbacks and walk-stx, independently of the other services.
     (define services
-      (list hovers
+      (if contribution-only?
+          (list decls)
+          (list hovers
             docs
             completions
             requires
@@ -64,7 +68,7 @@
             decls
             semantic-tokens
             inlay-hints
-            tails))
+            tails)))
 
     (define/public (reset)
       (for ([s services])
@@ -89,7 +93,7 @@
     (define/public (walk-log text)
       (for ([s services])
         (send s walk-log text))
-      (for ([log (in-list text)]
+      (for ([log (in-list (if contribution-only? '() text))]
             #:when (online-tooltip-log? log))
         (define tooltips
           (online-tooltip-log-tooltips log src))
@@ -109,7 +113,7 @@
       ;; Last: inlay hints are read from the pre-expand syntax and from what
       ;; the services above have just been filled with, this document's
       ;; inferred types included.
-      (send inlay-hints build!))
+      (unless contribution-only? (send inlay-hints build!)))
 
     ;; Named reads for services. Do not add getters that expose interval-maps.
     (define/public (get-hover) hovers)
@@ -235,7 +239,8 @@
               require-arrow? _name-dup?)))
 
     (define/override (syncheck:add-tail-arrow from-source from to-source to)
-      (send tails syncheck:add-tail-arrow from-source from to-source to))
+      (unless contribution-only?
+        (send tails syncheck:add-tail-arrow from-source from to-source to)))
 
     ;; Unused requires
     (define/override (syncheck:add-unused-require src left right)

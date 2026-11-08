@@ -73,7 +73,7 @@ exports.run = async function (workspace, observe = async () => {}) {
     breakpoints.push(new vscode.SourceBreakpoint(new vscode.Location(vscode.Uri.file(variableProgram), new vscode.Position(line, 2))));
     vscode.debug.addBreakpoints(breakpoints);
     assert.equal(await vscode.debug.startDebugging(workspace, {
-      type: 'racketdap', request: 'launch', name: 'Interactive plot variables', program: variableProgram, submodule: []
+      type: 'racketdap', request: 'launch', name: 'Interactive plot variables', program: variableProgram, submodule: [], stopOnEntry: false
     }), true);
     const paused = await until(() => sessions[2], 'Variable session starts');
     const stop = await event(paused, 'stopped');

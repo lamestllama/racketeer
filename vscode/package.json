@@ -1,8 +1,8 @@
 {
   "name": "racketeer",
   "displayName": "Racketeer: Organised Racket",
-  "description": "A Racket IDE for VS Code: debug, run, test, navigate and package Racket in one extension, with images, plots and Test Explorer, and nothing to install but Racket itself.",
-  "version": "0.8.54",
+  "description": "Racket for VS Code and VSCodium: macro stepping, faster workspace indexing, debugger attachment and language tools.",
+  "version": "0.8.55",
   "publisher": "lamestllama",
   "author": {
     "name": "Eric Parsonage"
@@ -14,17 +14,22 @@
     "rhombus",
     "scheme",
     "lisp",
+    "macro stepper",
+    "workspace indexing",
     "debugger",
     "repl",
-    "language server"
+    "language server",
+    "lsp",
+    "dap",
+    "rackunit"
   ],
   "private": true,
   "engines": {
     "vscode": "^1.91.0"
   },
   "categories": [
-    "Debuggers",
     "Programming Languages",
+    "Debuggers",
     "Linters",
     "Formatters"
   ],
@@ -43,7 +48,8 @@
     "onLanguage:rhombus",
     "workspaceContains:**/*.rkt",
     "workspaceContains:**/*.rhm",
-    "onTaskType:racket-build"
+    "onTaskType:racket-build",
+    "onWebviewPanel:racketeer.macroSteps"
   ],
   "capabilities": {
     "untrustedWorkspaces": {
@@ -190,12 +196,54 @@
         "title": "Racket: Refresh Workspace References"
       },
       {
-        "command": "racketdap.openMacroStepper",
-        "title": "Racket: Open Line or Selection in Macro Stepper"
+        "command": "racketdap.stepMacros",
+        "title": "Racket: Step Through Macros on This Line"
       },
       {
-        "command": "racketdap.openFileInMacroStepper",
-        "title": "Racket: Open File in Macro Stepper"
+        "command": "racketdap.stepMacrosInFile",
+        "title": "Racket: Step Through Macros in This File"
+      },
+      {
+        "command": "racketdap.macroSteps.first",
+        "category": "Racket",
+        "title": "First Macro Step",
+        "icon": "$(debug-reverse-continue)",
+        "enablement": "activeWebviewPanelId == 'racketeer.macroSteps' && racketdap.macroSteps.ready && !racketdap.macroSteps.busy && !racketdap.macroSteps.atStart"
+      },
+      {
+        "command": "racketdap.macroSteps.previous",
+        "category": "Racket",
+        "title": "Previous Macro Step",
+        "icon": "$(debug-step-back)",
+        "enablement": "activeWebviewPanelId == 'racketeer.macroSteps' && racketdap.macroSteps.ready && !racketdap.macroSteps.busy && !racketdap.macroSteps.atStart"
+      },
+      {
+        "command": "racketdap.macroSteps.next",
+        "category": "Racket",
+        "title": "Next Macro Step",
+        "icon": "$(debug-step-over)",
+        "enablement": "activeWebviewPanelId == 'racketeer.macroSteps' && racketdap.macroSteps.ready && !racketdap.macroSteps.busy && !racketdap.macroSteps.atEnd"
+      },
+      {
+        "command": "racketdap.macroSteps.last",
+        "category": "Racket",
+        "title": "Finish Macro Steps",
+        "icon": "$(debug-continue)",
+        "enablement": "activeWebviewPanelId == 'racketeer.macroSteps' && racketdap.macroSteps.ready && !racketdap.macroSteps.busy && !racketdap.macroSteps.atEnd"
+      },
+      {
+        "command": "racketdap.macroSteps.showAll",
+        "category": "Racket",
+        "title": "Show Racket's Macros Too",
+        "icon": "$(eye)",
+        "enablement": "activeWebviewPanelId == 'racketeer.macroSteps' && racketdap.macroSteps.ready && !racketdap.macroSteps.busy"
+      },
+      {
+        "command": "racketdap.macroSteps.showMine",
+        "category": "Racket",
+        "title": "Show Only My Macros",
+        "icon": "$(eye-closed)",
+        "enablement": "activeWebviewPanelId == 'racketeer.macroSteps' && racketdap.macroSteps.ready && !racketdap.macroSteps.busy"
       },
       {
         "command": "racketdap.managePackages",
@@ -328,6 +376,169 @@
         "command": "racketdap.fileActions",
         "title": "Racket: File Actions\u2026",
         "icon": "$(chevron-down)"
+      },
+      {
+        "command": "racketdap.macroSteps.jump",
+        "title": "Racket: Jump to Macro Step",
+        "enablement": "activeWebviewPanelId == 'racketeer.macroSteps' && racketdap.macroSteps.ready && !racketdap.macroSteps.busy"
+      },
+      {
+        "command": "racketdap.macroSteps.refresh",
+        "title": "Racket: Refresh Macro Steps",
+        "enablement": "activeWebviewPanelId == 'racketeer.macroSteps'"
+      },
+      {
+        "command": "racketdap.macroSteps.copyTerm",
+        "title": "Racket: Copy",
+        "enablement": "activeWebviewPanelId == 'racketeer.macroSteps' && racketdap.macroSteps.ready && !racketdap.macroSteps.busy && racketdap.macroSteps.canCopy"
+      },
+      {
+        "command": "racketdap.macroSteps.goToSource",
+        "title": "Racket: Go to Source",
+        "enablement": "activeWebviewPanelId == 'racketeer.macroSteps' && racketdap.macroSteps.ready && !racketdap.macroSteps.busy && racketdap.macroSteps.hasSelection && racketdap.macroSteps.hasSource"
+      },
+      {
+        "command": "racketdap.macroSteps.tack",
+        "title": "Racket: Keep Arrows",
+        "enablement": "activeWebviewPanelId == 'racketeer.macroSteps' && racketdap.macroSteps.ready && !racketdap.macroSteps.busy && racketdap.macroSteps.canKeepArrows && racketdap.macroSteps.drawBindingArrows"
+      },
+      {
+        "command": "racketdap.macroSteps.release",
+        "title": "Racket: Release Kept Arrows",
+        "enablement": "activeWebviewPanelId == 'racketeer.macroSteps' && racketdap.macroSteps.ready && !racketdap.macroSteps.busy && racketdap.macroSteps.hasKeptArrows && racketdap.macroSteps.drawBindingArrows"
+      },
+      {
+        "command": "racketdap.macroSteps.untackAll",
+        "title": "Racket: Clear Kept Arrows",
+        "enablement": "activeWebviewPanelId == 'racketeer.macroSteps' && racketdap.macroSteps.ready && !racketdap.macroSteps.busy && racketdap.macroSteps.hasPins"
+      },
+      {
+        "command": "racketdap.macroSteps.clearSelection",
+        "title": "Racket: Clear Macro Term Selection",
+        "enablement": "activeWebviewPanelId == 'racketeer.macroSteps' && racketdap.macroSteps.ready && !racketdap.macroSteps.busy && racketdap.macroSteps.hasSelection"
+      },
+      {
+        "command": "racketdap.macroSteps.properties",
+        "title": "Racket: Show Details",
+        "enablement": "activeWebviewPanelId == 'racketeer.macroSteps' && racketdap.macroSteps.ready && !racketdap.macroSteps.busy"
+      },
+      {
+        "command": "racketdap.macroSteps.definition",
+        "title": "Racket: Go to Binder",
+        "enablement": "activeWebviewPanelId == 'racketeer.macroSteps' && racketdap.macroSteps.ready && !racketdap.macroSteps.busy && racketdap.macroSteps.hasIdentifier"
+      },
+      {
+        "command": "racketdap.macroSteps.references",
+        "title": "Racket: Show Uses",
+        "enablement": "activeWebviewPanelId == 'racketeer.macroSteps' && racketdap.macroSteps.ready && !racketdap.macroSteps.busy && racketdap.macroSteps.hasIdentifier"
+      },
+      {
+        "command": "racketdap.macroSteps.morePhases",
+        "title": "Racket: Inspect More Phases",
+        "enablement": "activeWebviewPanelId == 'racketeer.macroSteps' && racketdap.macroSteps.ready && !racketdap.macroSteps.busy"
+      },
+      {
+        "command": "racketdap.macroSteps.openSavedSource",
+        "title": "Racket: Open Saved Macro Source",
+        "enablement": "activeWebviewPanelId == 'racketeer.macroSteps'"
+      },
+      {
+        "command": "racketdap.macroSteps.duplicate",
+        "title": "Racket: Duplicate Stepper",
+        "enablement": "activeWebviewPanelId == 'racketeer.macroSteps' && !racketdap.macroSteps.busy"
+      },
+      {
+        "command": "racketdap.macroSteps.duplicateCurrentTerm",
+        "title": "Racket: Duplicate Stepper (Current Term Only)",
+        "enablement": "activeWebviewPanelId == 'racketeer.macroSteps' && !racketdap.macroSteps.busy && racketdap.macroSteps.ready"
+      },
+      {
+        "command": "racketdap.macroSteps.removeSelectedTerm",
+        "title": "Racket: Remove Selected Term",
+        "enablement": "activeWebviewPanelId == 'racketeer.macroSteps' && !racketdap.macroSteps.busy && racketdap.macroSteps.ready"
+      },
+      {
+        "command": "racketdap.macroSteps.resetMarkNumbering",
+        "title": "Racket: Reset Mark Numbering",
+        "enablement": "activeWebviewPanelId == 'racketeer.macroSteps' && racketdap.macroSteps.ready && !racketdap.macroSteps.busy"
+      },
+      {
+        "command": "racketdap.macroSteps.foregroundGrouping",
+        "title": "Racket: Foreground Colors",
+        "enablement": "activeWebviewPanelId == 'racketeer.macroSteps' && racketdap.macroSteps.ready && !racketdap.macroSteps.busy"
+      },
+      {
+        "command": "racketdap.macroSteps.hiding",
+        "category": "Racket",
+        "title": "Macro Hiding...",
+        "enablement": "activeWebviewPanelId == 'racketeer.macroSteps' && racketdap.macroSteps.ready && !racketdap.macroSteps.busy",
+        "icon": "$(eye)"
+      },
+      {
+        "command": "racketdap.macroSteps.hidingRules",
+        "category": "Racket",
+        "title": "Macro Hiding Rules...",
+        "enablement": "activeWebviewPanelId == 'racketeer.macroSteps' && racketdap.macroSteps.ready && !racketdap.macroSteps.busy"
+      },
+      {
+        "command": "racketdap.macroSteps.hideMacro",
+        "category": "Racket",
+        "title": "Hide This Macro",
+        "enablement": "activeWebviewPanelId == 'racketeer.macroSteps' && racketdap.macroSteps.ready && !racketdap.macroSteps.busy && racketdap.macroSteps.hasIdentifier"
+      },
+      {
+        "command": "racketdap.macroSteps.showMacro",
+        "category": "Racket",
+        "title": "Show This Macro",
+        "enablement": "activeWebviewPanelId == 'racketeer.macroSteps' && racketdap.macroSteps.ready && !racketdap.macroSteps.busy && racketdap.macroSteps.hasIdentifier"
+      },
+      {
+        "command": "racketdap.macroSteps.includeRenamingSteps",
+        "title": "Include Renaming Steps",
+        "category": "Racket",
+        "enablement": "racketdap.macroSteps.ready && !racketdap.macroSteps.busy",
+        "toggled": "racketdap.macroSteps.includeRenamingSteps"
+      },
+      {
+        "command": "racketdap.macroSteps.alwaysSuffixMarkedIdentifiers",
+        "title": "Always Suffix Marked Identifiers",
+        "category": "Racket",
+        "enablement": "racketdap.macroSteps.ready && !racketdap.macroSteps.busy",
+        "toggled": "racketdap.macroSteps.alwaysSuffixMarkedIdentifiers"
+      },
+      {
+        "command": "racketdap.macroSteps.highlightRedexContractum",
+        "title": "Highlight Redex/Contractum",
+        "category": "Racket",
+        "enablement": "racketdap.macroSteps.ready && !racketdap.macroSteps.busy",
+        "toggled": "racketdap.macroSteps.highlightRedexContractum"
+      },
+      {
+        "command": "racketdap.macroSteps.drawBindingArrows",
+        "title": "Draw Binding Arrows",
+        "category": "Racket",
+        "enablement": "racketdap.macroSteps.ready && !racketdap.macroSteps.busy",
+        "toggled": "racketdap.macroSteps.drawBindingArrows"
+      },
+      {
+        "command": "racketdap.macroSteps.oneTermAtATime",
+        "title": "One Term at a Time",
+        "category": "Racket",
+        "enablement": "racketdap.macroSteps.ready && !racketdap.macroSteps.busy",
+        "toggled": "racketdap.macroSteps.oneTermAtATime"
+      },
+      {
+        "command": "racketdap.macroSteps.factorCommonContext",
+        "title": "Factor Out Common Context",
+        "category": "Racket",
+        "enablement": "racketdap.macroSteps.ready && !racketdap.macroSteps.busy",
+        "toggled": "racketdap.macroSteps.factorCommonContext"
+      },
+      {
+        "command": "racketdap.macroSteps.taintIcons",
+        "title": "Taint Icons",
+        "category": "Racket",
+        "enablement": "activeWebviewPanelId == 'racketeer.macroSteps'"
       }
     ],
     "configuration": {
@@ -490,6 +701,52 @@
           "type": "string",
           "default": "error",
           "description": "Application log capture for new debugger and Interactions sessions. Start with none, fatal, error, warning, info or debug, then optional level@topic overrides, for example: warning debug@network."
+        },
+        "racketdap.macroSteps.includeRenamingSteps": {
+          "type": "boolean",
+          "scope": "resource",
+          "default": false,
+          "description": "Include scope and identifier-resolution transitions in macro steps."
+        },
+        "racketdap.macroSteps.highlightRedexContractum": {
+          "type": "boolean",
+          "scope": "resource",
+          "default": true,
+          "description": "Highlight the changed syntax in the Before and After macro panes."
+        },
+        "racketdap.macroSteps.drawBindingArrows": {
+          "type": "boolean",
+          "scope": "resource",
+          "default": true,
+          "description": "Draw binding arrows in all open macro panes."
+        },
+        "racketdap.macroSteps.oneTermAtATime": {
+          "type": "boolean",
+          "scope": "resource",
+          "default": false,
+          "description": "Show each transformation as a Before position followed by an After position."
+        },
+        "racketdap.macroSteps.factorCommonContext": {
+          "type": "boolean",
+          "scope": "resource",
+          "default": false,
+          "description": "Show shared expansion context below paired transformation fragments. Kept while One Term at a Time is enabled."
+        },
+        "racketdap.macroSteps.taintIcons": {
+          "type": "string",
+          "enum": [
+            "codicons",
+            "unicode",
+            "none"
+          ],
+          "enumDescriptions": [
+            "Theme-coloured lock, unlock and zap icons.",
+            "Unicode lock, open lock and collision marks.",
+            "Hide term marks."
+          ],
+          "default": "codicons",
+          "scope": "window",
+          "description": "Taint marks in macro expansion panes."
         }
       }
     },
@@ -539,8 +796,8 @@
               },
               "stopOnEntry": {
                 "type": "boolean",
-                "default": false,
-                "description": "Pause automatically at startup. stopOnEntryMode chooses where to pause."
+                "default": true,
+                "description": "Pause automatically at startup, unless this is false. stopOnEntryMode chooses where to pause."
               },
               "stopOnEntryMode": {
                 "type": "string",
@@ -725,9 +982,50 @@
         "when": "editorTextFocus && editorLangId == racket && resourceScheme == file && editorHasSelection"
       },
       {
-        "command": "racketdap.openMacroStepper",
-        "key": "alt+shift+enter",
-        "when": "editorTextFocus && editorLangId == racket"
+        "command": "racketdap.stepMacros",
+        "key": "alt+shift+m",
+        "when": "editorTextFocus && editorLangId == racket && (resourceScheme == file || resourceScheme == untitled)"
+      },
+      {
+        "command": "racketdap.macroSteps.next",
+        "key": "f10",
+        "when": "activeWebviewPanelId == 'racketeer.macroSteps' && racketdap.macroSteps.ready && !racketdap.macroSteps.busy && racketdap.macroSteps.focusWithin && !racketdap.macroSteps.inputFocus && !racketdap.macroSteps.atEnd && !inDebugMode"
+      },
+      {
+        "command": "racketdap.macroSteps.next",
+        "key": "alt+right",
+        "when": "activeWebviewPanelId == 'racketeer.macroSteps' && racketdap.macroSteps.ready && !racketdap.macroSteps.busy && racketdap.macroSteps.focusWithin && !racketdap.macroSteps.inputFocus && !racketdap.macroSteps.atEnd"
+      },
+      {
+        "command": "racketdap.macroSteps.previous",
+        "key": "alt+left",
+        "when": "activeWebviewPanelId == 'racketeer.macroSteps' && racketdap.macroSteps.ready && !racketdap.macroSteps.busy && racketdap.macroSteps.focusWithin && !racketdap.macroSteps.inputFocus && !racketdap.macroSteps.atStart"
+      },
+      {
+        "command": "racketdap.stepMacros",
+        "key": "alt+shift+m",
+        "when": "activeWebviewPanelId == 'racketeer.macroSteps' && !racketdap.macroSteps.inputFocus"
+      },
+      {
+        "command": "racketdap.macroSteps.hiding",
+        "key": "ctrl+k h",
+        "mac": "cmd+k h",
+        "when": "activeWebviewPanelId == 'racketeer.macroSteps' && racketdap.macroSteps.ready && !racketdap.macroSteps.busy && racketdap.macroSteps.focusWithin && !racketdap.macroSteps.inputFocus"
+      },
+      {
+        "command": "racketdap.macroSteps.definition",
+        "key": "f12",
+        "when": "activeWebviewPanelId == 'racketeer.macroSteps' && racketdap.macroSteps.ready && !racketdap.macroSteps.busy && racketdap.macroSteps.focusWithin && !racketdap.macroSteps.inputFocus && racketdap.macroSteps.hasIdentifier"
+      },
+      {
+        "command": "racketdap.macroSteps.references",
+        "key": "shift+f12",
+        "when": "activeWebviewPanelId == 'racketeer.macroSteps' && racketdap.macroSteps.ready && !racketdap.macroSteps.busy && racketdap.macroSteps.focusWithin && !racketdap.macroSteps.inputFocus && racketdap.macroSteps.hasIdentifier"
+      },
+      {
+        "command": "racketdap.macroSteps.clearSelection",
+        "key": "escape",
+        "when": "activeWebviewPanelId == 'racketeer.macroSteps' && racketdap.macroSteps.ready && !racketdap.macroSteps.busy && racketdap.macroSteps.focusWithin && !racketdap.macroSteps.inputFocus && racketdap.macroSteps.hasSelection && !racketdap.macroSteps.menuOpen"
       }
     ],
     "menus": {
@@ -775,16 +1073,298 @@
           "command": "racketdap.fileActions",
           "when": "resourceLangId == racket && resourceScheme == file",
           "group": "navigation@3"
+        },
+        {
+          "command": "racketdap.macroSteps.first",
+          "when": "activeWebviewPanelId == 'racketeer.macroSteps' && racketdap.macroSteps.ready && !racketdap.macroSteps.busy",
+          "group": "navigation@1"
+        },
+        {
+          "command": "racketdap.macroSteps.previous",
+          "when": "activeWebviewPanelId == 'racketeer.macroSteps' && racketdap.macroSteps.ready && !racketdap.macroSteps.busy",
+          "group": "navigation@2"
+        },
+        {
+          "command": "racketdap.macroSteps.next",
+          "when": "activeWebviewPanelId == 'racketeer.macroSteps' && racketdap.macroSteps.ready && !racketdap.macroSteps.busy",
+          "group": "navigation@3"
+        },
+        {
+          "command": "racketdap.macroSteps.last",
+          "when": "activeWebviewPanelId == 'racketeer.macroSteps' && racketdap.macroSteps.ready && !racketdap.macroSteps.busy",
+          "group": "navigation@4"
+        },
+        {
+          "command": "racketdap.macroSteps.jump",
+          "when": "activeWebviewPanelId == 'racketeer.macroSteps'",
+          "group": "macro@0"
+        },
+        {
+          "command": "racketdap.macroSteps.copyTerm",
+          "when": "activeWebviewPanelId == 'racketeer.macroSteps'",
+          "group": "macro@2"
+        },
+        {
+          "command": "racketdap.macroSteps.goToSource",
+          "when": "activeWebviewPanelId == 'racketeer.macroSteps'",
+          "group": "macro@3"
+        },
+        {
+          "command": "racketdap.macroSteps.tack",
+          "when": "activeWebviewPanelId == 'racketeer.macroSteps'",
+          "group": "macro@4"
+        },
+        {
+          "command": "racketdap.macroSteps.release",
+          "when": "activeWebviewPanelId == 'racketeer.macroSteps'",
+          "group": "macro@5"
+        },
+        {
+          "command": "racketdap.macroSteps.untackAll",
+          "when": "activeWebviewPanelId == 'racketeer.macroSteps'",
+          "group": "macro@6"
+        },
+        {
+          "command": "racketdap.macroSteps.properties",
+          "when": "activeWebviewPanelId == 'racketeer.macroSteps'",
+          "group": "macro@7"
+        },
+        {
+          "command": "racketdap.macroSteps.refresh",
+          "when": "activeWebviewPanelId == 'racketeer.macroSteps'",
+          "group": "macro@8"
+        },
+        {
+          "command": "racketdap.macroSteps.openSavedSource",
+          "when": "activeWebviewPanelId == 'racketeer.macroSteps' && racketdap.macroSteps.savedSourceAvailable",
+          "group": "macro@14"
+        },
+        {
+          "command": "racketdap.macroSteps.duplicate",
+          "when": "activeWebviewPanelId == 'racketeer.macroSteps'",
+          "group": "8_window"
+        },
+        {
+          "command": "racketdap.macroSteps.duplicateCurrentTerm",
+          "when": "activeWebviewPanelId == 'racketeer.macroSteps'",
+          "group": "8_window"
+        },
+        {
+          "command": "racketdap.macroSteps.removeSelectedTerm",
+          "when": "activeWebviewPanelId == 'racketeer.macroSteps'",
+          "group": "8_window"
+        },
+        {
+          "command": "racketdap.macroSteps.resetMarkNumbering",
+          "when": "activeWebviewPanelId == 'racketeer.macroSteps'",
+          "group": "9_display"
+        },
+        {
+          "command": "racketdap.macroSteps.foregroundGrouping",
+          "when": "activeWebviewPanelId == 'racketeer.macroSteps'",
+          "group": "9_display"
+        },
+        {
+          "command": "racketdap.macroSteps.hiding",
+          "when": "activeWebviewPanelId == 'racketeer.macroSteps' && racketdap.macroSteps.ready && !racketdap.macroSteps.busy",
+          "group": "navigation@5"
+        },
+        {
+          "command": "racketdap.macroSteps.hidingRules",
+          "when": "activeWebviewPanelId == 'racketeer.macroSteps' && racketdap.macroSteps.ready && !racketdap.macroSteps.busy",
+          "group": "macro@9"
+        },
+        {
+          "command": "racketdap.macroSteps.includeRenamingSteps",
+          "when": "activeWebviewPanelId == 'racketeer.macroSteps'",
+          "group": "4_macroOptions@1"
+        },
+        {
+          "command": "racketdap.macroSteps.alwaysSuffixMarkedIdentifiers",
+          "when": "activeWebviewPanelId == 'racketeer.macroSteps'",
+          "group": "4_macroOptions@2"
+        },
+        {
+          "command": "racketdap.macroSteps.highlightRedexContractum",
+          "when": "activeWebviewPanelId == 'racketeer.macroSteps'",
+          "group": "4_macroOptions@3"
+        },
+        {
+          "command": "racketdap.macroSteps.drawBindingArrows",
+          "when": "activeWebviewPanelId == 'racketeer.macroSteps'",
+          "group": "4_macroOptions@4"
+        },
+        {
+          "command": "racketdap.macroSteps.oneTermAtATime",
+          "when": "activeWebviewPanelId == 'racketeer.macroSteps'",
+          "group": "4_macroOptions@5"
+        },
+        {
+          "command": "racketdap.macroSteps.factorCommonContext",
+          "when": "activeWebviewPanelId == 'racketeer.macroSteps'",
+          "group": "4_macroOptions@6"
+        },
+        {
+          "command": "racketdap.macroSteps.taintIcons",
+          "when": "activeWebviewPanelId == 'racketeer.macroSteps'",
+          "group": "4_macroOptions@7"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "racketdap.macroSteps.first",
+          "when": "activeWebviewPanelId == 'racketeer.macroSteps' && racketdap.macroSteps.ready && !racketdap.macroSteps.busy"
+        },
+        {
+          "command": "racketdap.macroSteps.previous",
+          "when": "activeWebviewPanelId == 'racketeer.macroSteps' && racketdap.macroSteps.ready && !racketdap.macroSteps.busy"
+        },
+        {
+          "command": "racketdap.macroSteps.next",
+          "when": "activeWebviewPanelId == 'racketeer.macroSteps' && racketdap.macroSteps.ready && !racketdap.macroSteps.busy"
+        },
+        {
+          "command": "racketdap.macroSteps.last",
+          "when": "activeWebviewPanelId == 'racketeer.macroSteps' && racketdap.macroSteps.ready && !racketdap.macroSteps.busy"
+        },
+        {
+          "command": "racketdap.macroSteps.jump",
+          "when": "activeWebviewPanelId == 'racketeer.macroSteps'"
+        },
+        {
+          "command": "racketdap.macroSteps.refresh",
+          "when": "activeWebviewPanelId == 'racketeer.macroSteps'"
+        },
+        {
+          "command": "racketdap.macroSteps.copyTerm",
+          "when": "activeWebviewPanelId == 'racketeer.macroSteps'"
+        },
+        {
+          "command": "racketdap.macroSteps.goToSource",
+          "when": "activeWebviewPanelId == 'racketeer.macroSteps'"
+        },
+        {
+          "command": "racketdap.macroSteps.tack",
+          "when": "activeWebviewPanelId == 'racketeer.macroSteps'"
+        },
+        {
+          "command": "racketdap.macroSteps.release",
+          "when": "activeWebviewPanelId == 'racketeer.macroSteps'"
+        },
+        {
+          "command": "racketdap.macroSteps.untackAll",
+          "when": "activeWebviewPanelId == 'racketeer.macroSteps'"
+        },
+        {
+          "command": "racketdap.macroSteps.clearSelection",
+          "when": "false"
+        },
+        {
+          "command": "racketdap.macroSteps.properties",
+          "when": "activeWebviewPanelId == 'racketeer.macroSteps'"
+        },
+        {
+          "command": "racketdap.macroSteps.definition",
+          "when": "false"
+        },
+        {
+          "command": "racketdap.macroSteps.references",
+          "when": "false"
+        },
+        {
+          "command": "racketdap.macroSteps.morePhases",
+          "when": "false"
+        },
+        {
+          "command": "racketdap.macroSteps.openSavedSource",
+          "when": "activeWebviewPanelId == 'racketeer.macroSteps' && racketdap.macroSteps.savedSourceAvailable"
+        },
+        {
+          "command": "racketdap.macroSteps.duplicate",
+          "when": "activeWebviewPanelId == 'racketeer.macroSteps'",
+          "group": "8_window"
+        },
+        {
+          "command": "racketdap.macroSteps.duplicateCurrentTerm",
+          "when": "activeWebviewPanelId == 'racketeer.macroSteps'",
+          "group": "8_window"
+        },
+        {
+          "command": "racketdap.macroSteps.removeSelectedTerm",
+          "when": "activeWebviewPanelId == 'racketeer.macroSteps'",
+          "group": "8_window"
+        },
+        {
+          "command": "racketdap.macroSteps.resetMarkNumbering",
+          "when": "activeWebviewPanelId == 'racketeer.macroSteps'",
+          "group": "9_display"
+        },
+        {
+          "command": "racketdap.macroSteps.foregroundGrouping",
+          "when": "activeWebviewPanelId == 'racketeer.macroSteps'",
+          "group": "9_display"
+        },
+        {
+          "command": "racketdap.macroSteps.hiding",
+          "when": "activeWebviewPanelId == 'racketeer.macroSteps' && racketdap.macroSteps.ready && !racketdap.macroSteps.busy"
+        },
+        {
+          "command": "racketdap.macroSteps.hidingRules",
+          "when": "activeWebviewPanelId == 'racketeer.macroSteps' && racketdap.macroSteps.ready && !racketdap.macroSteps.busy"
+        },
+        {
+          "command": "racketdap.macroSteps.hideMacro",
+          "when": "false"
+        },
+        {
+          "command": "racketdap.macroSteps.showMacro",
+          "when": "false"
+        },
+        {
+          "command": "racketdap.macroSteps.showAll",
+          "when": "false"
+        },
+        {
+          "command": "racketdap.macroSteps.showMine",
+          "when": "false"
+        },
+        {
+          "command": "racketdap.macroSteps.includeRenamingSteps",
+          "when": "activeWebviewPanelId == 'racketeer.macroSteps'"
+        },
+        {
+          "command": "racketdap.macroSteps.alwaysSuffixMarkedIdentifiers",
+          "when": "activeWebviewPanelId == 'racketeer.macroSteps'"
+        },
+        {
+          "command": "racketdap.macroSteps.highlightRedexContractum",
+          "when": "activeWebviewPanelId == 'racketeer.macroSteps'"
+        },
+        {
+          "command": "racketdap.macroSteps.drawBindingArrows",
+          "when": "activeWebviewPanelId == 'racketeer.macroSteps'"
+        },
+        {
+          "command": "racketdap.macroSteps.oneTermAtATime",
+          "when": "activeWebviewPanelId == 'racketeer.macroSteps'"
+        },
+        {
+          "command": "racketdap.macroSteps.factorCommonContext",
+          "when": "activeWebviewPanelId == 'racketeer.macroSteps'"
+        },
+        {
+          "command": "racketdap.macroSteps.taintIcons",
+          "when": "activeWebviewPanelId == 'racketeer.macroSteps'"
         }
       ],
       "editor/context": [
         {
-          "command": "racketdap.openMacroStepper",
+          "command": "racketdap.stepMacros",
           "when": "resourceLangId == racket",
           "group": "racket@6"
         },
         {
-          "command": "racketdap.openFileInMacroStepper",
+          "command": "racketdap.stepMacrosInFile",
           "when": "resourceLangId == racket",
           "group": "racket@7"
         },
@@ -856,6 +1436,98 @@
           "command": "racketdap.browseDependencies",
           "when": "resourceExtname == .rkt || resourceExtname == .rhm || resourceExtname == .wxme",
           "group": "racket"
+        }
+      ],
+      "webview/context": [
+        {
+          "command": "racketdap.macroSteps.copyTerm",
+          "when": "webviewId == 'racketeer.macroSteps' && racketdap.macroSteps.ready && !racketdap.macroSteps.busy",
+          "group": "macro@0"
+        },
+        {
+          "command": "racketdap.macroSteps.goToSource",
+          "when": "webviewId == 'racketeer.macroSteps' && racketdap.macroSteps.ready && !racketdap.macroSteps.busy",
+          "group": "macro@1"
+        },
+        {
+          "command": "racketdap.macroSteps.properties",
+          "when": "webviewId == 'racketeer.macroSteps' && racketdap.macroSteps.ready && !racketdap.macroSteps.busy",
+          "group": "macro@2"
+        },
+        {
+          "command": "racketdap.macroSteps.tack",
+          "when": "webviewId == 'racketeer.macroSteps' && racketdap.macroSteps.ready && !racketdap.macroSteps.busy",
+          "group": "macro@3"
+        },
+        {
+          "command": "racketdap.macroSteps.release",
+          "when": "webviewId == 'racketeer.macroSteps' && racketdap.macroSteps.ready && !racketdap.macroSteps.busy",
+          "group": "macro@4"
+        },
+        {
+          "command": "racketdap.macroSteps.untackAll",
+          "when": "webviewId == 'racketeer.macroSteps' && racketdap.macroSteps.ready && !racketdap.macroSteps.busy",
+          "group": "macro@5"
+        },
+        {
+          "command": "racketdap.macroSteps.jump",
+          "when": "webviewId == 'racketeer.macroSteps'",
+          "group": "macro@0"
+        },
+        {
+          "command": "racketdap.macroSteps.refresh",
+          "when": "webviewId == 'racketeer.macroSteps'",
+          "group": "macro@8"
+        },
+        {
+          "command": "racketdap.macroSteps.definition",
+          "when": "webviewId == 'racketeer.macroSteps'",
+          "group": "macro@11"
+        },
+        {
+          "command": "racketdap.macroSteps.references",
+          "when": "webviewId == 'racketeer.macroSteps'",
+          "group": "macro@12"
+        },
+        {
+          "command": "racketdap.macroSteps.openSavedSource",
+          "when": "webviewId == 'racketeer.macroSteps' && racketdap.macroSteps.savedSourceAvailable",
+          "group": "macro@14"
+        },
+        {
+          "command": "racketdap.macroSteps.duplicate",
+          "when": "webviewId == 'racketeer.macroSteps'",
+          "group": "8_window"
+        },
+        {
+          "command": "racketdap.macroSteps.duplicateCurrentTerm",
+          "when": "webviewId == 'racketeer.macroSteps'",
+          "group": "8_window"
+        },
+        {
+          "command": "racketdap.macroSteps.removeSelectedTerm",
+          "when": "webviewId == 'racketeer.macroSteps'",
+          "group": "8_window"
+        },
+        {
+          "command": "racketdap.macroSteps.resetMarkNumbering",
+          "when": "webviewId == 'racketeer.macroSteps'",
+          "group": "9_display"
+        },
+        {
+          "command": "racketdap.macroSteps.foregroundGrouping",
+          "when": "webviewId == 'racketeer.macroSteps'",
+          "group": "9_display"
+        },
+        {
+          "command": "racketdap.macroSteps.hideMacro",
+          "when": "webviewId == 'racketeer.macroSteps' && racketdap.macroSteps.ready && !racketdap.macroSteps.busy && racketdap.macroSteps.hasIdentifier",
+          "group": "macro@10"
+        },
+        {
+          "command": "racketdap.macroSteps.showMacro",
+          "when": "webviewId == 'racketeer.macroSteps' && racketdap.macroSteps.ready && !racketdap.macroSteps.busy && racketdap.macroSteps.hasIdentifier",
+          "group": "macro@10"
         }
       ]
     },
@@ -936,13 +1608,15 @@
     ]
   },
   "dependencies": {
-    "vscode-languageclient": "11.0.0"
+    "jsonc-parser": "3.3.1",
+    "monaco-editor": "0.57.0",
+    "vscode-languageclient": "11.0.0",
+    "vscode-oniguruma": "2.0.1",
+    "vscode-textmate": "9.2.0"
   },
   "devDependencies": {
     "@vscode/test-electron": "2.5.2",
     "@vscode/vsce": "3.9.2",
-    "esbuild": "0.25.12",
-    "vscode-textmate": "9.2.0",
-    "vscode-oniguruma": "2.0.1"
+    "esbuild": "0.25.12"
   }
 }

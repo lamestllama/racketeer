@@ -42,7 +42,7 @@ exports.run = async function (workspace) {
   try {
     const started = Date.now();
     assert.equal(await vscode.debug.startDebugging(workspace, {
-      type: 'racketdap', request: 'launch', name: 'Image result inspection',
+      type: 'racketdap', request: 'launch', name: 'Image result inspection', stopOnEntry: false,
       program: path.join(workspace.uri.fsPath, 'images.rkt'), interactive: true, submodule: []
     }), true);
     const session = await until(() => sessions[0], 'image debug session starts');
@@ -92,7 +92,7 @@ exports.run = async function (workspace) {
     breakpoints.push(new vscode.SourceBreakpoint(new vscode.Location(vscode.Uri.file(variableProgram), new vscode.Position(4, 0))));
     vscode.debug.addBreakpoints(breakpoints);
     assert.equal(await vscode.debug.startDebugging(workspace, {
-      type: 'racketdap', request: 'launch', name: 'Image variable inspection', program: variableProgram, submodule: []
+      type: 'racketdap', request: 'launch', name: 'Image variable inspection', program: variableProgram, submodule: [], stopOnEntry: false
     }), true);
     const paused = await until(() => sessions[1], 'image variable session starts');
     const stop = await event(paused, 'stopped');

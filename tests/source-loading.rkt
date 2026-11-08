@@ -15,6 +15,26 @@
   (display-to-file text path #:exists 'truncate/replace))
 
 (module+ test
+  (for ([atomic? '(#f #t)])
+    (test-case (format "freshness detects timestamp-preserving rewrites: atomic ~a" atomic?)
+      (with-directory
+       (lambda (directory)
+         (define file (build-path directory "current.rkt"))
+         (write-source file "(old)\n")
+         (file-or-directory-modify-seconds file 1700000000)
+         (define identity (file-or-directory-identity file))
+         (define snapshot (capture-source file 1))
+         (check-true (source-current? snapshot))
+         (check-true (source-current? snapshot))
+         (define replacement (if atomic? (build-path directory "replacement.rkt") file))
+         (write-source replacement "(new)\n")
+         (file-or-directory-modify-seconds replacement 1700000000)
+         (when atomic? (rename-file-or-directory replacement file #t))
+         (check-equal? (equal? identity (file-or-directory-identity file)) (not atomic?))
+         (check-false (source-current? snapshot))
+         (check-false (source-current? snapshot)))))))
+
+(module+ test
   (for* ([instrument? '(#f #t)] [plain? '(#f #t)])
     (test-case (format "one source read supplies execution and snapshots: debug ~a, plain ~a"
                        instrument? plain?)

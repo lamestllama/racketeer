@@ -1,3 +1,4 @@
+<!-- Copyright (c) 2026 Eric Parsonage. SPDX-License-Identifier: Apache-2.0 OR MIT -->
 # Understanding the stops
 
 Racketeer currently steps through expressions and exposes both their start and
@@ -52,19 +53,22 @@ around the stop, as at a tail expression in a thread's function or a callback, S
 Out goes to the next source boundary, which can be inside a function, so the press
 always ends in a stop. **F5 / Continue** runs until a breakpoint, exception, or
 completion.
-Set `stopOnEntry` to `false` to run directly to the first breakpoint.
+Set `stopOnEntry` to `false` to run directly to the first breakpoint. A launch that
+does not set it stops at its start, and an attach has no start to stop at. A session
+that finds nowhere to stop at its start says so. If the file only defines macros or
+functions, debug a file that uses it.
 
 **Call Stack**, **Variables**, and **Watch**
 retain their native VS Code labels. The **Locals** scope in Variables contains
 the lexical variables visible in the selected frame.
 
-Call Stack labels each stop **Before evaluation** or **Returned N values**.
-Before evaluation, the expression is highlighted; after it returns, the marker
-moves to its closing parenthesis. Open **Return values** to inspect those values.
-The scope includes the count, such as **Return values (1)**; **Return values
-(0)** is distinct from one `#<void>` value.
-**Waiting for return** identifies a caller whose calculation is still pending.
-These are two stages of one evaluation, not two executions of the expression.
+Call Stack labels each stop **Before evaluation** or **Returned N values**. Before
+evaluation, the expression is highlighted; after it returns, the marker moves to its
+closing parenthesis. Open **Return values** to inspect those values. The scope includes
+the count. For example: **Return values (1)**. **Return values (0)** is distinct from
+one `#<void>` value. **Waiting for return** identifies a caller whose calculation is
+still pending. These are two stages of one evaluation, not two executions of the
+expression.
 
 Stepping is by expression, so several stops can share a source line. Expanded forms
 can also share a larger source range, which currently makes some stops highlight a
@@ -81,29 +85,34 @@ A breakpoint set in the file after a saved edit stays unverified until a restart
 its line is in text that is not running. One already placed stays where it was. A breakpoint
 set in a captured source tab works on the running text and ends with the session.
 
-Internal definitions expand into binding containers whose source range can
-cover the whole function. Those generated containers are not separate stepping
-stops. Step Into enters the first executable initialiser, and Step Over advances
-through the remaining initialisers and body expressions. Explicit binding forms
-such as `let` and `letrec` retain their own expression stops. Macros can still
-execute a source expression more than once. Each execution retains its start
-and returned-value stops. When expansion metadata identifies the source
-expression inside a generated wrapper with the same range, that expression
-owns the stop. Step Over then completes one execution, not the whole wrapper.
+Internal definitions expand into binding containers whose source range can cover the
+whole function. Those generated containers are not separate stepping stops. Step Into
+enters the first executable initialiser, and Step Over advances through the remaining
+initialisers and body expressions. Explicit binding forms retain their own expression
+stops. For example: `let` and `letrec`. Macros can still execute a source expression
+more than once. Each execution retains its start and returned-value stops. When
+expansion metadata identifies the source expression inside a generated wrapper with the
+same range, that expression owns the stop. Step Over then completes one execution, not
+the whole wrapper.
 
-Expansion can also give generated code the location of source text it came from.
-A value shown against source text is that text's value, so generated code has no
-stops when expressions written in the same module-level form hold that range, or
-when its location takes in the stop around it and its value is not that stop's
-value. In `(for ([i (list 1 2)]) (f i))`, `(list 1 2)` stops once and returns
-`(1 2)`, a breakpoint on it stops once, and each iteration stops only at `(f i)`.
-Each use of a macro's argument keeps its stops, and so do a macro's template, the
-name of a macro such as `for/list`, and the whole of a call such as
-`(sort lst <)` that goes through a macro with the function's name. An operation
-generated around a constant or a variable is the only stop that text has, and
-stays, but what it returns is not the text's value: `(for ([i lst]) (f i))` stops
-once at `lst`, before and after, and Call Stack says **Returned, value not shown**,
-with no **Return values** scope.
+Expansion can also give generated code the location of source text it came from. A value
+shown against source text is that text's value, so generated code has no stops when
+expressions written in the same module-level form hold that range, or when its location
+takes in the stop around it and its value is not that stop's value. In `(for ([i (list 1
+2)]) (f i))`, `(list 1 2)` stops once and returns `(1 2)`, a breakpoint on it stops
+once, and each iteration stops only at `(f i)`. A macro's template stops where it is
+written when it is in the program's own files, under the source roots, even in another
+file: stepping goes into that file and back, and a breakpoint there stops at each use of
+the macro. Macros from anywhere else report the place they are used. This includes
+Racket's own macros. The outermost form of a `define-syntax-rule` template takes the
+location of the macro's use, as Racket gives it, so a template of one expression stops
+at the use. Each use of a macro's argument keeps its stops, and so do a macro's
+template, the name of a macro and the whole of a call that goes through a macro with the
+function's name. For example: `for/list` and `(sort lst <)`. An operation generated
+around a constant or a variable is the only stop that text has, and stays, but what it
+returns is not the text's value: `(for ([i lst]) (f i))` stops once at `lst`, before and
+after, and Call Stack says **Returned, value not shown**, with no **Return values**
+scope.
 
 Standalone expressions in a module body or plain file also have stops when
 they are a literal, a variable reference, or a function expression. Atomic

@@ -1,0 +1,20 @@
+diff --git a/common/source-snapshot.rkt b/common/source-snapshot.rkt
+--- a/common/source-snapshot.rkt
++++ b/common/source-snapshot.rkt
+@@ -79,11 +79,15 @@
+               (eval (cached-source-code held))]
+              [else
+               (define loads (box '()))
++              ;; Registered external reads are reported after compilation. Their
++              ;; contents cannot be reconstructed by replaying module loads, so
++              ;; retain normal compilation for modules that make such reads.
++              (define externals (and cache (make-log-receiver (current-logger) 'info 'cm-accomplice)))
+               (define code
+                 (parameterize ([collecting (cons loads (collecting))])
+                   (observe! full)
+                   (compile-source)))
+-              (when cache
++              (when (and cache (not (sync/timeout 0 externals)))
+                 (hash-set! cache full (cached-source code (reverse (unbox loads)))))
+               (eval code)])))]
+       [else

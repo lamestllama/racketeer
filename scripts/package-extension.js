@@ -18,6 +18,10 @@ async function main() {
   if (result.error) throw result.error;
   if (result.status !== 0) { process.exitCode = result.status || 1; return; }
   const recorded = await recordArtifact(output, source);
+  for (const file of ['out/extension.js', 'out/monaco/editor.js', 'out/monaco/editor.css', 'out/monaco/codicon.ttf', 'out/onig.wasm', 'out/THIRD_PARTY_NOTICES.txt', 'syntaxes/racket.tmLanguage.json',
+    'macro-view/model.js', 'macro-view/geometry.js', 'macro-view/protocol.js', 'macro-view/monaco.js', 'macro-view/state.js', 'macro-view/page.js', 'macro-view/editor.js', 'macro-view/decorations.js', 'macro-view/overlay.js', 'macro-view/details.js', 'macro-view/sentence.js', 'macro-view/input.js', 'macro-view/layout.js', 'macro-view/test-hooks.js', 'macro-view/messages.js', 'macro-view/view.js', 'macro-view/view.css']) {
+    if (!recorded.contents[`extension/${file}`]) throw Error(`Missing packaged token resource: ${file}`);
+  }
   console.log(`Artifact SHA256: ${recorded.sha256}\nBuild manifest: ${output}.build.json`);
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

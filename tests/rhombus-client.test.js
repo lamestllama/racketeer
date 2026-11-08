@@ -74,8 +74,8 @@ function fixture(initialDocuments = [], source = 'bundled', magic) {
       indexes.push(index); return index;
     } },
     './racket-version': { racketTooOld: async () => undefined },
-    './language-process': { ownedArgs: require('../vscode/language-process').ownedArgs, createLanguageProcess(executable, args) {
-      const process = { executable, args, start: async () => ({}), ready() {}, cancelStart() {}, disposed: false,
+    './language-process': { ownedArgs: require('../vscode/language-process').ownedArgs, createLanguageProcess(executable, args, _options, lifecycle) {
+      const process = { executable, args, owned: lifecycle.owned, start: async () => ({}), ready() {}, cancelStart() {}, disposed: false,
         async dispose() { this.disposed = true; } };
       processes.push(process); return process;
     } }
@@ -257,7 +257,9 @@ for (const source of ['bundled', 'installed']) test(`Rhombus-only startup regist
   assert.equal(instance.status.visible, true);
   assert.match(instance.status.tooltip, /Rhombus/);
   assert.deepEqual(JSON.parse(JSON.stringify(instance.processes[0].args)),
-    ['/extension/runtime/racketdap/tools/owned-command.rkt', ...(source === 'installed' ? ['-l', 'racket-langserver'] : ['/extension/language-server.rkt'])]);
+    [...(process.platform === 'win32' ? ['/extension/runtime/racketdap/tools/owned-command.rkt', '--supervise-input'] : []),
+      ...(source === 'installed' ? ['-l', 'racket-langserver'] : ['/extension/language-server.rkt'])]);
+  assert.equal(instance.processes[0].owned, true);
   instance.vscode.window.activeTextEditor = { document: { languageId: 'plaintext' } };
   instance.active.emit(); assert.equal(instance.status.visible, false);
   instance.vscode.window.activeTextEditor = { document: { languageId: 'rhombus' } };

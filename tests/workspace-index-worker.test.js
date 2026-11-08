@@ -40,6 +40,52 @@ const pidIn = file => until(() => {
   return /^\d+$/.test(text) && Number(text);
 }, 60, () => `No process id appeared in ${file}`);
 
+test('a pass reuses its process but isolates parameters, module state and child threads between files', async t => {
+  const p = await project(t, { RACKETEER_INDEX_WORKERS: '1', RACKETEER_INDEX_TRACE: '1' });
+  const first = p.filename('first.pid'), second = p.filename('second.pid');
+  const effect = p.filename('effect'), leaked = p.filename('leaked');
+  // The dependency's phase instance must also be new in the second namespace.
+  fs.mkdirSync(p.filename('build'));
+  p.write('build/state.rkt', '#lang racket/base\n(provide state)\n(define state (box #f))\n');
+  p.write('a.rkt', compileTime(`${writePid(first)}
+  (set-box! state #t)
+  (print-as-expression #f)
+  (thread (lambda () (let wait ()
+    (when (file-exists? ${quoted(effect)})
+      (call-with-output-file ${quoted(leaked)} #:exists 'truncate void))
+    (sleep 0.01) (wait))))`, 'ffi/unsafe "build/state.rkt"'));
+  p.write('b.rkt', compileTime(`${writePid(second)}
+  (unless (and (print-as-expression) (not (unbox state))) (error 'test "state leaked"))
+  (call-with-output-file ${quoted(effect)} #:exists 'truncate void)
+  (sleep 0.1)
+  (when (file-exists? ${quoted(leaked)}) (error 'test "thread leaked"))`, 'ffi/unsafe "build/state.rkt"'));
+  await p.update();
+  assert.equal(from(await p.references(p.origin), uri(p.filename('uses.rkt'))).length, 1);
+  assert.equal(p.notifications.at(-1).state, 'ready', p.diagnostics());
+  assert.equal(await pidIn(first), await pidIn(second), 'Both files must use one process');
+  assert.match(p.diagnostics(), /discover: started/);
+  assert.doesNotMatch(p.diagnostics(), /analyse \S*[ab]\.rkt: started/);
+  await stops(await pidIn(first), 'after the pass ended');
+});
+
+test('cancelling a pass ends its worker and the next file uses a fresh process', async t => {
+  const p = await project(t, { RACKETEER_INDEX_WORKERS: '1' });
+  const first = p.filename('blocked.pid'), next = p.filename('next.pid');
+  p.write('blocked.rkt', compileTime(`${writePid(first)}\n(sync never-evt)`, 'ffi/unsafe'));
+  await p.update();
+  const cancel = new rpc.CancellationTokenSource();
+  const rejected = assert.rejects(p.references(p.origin, undefined, false, cancel.token), error => error.code === -32800);
+  const pid = await pidIn(first);
+  cancel.cancel(); await rejected; cancel.dispose();
+  await stops(pid, 'after cancellation');
+  fs.unlinkSync(p.filename('blocked.rkt'));
+  p.write('next.rkt', compileTime(writePid(next), 'ffi/unsafe'));
+  await p.update();
+  assert.equal(from(await p.references(p.origin), uri(p.filename('uses.rkt'))).length, 1);
+  assert.equal(p.notifications.at(-1).state, 'ready', p.diagnostics());
+  assert.notEqual(pid, await pidIn(next), 'Cancellation must discard the process');
+});
+
 test('a file that needs more memory than the former 256 MB limit is analysed', async t => {
   const p = await project(t, unset);
   // A collection is when the limit is checked, so it runs while all of this is held.
@@ -52,14 +98,17 @@ test('a file that needs more memory than the former 256 MB limit is analysed', a
 });
 
 test('a worker over the memory limit says so in words, names its file, and the index carries on', async t => {
-  const p = await project(t, low);
-  p.write('greedy.rkt', compileTime(keepAllocating));
+  const p = await project(t, { ...low, RACKETEER_INDEX_WORKERS: '1' });
+  const first = p.filename('greedy.pid'), next = p.filename('next.pid');
+  p.write('greedy.rkt', compileTime(`${writePid(first)}\n${keepAllocating}`, 'ffi/unsafe'));
+  p.write('next.rkt', compileTime(writePid(next), 'ffi/unsafe'));
   await p.update();
   assert.equal(from(await p.references(p.origin), uri(p.filename('uses.rkt'))).length, 1);
   assert.equal(p.notifications.at(-1).state, 'partial');
   assert.equal(p.notifications.at(-1).failures, 1);
   assert.match(p.diagnostics(), new RegExp(`greedy\\.rkt \\(analysis of \\S*greedy\\.rkt went over the ${lowLimit} MB memory limit for one worker\\)`));
   assert.doesNotMatch(p.diagnostics(), /analysis worker exited/);
+  assert.notEqual(await pidIn(first), await pidIn(next), 'The memory limit must discard the process');
   fs.unlinkSync(p.filename('greedy.rkt')); await p.update();
   assert.equal(from(await p.references(p.origin), uri(p.filename('uses.rkt'))).length, 1);
   assert.equal(p.notifications.at(-1).state, 'ready');
@@ -116,15 +165,18 @@ test('one allocation over the memory limit also explains why a rename stopped', 
 });
 
 test('a worker in a blocking C call is stopped at its time limit, and the index carries on', async t => {
-  const p = await project(t, {});
+  const p = await project(t, { RACKETEER_INDEX_WORKERS: '1' });
+  const first = p.filename('stuck.pid'), next = p.filename('next.pid');
   p.settings.timeoutSeconds = 3;
-  p.write('stuck.rkt', compileTime(blockInC(70), 'ffi/unsafe'));
+  p.write('stuck.rkt', compileTime(`${writePid(first)}\n${blockInC(70)}`, 'ffi/unsafe'));
+  p.write('z-next.rkt', compileTime(writePid(next), 'ffi/unsafe'));
   await p.update();
   const asking = p.references(p.origin);
   // Before workers were processes, the stop waited for the whole C call.
   await until(() => p.notifications.at(-1)?.state === 'partial', () => p.diagnostics());
   assert.match(p.diagnostics(), /stuck\.rkt \(analysis exceeded its 3 second time limit\)/);
   assert.equal(from(await asking, uri(p.filename('uses.rkt'))).length, 1);
+  assert.notEqual(await pidIn(first), await pidIn(next), 'A timeout must discard the process');
 });
 
 test('cancelling a rename whose worker is in a blocking C call frees the index at once', async t => {
@@ -146,12 +198,15 @@ test('cancelling a rename whose worker is in a blocking C call frees the index a
 });
 
 test('compile-time code that ends its process loses only its file, and the status is reported', async t => {
-  const p = await project(t, {});
-  p.write('ended.rkt', compileTime(endProcess(7), 'ffi/unsafe'));
+  const p = await project(t, { RACKETEER_INDEX_WORKERS: '1' });
+  const first = p.filename('ended.pid'), next = p.filename('next.pid');
+  p.write('ended.rkt', compileTime(`${writePid(first)}\n${endProcess(7)}`, 'ffi/unsafe'));
+  p.write('next.rkt', compileTime(writePid(next), 'ffi/unsafe'));
   await p.update();
   assert.equal(from(await p.references(p.origin), uri(p.filename('uses.rkt'))).length, 1);
   assert.equal(p.notifications.at(-1).state, 'partial');
   assert.match(p.diagnostics(), /ended\.rkt \(analysis worker exited with status 7\)/);
+  assert.notEqual(await pidIn(first), await pidIn(next), 'The next file needs a fresh process');
 });
 
 test('a worker killed by a signal is reported as that, with what it means', { skip: windows }, async t => {
@@ -165,7 +220,9 @@ test('a worker killed by a signal is reported as that, with what it means', { sk
 });
 
 test('what a dying worker writes to its own error output is part of the reason', { skip: windows }, async t => {
-  const p = await project(t, {});
+  const p = await project(t, { RACKETEER_INDEX_WORKERS: '1' });
+  p.write('a-noisy.rkt', compileTime(`(call-with-output-file "/dev/stderr" #:exists 'append
+  (lambda (out) (write-string "previous request\\n" out)))`));
   p.write('noisy.rkt', compileTime(`(call-with-output-file "/dev/stderr" #:exists 'append
   (lambda (out) (write-string "fatal: the runtime gave up\\n" out)))
   ${endProcess(3)}`, 'ffi/unsafe'));
@@ -175,13 +232,17 @@ test('what a dying worker writes to its own error output is part of the reason',
 });
 
 test('compile-time code that finds the real output reaches only its own worker', { skip: windows }, async t => {
-  const p = await project(t, {});
-  p.write('forged.rkt', compileTime(`(call-with-output-file "/dev/stdout" #:exists 'append
+  const p = await project(t, { RACKETEER_INDEX_WORKERS: '1' });
+  const first = p.filename('forged.pid'), next = p.filename('next.pid');
+  p.write('next.rkt', compileTime(writePid(next), 'ffi/unsafe'));
+  p.write('forged.rkt', compileTime(`${writePid(first)}
+(call-with-output-file "/dev/stdout" #:exists 'append
   (lambda (out) (write-string "Content-Length: 2\\r\\n\\r\\n{}not a reply" out)))
-  (sync never-evt)`));
+  (sync never-evt)`, 'ffi/unsafe'));
   await p.update();
   assert.equal(from(await p.references(p.origin), uri(p.filename('uses.rkt'))).length, 1);
   assert.equal(p.notifications.at(-1).state, 'partial');
+  assert.notEqual(await pidIn(first), await pidIn(next), 'An unreadable reply must discard the process');
   assert.match(p.diagnostics(), /forged\.rkt \(analysis worker sent a reply that could not be read\)/);
 });
 

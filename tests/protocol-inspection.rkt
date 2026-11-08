@@ -12,7 +12,11 @@
     (define in (open-input-bytes (get-output-bytes out)))
     (check-equal? (read-message in) message)
     (check-equal? (read-message in) message)
-    (check-true (eof-object? (read-message in))))
+    (check-true (eof-object? (read-message in)))
+    (for ([ending '(#"\r\n" #"\n" #"\r")])
+      (define framed (open-input-bytes (bytes-append #"Content-Length: 2" ending ending #"{}")))
+      (check-equal? (read-message framed) (hasheq))
+      (check-true (eof-object? (read-message framed)))))
   (for ([bytes (list #"Content-Length: 20\r\n\r\n{}"
                     #"Content-Length: 2\r\nContent-Length: 2\r\n\r\n{}"
                     #"Content-Length: 999999999\r\n\r\n"
@@ -20,6 +24,16 @@
                     #"Content-Length: 2\r\n\r\n[]")])
     (test-case "malformed or truncated transport input is rejected"
       (check-exn exn:fail? (lambda () (read-message (open-input-bytes bytes))))))
+  (test-case "header budgets reject on the first excess byte"
+    (for ([input (list (make-bytes (* 1024 1024) 65)
+                       (bytes-append (make-bytes (* 1024 1024) 65) #"\n"))])
+      (define in (open-input-bytes input))
+      (check-exn #rx"oversized header" (lambda () (read-message in)))
+      (check-equal? (file-position in) 8193))
+    (define in (open-input-bytes
+                (apply bytes-append (make-list 10 (bytes-append (make-bytes 8192 65) #"\r\n")))))
+    (check-exn #rx"oversized header" (lambda () (read-message in)))
+    (check-equal? (file-position in) 32769))
   (test-case "previews do not execute writers, force promises, or traverse cycles"
     (define effects 0)
     (struct custom () #:property prop:custom-write (lambda args (set! effects (add1 effects))))

@@ -161,6 +161,7 @@ test('index status is sent only to a client that asked for it', async t => {
   await initialize(plain, {}, directory);
   open(plain, directory); plain.send(references(directory, 1));
   assert.equal((await plain.next()).id, 1, 'The first message is the answer');
+  plain.child.stdin.end(); await plain.closed;
   const asked = rawServer(t);
   await initialize(asked, asking, directory);
   open(asked, directory); asked.send(references(directory, 1));
@@ -174,6 +175,7 @@ test('a pass reports progress only to a client that offers it, and only once its
   await initialize(plain, asking, directory);
   open(plain, directory); plain.send(references(directory, 1));
   assert.equal((await plain.next()).method, 'racketeer/indexStatus', 'No progress without the offer');
+  plain.child.stdin.end(); await plain.closed;
   const server = rawServer(t);
   await initialize(server, { ...asking, window: { workDoneProgress: true } }, directory);
   open(server, directory); server.send(references(directory, 1));

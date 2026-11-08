@@ -19,7 +19,7 @@ const sourceSuffixes = ['.rkt', '.ss', '.scrbl', '.rhm', '.rktl', '.rktd', ''];
 // The index has its own document synchronisation and transport. It never sends
 // fake document opens to the language server or consumes the server's live traces.
 function createWorkspaceIndex(context, { executable, timeout, output, onStatus }) {
-  let connection, starting, disposed = false, synchronized = false;
+  let connection, starting, disposed = false, synchronized = false, stalled = false;
   let identity = 0, heard = Date.now(), folders = [];
   const identities = new WeakMap();
   // The documents the server holds, at the versions it has.
@@ -45,7 +45,7 @@ function createWorkspaceIndex(context, { executable, timeout, output, onStatus }
   }
   const process = createLanguageProcess(executable, ownedArgs(context, [context.asAbsolutePath('workspace-index-server.rkt')]),
     { cwd: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath },
-    { timeout, name: 'Workspace index', onTimeout: failure });
+    { owned: true, timeout, name: 'Workspace index', onTimeout: failure });
   const currentFolders = () => (vscode.workspace.workspaceFolders || []).map(folder => ({ uri: folder.uri.toString(), name: folder.name }));
   function notify(method, params) {
     void connection.sendNotification(method, params).catch(failure);
@@ -186,6 +186,7 @@ function createWorkspaceIndex(context, { executable, timeout, output, onStatus }
   // come from the language server alone, and rename reports the stall.
   const silent = Symbol('silent');
   function ask(method, params, token) {
+    if (stalled) return Promise.resolve(silent);
     const source = new CancellationTokenSource();
     const linked = token.onCancellationRequested(() => source.cancel());
     heard = Date.now();
@@ -193,16 +194,20 @@ function createWorkspaceIndex(context, { executable, timeout, output, onStatus }
       notify('workspace/didChangeWatchedFiles', { changes: [...held.values()] });
       held.clear();
     }
+    let check;
     return new Promise((resolve, reject) => {
-      const check = setInterval(() => {
+      check = setInterval(() => {
         if (Date.now() - heard < timeout) return;
         source.cancel();
         failure(new Error(`no answer to ${method} for ${timeout / 1000} seconds.`));
+        stalled = true;
+        synchronized = false;
         resolve(silent);
+        connection.dispose();
+        void process.dispose();
       }, Math.min(1000, timeout));
-      connection.sendRequest(method, params, source.token).then(resolve, reject)
-        .finally(() => { clearInterval(check); linked.dispose(); source.dispose(); });
-    }).then(value => { if (value !== silent) heard = Date.now(); return value; });
+      connection.sendRequest(method, params, source.token).then(resolve, reject);
+    }).finally(() => { clearInterval(check); linked.dispose(); source.dispose(); }).then(value => { if (value !== silent) heard = Date.now(); return value; });
   }
   async function renameRequest(method, document, position, token, newName) {
     if (!enabled()) throw new Error('Enable workspace analysis to rename safely across files.');

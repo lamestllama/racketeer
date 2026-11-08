@@ -1,3 +1,4 @@
+<!-- Copyright (c) 2026 Eric Parsonage. SPDX-License-Identifier: Apache-2.0 OR MIT -->
 # Debug across files and nested folders
 
 Open this directory, the `examples` directory, or the repository root as your
@@ -43,8 +44,8 @@ the deepest breakpoint. The arithmetic uses exact values.
    alive between expressions; ordinary file debugging exits when the program
    completes.
 
-Use **Debug Console** for expressions in a Debug REPL. Its accompanying terminal
-is for the program's input and output.
+Use **Debug Console** for expressions in a Debug REPL. Interactions shows program
+output; **Program input** supplies lines or end of input.
 
 ## Test the ordinary REPL
 

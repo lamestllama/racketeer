@@ -1,3 +1,4 @@
+<!-- Copyright (c) 2026 Eric Parsonage. SPDX-License-Identifier: Apache-2.0 OR MIT -->
 # Run, Debug, Test, and REPL execution
 
 The extension uses VS Code's task, testing, terminal, and debug APIs. File
@@ -5,11 +6,11 @@ actions share a target resolver: saved program URI, owning workspace, working
 directory, and Racket executable. The File Actions picker retains its selected
 target while the picker is open.
 
-Run, Debug, Debug REPL, and both test profiles share the existing adapter and
-worker. File and test Run set DAP `noDebug`; the loader disables instrumentation
-and exception stops. Debug uses the same module selection with instrumentation
-enabled. Run in Terminal uses a process task. Plain REPL terminals retain
-Racket's ordinary `racket/enter` behaviour.
+Run, Debug, Debug REPL, and the Test Explorer Run, Debug and Coverage profiles share the
+adapter and worker. The package-policy profile uses a native task. File and test Run set
+DAP `noDebug`; the loader disables instrumentation and exception stops. Debug uses the
+same module selection with instrumentation enabled. Run in Terminal uses a process task.
+Plain REPL terminals retain Racket's ordinary `racket/enter` behaviour.
 
 Run Current File and Debug Current File save the source and execute its root
 module and optional `main` submodule. A Results view retains text, images and
@@ -31,6 +32,30 @@ when provided. Debug REPL evaluations retain these parameters. Only the launched
 module is configured; required libraries keep normal `require` behaviour. An
 explicit submodule uses its own configuration. Plain files retain their chosen
 top-level language, and test profiles follow the `raco test` rule below.
+
+## Installation troubleshooting
+
+Racketeer requires VS Code or VSCodium 1.91 or newer and the full Racket 9.1 or newer
+distribution. If Racket is not on PATH, set `racketdap.racketExecutable` in Settings.
+An older Racket is refused on Run, Debug, Test Explorer, the language server and the
+workspace index. The diagnostic names its version, executable path and that setting.
+Minimal Racket alone lacks standard libraries and documentation the language tools use.
+
+The language servers and debug adapter are included. No separate `racket-langserver`,
+Magic Racket, Node.js or npm is required to use the extension, and Racketeer installs
+no packages into Racket automatically. Resyntax suggestions require a separately
+installed `resyntax` package. Interactive plots and the WXME editor need a graphical
+display.
+
+To install a package file, choose **Install from VSIX…** in the Extensions view.
+Remove the earlier `lamestllama.racketdap` development extension first; existing
+`racketdap` launch configurations and settings keep working. The current extension
+ID is `lamestllama.racketeer`.
+
+While Magic Racket's language server is enabled, the status bar shows **Racket:
+external LSP** and Racketeer's language tools and workspace index stay off. Choose
+**Use Racketeer’s Tools**, or disable that server and reload. See [language-server
+settings](editor-tools.md#language-server) for coexistence behaviour.
 
 ## Test discovery and reporting
 
@@ -184,6 +209,38 @@ with CRLF normalised to LF, and `statements`. Each statement has zero-based
 UTF-16 `line`, `column`, `endLine`, `endColumn` (exclusive end), and a boolean
 `executed`. The hash uses the same SHA-1 convention as test selection.
 
+### Commands, settings and discovery boundaries
+
+| Command | What it does |
+| --- | --- |
+| **Racket: Test Current File** | Saves and runs the file through the Testing view. |
+| **Racket: Debug Tests in Current File** | Runs the same tests with source breakpoints and stepping. |
+| **Racket: Test Package** | Runs an entire installed package, honouring `info.rkt` policies through `raco test --package`. |
+
+| Setting | Default | What it does |
+| --- | --- | --- |
+| `racketdap.testing.include` | `**/*.rkt` | Files to discover. |
+| `racketdap.testing.exclude` | Generated directories, vendored code and `info.rkt` | Files to leave out of discovery. |
+| `racketdap.testing.sourceRoots` | `["."]` | Directories instrumented by Debug Test and Coverage. |
+
+Run or debug a case from its gutter control, the Testing view or VS Code's
+**Test at Cursor** commands. Direct cases need literal names in a plain
+`#lang racket` or `#lang racket/base` module containing definitions and those cases.
+Run a `run-tests` suite to populate its nested cases and individual results.
+
+These run, debug and measure coverage as a whole file, with no single case to choose:
+
+- a top-level `struct`, macro or expression beside `module+ test`
+- `check-equal?` or another check beside `test-case`
+- a `test-case` with a computed name
+- `#lang typed/racket`, `#lang racket/gui` and every other language or reader
+- a custom runner
+
+The Testing view does not implement all package test metadata. Use **Run with
+package policies (raco test)** for file omissions, arguments and timeouts, or
+**Racket: Test Package** for an installed package. A handled RackUnit failure is
+reported normally; use a source breakpoint to investigate it.
+
 ## Session ownership
 
 Each workflow launch carries a unique correlation ID. A shared session manager
@@ -243,13 +300,20 @@ starts a fresh execution, replacing that file's output. **Stop** retains output;
 closing Results stops its execution. Results is bounded to 32 MiB and 1,000 entries
 and is not saved when the view closes.
 
+The editor toolbar has Run, Debug and **Racket: File Actions…** controls. The latter
+also offers testing and both kinds of REPL for the current file. Use **Racket: Run
+Current File in Terminal** for a VS Code task with native process streams, including
+programs that need a real terminal. Results offers line input rather than a terminal:
+**Program input** sends lines or end of input. Select an image to enlarge it, or use
+**Save image…**. Run takes error locations from Racket, which can leave them absent
+or approximate; Debug locates instrumented expressions precisely.
+
 ## REPL terminals
 
-**Racket: Start REPL** opens a persistent Racket terminal for the workspace.
-**Racket: Load Current File in REPL** saves and uses `racket/enter` to load or reload
-the module and enter its namespace, including its private definitions.
-**Racket: Evaluate Selection in REPL** sends the selected complete expression to the
-current workspace REPL.
+**Racket: Start REPL** opens a persistent Racket terminal for the workspace. **Racket:
+Load Current File in REPL** saves and uses `racket/enter` to load or reload the module
+and enter its namespace, including its private definitions. **Racket: Evaluate Selection
+in REPL** sends selected complete expressions in source order to the current REPL.
 
 The default `racketdap.repl.sessionScope`, `workspace`, shares a REPL within each
 workspace folder. Set it to `file` to keep a separate plain REPL for each saved file.
@@ -304,9 +368,33 @@ several sessions open, the Debug Console's session selector chooses where manual
 expressions go. Selection commands always target the source file's Debug REPL. Cancel
 Evaluation interrupts evaluation in the active Racket debug session; Stop ends the
 session. Plain REPL terminals continue to run ordinary Racket through `racket/enter`.
-Debug REPL program input uses its associated integrated terminal.
+Debug REPL program input uses **Program input** in Interactions.
+
+### Prompt and session controls
+
+Enter an expression and press Enter to evaluate it. Shift+Enter inserts a newline;
+Up and Down recall earlier expressions. Select a picture to open it full-size, or
+use **Save image…** beneath it.
+
+**Interrupt** cancels evaluation or image conversion. **Run again** saves the file and
+starts a fresh session. **Stop** leaves output visible. **Program input** supplies
+lines or end of input to `read-line` and other input operations; **Logs** opens the
+session's application log. Closing the Interactions tab stops its session.
+
+**Racket: Evaluate Selection in Debug REPL** (Shift+Enter) evaluates selected complete
+expressions in source order. To change its shortcut, search for that command in the
+**Keyboard Shortcuts** editor, or use `keybindings.json`.
+
+Try [the image example](../examples/images.rkt): its three pictures appear when the
+file loads. Evaluate `(broken)` in [the error example](../examples/errors.rkt) to
+follow an error back to source. The [four-file walkthrough](../examples/multi-file/README.md)
+shows calls across modules.
 
 ## Images and plots
+
+Results and Interactions draw images, picts and plots that a program prints. A value
+at the top level of a module or passed to `print` is drawn. `displayln`, `display` and
+`write` of a pict show `#<pict>` instead.
 
 The Interactions view draws returned and printed image values automatically, with a
 native image preview available by clicking the picture. The workflow follows Racket's
@@ -315,10 +403,10 @@ native image preview available by clicking the picture. The workflow follows Rac
 Debug Console remains textual.
 
 **Racket: View Image** opens a PNG snapshot in VS Code's built-in image editor. If an
-expression returns several image values, such as `(values tile drawing chart)`, the
-command asks which one to view. The labels retain each value's position in the complete
-result, including any non-image values. The picker lists up to 200 images from that
-result; evaluate a particular value separately to view one beyond that limit.
+expression returns several image values, the command asks which one to view. For
+example: `(values tile drawing chart)`. The labels retain each value's position in the
+complete result, including any non-image values. The picker lists up to 200 images from
+that result; evaluate a particular value separately to view one beyond that limit.
 
 While paused, it also works from **Variables**, for image fields inside expanded
 structures and images in the **Return values** scope. It uses the selected value
@@ -345,6 +433,15 @@ VS Code's image editor. In a plain terminal REPL, `(require plot)` and
 `(plot-new-window? #t)` make later `plot` and `plot3d` calls open their own windows using
 Racket's public plot API.
 
+The image and plot commands are available in the Command Palette, debug toolbar and
+**Variables** context menu for an image or plot. **Racket: Save Image As…** in the
+image editor keeps a PNG copy. In an interactive 2D plot, drag to zoom and click to
+undo a zoom; drag a 3D plot to rotate it. **Save PNG…** saves the current view.
+
+Try `tile`, `drawing` and `chart` in [the image example](../examples/images.rkt) for
+`2htdp/image`, pict and plot values, or `curve` and `surface` in
+[the interactive-plot example](../examples/interactive-plots.rkt).
+
 ## Application logs
 
 **Racket: Show Application Log**, or **Logs** in Interactions, opens a session's messages
@@ -357,13 +454,25 @@ topic overrides. The last override for a repeated topic wins. Filters affect new
 earlier messages remain visible. `none` disables capture. `racketdap.logs.filter` applies
 to new sessions, and `logFilter` in a launch configuration overrides that setting.
 
-Capture begins before module loading. Stopped sessions keep their received logs; new
-sessions start with a fresh log and their configured filter. Up to ten stopped session
-logs are retained until the editor reloads. Each session retains at most 1,000 messages
-and 1 MiB of message text, with omission notices. Individual messages are truncated at
-16,384 characters. Large pending bursts can be omitted at filter changes or program exit;
-those omissions are reported. Forced termination can lose messages still waiting in the
-worker.
+For example, this captures warnings and more severe messages generally, all network
+messages and no storage messages:
+
+```text
+warning debug@network none@storage
+```
+
+Try [the logging example](../examples/logging.rkt) in Interactions: open its log,
+change the filter to `warning debug@network`, then evaluate `(sample-logs)`.
+
+Capture begins before module loading. The capture service waits for messages, commands
+or its flush deadline without idle polling. Its thread and custodian close with the
+session, including after an attached debugger disconnects. Stopped sessions keep their
+received logs; new sessions start with a fresh log and their configured filter. Up to
+ten stopped session logs are retained until the editor reloads. Each session retains at
+most 1,000 messages and 1 MiB of message text, with omission notices. Individual
+messages are truncated at 16,384 characters. Large pending bursts can be omitted at
+filter changes or program exit; those omissions are reported. Forced termination can
+lose messages still waiting in the worker.
 
 Capture uses the public [Racket logging API](https://docs.racket-lang.org/reference/logging.html)
 for the program's current logger and descendants, including child threads and REPL

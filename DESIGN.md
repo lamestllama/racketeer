@@ -1,29 +1,32 @@
+<!-- Copyright (c) 2026 Eric Parsonage. SPDX-License-Identifier: Apache-2.0 OR MIT -->
 # Racketeer design
 
-Status: architecture and acceptance plan, 2026-09-27. An initial DAP adapter and
-installable VS Code extension are implemented, including expression stepping,
-conditional breakpoints, uncaught exception stops, live lexical evaluation,
-cooperative cancellation, interactive sessions, terminal line input, and a
-separate target worker. Racketeer packages these with language-server editing
-support, syntax highlighting, run/test tasks, and a normal Racket REPL in one
-extension. The delivery gates below
-remain the acceptance plan, not a statement that all behaviour is supported.
-See [README.md](README.md) for the implemented release and its limits.
+Status: implemented architecture for release 0.8.55, updated 2026-11-07. Racketeer
+provides a language server and a workspace indexing server, both over LSP, and a debug
+adapter over DAP. The extension combines editing, expression stepping, live lexical
+evaluation, execution views, testing, package tools, application builds, WXME editing
+and a two-pane macro stepper. The debugger can attach to running programs that embed its
+debug host.
+
+The delivery gates remain acceptance criteria. Implemented behaviour and limits are
+recorded in [README.md](README.md), the [guide](docs/debugger.md) and the [release
+notes](docs/releases/0.8.55.md). Future work is labelled below.
 
 ## 1. Product decision
 
 Build a Racket debugger with a DAP interface. The primary experience is debugging
-ordinary Racket libraries, tests, and command-line programs, then interacting
-with those programs in a Racket console. GUI programs and language development
-should fit the architecture, with their support established in later milestones.
+ordinary Racket libraries, tests, and command-line programs, then interacting with those
+programs in a Racket console. GUI callbacks and macro expansion have dedicated
+integration and regression fixtures. Transformer-phase runtime debugging remains future
+work.
 
 The unit of attention is an **expression and its values**. The environment is a
 set of **lexical bindings in a module**. The stack describes **current control
 context**, including Racket's tail-call and continuation semantics.
 
-The initial implementation should be entirely in Racket. Editor extensions
-register the adapter and provide launch configuration; the debugger must work
-without an editor-specific runtime or a graphical Racket installation.
+The adapter and instrumentation are implemented in Racket. Editor extensions register
+the adapter and provide launch configuration; the debugger must work without an
+editor-specific runtime or a graphical Racket installation.
 
 ### What a session should feel like
 
@@ -101,15 +104,15 @@ separate integration. Do not assume every `#lang` provides a Racket REPL.
 
 ### Modules and languages
 
-Launch supports the usual module entry point and explicit submodules such as
-`main` and `test`. Instrument selected source files across module boundaries.
-Collection dependencies run normally unless selected for debugging.
+Launch supports the usual module entry point and explicit submodules. For example:
+`main` and `test`. Instrument selected source files across module boundaries. Collection
+dependencies run normally unless selected for debugging.
 
-The first supported languages are `racket/base` and `racket`. Common macros such
-as `for`, `match`, and `class` require compatibility fixtures. Other languages,
-including Typed Racket and custom `#lang` implementations, gain support through
-tested expansion and source-location behaviour, not through a blanket claim that
-all languages work because they expand to Racket.
+Language fixtures cover `racket/base`, `racket`, Scheme, Typed Racket, teaching
+languages and a custom module language. Macro fixtures cover common forms. For example:
+`for`, `match` and `class`. These tests establish the recorded expansion and
+source-location behaviour; they do not guarantee every language that expands to Racket.
+The [debugger guide](docs/debugger.md) lists the scope.
 
 Runtime debugging of macro-generated code belongs in the core. Debugging a
 macro transformer while it expands code is a separate, phase-aware feature.
@@ -213,9 +216,9 @@ runs from source or from ordinary compiled files, as other DAP clients do.
 The extension starts its other debugger files the same way: the supervisor of the
 language server and of the workspace index, test discovery, package listing, the WXME
 workers and the macro stepper. A build task's wrapper stays on source, since a build
-outlasts its cost many times over. A window opening starts the
-build through the language server's supervisor, so the first debug session usually
-finds it finished. The language server has its own compiled root in Racket's addon
+outlasts its cost many times over. A window opening starts the build through the
+language server's supervisor, so the first debug session usually finds it finished. The
+language server and workspace indexing server share a compiled root in Racket's addon
 directory, which `vscode/racket-environment.rkt` installs. The dependency view's worker
 needs bundled libraries that only its command line supplies, so it stays on source.
 
@@ -226,15 +229,14 @@ the listener after the expected worker connects. The control protocol is
 versioned, framed JSON containing metadata and opaque handles, never arbitrary
 Racket values. It is an implementation boundary, not a public network service.
 
-Program stdout and stderr have their own captured pipes. Program stdin is
-explicitly configured independently: EOF by default, or a file/terminal supplied
-by the runner. DAP's debug console is for evaluation, not implicit program stdin.
-Interactive terminal support can use a small launcher and DAP `runInTerminal`
-without changing the control protocol; it is a later milestone. A worker exit,
-`(exit)`, or native crash must leave the adapter able to report termination.
-A worker that ends without reporting a program exit, such as one the system
-kills when memory runs out, is named in the Debug Console with its exit code or
-signal before the session terminates.
+Program stdout and stderr have their own captured pipes. Program stdin is explicitly
+configured independently: EOF by default, or a file/terminal supplied by the runner.
+DAP's debug console is for evaluation, not implicit program stdin. Interactive terminal
+support uses a VS Code pseudoterminal backed by the worker's input pipe. It provides
+line input, not a full OS TTY. A worker exit, `(exit)`, or native crash must leave the
+adapter able to report termination. A worker that ends without reporting a program exit
+is named in the Debug Console with its exit code or signal before the session
+terminates.
 
 Termination requests a cooperative shutdown, closes program resources through
 the custodian, then uses a bounded OS-process fallback. Owned child-process
@@ -244,23 +246,28 @@ not attempt to unload and redefine an existing module graph.
 
 ### Small implementation boundaries
 
-Proposed layout, to be introduced as each responsibility is implemented:
+The implemented boundaries are:
 
 ```text
-info.rkt                       package and raco command registration
-racketdap/main.rkt             adapter entry point
-racketdap/protocol.rkt         DAP byte framing and serialized messages
-racketdap/session.rkt          adapter state and request dispatch
-racketdap/source.rkt           source identity, ranges, breakpoint resolution
-racketdap/worker/main.rkt       bootstrap, runner, private control protocol
-racketdap/worker/load.rkt       namespace and module-loading integration
-racketdap/worker/instrument.rkt component compatibility exports
-racketdap/instrumentation/instrument.rkt expanded-syntax instrumentation
-racketdap/instrumentation/runtime.rkt binding accessors and continuation metadata
-racketdap/worker/control.rkt    stops, stepping, threads, handle lifetimes
-racketdap/worker/evaluate.rkt   frame evaluation and explicit mutation
-racketdap/worker/inspect.rkt    bounded value previews and children
-tests/                         semantic fixtures and protocol sessions
+info.rkt                            package and raco command registration
+racketdap/main.rkt                  adapter entry point
+racketdap/protocol.rkt              DAP framing and serialised messages
+racketdap/commands.rkt              adapter requests and worker lifecycle
+racketdap/source.rkt                source identity and breakpoint resolution
+racketdap/worker/main.rkt           worker bootstrap and private connection
+racketdap/worker/load.rkt           namespace and module loading
+racketdap/worker/expand.rkt         expanded-form processing
+racketdap/instrumentation/          expression instrumentation and runtime
+racketdap/worker/session.rkt        stops, stepping, threads and handle lifetimes
+racketdap/worker/stepping.rkt       dynamic step targets
+racketdap/worker/evaluate.rkt       frame evaluation and mutation
+racketdap/worker/inspect.rkt        bounded value previews and children
+racketdap/worker/attach.rkt         embedded host connection and instrumentation
+racketdap/worker/logs.rkt           bounded application log capture
+racketdap/tools/macro-steps/        expansion sessions, policy, facts and printing
+vscode/macro-steps/                 editor commands, paired panes and sessions
+vscode/macro-view/                  read-only editor presentation and input
+tests/                             semantic fixtures and protocol sessions
 ```
 
 Use explicit structs and narrow module interfaces. Do not add a general
@@ -324,36 +331,55 @@ pass stops and the status becomes `outdated`. A change while a pass runs replace
 it, and the replacement starts no sooner than 2 seconds after the change, so that
 a run of changes does not start and stop a worker each time.
 
-An instance runs as many worker processes at once as it has slots: half the processors,
-at most three. A query's own worker takes a slot as a file's does. Measured on 52
-files, one at a time, on 9 processors with a load of about 2 from other work:
+An instance defaults to half the processors, at most three workers and at least one. On
+Linux, available memory and container limits can lower this count. The default reserves
+512 MiB for the editor and server, then budgets each worker's 2 GiB allocation allowance
+plus its 288 MiB replacement threshold. `RACKETEER_INDEX_WORKERS` accepts a positive
+integer override. A query's own worker takes a slot as a file's does.
 
-| Workers | First Find References (s) | CPU (s) | Peak of the process tree (MB) |
-| ---: | ---: | ---: | ---: |
-| 1 | 62 | 62 | 636 |
-| 2 | 34 | 66 | 914 |
-| 3 | 26 | 71 | 1,146 |
-| 4 | 21 | 74 | 1,420 |
-| 6 | 20 | 95 | 1,921 |
+Workspace indexing of a 53-file project gave these measurements, with identical results:
 
-The pass starts a file's worker as a slot comes free, earliest file first, and
+| Workers | Before | 0.8.55 |
+| ---: | ---: | ---: |
+| 1 | 97.9 s | 8.9 s |
+| 3 | 37.0 s | 5.3 s |
+
+Each slot reuses its process through discovery and one pass, then ends it. Each file
+runs in a fresh namespace with its own custodians, whose resources end before the
+next request. Cancellation, timeout, memory failure, a crash or an unreadable reply
+ends the process; the slot starts a fresh one for its next request.
+The pass sends a file to a slot as it comes free, earliest file first, and
 reads the outcomes in the order of a fresh pass, so one that ends early waits for
 those before it. Everything a client or a later pass can see is decided in that reading:
 the store's order, the progress counts, the failures and their reasons, and the size
 and fact limits. A limit stops the pass at the same file whichever worker ended first, and any
 workers still running are stopped. What workers found beyond that file goes back to
 what the pass found on arrival, so the next pass analyses those files as it would have.
-A result counts as finished when its worker ends, whatever came before it, so
+A result counts as finished when its analysis ends, whatever came before it, so
 cancelling keeps it. The results of a pass are the same to the byte for any number of workers,
 given compile-time code that does not depend on other files' compile-time code running at the same moment.
 
-Each worker keeps its own memory limit, so the machine's total rises with the
-number of workers, by about 260 MB each for small files and up to about 530 MB with
-heavy libraries. Compile-time code running away is the larger case: with a limit of
-512 MB, the tree peaked at 1.4 GB with one worker and 2.9 GB with three, and with the
-2 GiB limit at 3.4 GB with one, so three running away at once could reach about 9 GB
-for a moment. The limit is not divided between workers, since whether a file fails
-must not depend on how many there are.
+Each analysis can allocate 2 GiB beyond the worker's existing libraries. This allowance
+is per worker and is not divided between workers. After each request, a worker at 288
+MiB is replaced before another file is sent. Its completed result is retained. Linux
+checks resident memory; other platforms check managed memory.
+`RACKETEER_INDEX_RECYCLE_MEGABYTES` can override the replacement threshold. One analysis
+can still use its full allocation allowance.
+
+The worker's compiled dependency cache lasts for one pass. Each file has a fresh
+namespace and custodians but can reuse compiled dependencies from that fixed source
+snapshot. Cached code carries its original load observations and fingerprints. A change
+during the pass cannot certify old code against new contents. Modules with registered
+external reads compile again, including when a transitive dependency registers them.
+Recycling discards the cache.
+
+Index analysis requests binding contributions only. It does not build hover,
+documentation, completion, diagnostics, semantic tokens, inlay hints or Typed Racket and
+tail-position results. Declaration callbacks and syntax processing still run. Allocation
+failures reach the worker controller even without diagnostic construction. The language
+server retains all its services. Documentation helpers load on first use; URL utilities
+avoid HTTP and TLS implementations. The patches are listed in
+[vendor/README.md](vendor/README.md).
 
 Rename validation does not run this way. One worker expands every file with the
 current names and again with the proposed ones and compares them, holding each file's
@@ -383,7 +409,7 @@ A macro that reads a file it does not register leaves no record of it. Such a fi
 is seen only at the next change to the macro's file or to a file loaded with it,
 after a refresh, or after a restart. This is the limit the debugger's compiled cache has too.
 
-A worker and the server exchange one framed JSON message each way, through
+A worker and the server exchange one framed JSON message each way per request, through
 `vscode/workspace-wire.rkt`. Compile-time code can reach a worker's reply pipe, and FASL
 names the size of what it allocates ahead of the values, so 17 bytes grew the server by
 259 MB. JSON carries its elements, so what the server allocates follows what arrived. A
@@ -467,13 +493,14 @@ can have the same version and other text. Without the capability, the edit is a 
 `changes` record.
 
 Passes report work-done progress to a client that offers `window.workDoneProgress`:
-`window/workDoneProgress/create`, then `begin`, `report` after each file, and `end`
-when the pass is `ready`, `partial` or `outdated`. A client that refuses a token gets no
-progress on it and is not asked again. `begin` carries a `percentage`, since a client may
-otherwise ignore later ones, and a token accepted after its pass has finished begins with
-the last count and ends straight away. Once the pass has found its files, each
-value carries the share analysed as `percentage` and the count as `message`, such as
-`12/53`. Partial results are not used, since a result is valid only once its pass settles.
+`window/workDoneProgress/create`, then `begin`, `report` after each file, and `end` when
+the pass is `ready`, `partial` or `outdated`. A client that refuses a token gets no
+progress on it and is not asked again. `begin` carries a `percentage`, since a client
+may otherwise ignore later ones, and a token accepted after its pass has finished begins
+with the last count and ends straight away. Once the pass has found its files, each
+value carries the share analysed as `percentage` and the count as `message`. For
+example: `12/53`. Partial results are not used, since a result is valid only once its
+pass settles.
 
 One thing has no standard form, so it stays private. It is named under `racketeer/`, and
 negotiated under `experimental`, where a client asks with `{ racketeer: { indexStatus: true } }`
@@ -484,14 +511,14 @@ sees a standard server.
 | --- | --- | --- |
 | `racketeer/indexStatus` | Server to client, when asked | The final state of a pass, `{ state, indexed, total, failures }`: `ready`, `partial`, `disabled`, or `outdated` when it was stopped before it finished. |
 
-The VS Code client adds two policies of its own. It starts the server at the first request,
-so a workspace where nobody asks has no index process. It sends file events at once only for
-source suffixes and for names with no suffix, which can be deleted folders. It holds any
-other event, the latest in each folder, and sends those before the next request, so a
-program writing logs cannot replace a pass that a request is waiting for. A folder whose name
-holds a dot, such as `my.project`, is reported by that name alone, and arrives this way. An
-event for an excluded folder is not held, since the server would discard it in place of the
-one it displaced.
+The VS Code client adds two policies of its own. It starts the server at the first
+request, so a workspace where nobody asks has no index process. It sends file events at
+once only for source suffixes and for names with no suffix, which can be deleted
+folders. It holds any other event, the latest in each folder, and sends those before the
+next request, so a program writing logs cannot replace a pass that a request is waiting
+for. A folder whose name holds a dot is reported by that name alone and arrives this
+way. For example: `my.project`. An event for an excluded folder is not held, since the
+server would discard it in place of the one it displaced.
 
 ## 4. Instrumentation and module loading
 
@@ -584,8 +611,8 @@ hashes is deleted and read from source. Anything raised while building turns the
 off for the session and loads from source. The failing file then expands twice, with its
 transformer effects, output included, twice as well: this is the one case where
 expansion repeats. A syntax error is reported once, by the second attempt, in the same
-words. Module code that a `.zo` cannot hold, such as a macro embedding a closure, goes
-the same way on each run.
+words. Module code that a `.zo` cannot hold goes the same way on each run. For example:
+a macro embedding a closure.
 
 Concurrent sessions rely on the manager's atomic renames. Both may build; a mismatch
 of dependency hashes then causes one more rebuild, never a wrong read. At session start,
@@ -613,13 +640,13 @@ another thread; a debugger must not silently reduce that model to a linear call
 history. See [continuations](https://docs.racket-lang.org/reference/cont.html)
 and [continuation marks](https://docs.racket-lang.org/reference/contmarks.html).
 
-Getter closures retain accessible lexical bindings. For ordinary assignable
-lexical variables, generate setters and accept the associated debug-build
-optimisation cost. For module bindings, provide setters only when the expanded
-program already establishes their mutability. Imported bindings and module
-constants remain read-only. The new core uses binding-preserving aliases for
-module evaluation. Test binding behaviour as well as values;
-do not make every module binding mutable merely for editor convenience.
+Getter closures retain accessible lexical bindings. Ordinary assignable lexical
+variables have setters, with the associated debug-build optimisation cost. Selected
+modules compile with constant enforcement disabled so assignment can reach their live
+cells. Imported bindings stay read-only. Unselected modules keep ordinary constant
+enforcement. The [debugger guide](docs/debugger.md) describes assignment behaviour.
+Console evaluation uses binding-preserving aliases. Tests check binding identity and
+mutation as well as values.
 
 ## 5. Source and runtime model
 
@@ -648,7 +675,10 @@ While the file still holds the captured text, a source has no reference. VS Code
 reference to the session, so each session would open another tab. Frames and loaded
 sources check the file whenever they report a source, so a save during a stop shows at
 the next stack trace, and saving the old text again takes the reference away. A check
-reads the file only when its date or size has changed.
+can reuse a text comparison only when file identity, size, modification time and an old
+enough POSIX change time match. Recent changes are read again because writes can share a
+filesystem clock tick. Windows always compares text. Replacing a file under the same
+size and modification date is therefore detected.
 
 A path's lines are the file's, so a new breakpoint named by path while the file differs
 from the running text is answered unverified with the reason, and a breakpoint already
@@ -712,7 +742,7 @@ pretend to expose live lexical frames.
 No synthetic history of eliminated tail callers appears as live stack frames.
 An optional bounded history feature could be added later as a separate view.
 
-### Proposed step controller
+### Step controller
 
 Each step command records its starting event sequence and dynamic return/context
 identity. This is separate from persistent user breakpoints. The algorithm must
@@ -756,12 +786,11 @@ those bindings around the console expression in its module namespace. Racket's
 [guide to eval](https://docs.racket-lang.org/guide/eval.html) explains the lexical
 limitation.
 
-The proposed bridge uses generated identifier aliases backed by getters and,
-where supported, assignment transformers backed by setters. It must support
-identifier use, procedure application, and `set!`, and must not make assignments
-to a copied local value appear to mutate the program. Assignment-transformer
-support is documented in the
-[syntax transformer reference](https://docs.racket-lang.org/reference/stxtrans.html).
+The bridge uses generated identifier aliases backed by getters and, where supported,
+assignment transformers backed by setters. It must support identifier use, procedure
+application, and `set!`, and must not make assignments to a copied local value appear to
+mutate the program. Assignment-transformer support is documented in the [syntax
+transformer reference](https://docs.racket-lang.org/reference/stxtrans.html).
 
 Prove this bridge with shadowing, source macros, imported names, private module
 bindings, escaped closures, and mutation before promising general console
@@ -844,11 +873,13 @@ point. Other threads can continue. Report `allThreadsStopped: false`; shared
 objects may consequently change during inspection. Several threads can have
 independent pending stops, serialised into DAP events by the adapter.
 
-Implement Pause as a cooperative request acknowledged at a safe point. Blocking
-or native code may delay acknowledgment; do not report it stopped prematurely.
-Do not use arbitrary suspension of threads holding runtime or application locks
-as a shortcut to an “all stopped” claim. A later pause-all operation requires
-individual acknowledgments and keeps the controller runnable.
+Pause requests a source stop in every registered application thread and focuses the
+first executing expression. A blocked thread can be suspended and inspected from an
+unmarked service thread. Its live frames and parameterisation remain available, with an
+approximate source location. Resuming cancels pending Pause requests. Application break
+handlers are not used for suspension, so catching breaks does not consume Pause.
+Break-disabled regions can defer inspection. The controller stays runnable and reports
+individual thread stops.
 
 Only advertise single-thread execution capabilities once continue/step semantics
 have been tested with several stopped threads. Places, futures, GUI eventspaces,
@@ -893,20 +924,27 @@ through the same output and termination path.
 
 ## 9. Launch and DAP surface
 
-Proposed configuration for a thin editor integration:
+The extension uses debugger type `racketdap`. A launch configuration can be saved in
+`launch.json`:
 
 ```json
 {
-  "type": "racket",
+  "type": "racketdap",
   "request": "launch",
   "name": "Debug Racket file",
   "program": "${file}",
   "cwd": "${workspaceFolder}",
   "args": [],
-  "session": "script",
-  "stopOnEntry": false
+  "interactive": false,
+  "stopOnEntry": true,
+  "stopOnEntryMode": "entryPoint"
 }
 ```
+
+The extension defaults omitted `stopOnEntry` to true. The adapter itself defaults to
+false. `entryPoint` starts in the selected entry module; `firstExpression` starts before
+initialisation. Explicit breakpoints remain independent. An entry without executable
+stops reports that it ran to completion.
 
 A relative `program` is relative to `cwd`. Through the extension, a launch without `cwd`
 uses the workspace folder for both.
@@ -928,9 +966,9 @@ ready, the console uses the entry module's namespace; while stopped it uses
 the selected lexical frame. For a library, root-only loading plus interactive
 mode is the natural starting configuration.
 
-Initial DAP surface, enabled as implementation milestones pass:
+Implemented DAP surface:
 
-- Initialize, launch, configurationDone, disconnect, terminate.
+- `initialize`, `launch`, cooperative `attach`, `configurationDone`, `disconnect`, `terminate`.
 - SetBreakpoints, breakpointLocations, setExceptionBreakpoints.
 - Threads, stackTrace, scopes, variables, source, loadedSources.
 - Continue, next, stepIn, stepOut, cooperative pause.
@@ -942,6 +980,66 @@ Capabilities describe implemented behaviour. Do not advertise restartFrame,
 reverse execution, native disassembly, data breakpoints, or arbitrary-process
 attach. In particular, attaching to an already optimised process does not
 retroactively install lexical accessors and source instrumentation.
+
+### Embedded running hosts
+
+Attachment serves servers, long-running jobs and programs started outside the editor.
+Racket's own editor cannot attach to a running process. `racketdap/worker/attach.rkt`
+supplies a token-authenticated loopback listener. The host runs selected code through
+its instrumentation hooks. A DAP attach configuration supplies `port` and `token`, with
+no `program`. Code already loaded without instrumentation cannot gain lexical accessors
+retroactively.
+
+The host owns input, output and thread lifetime. Its exclusions override source roots
+and breakpoints. Interrupt is refused. Disconnect and Terminate release held stops and
+close the debug connection without killing the host. See the [embedding
+contract](racketdap/instrumentation/DESIGN.md#embedding-host-contract).
+
+### Startup and service lifetime
+
+Package-management and WXME decoding libraries load on first use. Successful Racket
+version checks are cached by executable identity and environment; failures are not
+cached. Ordinary numeric values bypass plot-library inspection. The log worker waits for
+receiver events, commands and its flush deadline. It does no idle polling. Session
+closure releases its thread and custodian, including on attachment disconnect.
+
+Measured debugger launch to first stop about halved: about 470 ms to 220 ms with its
+compile cache. Memory fell by about a third: 169 MB to 115 MB. Protocol headers are
+bounded while bytes arrive, including unterminated lines.
+
+### Macro expansion panes
+
+The macro stepper uses the `macro-debugger` model from the full Racket installation. It
+records expansion in an owned headless worker. It does not run the module's runtime
+body. The Before and After webviews share navigation, source provenance and one captured
+expansion. Each contains a read-only Monaco editor. Closing either pane closes the pair.
+
+`vscode/macro-steps/` separates commands, options, hiding, pane ownership, source
+tracking, worker requests, navigation and internal-error reporting. `vscode/macro-view/`
+owns page input, editor layout, decorations, arrows and the inspector.
+`racketdap/tools/macro-steps/` separates the expansion engine, policy, session views,
+printing, binding facts, answers and resource limits. The
+[schema](docs/macro-stepper-schema.md) records the request contract.
+
+Schema 2 sends a summary first. Positions and selected-term facts load on demand. The
+extension keeps three positions within 32 MiB and 32 inspections within 8 MiB. A
+recording has a 1000 MiB ceiling; each JSON answer has a 64 MiB ceiling. Initial
+expansion asks for Continue or Stop at 40,000 macro applications, doubling the threshold
+after each Continue. Recovery replays the recorded decisions.
+
+Two unshared workers can remain resident. An unshared pair hidden for 60 seconds
+releases its worker; a cache miss can rerun transformers on the captured source. The
+display-order journal reconstructs scope numbering. Refresh captures current source.
+Duplicate Stepper creates independent worker views over one derivation, without
+retracing. Shared recordings remain resident until the last retained term is released. A
+shared worker failure needs Refresh.
+
+Display options control renaming steps, suffixes, change backgrounds, binding arrows,
+one-term positions, common-context factoring and taint marks. Numbering can be reset or
+grouped by macro scopes or all scopes. Binding-specific hiding rules use identity and
+phase. Details inspect bindings, scopes, properties and source. Internal failures expose
+copyable details and an optional diagnostic file. The [macro
+guide](docs/editor-tools.md#macro-stepper) lists every control.
 
 ## 10. Delivery sequence and proof gates
 
@@ -1012,12 +1110,14 @@ Normal/instrumented fixtures compare values and effects for continuations,
 `dynamic-wind`, multiple values, macros, phases, and submodules. A 20,000-call
 tail-recursion fixture checks bounded debugger frame depth.
 
-The loader partially expands module forms, then instruments runtime expressions
-within the normal module expansion. Expanding an entire module and subsequently
-compiling its rewritten syntax repeated compile-time effects in the comparison
-fixture; the expression-level mechanism avoids that failure in the tested cases.
-Without the compiled cache, source loading and instrumentation are memory-only, with
-an existing-bytecode regression check.
+The loader partially expands module forms, then instruments runtime expressions within
+the normal module expansion. Selected macro templates retain their own source locations
+across files. Template variables appear only while stopped in the template. Cache replay
+retains each site's source file identity. Expanding an entire module and subsequently
+compiling its rewritten syntax repeated compile-time effects in the comparison fixture;
+the expression-level mechanism avoids that failure in the tested cases. Without the
+compiled cache, source loading and instrumentation are memory-only, with an
+existing-bytecode regression check.
 
 `tests/stepping.rkt` additionally compares execution with entry/completion events
 enabled, checks exact expression results and function return targets, and checks
@@ -1057,8 +1157,8 @@ bindings, expansion-renamed identifiers, merged `module+` fragments, inherited
 bindings, and parent modules containing only syntax definitions. The new core
 retains the established stepping and continuation behaviour.
 
-Breakpoint resolution remains restricted to the requested line. Stops on every
-caught exception, line coalescing, full TTY input, and
+Line breakpoints advance to the next executable line; inline breakpoints stay
+on the requested line. Stops on every caught exception, line coalescing, full TTY input, and
 broader platform verification remain future work. These tests do not complete
 every Gate A/B acceptance item or establish
 general loader, macro, inspector, concurrent-thread, or cross-platform lifecycle

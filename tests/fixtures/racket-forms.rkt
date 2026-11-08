@@ -20,3 +20,6 @@
       (values name quantity)))
   (list (send basket total) names quantities
         (for/vector ([quantity (in-list quantities)]) (sqr quantity))))
+
+;; Copyright (c) 2026 Eric Parsonage
+;; SPDX-License-Identifier: Apache-2.0 OR MIT

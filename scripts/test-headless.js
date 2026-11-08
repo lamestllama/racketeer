@@ -7,10 +7,11 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const root = path.resolve(__dirname, '..');
 function inventory(directory = root) {
+  // Feature suites are discovered by filename, including the macro stepper suites.
   const tests = fs.readdirSync(path.join(directory, 'tests')).sort();
   return {
     racket: [...tests.filter(name => name.endsWith('.rkt')).map(name => `tests/${name}`), 'experiments/lexical-eval.rkt'],
-    node: tests.filter(name => name.endsWith('.test.js') && !['gui-parity.test.js', 'macro-stepper-gui.test.js', 'plots-gui.test.js'].includes(name)).map(name => `tests/${name}`)
+    node: tests.filter(name => name.endsWith('.test.js') && !['gui-parity.test.js', 'plots-gui.test.js'].includes(name)).map(name => `tests/${name}`)
   };
 }
 function run() {
@@ -23,7 +24,9 @@ function run() {
   try {
     for (const [command, args] of [
       [process.execPath, ['scripts/stage-extension.js']],
-      ['raco', ['test', '--timeout', '600', ...suites.racket]],
+      // Racket itself, not the raco launcher: on Windows the launcher refuses a
+      // command line over 1024 characters.
+      ['racket', ['-l-', 'raco', 'test', '--timeout', '600', ...suites.racket]],
       // Each test has its own deadline (tests/support/node-test.js), so a file
       // takes the sum of its tests' times. The runner's limit is only a ceiling
       // for a file whose process never exits.

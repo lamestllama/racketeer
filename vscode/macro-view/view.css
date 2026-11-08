@@ -1,0 +1,55 @@
+/* Copyright (c) 2026 Eric Parsonage
+ * SPDX-License-Identifier: Apache-2.0 OR MIT */
+:root { color: var(--vscode-editor-foreground); background: var(--vscode-editor-background); font-family: var(--vscode-font-family); font-size: var(--vscode-font-size); }
+html, body, #app { height: 100%; overflow: hidden; }
+body { margin: 0; }
+#app { display: flex; flex-direction: column; }
+a { color: var(--vscode-textLink-foreground); }
+a:hover { color: var(--vscode-textLink-activeForeground); }
+a[aria-disabled="true"] { color: var(--vscode-disabledForeground); }
+:focus-visible { outline: 2px solid var(--vscode-focusBorder); outline-offset: 2px; }
+[hidden] { display: none !important; }
+.banner { padding: .6em; color: var(--vscode-editorWarning-foreground); background: var(--vscode-editorWidget-background); border: 1px solid var(--vscode-contrastBorder); }
+.error { color: var(--vscode-errorForeground); white-space: pre-wrap; }
+#work { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); flex: 1; min-width: 0; min-height: 0; }
+#work.no-properties { grid-template-columns: minmax(0, 1fr); }
+#syntax { min-width: 0; min-height: 0; position: relative; }
+.editor-host, .editor-surface { position: absolute; inset: 0; overflow: hidden; }
+#divider { box-sizing: border-box; min-width: 0; min-height: 0; touch-action: none; cursor: col-resize; background: var(--vscode-panel-border); border: 1px solid var(--vscode-contrastBorder); }
+#properties { box-sizing: border-box; min-width: 0; min-height: 0; overflow: auto; overflow-wrap: anywhere; padding: .8em; border-left: 1px solid var(--vscode-panel-border); }
+#work.properties-below #divider { cursor: row-resize; }
+#work.properties-below #properties { border-left: 0; border-top: 1px solid var(--vscode-panel-border); }
+h2 { font-size: 1.15em; margin: .6em 0; }
+.monaco-editor .macro-frontier { background-color: var(--vscode-editor-inactiveSelectionBackground); }
+.monaco-editor .macro-before { background: var(--vscode-diffEditor-removedTextBackground); outline: 1px solid var(--vscode-diffEditor-removedTextBorder); }
+.monaco-editor .macro-after { background: var(--vscode-diffEditor-insertedTextBackground); outline: 1px solid var(--vscode-diffEditor-insertedTextBorder); }
+.monaco-editor .macro-binder { text-decoration: underline; text-decoration-color: var(--vscode-editorBracketMatch-border); text-underline-offset: .2em; }
+.monaco-editor .macro-word-highlight { background: var(--vscode-editor-wordHighlightBackground); }
+.monaco-editor .macro-word-highlight-strong { background: var(--vscode-editor-wordHighlightStrongBackground); }
+.vscode-high-contrast .monaco-editor .macro-word-highlight, .vscode-high-contrast-light .monaco-editor .macro-word-highlight { border: 1px solid var(--vscode-editor-wordHighlightBorder); box-sizing: border-box; }
+.vscode-high-contrast .monaco-editor .macro-word-highlight-strong, .vscode-high-contrast-light .monaco-editor .macro-word-highlight-strong { border: 1px solid var(--vscode-editor-wordHighlightStrongBorder); box-sizing: border-box; }
+.monaco-editor .macro-hover { outline: 1px solid var(--vscode-charts-yellow); outline-offset: -1px; }
+svg.arrows { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+svg .edge { fill: none; }
+svg .head, svg .origin, svg .arrow-label-box { fill: var(--vscode-editor-background); stroke-width: 1; }
+svg .definite :is(.edge, .head, .origin, .arrow-label-box) { stroke: var(--vscode-charts-green); }
+svg .possible :is(.edge, .head, .origin, .arrow-label-box) { stroke: var(--vscode-charts-yellow); }
+svg .definite.kept :is(.head, .origin), svg .definite .arrow-label-text { fill: var(--vscode-charts-green); }
+svg .possible.kept :is(.head, .origin), svg .possible .arrow-label-text { fill: var(--vscode-charts-yellow); }
+summary { cursor: pointer; margin-block: .6em; }
+.property { white-space: pre-wrap; font-family: var(--vscode-font-family); }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+#connections { color: var(--vscode-editor-foreground); font-family: var(--vscode-editor-font-family); font-size: var(--vscode-editor-font-size); font-weight: var(--vscode-editor-font-weight); margin: 0; padding: .4em .8em; max-height: 25vh; overflow: auto; overflow-wrap: anywhere; flex-shrink: 0; }
+#connections:empty { display: none; }
+#note { color: var(--vscode-descriptionForeground); margin: .5em .8em; white-space: pre-wrap; }
+#note:empty { display: none; }
+.vscode-high-contrast .banner, .vscode-high-contrast-light .banner { border-color: var(--vscode-contrastBorder); }
+@media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto; } }
+
+.monaco-editor .macro-selected { font-weight: bold; }
+/* Inline marks belong to syntax occurrences; model text stays unchanged. */
+.macro-taint { user-select: none; }
+.monaco-editor .macro-taint-codicon { font-family: codicon; font-style: normal; font-weight: normal; }
+.monaco-editor .macro-taint-armed { color: var(--vscode-charts-yellow); }
+.monaco-editor .macro-taint-disarmed { color: var(--vscode-charts-green); }
+.monaco-editor .macro-taint-tainted { color: var(--vscode-charts-red); }

@@ -35,15 +35,23 @@
                 (cons 0 (for/list ([c (in-string text)] [i (in-naturals)] #:when (char=? c #\newline))
                           (add1 i))))))
 ;; Whether the file still holds the captured text. A WXME document's text is never its file's.
-;; Every source reported asks, so the file is read again only when its date or size changes.
+;; POSIX change times cannot be restored by saving a file. Recent changes still
+;; need a read: several writes can share one filesystem clock tick. Windows
+;; reports creation time here, so it always needs a text comparison.
 (define current-answers (make-weak-hasheq))
 (define (source-current? source)
   (with-handlers ([exn:fail? (lambda (_) #f)])
     (define stat (file-or-directory-stat (source-file-path source)))
-    (define key (cons (hash-ref stat 'modify-time-nanoseconds) (hash-ref stat 'size)))
+    (define changed (hash-ref stat 'change-time-nanoseconds 0))
+    (define key
+      (and (memq (system-type 'os) '(unix macosx))
+           (positive? changed)
+           (< (quotient changed 1000000000) (sub1 (current-seconds)))
+           (list (file-or-directory-identity (source-file-path source)) changed
+                 (hash-ref stat 'modify-time-nanoseconds) (hash-ref stat 'size))))
     (define known (hash-ref current-answers source #f))
     (cond
-      [(and known (equal? (car known) key)) (cdr known)]
+      [(and key known (equal? (car known) key)) (cdr known)]
       [else
        (define answer (equal? (source-file-text source) (counted-text (file->string (source-file-path source)))))
        (hash-set! current-answers source (cons key answer))

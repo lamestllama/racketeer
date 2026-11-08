@@ -125,6 +125,7 @@ function registerLanguageTools(context) {
     const process = createLanguageProcess(executable,
       ownedArgs(context, installed ? ['-l', 'racket-langserver'] : [context.asAbsolutePath('language-server.rkt')]),
       { cwd: folder?.uri.fsPath }, {
+        owned: true,
         timeout: startupTimeoutSeconds * 1000,
         onTimeout: error => reportFailure(error,
           'Cold startup or a busy machine may need more time. Increase racketdap.languageServer.startupTimeoutSeconds, then run Racket: Restart Language Server.',

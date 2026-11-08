@@ -83,7 +83,8 @@
      (resolve module relative-to stx load?)]))
 
 ;; TODO: cache the namespace with some strategy
-(define (expand-source source in collector #:expand? [expand? #t])
+(define (expand-source source in collector #:expand? [expand? #t]
+                       #:contribution-only? [contribution-only? #f])
   (define src-dir (source-analysis-directory source))
   (define ns (make-base-namespace))
   (define-values (add-syntax done)
@@ -104,16 +105,19 @@
           (λ () (read-syntax (source-syntax-source source) in)))))
 
     (define expand-logs '())
+    (define (expand-input)
+      (with-handlers ([exn:fail? (λ (exn) exn)])
+        (parameterize ([current-output-port (open-output-nowhere)])
+          (if (and expand? (syntax? stx))
+              (expand stx)
+              #f))))
     (define expanded-stx
-      (with-intercepted-logging
-        (λ (log) (set! expand-logs (cons log expand-logs)))
-        (λ ()
-          (with-handlers ([exn:fail? (λ (exn) exn)])
-            (parameterize ([current-output-port (open-output-nowhere)])
-              (if (and expand? (syntax? stx))
-                  (expand stx)
-                  #f))))
-        'info))
+      (if contribution-only?
+          (expand-input)
+          (with-intercepted-logging
+            (λ (log) (set! expand-logs (cons log expand-logs)))
+            expand-input
+            'info)))
 
     (when (syntax? expanded-stx)
       (add-syntax expanded-stx)
@@ -130,7 +134,7 @@
    [succeed? boolean?])
   #:transparent)
 
-(define (check-syntax source doc-text lexer-state)
+(define (check-syntax source doc-text lexer-state #:contribution-only? [contribution-only? #f])
   (define text (send doc-text get-text))
   (define active-policy (LexerState-language-policy lexer-state))
   (define expand? (Language-Policy-expand? active-policy))
@@ -138,10 +142,19 @@
     (new build-trace%
       [source source]
       [doc-text doc-text]
-      [lexer-state lexer-state]))
+      [lexer-state lexer-state]
+      [contribution-only? contribution-only?]))
 
   (define in (open-input-text text))
-  (define er (expand-source source in new-trace #:expand? expand?))
+  (define er (expand-source source in new-trace #:expand? expand?
+                            #:contribution-only? contribution-only?))
+
+  ;; Resource failures must reach the indexer's worker controller even when
+  ;; diagnostic construction is omitted. Full document analysis is unchanged.
+  (when contribution-only?
+    (for ([problem (in-list (list (ExpandResult-pre-exn er) (ExpandResult-post-exn er)))]
+          #:when (exn:fail:out-of-memory? problem))
+      (raise problem)))
 
   (send new-trace walk-stx er)
   (send new-trace walk-log (ExpandResult-logs er))
@@ -154,6 +167,7 @@
   (struct-out CSResult)
   (contract-out
     [expand-source (->* (Source? input-port? (is-a?/c syncheck-annotations<%>))
-                        (#:expand? boolean?)
+                        (#:expand? boolean? #:contribution-only? boolean?)
                         ExpandResult?)]
-    [check-syntax (-> Source? (is-a?/c lsp-editor%) LexerState? CSResult?)]))
+    [check-syntax (->* (Source? (is-a?/c lsp-editor%) LexerState?)
+                       (#:contribution-only? boolean?) CSResult?)]))

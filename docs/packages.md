@@ -1,3 +1,4 @@
+<!-- Copyright (c) 2026 Eric Parsonage. SPDX-License-Identifier: Apache-2.0 OR MIT -->
 # Package development
 
 Run **Racket: Manage Packages** in a trusted workspace. The extension uses the
@@ -9,14 +10,14 @@ separate windows when folders require different Racket installations.
 
 | Action | Behaviour |
 | --- | --- |
-| Install Package | Accepts a package name, Git URL, archive, or local directory; `raco pkg` resolves dependencies. |
-| Link Local Package | Installs a directory link so edits apply to the package's source. |
-| Update Package | Updates one selected user package and resolves required dependencies. Packages installed from local archives or copied directories prompt for a replacement source. Directory links already use their source directly; edit that source and use Build Package. |
-| Remove Package | Removes one selected user package; `raco pkg` enforces dependency constraints. |
-| Test Package | Runs `raco test --package`, including `info.rkt` test policies. |
-| Build Package | Runs `raco setup --pkgs` for a selected user package. |
-| Open Package Source | Opens the resolved package directory in a new editor window. |
-| Choose Packages to Debug | Saves package names whose sources should be instrumented in future debug sessions. |
+| **Racket: Install Package** | Accepts a package name, Git URL, archive, or local directory; `raco pkg` resolves dependencies. |
+| **Racket: Link Local Package** | Installs a directory link so edits apply to the package's source. |
+| **Racket: Update Package** | Updates one selected user package and resolves required dependencies. Packages installed from local archives or copied directories prompt for a replacement source. Directory links already use their source directly; edit that source and use Build Package. |
+| **Racket: Remove Package** | Removes one selected user package; `raco pkg` enforces dependency constraints. |
+| **Racket: Test Package** | Runs `raco test --package`, including `info.rkt` test policies. |
+| **Racket: Build Package** | Runs `raco setup --pkgs` for a selected user package. |
+| **Racket: Open Package Source** | Opens the resolved package directory in a new editor window. |
+| **Racket: Choose Packages to Debug** | Saves package names whose sources should be instrumented in future debug sessions. |
 
 Each operation is also a Command Palette command. Install, link, update, and
 remove use Racket's **user scope** for the selected installation. Their task
@@ -25,10 +26,10 @@ Successful package changes restart the bundled language client so it sees the
 updated environment. Existing debug processes and REPLs retain loaded code;
 restart those sessions to load changes.
 
-The extension does not install, update, or remove anything automatically when
-opening a workspace. Package management uses ordinary Racket scopes, catalogs,
-database locking, and dependency checks. No separate package database or
-project-specific replacement environment is introduced.
+The extension does not install, update, or remove anything automatically when opening a
+workspace. Package management uses ordinary Racket scopes, catalogues, database locking,
+and dependency checks. No separate package database or project-specific replacement
+environment is introduced.
 
 ## Debug package sources
 
@@ -73,8 +74,9 @@ and structured failures. To inspect a package test, use Debug Test or a launch
 configuration with its required arguments and environment; these instrumented
 runs do not reproduce the native package runner's policies.
 
-The package API returns structured data through a small Racket helper, using
-`pkg/lib` and `pkg/path`. The editor never parses `raco pkg show` tables.
+The package API returns structured data through a small Racket helper, using `pkg/lib`
+and `pkg/path`. Package-management libraries load only when a package operation or
+selected debug package needs them. The editor never parses `raco pkg show` tables.
 Management runs public commands through process tasks with argument arrays.
 
 References: [Racket package commands](https://docs.racket-lang.org/pkg/cmdline.html),

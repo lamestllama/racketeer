@@ -15,7 +15,7 @@ function event() {
   return { listen(callback) { listeners.add(callback); return { dispose() { listeners.delete(callback); } }; },
     emit(value) { for (const listener of listeners) listener(value); } };
 }
-function client(t, processFactory, timeout = 60000) {
+function client(t, processFactory, timeout = 60000, environment = {}) {
   const vm = require('node:vm');
   const { fileURLToPath } = require('node:url');
   const { createLanguageProcess, ownedArgs } = require('../vscode/language-process');
@@ -38,14 +38,14 @@ function client(t, processFactory, timeout = 60000) {
       Range: class { constructor(a, b, c, d) { this.start = { line: a, character: b }; this.end = { line: c, character: d }; } },
       TextEdit: class { constructor(range, newText) { this.range = range; this.newText = newText; } },
       WorkspaceEdit: class extends Map { set(uri, edits) { return super.set(uri.toString(), edits); } } },
-    'node:path': path, 'vscode-languageclient/node': rpc,
+    'node:path': path, 'vscode-languageclient/node': environment.rpc || rpc,
     './racket-version': require('../vscode/racket-version'),
     './language-process': { ownedArgs, createLanguageProcess: processFactory || ((command, args, options, lifecycle) =>
       createLanguageProcess(command, args, { ...options, env: { ...process.env, PLTADDONDIR: addon } }, lifecycle)) }
   };
   const module = { exports: {} };
   const filename = path.join(root, 'vscode/workspace-index.js');
-  vm.runInNewContext(fs.readFileSync(filename, 'utf8'), { module, require: name => name === './selected-editor' ? require('../vscode/selected-editor') : dependencies[name], setInterval, clearInterval, setTimeout, clearTimeout }, { filename });
+  vm.runInNewContext(fs.readFileSync(filename, 'utf8'), { module, require: name => name === './selected-editor' ? require('../vscode/selected-editor') : dependencies[name], setInterval, clearInterval, setTimeout, clearTimeout, ...environment }, { filename });
   const index = module.exports.createWorkspaceIndex({ asAbsolutePath: file => path.join(root, 'vscode', file) }, {
     executable: 'racket', timeout, output: { append() {}, appendLine() {} }, onStatus: value => statuses.push(value)
   });
@@ -60,7 +60,7 @@ function client(t, processFactory, timeout = 60000) {
   return { index, directory, open, refs, closed, changed, disk, parse, workspace, statuses, vscode: dependencies.vscode };
 }
 
-function indexPeer(t, initialize = () => ({}), starting = Promise.resolve(), timeout) {
+function indexPeer(t, initialize = () => ({}), starting = Promise.resolve(), timeout, environment) {
   const { PassThrough } = require('node:stream');
   const child = { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough() };
   const connection = rpc.createMessageConnection(new rpc.StreamMessageReader(child.stdin), new rpc.StreamMessageWriter(child.stdout));
@@ -103,7 +103,7 @@ function indexPeer(t, initialize = () => ({}), starting = Promise.resolve(), tim
       connection.dispose();
       for (const stream of Object.values(child)) stream.destroy();
     }
-  }), timeout);
+  }), timeout, environment);
   return { ...c, snapshots, connection, disconnect: () => child.stdout.destroy() };
 }
 const wire = method => method === 'initialize' ? method : `textDocument/${method}`;
@@ -132,15 +132,36 @@ for (const method of ['initialize', 'references', 'prepareRename', 'rename']) {
   });
 }
 
-test('an index that stops answering leaves references to the language server and refuses rename', async t => {
-  const c = indexPeer(t, undefined, undefined, 1500), doc = c.open('definition.rkt', definition);
+test('an index that stops answering cleans up before falling back and refuses further requests', async t => {
+  let now = 0, sourcesDisposed = 0;
+  const intervals = new Set(), listeners = new Set();
+  const c = indexPeer(t, undefined, undefined, 1500, {
+    rpc: { ...rpc, CancellationTokenSource: class extends rpc.CancellationTokenSource {
+      dispose() { sourcesDisposed++; super.dispose(); }
+    } },
+    Date: { now: () => now },
+    setInterval: fn => { intervals.add(fn); return fn; },
+    clearInterval: fn => intervals.delete(fn)
+  }), doc = c.open('definition.rkt', definition);
   await c.index.start();
-  for (const method of ['references', 'rename']) c.connection.onRequest(wire(method), () => new Promise(() => {}));
-  const position = { line: 2, character: 10 }, token = rpc.CancellationToken.None;
-  assert.equal(await c.index.provideReferences(doc, position, { includeDeclaration: false }, token, () => 'language server'),
-    'language server');
-  assert.equal(c.statuses.at(-1).state, 'failed');
+  let entered;
+  const received = new Promise(resolve => { entered = resolve; });
+  c.connection.onRequest(wire('references'), () => { entered(); return new Promise(() => {}); });
+  const position = { line: 2, character: 10 }, token = { isCancellationRequested: false,
+    onCancellationRequested(fn) { listeners.add(fn); return { dispose: () => listeners.delete(fn) }; } };
+  const pending = c.index.provideReferences(doc, position, { includeDeclaration: false }, token, () => 'language server');
+  await received;
+  assert.equal(intervals.size, 1); assert.equal(listeners.size, 1);
+  now = 1501; for (const fn of intervals) fn();
+  assert.equal(await pending, 'language server');
+  assert.equal(intervals.size, 0, 'The fallback has no remaining watchdog');
+  assert.equal(listeners.size, 0, 'The fallback releases the caller listener');
+  assert.equal(sourcesDisposed, 1, 'The fallback disposes its cancellation source');
+  const failures = c.statuses.filter(s => s.state === 'failed').length;
+  now *= 2; for (const fn of intervals) fn();
+  assert.equal(c.statuses.filter(s => s.state === 'failed').length, failures);
   await assert.rejects(c.index.provideRenameEdits(doc, position, 'squared', token), /stopped answering/);
+  assert.equal(intervals.size, 0); assert.equal(listeners.size, 0);
 });
 
 test('index skips a duplicate startup snapshot', async t => {

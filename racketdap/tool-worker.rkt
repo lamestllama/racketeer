@@ -6,7 +6,7 @@
 
 ;; The supervisor alone reads the editor's input lease. Readers and macros run
 ;; in an owned process group, released on completion, cancellation or host exit.
-(define (run-tool-worker self run)
+(define (run-tool-worker self run #:session? [allow-session? #f])
   (define (worker)
     (define request (read-json))
     (join-process-group! (hash-ref request 'processGroup #f))
@@ -29,11 +29,24 @@
                                          (current-library-collection-paths))
                              (debugger-command self) (list "--worker")))))
           (set! child process)
-          (write-json (hash-set (string->jsexpr input) 'processGroup (process-group-name owner)) in)
+          (define request (string->jsexpr input))
+          (define session? (and allow-session? (= (hash-ref request 'schemaVersion 1) 2)
+                                (hash-ref request 'session #f)))
+          (write-json (hash-set request 'processGroup (process-group-name owner)) in)
           (newline in)
-          (close-output-port in)
+          (flush-output in)
+          (unless session? (close-output-port in))
           (define lease-ended
-            (thread (lambda () (let loop () (unless (eof-object? (read-byte)) (loop))))))
+            (thread
+             (lambda ()
+               (if session?
+                   (let loop ()
+                     (define line (read-line (current-input-port) 'any))
+                     (unless (eof-object? line)
+                       (displayln line in)
+                       (flush-output in)
+                       (loop)))
+                   (let loop () (unless (eof-object? (read-byte)) (loop)))))))
           (sync process lease-ended))
         (lambda ()
           (when (and child (eq? (system-type 'os) 'windows)) (subprocess-kill child #t))

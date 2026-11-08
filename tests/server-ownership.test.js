@@ -8,14 +8,17 @@ const test = require('./support/node-test');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { spawn, execFileSync } = require('node:child_process');
+const { spawn, execFile } = require('node:child_process');
+const { promisify } = require('node:util');
+const execute = promisify(execFile);
 const { pathToFileURL } = require('node:url');
 
 const root = path.resolve(__dirname, '..');
 const alive = pid => { try { process.kill(pid, 0); return true; } catch (_) { return false; } };
-function descendants(pid) {
+async function descendants(pid) {
   const children = new Map();
-  for (const line of execFileSync('ps', ['-A', '-o', 'pid=,ppid='], { encoding: 'utf8' }).trim().split('\n')) {
+  const { stdout } = await execute('ps', ['-A', '-o', 'pid=,ppid=']);
+  for (const line of stdout.trim().split('\n')) {
     const [child, parent] = line.trim().split(/\s+/).map(Number);
     if (!children.has(parent)) children.set(parent, []);
     children.get(parent).push(child);
@@ -25,10 +28,10 @@ function descendants(pid) {
   return found;
 }
 
-// The extension host starts both servers as the extension does and is then
-// killed without warning, while the index analyses a module whose
-// compile-time code holds a child that ignores breaks.
-test('the language and workspace index servers end with an extension host that is killed', {
+// Start each real server in turn, within the memory budget. Kill the extension
+// host without warning; the index is analysing compile-time code with a child
+// that ignores breaks.
+for (const kind of ['language', 'workspace-index']) test(`the ${kind} server ends with an extension host that is killed`, {
   skip: process.platform === 'win32' && 'POSIX process listing; Windows uses a job object'
 }, async t => {
   const directory = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'racketeer servers ')));
@@ -55,33 +58,34 @@ test('the language and workspace index servers end with an extension host that i
     const env = { ...process.env, PLTADDONDIR: ${JSON.stringify(path.join(directory, 'addon'))} };
     const context = { asAbsolutePath: file => ${JSON.stringify(path.join(root, 'vscode'))} + '/' + file };
     const server = file => createLanguageProcess('racket', ownedArgs(context, [context.asAbsolutePath(file)]),
-      { cwd: ${JSON.stringify(directory)}, env });
+      { cwd: ${JSON.stringify(directory)}, env }, { owned: true });
     (async () => {
-      const language = await server('language-server.rkt').start();
-      const index = await server('workspace-index-server.rkt').start();
+      const index = await server(${JSON.stringify(kind + '-server.rkt')}).start();
       const connection = rpc.createMessageConnection(new rpc.StreamMessageReader(index.stdout), new rpc.StreamMessageWriter(index.stdin));
       connection.onRequest('workspace/configuration', () => [{ enabled: true, timeoutSeconds: 120 }]);
       connection.listen();
-      await connection.sendRequest('initialize', { processId: null, rootUri: null,
+      await connection.sendRequest('initialize', { processId: null, rootUri: null, rootPath: null,
         workspaceFolders: [{ uri: ${JSON.stringify(pathToFileURL(directory).href)}, name: 'servers' }],
         capabilities: { workspace: { configuration: true } } });
       await connection.sendNotification('initialized', {});
+      if (${JSON.stringify(kind)} === 'language') { require('node:fs').writeSync(1, JSON.stringify([index.pid]) + '\\n'); return; }
       // A pass runs for a request, and this one stays waiting for it.
       const busy = ${JSON.stringify(pathToFileURL(path.join(directory, 'busy.rkt')).href)};
       await connection.sendNotification('textDocument/didOpen', { textDocument: { uri: busy, languageId: 'racket', version: 1,
         text: require('node:fs').readFileSync(${JSON.stringify(path.join(directory, 'busy.rkt'))}, 'utf8') } });
       void connection.sendRequest('textDocument/references', { textDocument: { uri: busy },
         position: { line: 0, character: 0 }, context: { includeDeclaration: false } }).catch(() => {});
-      console.log(JSON.stringify([language.pid, index.pid]));
+      require('node:fs').writeSync(1, JSON.stringify([index.pid]) + '\\n');
     })();`], { stdio: ['ignore', 'pipe', 'inherit'] });
   const servers = await new Promise((resolve, reject) => {
     host.stdout.once('data', data => resolve(JSON.parse(data)));
     host.once('exit', code => reject(new Error(`Host exited with ${code}`)));
   });
-  // A fresh addon directory compiles both servers first.
-  await until(() => fs.existsSync(pids), 'The index started analysing the busy module');
-  tree = servers.flatMap(pid => [pid, ...descendants(pid)]);
-  assert.ok(tree.length >= 3, `The servers and the compile-time child are running: ${tree}`);
+  // A fresh addon directory compiles the server first.
+  if (kind === 'workspace-index') await until(() => fs.existsSync(pids), 'The index started analysing the busy module');
+  for (const pid of servers) tree.push(pid, ...await descendants(pid));
+  assert.ok(tree.length >= 3, `The server and its guards are running: ${tree}`);
+  if (kind === 'workspace-index') assert.ok(tree.length >= 5, `The analysis worker and compile-time child are running: ${tree}`);
   const exited = new Promise(resolve => host.once('exit', resolve));
   host.kill('SIGKILL');
   await exited;

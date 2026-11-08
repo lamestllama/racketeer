@@ -1,3 +1,4 @@
+<!-- Copyright (c) 2026 Eric Parsonage. SPDX-License-Identifier: Apache-2.0 OR MIT -->
 # WXME editing
 
 ## Viewer and editor
@@ -131,12 +132,13 @@ the outer stream's class list does not describe all nested readers.
 restricts module resolution throughout decoding, including nested streams.
 Document-supplied readers cannot load through an embedded XML box.
 
-The loader reads source bytes once. For supported WXME files, `wxme-source.rkt`
-builds a display snapshot with the public decoder, replacing each outer object
+The loader reads source bytes once. `wxme-source.rkt` recognises the WXME header before
+loading `wxme-decode.rkt`, so ordinary text debugging does not load WXME libraries. For
+supported WXME files, the decoder builds a display snapshot, replacing each outer object
 with one U+FFFC character. It uses the viewer's reader allowlist and does not call
-embedded objects' `read-special` methods. The program reader still consumes the
-original bytes. Reader positions therefore align with the snapshot without
-flattening nested editors or turning images into executable text.
+embedded objects' `read-special` methods. Decoded source is limited to 32 MiB. The
+program reader still consumes the original bytes. Reader positions therefore align with
+the snapshot without flattening nested editors or turning images into executable text.
 
 The existing DAP source-reference lifecycle, position-to-UTF-16 conversion,
 breakpoint resolution and stack handling use this snapshot. Saving a later edit

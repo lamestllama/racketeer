@@ -1,0 +1,33 @@
+diff --git a/common/source-snapshot.rkt b/common/source-snapshot.rkt
+--- a/common/source-snapshot.rkt
++++ b/common/source-snapshot.rkt
+@@ -15,6 +15,7 @@
+ ;;   claim the same path.
+ ;; source?: whether a file outside `sources` loads from source.
+ ;; on-load: receives each module file the expansion loads.
++;; cache: optional path -> compiled module code table for one fixed source view.
+ ;; Installed collections keep compiled loading even below a project folder,
+ ;; for example when a workspace folder contains the Racket installation.
+ ;; The setup roots are found when this module is instantiated, outside analysis
+@@ -34,7 +35,8 @@
+ 
+ (define (call-with-source-snapshot sources proc
+                                    #:source? [source? (lambda (_) #f)]
+-                                   #:on-load [on-load void])
++                                   #:on-load [on-load void]
++                                   #:cache [cache #f])
+   (define ordinary-load (current-load/use-compiled))
+   (define ordinary-open (moddep-current-open-input-file))
+   (define (load-snapshot file expected)
+@@ -54,8 +56,9 @@
+        (unless (and (pair? expected) (not (car expected)))
+          (parameterize ([current-load-relative-directory (path-only full)]
+                         [current-module-declare-source full])
+-           (eval (get-module-code full #:rkt-try-ss? #f
+-                                  #:choose (lambda _ 'src)))))]
++           (define (compile-source)
++             (get-module-code full #:rkt-try-ss? #f #:choose (lambda _ 'src)))
++           (eval (if cache (hash-ref! cache full compile-source) (compile-source)))))]
+       [else (ordinary-load file expected)]))
+   (parameterize ([current-load/use-compiled load-snapshot]
+                  [moddep-current-open-input-file

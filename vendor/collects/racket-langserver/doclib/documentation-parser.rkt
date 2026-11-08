@@ -6,7 +6,9 @@
   net/url-string
   html-parsing
   racket/function
-  "docs-helpers.rkt")
+  racket/lazy-require)
+
+(lazy-require ["docs-helpers.rkt" (make-proper-url-for-online-documentation)])
 
 
 ;; ------------------------------------------

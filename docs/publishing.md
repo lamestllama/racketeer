@@ -23,9 +23,16 @@ retained in [the icon notices](../vscode/images/NOTICE.txt).
 
 ## Before publishing
 
-Before publishing, recheck that no other Racket extension on the VS Code
-Marketplace or Open VSX registers a debugger; the description claims
-Racketeer is the only one.
+For release 0.8.55, check that the manifest, changelog, Marketplace page and release
+notes describe the same version. The Marketplace page uses absolute image links; the
+repository README and guide use local image paths. The macro image is
+[docs/images/macro-steps.png](images/macro-steps.png). Its Marketplace link uses
+`release-0.8.55`, where that path already exists. Publish the updated image on
+that branch before updating either listing.
+
+Build and test the final VSIX as described in [CI](ci.md). Record validation for that
+artefact in the [release record](releases/0.8.55.md). Publish the reviewed package to
+the Visual Studio Marketplace and Open VSX.
 
 References: [extension manifest](https://code.visualstudio.com/api/references/extension-manifest)
 and [publisher setup](https://code.visualstudio.com/api/working-with-extensions/publishing-extension#create-a-publisher).

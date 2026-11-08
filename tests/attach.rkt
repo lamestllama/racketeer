@@ -4,7 +4,8 @@
 
 (require rackunit pkg/lib racket/async-channel racket/file racket/list racket/path racket/port racket/tcp
          compiler/compile-file
-         "../racketdap/protocol.rkt" "../racketdap/worker/attach.rkt"
+         "../racketdap/protocol.rkt" "../racketdap/worker/attach.rkt" "../racketdap/worker/logs.rkt"
+         (only-in "../racketdap/worker/session.rkt" serve-session)
          (submod "../racketdap/worker/attach.rkt" test-support)
          "support/attach-host.rkt")
 
@@ -70,6 +71,60 @@
 (define (break! c file line)
   (ask c "setBreakpoints" (hasheq 'source (hasheq 'path (path->string file))
                                  'breakpoints (list (hasheq 'line line)))))
+
+(module+ test
+  (test-case "closing a log refuses pending commands without stopping their caller"
+    (define owner (make-custodian))
+    (dynamic-wind
+      void
+      (lambda ()
+        (parameterize ([current-custodian owner])
+          (define entered (make-semaphore))
+          (define log
+            (parameterize ([current-logger (make-logger #f #f)])
+              (make-application-log "error" (lambda (_) (semaphore-post entered) (sync never-evt)))))
+          (log-message (application-log-logger log) 'error "blocked output" #f)
+          (define refused? (box #f))
+          (define caller
+            (thread (lambda ()
+                      (with-handlers ([exn:fail? (lambda (_) (set-box! refused? #t))])
+                        (application-log-flush! log)))))
+          (check-not-false (sync/timeout 5 entered))
+          (application-log-close! log)
+          (application-log-close! log)
+          (check-not-false (sync/timeout 5 caller))
+          (check-true (unbox refused?))
+          (check-exn #rx"closed" (lambda () (application-log-filter! log "none")))))
+      (lambda () (custodian-shutdown-all owner))))
+
+  (test-case "ended attachment sessions release their services inside a surviving host"
+    (define parent (current-custodian))
+    (define owner (make-custodian parent))
+    (define (live-threads custodian)
+      (append-map (lambda (value)
+                    (cond [(custodian? value) (live-threads value)]
+                          [(and (thread? value) (not (thread-dead? value))) (list value)]
+                          [else '()]))
+                  (custodian-managed-list custodian parent)))
+    (dynamic-wind
+      void
+      (lambda ()
+        (parameterize ([current-custodian owner])
+          (define host (thread (lambda () (sync never-evt))))
+          (for ([i (in-range 4)])
+            (define a (start-attach))
+            (define c (connect/ports a (hasheq 'sourceRoots '() 'debugPackages '())))
+            (if (even? i) (close-attachment! a) (close-output-port (client-output c)))
+            (check-not-false (sync/timeout 5 (client-session c)))
+            (collect-garbage)
+            (check-equal? (live-threads owner) (list host))
+            (check-false (thread-dead? host)))
+          (define standalone
+            (thread (lambda () (serve-session (open-input-bytes #"") (open-output-bytes)
+                                              (hasheq) (hasheq) void))))
+          (check-not-false (sync/timeout 5 standalone))
+          (check-equal? (live-threads owner) (list host))))
+      (lambda () (custodian-shutdown-all owner)))))
 
 (module+ test
   (test-case "API version and the three selection-independent host options"

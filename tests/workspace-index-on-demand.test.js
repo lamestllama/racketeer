@@ -90,7 +90,7 @@ async function blockingProject(t, env) {
   };
   // Workers run at once, so reaching one file does not mean that the one before it ended.
   const finished = async name => {
-    await until(() => new RegExp(`analyse \\S*${name.replace('.', '\\.')}: reaped`).test(p.diagnostics()), () => p.diagnostics());
+    await until(() => new RegExp(`analyse \\S*${name.replace('.', '\\.')}: finished`).test(p.diagnostics()), () => p.diagnostics());
   };
   return { ...p, reached, finished, expansions: () => fs.readFileSync(log, 'utf8').trim().split('\n').length,
     release: () => fs.unlinkSync(gate), entered };

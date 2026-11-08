@@ -75,6 +75,9 @@ class EditorIsolation(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             for relative in ('tests/vscode-integration.js', 'tests/vscode-dogfood.js',
+                             'vscode/testing.js', 'vscode/macro-view/model.js',
+                             'vscode/workspace-analysis.rkt',
+                             'vscode/node_modules/vscode-oniguruma/release/onig.wasm',
                              'racketdap/main.rkt', 'examples/demo.rkt',
                              'vendor/collects/example/reader.rkt',
                              '.vscode/settings.json', 'experiments/lexical-eval.rkt'):
@@ -98,10 +101,14 @@ class EditorIsolation(unittest.TestCase):
                     self.assertFalse((second / name / 'contamination').exists())
                     self.assertTrue((first / name / 'contamination').exists())
                 self.assertTrue((second / 'harness/vscode-integration.js').is_file())
+                self.assertEqual((second / 'harness/extension/testing.js').read_text(), 'fixture')
+                self.assertEqual((second / 'vscode/macro-view/model.js').read_text(), 'fixture')
+                self.assertEqual((second / 'vscode/node_modules/vscode-oniguruma/release/onig.wasm').read_text(), 'fixture')
                 dependency = second / 'workspace/vendor/collects/example/reader.rkt'
                 self.assertEqual(dependency.exists(), dogfood)
                 if dogfood:
                     self.assertEqual(dependency.read_text(encoding='utf-8'), 'fixture')
+                    self.assertEqual((second / 'workspace/vscode/workspace-analysis.rkt').read_text(), 'fixture')
                 for directory in ('workspace', 'harness'):
                     self.assertFalse(list((second / directory).rglob('compiled')))
                     self.assertFalse(list((second / directory).rglob('__pycache__')))

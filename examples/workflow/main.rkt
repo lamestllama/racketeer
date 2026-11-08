@@ -15,3 +15,6 @@
 ;; Load this file in Debug REPL, select the following expression, and use
 ;; Evaluate Selection in Debug REPL. A breakpoint in math.rkt also works here.
 ;; (show-price 200)
+
+;; Copyright (c) 2026 Eric Parsonage
+;; SPDX-License-Identifier: Apache-2.0 OR MIT

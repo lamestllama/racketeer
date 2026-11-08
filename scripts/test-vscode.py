@@ -81,9 +81,9 @@ def prepare_run(root, dogfood=False):
     output = Path(tempfile.mkdtemp(prefix='run-', dir=parent))
     workspace = output / 'workspace'
     if dogfood:
-        for directory in ('racketdap', 'tests', 'examples', 'vendor'):
+        for directory in ('racketdap', 'tests', 'examples', 'vendor', 'vscode'):
             shutil.copytree(root / directory, workspace / directory,
-                            ignore=shutil.ignore_patterns('compiled', '__pycache__'))
+                            ignore=shutil.ignore_patterns('compiled', '__pycache__', 'node_modules'))
         for relative in ('.vscode/settings.json', 'experiments/lexical-eval.rkt'):
             destination = workspace / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
@@ -98,6 +98,14 @@ def prepare_run(root, dogfood=False):
     extension_source.mkdir()
     for source in (root / 'vscode').glob('*.js'):
         shutil.copyfile(source, extension_source / source.name)
+    # Preserve source-relative imports, including nested modules and npm dependencies.
+    shutil.copytree(root / 'vscode', output / 'vscode',
+                    ignore=shutil.ignore_patterns('compiled', '__pycache__', 'node_modules'))
+    try:
+        (output / 'vscode' / 'node_modules').symlink_to(root / 'vscode' / 'node_modules', target_is_directory=True)
+    except OSError:
+        # Windows may refuse symbolic links without developer mode.
+        shutil.copytree(root / 'vscode' / 'node_modules', output / 'vscode' / 'node_modules')
     for name in ('user', 'extensions', 'empty-racket-addon'):
         (output / name).mkdir()
     settings = output / 'user/User/settings.json'
@@ -106,6 +114,8 @@ def prepare_run(root, dogfood=False):
         'telemetry.telemetryLevel': 'off', 'update.mode': 'none',
         'extensions.autoUpdate': False, 'workbench.startupEditor': 'none',
         'window.restoreWindows': 'none',
+        # Newer VS Code opens a chat side bar, which leaves the editor too small.
+        'workbench.secondarySideBar.defaultVisibility': 'hidden',
         'racket-langserver.workspaceAnalysis.timeoutSeconds': 120,
     }))
     (parent / 'latest.json').write_text(json.dumps({

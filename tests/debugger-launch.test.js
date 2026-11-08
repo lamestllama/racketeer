@@ -451,16 +451,17 @@ test('tools run through the launcher as they do without it', async t => {
                           'arguments (vector->list (current-command-line-arguments))))
       (flush-output))))
 `);
+  // Activation starts the build, as a window opening does.
+  const starter = spawnSync('racket', launcherArgs(files, 'tools/start-debugger-build.rkt'), { encoding: 'utf8' });
+  assert.equal(starter.status, 0, starter.stderr);
+  const [build] = await built(storage);
   const owned = launcherArgs(files, 'tools/owned-command.rkt');
-  // Everything an owned command starts ends with it, on Windows its builder too,
-  // so this one stays until the build has finished, as a window's server does.
   const child = spawn('racket', [...owned, '-l', 'racket/base', '-e', '(void (read-byte)) (display "from the child") (exit 7)']);
   t.after(() => child.kill('SIGKILL'));
   let said = '', complaint = '';
   child.stdout.on('data', data => { said += data; });
   child.stderr.on('data', data => { complaint += data; });
   const ended = new Promise(resolve => child.on('close', resolve));
-  const [build] = await built(storage);
   child.stdin.end();
   assert.equal(await ended, 7, complaint);
   assert.equal(said, 'from the child');

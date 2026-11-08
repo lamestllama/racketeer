@@ -37,3 +37,6 @@
     (check-equal? (sorted (filter hash? received))
                   (for*/list ([writer (in-range writers)] [n (in-range replies)]) (message writer n)))
     (check-equal? (length received) (* writers replies))))
+
+;; Copyright (c) 2026 Eric Parsonage
+;; SPDX-License-Identifier: Apache-2.0 OR MIT

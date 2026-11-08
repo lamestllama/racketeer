@@ -12,6 +12,19 @@ const position = (source, needle, delta = 1) => {
   return { line: prefix.length - 1, character: prefix.at(-1).length };
 };
 
+test('language-server hover still returns library documentation on its first and repeated requests', async t => {
+  const p = await languageServer(t);
+  const source = '#lang racket/base\n(map add1 (list 1 2))\n';
+  await p.open('documentation.rkt', source);
+  await p.expectDiagnostics('documentation.rkt', false);
+  const at = position(source, '(map');
+  const first = text(await p.request('hover', 'documentation.rkt', { position: at }));
+  assert.match(first, /docs\.racket-lang\.org\/reference\//);
+  assert.match(first, /procedure/);
+  assert.match(first, /applies|application/i);
+  assert.equal(text(await p.request('hover', 'documentation.rkt', { position: at })), first);
+});
+
 test('tail hover describes relative contexts and keeps non-tail arguments distinct', async t => {
   const p = await languageServer(t);
   const source = '#lang racket/base\n(define (f x)\n  (+ 1 (if x (f #f) 3)))\n(define (g x)\n  (if x (g #f) 4))\n';

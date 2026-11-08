@@ -1,0 +1,17 @@
+diff --git a/doclib/check-syntax.rkt b/doclib/check-syntax.rkt
+--- a/doclib/check-syntax.rkt
++++ b/doclib/check-syntax.rkt
+@@ -149,6 +149,13 @@
+   (define er (expand-source source in new-trace #:expand? expand?
+                             #:contribution-only? contribution-only?))
+ 
++  ;; Resource failures must reach the indexer's worker controller even when
++  ;; diagnostic construction is omitted. Full document analysis is unchanged.
++  (when contribution-only?
++    (for ([problem (in-list (list (ExpandResult-pre-exn er) (ExpandResult-post-exn er)))]
++          #:when (exn:fail:out-of-memory? problem))
++      (raise problem)))
++
+   (send new-trace walk-stx er)
+   (send new-trace walk-log (ExpandResult-logs er))
+   (CSResult new-trace text

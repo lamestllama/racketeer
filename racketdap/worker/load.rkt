@@ -187,6 +187,7 @@
             (instrument-module expanded selected-source fresh-id
                                #:form (cons unit index) #:module-context bindings
                                #:coverage? coverage? #:source-operands source-operands
+                               #:template-source? (lambda (file) (and (path? file) (selected-source? file)))
                                #:expression-boundary? expression-boundary?))
           (define module-path (hash-ref module-paths bindings '()))
           (when live?
@@ -199,7 +200,9 @@
                                  (define s (car entry))
                                  (vector (site-line s) (site-column s) (site-position s) (site-span s)
                                          (site-tail? s) (site-parent s) (cdr entry)
-                                         (site-value-shown? s))))))
+                                         (site-value-shown? s)
+                                         (and (not (equal? (site-source s) selected-source))
+                                              (path->bytes (site-source s))))))))
           annotated)
         (define (make-transform bindings)
           (lambda (kind stx)
@@ -211,11 +214,19 @@
         (define (wrap-body body context bindings)
           (define transform (make-transform bindings))
           (define wrapper (datum->syntax context wrapper-name))
+          ;; Bind the core import explicitly; program definitions must not
+          ;; capture the import or its module-path spelling.
+          (define require-name (gensym 'require))
+          (define require-binding (identifier-binding #'#%require))
+          (define require-id
+            (syntax-binding-set->syntax
+             (syntax-binding-set-extend (syntax-binding-set) require-name 0 (car require-binding)
+                                        #:source-symbol (cadr require-binding))
+             require-name))
           (cons
            (datum->syntax context
-                          `(require (only-in (file ,(path->string instrumentation-runtime-path)))
-                                    (rename-in (file ,(path->string expander-path))
-                                               [instrument-form ,wrapper-name])))
+                          `(,require-id (only (file ,(path->string instrumentation-runtime-path)))
+                                        (rename (file ,(path->string expander-path)) ,wrapper instrument-form)))
            (for/list ([item (in-list body)])
              ;; Racket's module-begin must see an explicit runtime configuration
              ;; before expansion, or it inserts a second submodule of that name.
@@ -470,9 +481,10 @@
         [(form)
          (define descriptors
            (for/list ([entry (in-list (cadddr event))])
-             (define-values (line column position span tail? parent visible? value-shown?)
+             (define-values (line column position span tail? parent visible? value-shown? file)
                (vector->values entry))
-             (cons (site (fresh-id) resolved line column position span tail? #f parent visible? value-shown?)
+             (cons (site (fresh-id) (if file (bytes->path file) resolved)
+                         line column position span tail? #f parent visible? value-shown?)
                    visible?)))
          (register-form-sites! unit (caddr event) (form-callback resolved (cadr event))
                                (map car descriptors)
