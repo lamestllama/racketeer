@@ -179,6 +179,9 @@ def run(args, executable, app, selected):
             raise RuntimeError('Selected artifact changed while preparing the run.')
         evidence['artifact'].update(retainedPath=staged['path'], retainedManifest=staged['manifest'])
         env = isolated_environment(output)
+        if args.dogfood:
+            # Some suites import the bundled language server by its collection name.
+            env['PLTCOLLECTS'] = f'{output / "workspace" / "vendor" / "collects"}{os.pathsep}'
         if args.rhombus:
             runtime = output / 'rhombus-runtime'
             print(f'Provisioning the pinned Rhombus runtime: {runtime}', flush=True)
