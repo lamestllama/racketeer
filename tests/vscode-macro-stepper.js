@@ -23,7 +23,7 @@ async function observed(predicate = () => true, description = 'macro view is ren
   await until(async () => {
     latest = await command('_observe');
     return !!latest && !latest.busy && latest.rendered?.position === latest.position &&
-      (!latest.selection || !!latest.properties) && latest.rendered.generation === latest.generation && latest.rendered.positionRevision === latest.revision && latest.pair.every(p => p.rendered?.position === latest.position && p.rendered.generation === latest.generation && p.rendered.positionRevision === p.revision) && predicate(latest);
+      latest.rendered.generation === latest.generation && latest.rendered.positionRevision === latest.revision && latest.pair.every(p => p.rendered?.position === latest.position && p.rendered.generation === latest.generation && p.rendered.positionRevision === p.revision) && predicate(latest);
   }, description, () => JSON.stringify(latest && { position: latest.position, count: latest.count, busy: latest.busy, hiding: latest.hiding, custom: latest.custom, failure: latest.failure, rendered: latest.rendered }));
   const file = path.basename(vscode.Uri.parse(latest.source).path);
   for (const pane of latest.pair) {
@@ -45,7 +45,16 @@ async function observed(predicate = () => true, description = 'macro view is ren
   assert.ok(tabs().some(tab => tab.isActive && tab.label === latest.title));
   return latest;
 }
-async function focusSide(side) { await command('_focusPane', side); return observed(s => s.side === side); }
+async function focusSide(side) {
+  const tab = tabs().find(t => t.label.startsWith(side === 'before' ? 'Before - ' : 'After - '));
+  const group = ['First', 'Second', 'Third', 'Fourth', 'Fifth', 'Sixth', 'Seventh', 'Eighth', 'Ninth'][tab.group.viewColumn - 1];
+  await vscode.commands.executeCommand(`workbench.action.focus${group}EditorGroup`);
+  return observed(s => {
+    const group = vscode.window.tabGroups.activeTabGroup, tab = group.activeTab;
+    return s.side === side && group.viewColumn === s.panelColumn && tab?.label === s.title &&
+      tab.input instanceof vscode.TabInputWebview && tab.input.viewType.endsWith('racketeer.macroSteps');
+  }, `${side} macro pane has workbench focus`);
+}
 async function go(name, position) {
   await command(name); return observed(s => position === 'end' ? s.position === s.count : s.position === position, name);
 }
@@ -160,7 +169,7 @@ exports.run = async function (extension, workspace) {
     assert.equal(await vscode.workspace.applyEdit(edit), true);
   }
   let dom, document, sourceColumn, panelColumn, currentSide = 'before';
-  const focusPanel = async () => { const tab = tabs().find(t => t.label.startsWith(currentSide === 'before' ? 'Before - ' : 'After - ')); const group = ['First', 'Second', 'Third', 'Fourth', 'Fifth', 'Sixth', 'Seventh', 'Eighth', 'Ninth'][tab.group.viewColumn - 1]; await vscode.commands.executeCommand(`workbench.action.focus${group}EditorGroup`); await observed(s => s.side === currentSide); };
+  const focusPanel = () => focusSide(currentSide);
   try {
     await bracketSettings.update('bracketPairColorization.enabled', true, vscode.ConfigurationTarget.Workspace, true);
     await bracketSettings.update('bracketPairColorization.independentColorPoolPerBracketType', false, vscode.ConfigurationTarget.Workspace, true);
@@ -399,7 +408,7 @@ exports.run = async function (extension, workspace) {
       dom = await drive({ type: 'settle' });
       assert.ok(dom.editorLayoutWidth >= 320 || dom.propertiesBelow, 'Properties preserve editor width or sit below it');
       await command('properties'); await observed(s => !s.propertiesVisible);
-      await command('properties'); s = await observed(s => s.propertiesVisible);
+      await command('properties'); s = await observed(s => s.propertiesVisible && !!s.properties);
       dom = await drive({ type: 'observe' });
       assert.equal(dom.propertiesVisible, true); assert.match(dom.inspector, /Apparent identifier binding|Scopes/);
       assert.ok(dom.editorLayoutWidth >= 320 || dom.propertiesBelow, 'Properties preserve editor width or sit below it');
@@ -473,7 +482,7 @@ exports.run = async function (extension, workspace) {
       const withSource = sourceAppearance(s.projection, s.rendered.sections, source);
       assert.ok(withSource); dom = await drive({ type: 'select', target: withSource.target });
       assert.deepEqual(dom.selected, withSource.target, 'The click selects the source term in its pane');
-      s = await observed(s => s.selection?.sectionId === withSource.target.sectionId && s.selection?.occurrenceId === withSource.target.occurrenceId);
+      s = await observed(s => s.selection?.sectionId === withSource.target.sectionId && s.selection?.occurrenceId === withSource.target.occurrenceId && !!s.properties);
       dom = await drive({ type: 'observe' });
       const location = s.properties.source;
       const [start, end] = Model.sourceOffsets(document.getText(), location.line, location.column, location.span);
@@ -604,7 +613,7 @@ exports.run = async function (extension, workspace) {
     assert.ok(diagnostic.syntax.length > 0); assert.ok(diagnostic.contexts.length >= 3);
     const context = diagnostic.contexts.at(-1).section, occurrence = context.occurrences[0];
     await drive({ type: 'select', target: { sectionId: context.id, occurrenceId: occurrence.id } });
-    await observed(s => s.selection?.sectionId === context.id);
+    await observed(s => s.selection?.sectionId === context.id && !!s.properties);
     dom = await drive({ type: 'observe' }); assert.match(dom.inspector, /Source location|Scopes/);
     await vscode.window.tabGroups.close(tabs().find(t => t.label.startsWith('After - ')));
     await until(() => tabs().length === 0, 'Closing After closes Before');

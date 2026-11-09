@@ -10,7 +10,6 @@ function createTestHooks(runtime) {
   if (runtime.context.extensionMode === vscode.ExtensionMode.Test) {
     runtime.context.subscriptions.push(vscode.commands.registerCommand('racketdap.macroSteps._hidingPicker', () => runtime.hidingPick));
     runtime.context.subscriptions.push(vscode.commands.registerCommand('racketdap.macroSteps._workerCount', () => runtime.workers.size));
-    runtime.command('_focusPane', (v, side) => { const pane = runtime.panes(v).find(p => p.side === side); if (pane) pane.panel.reveal(pane.panel.viewColumn, false); });
     runtime.command('_observe', v => ({ side: v.side, pair: runtime.panes(v).map(p => ({ side: p.side, title: p.panel.title, column: p.panel.viewColumn,
       rendered: p.rendered, revision: p.positionRevision, generation: p.generation })), title: v.panel.title, source: v.source.toString(), position: v.position, count: v.data ? v.data.steps.length + 1 : undefined,
       revision: v.positionRevision, generation: v.generation, busy: !!v.busy, stale: !!v.stale, hiding: v.hiding, custom: runtime.customFor(v),

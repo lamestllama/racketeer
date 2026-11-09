@@ -113,7 +113,11 @@
                       #:on-language-adapter (lambda (identity descriptor) (hash-set! selected identity descriptor))) 42)
          (check-equal? (tag (hash-ref selected source)) 'none)
          (check-equal? (tag (hash-ref selected `(submod ,source child))) (if chosen 'sexp 'shrubbery))
-         (check-false (hash-has-key? selected `(submod ,source sibling))))))))
+         ;; Instrumenting the file reads every written submodule under its own
+         ;; language, while an explicit adapter stays with the launched child.
+         (if instrument?
+             (check-equal? (tag (hash-ref selected `(submod ,source sibling))) 'none)
+             (check-false (hash-has-key? selected `(submod ,source sibling)))))))))
 
 
 (module+ submodule-launch

@@ -444,10 +444,9 @@ for (const side of ['before', 'after']) for (const flags of [false, true]) test(
   other.reveal(); await ui.command('next');
   const revisions = pairA.map(p => p.env.positionRevision);
   ui.deferFocus(flags);
-  // _focusPane is the command used by focusSide in the editor suite. The
-  // selected tab moves immediately; view notifications (and sometimes the
+  // The selected tab moves immediately; view notifications (and sometimes the
   // panel flags) lag behind.
-  await ui.command('_focusPane', side);
+  target.reveal();
   assert.equal(target.active, !flags);
   await ui.command('first');
   for (const [index, p] of pairA.entries()) {

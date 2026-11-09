@@ -28,6 +28,7 @@ exports.run = async function () {
     ['tests/breakpoint-rearming.rkt', 2],
     // Its second case needs a link, which can take a privilege on Windows.
     ['tests/breakpoint-spelling.rkt', process.platform === 'win32' ? 1 : 2],
+    ['tests/binding-contributions.rkt', 2],
     ['tests/binding-facts.rkt', 9],
     ['tests/binding-facts-services.rkt', 47],
     ['tests/rename-binders.rkt', 29],

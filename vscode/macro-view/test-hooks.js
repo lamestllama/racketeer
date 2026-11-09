@@ -132,14 +132,22 @@ MacroView.createTestHooks = function (runtime) {
         // catches up. Reveal the whole owned character in the current pane,
         // including its columns, before measuring a pointer point.
         runtime.editor.layout();
-        runtime.editor.revealRangeInCenterIfOutsideViewport({ startLineNumber: pos.lineNumber, startColumn: pos.column,
-          endLineNumber: end.lineNumber, endColumn: end.column }, runtime.monaco.editor.ScrollType.Immediate);
+        const range = { startLineNumber: pos.lineNumber, startColumn: pos.column, endLineNumber: end.lineNumber, endColumn: end.column };
+        runtime.editor.revealRangeInCenterIfOutsideViewport(range, runtime.monaco.editor.ScrollType.Immediate);
         await new Promise(resolve => requestAnimationFrame(resolve));
         if (!runtime.pendingDrives.has(answer)) return;
         // Horizontal reveal is completed during rendering. Measure only after
         // that render, and check the real editor hit before dispatching a click.
         runtime.editor.render(true);
-        const box = runtime.editor.getScrolledVisiblePosition(pos), next = runtime.editor.getScrolledVisiblePosition(end), origin = runtime.editorSurface.getBoundingClientRect();
+        let box = runtime.editor.getScrolledVisiblePosition(pos), next = runtime.editor.getScrolledVisiblePosition(end);
+        // A line partly under the horizontal scrollbar counts as inside the viewport.
+        const layout = runtime.editor.getLayoutInfo();
+        if (box && box.top + box.height > layout.height - layout.horizontalScrollbarHeight) {
+          runtime.editor.revealRangeInCenter(range, runtime.monaco.editor.ScrollType.Immediate);
+          runtime.editor.render(true);
+          box = runtime.editor.getScrolledVisiblePosition(pos); next = runtime.editor.getScrolledVisiblePosition(end);
+        }
+        const origin = runtime.editorSurface.getBoundingClientRect();
         if (!box || !next) throw Error('Requested occurrence is not rendered');
         const point = { clientX: origin.left + box.left + (next.left - box.left) / 4, clientY: origin.top + box.top + box.height / 2, bubbles: true, button: 0, buttons: o.type === 'hover' ? 0 : 1, view: window };
         const hit = runtime.editor.getTargetAtClientPoint(point.clientX, point.clientY);
