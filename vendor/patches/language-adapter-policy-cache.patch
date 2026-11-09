@@ -1,0 +1,603 @@
+diff --git a/common/source-snapshot.rkt b/common/source-snapshot.rkt
+--- a/common/source-snapshot.rkt
++++ b/common/source-snapshot.rkt
+@@ -9,7 +9,12 @@
+          syntax/modcode
+          "path-util.rkt")
+ 
+-(provide call-with-source-snapshot)
++(provide call-with-source-snapshot observe-source-snapshot! open-source-snapshot-input-file)
++
++;; Descriptor data participates in the same pass observations as module loads.
++(define current-snapshot-observer (make-parameter void))
++(define (observe-source-snapshot! file) ((current-snapshot-observer) file))
++(define (open-source-snapshot-input-file file) ((moddep-current-open-input-file) file))
+ 
+ ;; sources: complete normalized path -> buffer text, or #f when two buffers
+ ;;   claim the same path.
+@@ -50,7 +55,8 @@
+       (set-box! loads (cons (cons file value) (unbox loads)))))
+   (define (observe! file)
+     (define value (on-load file))
+-    (remember! file value))
++    (remember! file value)
++    value)
+   (define (load-snapshot file expected)
+     (define requested (simple-form-path file))
+     (define legacy (path-replace-extension requested #".ss"))
+@@ -93,7 +99,11 @@
+       [else
+        (when expected (observe! full))
+        (ordinary-load file expected)]))
+-  (parameterize ([current-load/use-compiled load-snapshot]
++  (parameterize ([current-snapshot-observer
++                  (lambda (file)
++                    (define value (observe! file))
++                    (if (hash-has-key? sources file) (void) value))]
++                 [current-load/use-compiled load-snapshot]
+                  [moddep-current-open-input-file
+                   (lambda (file)
+                     (define full (simple-form-path file))
+diff --git a/doclib/check-syntax.rkt b/doclib/check-syntax.rkt
+--- a/doclib/check-syntax.rkt
++++ b/doclib/check-syntax.rkt
+@@ -11,8 +11,11 @@
+          "textbuffer/text-port.rkt"
+          "doc-trace.rkt"
+          "language-adapter.rkt"
++         (only-in "lexer/state.rkt" LexerState LexerState-snapshot LexerState-base-policy lexer-state-apply-adapter!)
++         "lazy-cache.rkt"
+          (only-in "lexer.rkt"
+                   LexerState?
++                  LexerState-adapter
+                   LexerState-language-policy
+                   Language-Policy-expand?)
+          "../common/source.rkt"
+@@ -87,6 +90,7 @@
+ 
+ ;; TODO: cache the namespace with some strategy
+ (define (expand-source source in collector #:expand? [expand? #t]
++                       #:on-adapter [on-adapter void]
+                        #:text [document-text #f]
+                        #:contribution-only? [contribution-only? #f]
+                        #:bindings-provider [bindings-provider #f])
+@@ -109,11 +113,17 @@
+     (define stx
+       (with-handlers ([exn:fail? (λ (exn) exn)])
+         (define pre
+-          (with-module-reading-parameterization
+-            (λ () (read-syntax (source-syntax-source source) in))))
+-        (define adapter (and (current-language-adapter-resolver) (syntax? pre)
++          (with-handlers ([exn:fail? values])
++            (with-module-reading-parameterization
++              (λ () (read-syntax (source-syntax-source source) in)))))
++        (define adapter (and (current-language-adapter-resolver)
+                              (source-language-adapter source text pre)))
+-        (if adapter (syntax-property pre 'racketeer:language-profile adapter) pre)))
++        (on-adapter adapter)
++        (when adapter
++          (define override (hash-ref (hash-ref adapter 'editor) 'expand? 'policy))
++          (unless (eq? override 'policy) (set! expand? override)))
++        (if (and adapter (syntax? pre))
++            (syntax-property pre 'racketeer:language-profile adapter) pre)))
+ 
+     (define expand-logs '())
+     (define (expand-input)
+@@ -152,9 +162,11 @@
+    [succeed? boolean?])
+   #:transparent)
+ 
+-(define (check-syntax source doc-text lexer-state #:contribution-only? [contribution-only? #f])
++(define (check-syntax source doc-text existing-state #:contribution-only? [contribution-only? #f])
+   (define text (send doc-text get-text))
+-  (define active-policy (LexerState-language-policy lexer-state))
++  (define active-policy (LexerState-base-policy existing-state))
++  (define lexer-state
++    (LexerState (LexerState-snapshot existing-state) active-policy active-policy #f (make-lazy-cache)))
+   (define expand? (Language-Policy-expand? active-policy))
+   (define new-trace
+     (new build-trace%
+@@ -165,6 +177,7 @@
+ 
+   (define in (open-input-text text))
+   (define er (expand-source source in new-trace #:expand? expand?
++                            #:on-adapter (lambda (adapter) (lexer-state-apply-adapter! lexer-state adapter))
+                             #:text text
+                             #:contribution-only? contribution-only?))
+ 
+@@ -177,16 +190,22 @@
+ 
+   (send new-trace walk-stx er)
+   (send new-trace walk-log (ExpandResult-logs er))
++  (define adapter (LexerState-adapter lexer-state))
++  ;; Disabling expansion cannot certify a complete binding graph.
++  (define binding-analysis?
++    (not (and adapter (eq? (hash-ref (hash-ref adapter 'editor) 'expand? 'policy) #f))))
+   (CSResult new-trace text
+-            (if expand?
+-                (ExpandResult-all-succeed? er)
+-                (and (ExpandResult-pre-syntax er) #t))))
++            (and binding-analysis?
++                 (if (Language-Policy-expand? (LexerState-language-policy lexer-state))
++                     (ExpandResult-all-succeed? er)
++                     (and (ExpandResult-pre-syntax er) #t)))))
+ 
+ (provide
+   (struct-out CSResult)
+   (contract-out
+     [expand-source (->* (Source? input-port? (is-a?/c syncheck-annotations<%>))
+-                        (#:expand? boolean? #:text (or/c string? #f) #:contribution-only? boolean?
++                        (#:expand? boolean? #:on-adapter (-> (or/c hash? #f) any/c)
++                         #:text (or/c string? #f) #:contribution-only? boolean?
+                          #:bindings-provider (or/c #f (-> hash? hash?)))
+                         ExpandResult?)]
+     [check-syntax (->* (Source? (is-a?/c lsp-editor%) LexerState?)
+diff --git a/doclib/doc-lang.rkt b/doclib/doc-lang.rkt
+--- a/doclib/doc-lang.rkt
++++ b/doclib/doc-lang.rkt
+@@ -579,6 +579,17 @@
+     (language-match-expand? language-match)
+     (language-match-inlay-hints language-match)))
+ 
++;; Omitted adapter fields inherit the policy already selected for this source.
++(define (language-policy-with-adapter policy adapter)
++  (define editor (and adapter (hash-ref adapter 'editor)))
++  (define (override key default)
++    (define value (if editor (hash-ref editor key 'policy) 'policy))
++    (if (eq? value 'policy) default value))
++  (struct-copy Language-Policy policy
++    [body-mode (override 'body-mode (Language-Policy-body-mode policy))]
++    [expand? (override 'expand? (Language-Policy-expand? policy))]
++    [require-header? (override 'require-header? (Language-Policy-require-header? policy))]))
++
+ ;; Same as `source->language-policy` but reuses already-lexed spans.
+ (define/contract (lexer-language-policy text spans [uri #f])
+   (->* (string? (vectorof LexerTokenSpan?))
+@@ -608,6 +619,7 @@
+          (struct-out Language-Policy)
+          parse-language-header
+          source->language-policy
++         language-policy-with-adapter
+          sexp-format-language?
+          lexer-language-policy
+          get-indenter)
+diff --git a/doclib/doc-trace.rkt b/doclib/doc-trace.rkt
+--- a/doclib/doc-trace.rkt
++++ b/doclib/doc-trace.rkt
+@@ -20,12 +20,15 @@
+          "service/typed-racket/service.rkt"
+          "../common/interfaces.rkt"
+          "../common/source.rkt"
+-         "internal-types.rkt")
++         "internal-types.rkt"
++         "language-adapter.rkt"
++         (only-in "lexer/state.rkt" LexerState-adapter))
+ 
+ (define build-trace%
+   (class (check-syntax-annotations-mixin object%)
+     (init-field source doc-text lexer-state [contribution-only? #f])
+     (define src (source-syntax-source source))
++    (define adapter (LexerState-adapter lexer-state))
+     (define docs (new docs%))
+     (define completions (new completion%))
+     (define requires (new require%))
+@@ -90,6 +93,8 @@
+       (send decls add-binding-facts facts))
+ 
+     (define/public (walk-stx expand-result)
++      ;; Later analyses can reuse the lexer state without replacing this descriptor.
++      (set! adapter (LexerState-adapter lexer-state))
+       (for ([s services])
+         (send s walk-stx expand-result)))
+ 
+@@ -119,6 +124,10 @@
+       (unless contribution-only? (send inlay-hints build!)))
+ 
+     ;; Named reads for services. Do not add getters that expose interval-maps.
++    (define/public (adapter-current?)
++      ((current-language-adapter-validator) adapter))
++    (define/public (get-language-adapter) adapter)
++    (define/public (get-lexer-state) lexer-state)
+     (define/public (get-hover) hovers)
+     (define/public (get-declaration) decls)
+     (define/public (get-typed-racket) typed-racket)
+diff --git a/doclib/doc.rkt b/doclib/doc.rkt
+--- a/doclib/doc.rkt
++++ b/doclib/doc.rkt
+@@ -243,12 +243,17 @@
+   (->* (Source? (is-a?/c lsp-editor%) LexerState?) (#:contribution-only? boolean?) CSResult?)
+   (check-syntax source doc-text lexer-state #:contribution-only? contribution-only?))
+ 
++(define (doc-update-language-policy! doc new-trace)
++  (set-Doc-lexer-state! doc (make-lazy-cache))
++  (call-with-lazy-cache! (Doc-lexer-state doc) (lambda () (send new-trace get-lexer-state))))
++
+ (define/contract (doc-update-trace! doc new-trace new-contribution new-version)
+   (-> Doc?
+       (is-a?/c build-trace%)
+       (or/c #f Doc-Contribution?)
+       exact-nonnegative-integer?
+       void?)
++  (doc-update-language-policy! doc new-trace)
+   (set-Doc-trace! doc new-trace)
+   (set-Doc-contribution! doc new-contribution)
+   (set-Doc-trace-version! doc new-version))
+@@ -268,7 +273,8 @@
+ 
+ (define/contract (doc-trace-latest? doc)
+   (-> Doc? boolean?)
+-  (equal? (Doc-version doc) (Doc-trace-version doc)))
++  (and (equal? (Doc-version doc) (Doc-trace-version doc))
++       (send (Doc-trace doc) adapter-current?)))
+ 
+ ;; Extract while the worker exclusively owns an unedited, completed Doc.
+ ;; Shared queries retain ranges, never the mutable declaration service.
+@@ -283,7 +289,7 @@
+   (->* (Doc?) (#:contribution-only? boolean?) boolean?)
+   (define result (doc-check-syntax doc #:contribution-only? contribution-only?))
+   (define new-trace (CSResult-trace result))
+-  (cond [(CSResult-succeed? result)
++  (cond [(and (CSResult-succeed? result) (send new-trace adapter-current?))
+          (define new-contribution (send new-trace get-contribution))
+          (doc-update-trace! doc
+                             new-trace
+@@ -1383,6 +1389,7 @@
+          doc-expand
+          doc-detach-analysis!
+          doc-update-trace!
++         doc-update-language-policy!
+          doc-trace-latest?
+          doc-expand!
+          doc-check-syntax
+diff --git a/doclib/formatting.rkt b/doclib/formatting.rkt
+--- a/doclib/formatting.rkt
++++ b/doclib/formatting.rkt
+@@ -8,6 +8,7 @@
+          "formatter/fmt.rkt"
+          (only-in "lexer.rkt"
+                   LexerState?
++                  LexerState-adapter
+                   LexerState-language-policy
+                   LexerState-snapshot)
+          (only-in "doc-lang.rkt"
+@@ -47,34 +48,38 @@
+   (define text (send doc-text get-text))
+   (define policy
+     (and lexer-state (LexerState-language-policy lexer-state)))
+-  (case (selected-backend backend policy text)
+-    [(fixw)
+-     (fixw-format-edits text
+-                        start-ln
+-                        end-ln
+-                        #:formatting-options options
+-                        #:src-dir src-dir
+-                        #:interactive? interactive?)]
+-    [(drracket)
+-     (define racket-fallback?
+-       (and policy (eq? 'sexp (Language-Policy-body-mode policy))))
+-     (drracket-format-edits text
+-                            start-ln
+-                            end-ln
+-                            #:formatting-options options
+-                            #:racket-fallback? racket-fallback?
+-                            #:lexer-snapshot (and racket-fallback?
+-                                                  (LexerState-snapshot lexer-state))
+-                            #:src-dir src-dir
+-                            #:interactive? interactive?)]
+-    [(fmt)
+-     (define formatted (fmt-format-document text fmt-settings))
+-     (if formatted
+-         (list (TextEdit #:range (Range (Pos 0 0)
+-                                        (abs-pos->Pos doc-text (send doc-text end-pos)))
+-                         #:newText formatted))
+-         '())]
++  (define adapter (and lexer-state (LexerState-adapter lexer-state)))
++  (cond
++    [(and adapter (eq? (hash-ref (hash-ref adapter 'editor) 'formatting 'policy) 'off)) '()]
+     [else
+-     (raise-arguments-error 'formatting
+-                            "formatter backend is not available"
+-                            "backend" backend)]))
++     (case (selected-backend backend policy text)
++       [(fixw)
++        (fixw-format-edits text
++                           start-ln
++                           end-ln
++                           #:formatting-options options
++                           #:src-dir src-dir
++                           #:interactive? interactive?)]
++       [(drracket)
++        (define racket-fallback?
++          (and policy (eq? 'sexp (Language-Policy-body-mode policy))))
++        (drracket-format-edits text
++                               start-ln
++                               end-ln
++                               #:formatting-options options
++                               #:racket-fallback? racket-fallback?
++                               #:lexer-snapshot (and racket-fallback?
++                                                     (LexerState-snapshot lexer-state))
++                               #:src-dir src-dir
++                               #:interactive? interactive?)]
++       [(fmt)
++        (define formatted (fmt-format-document text fmt-settings))
++        (if formatted
++            (list (TextEdit #:range (Range (Pos 0 0)
++                                           (abs-pos->Pos doc-text (send doc-text end-pos)))
++                            #:newText formatted))
++            '())]
++       [else
++        (raise-arguments-error 'formatting
++                               "formatter backend is not available"
++                               "backend" backend)])]))
+diff --git a/doclib/language-adapter.rkt b/doclib/language-adapter.rkt
+--- a/doclib/language-adapter.rkt
++++ b/doclib/language-adapter.rkt
+@@ -5,11 +5,12 @@
+ (require "../common/source.rkt"
+          "../workspace/current.rkt"
+          "../workspace/state.rkt")
+-(provide current-language-adapter-resolver source-language-adapter)
++(provide current-language-adapter-resolver current-language-adapter-validator source-language-adapter)
+ 
+ ;; The embedding launcher supplies optional language tooling. Standalone
+ ;; callers retain ordinary analysis without depending on an extension package.
+ (define current-language-adapter-resolver (make-parameter #f))
++(define current-language-adapter-validator (make-parameter (lambda (_) #t)))
+ (define (source-language-adapter source text pre)
+   (define resolver (current-language-adapter-resolver))
+   (and resolver
+diff --git a/doclib/lexer/state.rkt b/doclib/lexer/state.rkt
+--- a/doclib/lexer/state.rkt
++++ b/doclib/lexer/state.rkt
+@@ -14,7 +14,9 @@
+ ;; for snapshot, language, and forest.
+ (struct/contract LexerState
+   ([snapshot LexerSnapshot?]
+-   [language-policy Language-Policy?]
++   [base-policy Language-Policy?]
++   [(language-policy #:mutable) Language-Policy?]
++   [(adapter #:mutable) (or/c hash? #f)]
+    [body-forest-cache (lazy-cache-of Token-Forest?)])
+   #:transparent)
+ 
+@@ -56,7 +58,13 @@
+   (define policy (lexer-language-policy (LexerSnapshot-text snapshot)
+                                         (LexerSnapshot-tokens snapshot)
+                                         uri))
+-  (LexerState snapshot policy (make-lazy-cache)))
++  (LexerState snapshot policy policy #f (make-lazy-cache)))
++
++(define (lexer-state-apply-adapter! state adapter)
++  (set-LexerState-adapter! state adapter)
++  (set-LexerState-language-policy!
++    state (language-policy-with-adapter (LexerState-base-policy state) adapter))
++  (lazy-cache-invalidate! (LexerState-body-forest-cache state)))
+ 
+ (define (lexer-state-body-forest state)
+   (call-with-lazy-cache!
+@@ -102,6 +110,7 @@
+       '()))
+ 
+ (provide (struct-out LexerState)
++         lexer-state-apply-adapter!
+          build-lexer-snapshot
+          build-lexer-state
+          build-snapshot-token-forest
+diff --git a/doclib/lexer.rkt b/doclib/lexer.rkt
+--- a/doclib/lexer.rkt
++++ b/doclib/lexer.rkt
+@@ -14,6 +14,7 @@
+          LexerState?
+          LexerState-snapshot
+          LexerState-language-policy
++         LexerState-adapter
+          lexer-state-body-mode
+          lexer-state-token-at
+          lexer-state-symbol-at
+diff --git a/doclib/service/hover/service.rkt b/doclib/service/hover/service.rkt
+--- a/doclib/service/hover/service.rkt
++++ b/doclib/service/hover/service.rkt
+@@ -21,6 +21,7 @@
+          data/interval-map
+          drracket/check-syntax
+          (only-in "../../lexer.rkt"
++                  LexerState-adapter
+                   LexerState-language-policy
+                   Language-Policy-policy-language
+                   Language-Policy-body-mode)
+@@ -63,14 +64,18 @@
+     ;; Filled only during `walk-stx`. Edits replay stored comment ranges.
+     (define leading-comments-by-display-start (make-hash))
+     ;; From lexer policy at build time. Chooses candidates and fence language.
+-    (define source-kind
+-      (let ([policy (LexerState-language-policy lexer-state)])
+-        (cond
+-          [(eq? (Language-Policy-policy-language policy) 'rhombus) 'rhombus]
+-          [(eq? (Language-Policy-body-mode policy) 'sexp) 'sexp]
+-          [else 'none])))
+-    (define fence-language
+-      (if (eq? source-kind 'rhombus) "rhombus" "racket"))
++    (define (source-kind)
++      (define policy (LexerState-language-policy lexer-state))
++      (define adapter (LexerState-adapter lexer-state))
++      (case (if adapter (hash-ref (hash-ref adapter 'editor) 'source-details 'auto) 'auto)
++        [(sexp) 'sexp]
++        [(shrubbery) 'rhombus]
++        [(none) 'none]
++        [else
++         (cond
++           [(eq? (Language-Policy-policy-language policy) 'rhombus) 'rhombus]
++           [(eq? (Language-Policy-body-mode policy) 'sexp) 'sexp]
++           [else 'none])]))
+ 
+     ;; Do not expose interval-maps. Bounds are the atomic range over which this
+     ;; exact winner remains active.
+@@ -185,12 +190,12 @@
+ 
+     (define/override (walk-stx expand-result)
+       (define pre-stx (ExpandResult-pre-syntax expand-result))
+-      (when (and pre-stx (not (eq? source-kind 'none)))
++      (when (and pre-stx (not (eq? (source-kind) 'none)))
+         (define candidates
+           (source-candidates pre-stx
+                              src
+                              (send doc-text end-pos)
+-                             source-kind))
++                             (source-kind)))
+         ;; Definition targets: module-level decls with no uses.
+         ;; Arrow starts: local decls in let and clauses.
+         (for ([range (in-set definition-target-ranges)])
+@@ -226,7 +231,7 @@
+                         display-start
+                         display-end
+                         (cdr source-range)
+-                        fence-language))))
++                        (if (eq? (source-kind) 'rhombus) "rhombus" "racket")))))
+ 
+     (define/private (comments-for-display display-start)
+       (define cached
+diff --git a/lsp/source-controller/analysis-publisher.rkt b/lsp/source-controller/analysis-publisher.rkt
+--- a/lsp/source-controller/analysis-publisher.rkt
++++ b/lsp/source-controller/analysis-publisher.rkt
+@@ -9,6 +9,7 @@
+          "../../doclib/doc.rkt"
+          "../../workspace/state.rkt"
+          "../analysis.rkt"
++         racket/class
+          "../safedoc.rkt")
+ 
+ (provide Analysis-Publisher?
+@@ -35,16 +36,21 @@
+ ;; A restored product has no fresh completion. Source errors clear exact
+ ;; availability while preserving the old trace for approximate local queries.
+ (define (publish-document-analysis! publisher sd snapshot product [completion #f])
+-  (define doc (SafeDoc-doc sd))
+-  (cond
+-    [(Analysis-Product-succeeded? product)
+-     (define contribution (Analysis-Product-contribution product))
+-     (doc-update-trace! doc (Analysis-Product-trace product) contribution (Doc-version doc))
+-     (set-SafeDoc-available! sd (Available-Analysis snapshot product completion))
+-     (when contribution
+-       (workspace-set-contribution! (Analysis-Publisher-workspace publisher) contribution))]
+-    [else (set-SafeDoc-available! sd #f)])
+-  (publish-diagnostics! publisher (Doc-uri doc) (Analysis-Product-diagnostics product)))
++  (and (send (Analysis-Product-trace product) adapter-current?)
++       (let ()
++         (define doc (SafeDoc-doc sd))
++         (cond
++           [(Analysis-Product-succeeded? product)
++            (define contribution (Analysis-Product-contribution product))
++            (doc-update-trace! doc (Analysis-Product-trace product) contribution (Doc-version doc))
++            (set-SafeDoc-available! sd (Available-Analysis snapshot product completion))
++            (when contribution
++              (workspace-set-contribution! (Analysis-Publisher-workspace publisher) contribution))]
++           [else
++            (doc-update-language-policy! doc (Analysis-Product-trace product))
++            (set-SafeDoc-available! sd #f)])
++         (publish-diagnostics! publisher (Doc-uri doc) (Analysis-Product-diagnostics product))
++         #t)))
+ 
+ ;; Completion identity distinguishes same-revision retries. Old Resyntax
+ ;; findings cannot apply to a restored product or a later accepted attempt.
+diff --git a/lsp/source-controller/source-owner.rkt b/lsp/source-controller/source-owner.rkt
+--- a/lsp/source-controller/source-owner.rkt
++++ b/lsp/source-controller/source-owner.rkt
+@@ -212,9 +212,18 @@
+ ;; that policy belongs here rather than in the scheduler.
+ (define (available-analysis controller snapshot)
+   (define buffer (source-buffer controller (Source-Snapshot-source snapshot)))
+-  (if buffer
+-      (with-read-safedoc buffer SafeDoc-available)
+-      (find-closed-analysis! (Source-Controller-closed-analysis controller) snapshot)))
++  (define available
++    (if buffer
++        (with-read-safedoc buffer SafeDoc-available)
++        (find-closed-analysis! (Source-Controller-closed-analysis controller) snapshot)))
++  (and available
++       (or (not (adapter-analysis? (Available-Analysis-product available)))
++           (not (stale-imports? controller (Available-Analysis-product available))))
++       available))
++
++(define (adapter-analysis? product)
++  (define adapter (send (Analysis-Product-trace product) get-language-adapter))
++  (and adapter (hash-ref adapter 'fingerprint #f)))
+ 
+ (define (reusable-completion controller snapshot)
+   (define available (available-analysis controller snapshot))
+@@ -277,10 +286,11 @@
+ ;; that have since changed, opened or closed make the result stale.
+ (define (stale-imports? controller product)
+   (define dependencies (Analysis-Product-dependencies product))
+-  (and dependencies
++  (or (not (send (Analysis-Product-trace product) adapter-current?))
++      (and dependencies
+        (let ([buffers (Analysis-Context-buffers (analysis-context controller))])
+          (for/or ([(path text) (in-hash dependencies)])
+-           (not (equal? text (hash-ref buffers path #f)))))))
++           (not (equal? text (hash-ref buffers path #f))))))))
+ 
+ (define (source-controller-ensure-analysis! controller snapshot #:refresh? [refresh? #f])
+   (cond
+@@ -332,19 +342,22 @@
+                        (if (source-file-path source) contribution (not contribution)))))
+     (error 'record-analysis! "successful analysis requires facts and a file-only contribution"))
+   (define buffer (source-buffer controller source))
+-  (when buffer
++  (define accepted?
++    (cond
++      [buffer
++       (with-write-safedoc buffer
++         (lambda (sd)
++           (publish-document-analysis! (Source-Controller-publisher controller)
++                                       sd snapshot product completion)))]
++      [else
++       (when (and succeeded? (eq? 'disk (Source-Snapshot-origin snapshot)))
++         (store-closed-analysis! (Source-Controller-closed-analysis controller)
++                                 (Available-Analysis snapshot product completion)))
++       #t]))
++  (when (and accepted? buffer)
+     (hash-set! (Source-Controller-dependencies controller) (source-id source)
+                (Analysis-Product-dependencies product)))
+-  (cond
+-    [buffer
+-     (with-write-safedoc buffer
+-       (lambda (sd)
+-         (publish-document-analysis! (Source-Controller-publisher controller)
+-                                     sd snapshot product completion)))]
+-    [(and succeeded? (eq? 'disk (Source-Snapshot-origin snapshot)))
+-     (store-closed-analysis! (Source-Controller-closed-analysis controller)
+-                             (Available-Analysis snapshot product completion))])
+-  (Analysis-Outcome (if succeeded? 'succeeded 'errors) (Analysis-Product-summary product)))
++  accepted?)
+ 
+ ;; A handled acceptance failure clears exact eligibility before the scheduler
+ ;; broadcasts failure. Mutable traces are never returned to request threads.
+@@ -355,10 +368,16 @@
+       (cond
+         [(not (snapshot-current? controller snapshot)) (Analysis-Outcome 'stopped 'source-changed)]
+         [(Analysis-Outcome? result) result]
+-        [(and (eq? kind 'analysis) (source-buffer controller source) (stale-imports? controller result))
+-         (restart-buffers! controller (list (cons source (source-buffer controller source))))
++        [(and (eq? kind 'analysis)
++              (or (and (or (source-buffer controller source) (adapter-analysis? result))
++                       (stale-imports? controller result))
++                  (not (record-analysis! controller snapshot result completion))))
++         (when (source-buffer controller source)
++           (restart-buffers! controller (list (cons source (source-buffer controller source)))))
+          (Analysis-Outcome 'stopped 'dependency-changed)]
+-        [(eq? kind 'analysis) (record-analysis! controller snapshot result completion)]
++        [(eq? kind 'analysis)
++         (Analysis-Outcome (if (Analysis-Product-succeeded? result) 'succeeded 'errors)
++                           (Analysis-Product-summary result))]
+         [else
+          (define buffer (source-buffer controller source))
+          (when buffer
+@@ -395,6 +414,8 @@
+   (define available (take-closed-analysis! (Source-Controller-closed-analysis controller) source))
+   (define snapshot (and available (source-controller-snapshot controller source)))
+   (when (and available
++             (or (not (adapter-analysis? (Available-Analysis-product available)))
++                 (not (stale-imports? controller (Available-Analysis-product available))))
+              (equal? (Source-Snapshot-text snapshot)
+                      (Source-Snapshot-text (Available-Analysis-snapshot available))))
+     (define product (Available-Analysis-product available))

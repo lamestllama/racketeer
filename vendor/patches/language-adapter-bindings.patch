@@ -1,0 +1,34 @@
+diff --git a/doclib/check-syntax.rkt b/doclib/check-syntax.rkt
+--- a/doclib/check-syntax.rkt
++++ b/doclib/check-syntax.rkt
+@@ -120,7 +120,9 @@
+         (on-adapter adapter)
+         (when adapter
+           (define override (hash-ref (hash-ref adapter 'editor) 'expand? 'policy))
+-          (unless (eq? override 'policy) (set! expand? override)))
++          (unless (eq? override 'policy) (set! expand? override))
++          (unless bindings-provider
++            (set! bindings-provider ((current-language-adapter-bindings) adapter))))
+         (if (and adapter (syntax? pre))
+             (syntax-property pre 'racketeer:language-profile adapter) pre)))
+ 
+diff --git a/doclib/language-adapter.rkt b/doclib/language-adapter.rkt
+--- a/doclib/language-adapter.rkt
++++ b/doclib/language-adapter.rkt
+@@ -5,12 +5,15 @@
+ (require "../common/source.rkt"
+          "../workspace/current.rkt"
+          "../workspace/state.rkt")
+-(provide current-language-adapter-resolver current-language-adapter-validator source-language-adapter)
++(provide current-language-adapter-resolver current-language-adapter-validator
++         current-language-adapter-bindings source-language-adapter)
+ 
+ ;; The embedding launcher supplies optional language tooling. Standalone
+ ;; callers retain ordinary analysis without depending on an extension package.
+ (define current-language-adapter-resolver (make-parameter #f))
+ (define current-language-adapter-validator (make-parameter (lambda (_) #t)))
++;; Maps a selected adapter to its bindings procedure, or #f for generic facts alone.
++(define current-language-adapter-bindings (make-parameter (lambda (_) #f)))
+ (define (source-language-adapter source text pre)
+   (define resolver (current-language-adapter-resolver))
+   (and resolver

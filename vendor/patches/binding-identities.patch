@@ -1,0 +1,854 @@
+diff --git a/doclib/doc.rkt b/doclib/doc.rkt
+--- a/doclib/doc.rkt
++++ b/doclib/doc.rkt
+@@ -965,11 +965,14 @@
+ 
+ (define/contract (doc-definition-at doc pos)
+   (-> Doc? Pos? (or/c Range? #f))
++  (define ranges (doc-definition-ranges-at doc pos))
++  (and (= (length ranges) 1) (car ranges)))
++
++(define/contract (doc-definition-ranges-at doc pos)
++  (-> Doc? Pos? (listof Range?))
+   (define pos* (doc-pos->abs-pos doc pos))
+-  (define range
+-    (send (send (Doc-trace doc) get-declaration) definition-at pos*))
+-  (and range
+-       (abs-range->range doc (CharRange-start range) (CharRange-end range))))
++  (for/list ([range (in-list (send (send (Doc-trace doc) get-declaration) definition-ranges-at pos*))])
++    (abs-range->range doc (CharRange-start range) (CharRange-end range))))
+ 
+ (define/contract (doc-uses-at doc pos)
+   (-> Doc? Pos? (listof Range?))
+@@ -981,17 +984,18 @@
+ ;; exists, then uses. Imported bindings have no definition range here.
+ (define/contract (doc-binding-ranges-at doc pos)
+   (-> Doc? Pos? (listof Range?))
+-  (define definition-range (doc-definition-at doc pos))
+-  (define use-ranges (doc-uses-at doc pos))
+-  (cond
+-    [definition-range
+-     (cons definition-range use-ranges)]
+-    [else use-ranges]))
++  (remove-duplicates
++    (append (doc-definition-ranges-at doc pos) (doc-uses-at doc pos))))
++
++(define/contract (doc-module-bindings-at doc pos)
++  (-> Doc? Pos? (listof Module-Binding?))
++  (define pos* (doc-pos->abs-pos doc pos))
++  (send (send (Doc-trace doc) get-declaration) module-bindings-at pos*))
+ 
+ (define/contract (doc-module-binding-at doc pos)
+   (-> Doc? Pos? (or/c Module-Binding? #f))
+-  (define pos* (doc-pos->abs-pos doc pos))
+-  (send (send (Doc-trace doc) get-declaration) module-binding-at pos*))
++  (define bindings (doc-module-bindings-at doc pos))
++  (and (= (length bindings) 1) (car bindings)))
+ 
+ (define (doc-completion-online-prefix token left-fragment cursor-pos)
+   ;; Only two token classes currently produce a useful module-path prefix in
+@@ -1045,21 +1049,29 @@
+   (CompletionList #:isIncomplete #t
+                   #:items result))
+ 
+-;; Document-local capture only. A cross-file import is returned as a
+-;; `Module-Binding`. LSP composition turns that binding into a location only
+-;; on the shared analysis route, after this document's lock is released.
++;; Document-local capture returns a local location or a module binding, and
++;; combines both kinds for shared occurrences. LSP composition resolves module
++;; bindings on the shared analysis route, after this document's lock is released.
+ (define/contract (doc-definition doc uri pos)
+-  (-> Doc? string? Pos? (or/c Location? Module-Binding? #f))
++  (-> Doc? string? Pos? (or/c Location? Module-Binding? (listof (or/c Location? Module-Binding?)) #f))
+   (define definition-range (doc-definition-at doc pos))
+   (cond
++    [(> (send (send (Doc-trace doc) get-declaration) binding-count-at (doc-pos->abs-pos doc pos)) 1)
++     (append (for/list ([range (in-list (doc-definition-ranges-at doc pos))])
++               (Location #:uri uri #:range range))
++             (if (source-file-path (Doc-source doc)) (doc-module-bindings-at doc pos) '()))]
+     [definition-range
+      (Location #:uri uri
+                #:range definition-range)]
+     [(not (source-file-path (Doc-source doc))) #f]
+-    [else (doc-module-binding-at doc pos)]))
+-
+-;; References: live locations for this document, plus an optional Module-Binding
+-;; for workspace lookup when the identifier is module-backed.
++    [else
++     (define bindings (doc-module-bindings-at doc pos))
++     (cond [(null? bindings) #f]
++           [(null? (cdr bindings)) (car bindings)]
++           [else bindings])]))
++
++;; References: live locations and every module identity at this occurrence.
++;; A single identity retains the scalar representation used by existing callers.
+ (define/contract (doc-references doc uri pos include-decl?)
+   (-> Doc? string? Pos? boolean? (or/c Document-Reference-Result? #f))
+   (define occurrence-range (doc-occurrence-at doc pos))
+@@ -1075,7 +1087,10 @@
+      (Document-Reference-Result
+        (Reference-Source (source-id (Doc-source doc)) local-locations)
+        (and (source-file-path (Doc-source doc))
+-            (doc-module-binding-at doc pos)))]
++            (let ([bindings (doc-module-bindings-at doc pos)])
++              (cond [(null? bindings) #f]
++                    [(null? (cdr bindings)) (car bindings)]
++                    [else bindings]))))]
+     [else #f]))
+ 
+ ;; Document Highlight: returns binding highlights or an empty list.
+@@ -1092,7 +1107,12 @@
+ (define/contract (doc-rename doc uri pos new-name)
+   (-> Doc? string? Pos? string? (or/c WorkspaceEdit? #f))
+   (define definition-range (doc-definition-at doc pos))
++  (define shared-definition?
++    (or (> (send (send (Doc-trace doc) get-declaration) binding-count-at (doc-pos->abs-pos doc pos)) 1)
++        (and definition-range
++             (> (length (doc-module-bindings-at doc (Range-start definition-range))) 1))))
+   (cond
++    [shared-definition? #f]
+     [definition-range
+      (define ranges (doc-binding-ranges-at doc pos))
+      (WorkspaceEdit
+@@ -1107,7 +1127,10 @@
+   (-> Doc? Pos? (or/c Range? #f))
+   (define occurrence-range (doc-occurrence-at doc pos))
+   (define definition-range (doc-definition-at doc pos))
+-  (and definition-range occurrence-range))
++  (and definition-range occurrence-range
++       (<= (send (send (Doc-trace doc) get-declaration) binding-count-at (doc-pos->abs-pos doc pos)) 1)
++       (<= (length (doc-module-bindings-at doc (Range-start definition-range))) 1)
++       occurrence-range))
+ 
+ ;; Document Symbols: returns a list of SymbolInformation.
+ (define/contract (doc-symbols doc uri)
+@@ -1363,8 +1386,10 @@
+          doc-signature-help
+          doc-occurrence-at
+          doc-definition-at
++         doc-definition-ranges-at
+          doc-uses-at
+          doc-binding-ranges-at
++         doc-module-bindings-at
+          doc-module-binding-at
+          (struct-out Module-Binding)
+          (struct-out Reference-Source)
+diff --git a/doclib/internal-types.rkt b/doclib/internal-types.rkt
+--- a/doclib/internal-types.rkt
++++ b/doclib/internal-types.rkt
+@@ -91,10 +91,11 @@
+    [locations (listof Location?)])
+   #:transparent)
+ 
+-;; Live document references plus the exact cross-document identity, when any.
++;; Live references plus one exact cross-document identity, several at a shared
++;; occurrence, or #f for local-only names.
+ (struct/contract Document-Reference-Result
+   ([source Reference-Source?]
+-   [module-binding (or/c Module-Binding? #f)])
++   [module-binding (or/c Module-Binding? (listof Module-Binding?) #f)])
+   #:transparent)
+ 
+ (define (interval-map-of value/c)
+diff --git a/doclib/service/declaration.rkt b/doclib/service/declaration.rkt
+--- a/doclib/service/declaration.rkt
++++ b/doclib/service/declaration.rkt
+@@ -4,11 +4,11 @@
+ ;; position, the local definition range, other uses in this document, and a
+ ;; Module-Binding when the name can leave this document.
+ ;;
+-;; Check Syntax reports one definition and many uses. This service stores
++;; Check Syntax can report several identities at one range. This service stores
+ ;; the Check Syntax report as a graph. Each occurrence has a private integer
+ ;; id. Callers never hold those ids. Uses share a graph owner: a local
+-;; def-id when the definition is in this document, a Module-Binding when
+-;; the name is imported, or a Module-Lang-Use-Key for a leftover `#lang`
++;; def-id for an unlabelled lexical arrow, an exact Module-Binding for
++;; module-backed uses, or a Module-Lang-Use-Key for a leftover `#lang`
+ ;; export use. Only Module-Binding may leave this document.
+ ;;
+ ;; Check Syntax positions are a snapshot. After edits, def-at-position and
+@@ -30,14 +30,15 @@
+          "position-journal.rkt"
+          "../../common/interfaces.rkt"
+          "../../common/path-util.rkt"
+-         (only-in "../../common/source.rkt" source-file-path)
++         (only-in "../../common/source.rkt" source-file-path source-syntax-source)
+          "../internal-types.rkt"
+          data/interval-map
+          drracket/check-syntax
+          racket/class
+          racket/dict
+          racket/list
+-         racket/match)
++         racket/match
++         syntax/modresolve)
+ 
+ (provide declaration%)
+ 
+@@ -74,7 +75,8 @@
+     ;; in these two hashes; an import uses the Module-Binding itself as the
+     ;; graph owner.
+     (define module-binding->def-id (make-hash))
+-    (define def-id->module-binding (make-hash))
++    (define def-id->module-bindings (make-hash))
++    (define import-alias-def-ids (make-hash))
+     (define range-journal (make-position-journal))
+     ;; `'module-lang` uses held until walk-stx.
+     (define pending-module-lang-uses '())
+@@ -117,17 +119,23 @@
+            (eqv? found-end end)
+            use-id))
+ 
+-    (define/private (alloc-use start end)
+-      (define use-id (fresh-id!))
+-      (interval-map-set! use-at-position start end use-id)
+-      (hash-set! id->range use-id (CharRange start end))
+-      use-id)
+-
+-    ;; `def` is the graph owner: a local def-id, a Module-Binding, or a
+-    ;; Module-Lang-Use-Key.
++    (define/private (alloc-use start end def)
++      (or (for/first ([use-id (in-list (or (use-at-exact-range start end) '()))]
++                      #:when (equal? (hash-ref use->def use-id #f) def))
++            use-id)
++          (let ([use-id (fresh-id!)])
++            (interval-map-set! use-at-position start end
++                               (cons use-id (or (use-at-exact-range start end) '())))
++            (hash-set! id->range use-id (CharRange start end))
++            use-id)))
++
++    ;; Keep exact module identities as owners, even for same-file jumps.
++    ;; The range's def-id remains the owner of unlabelled lexical arrows.
+     (define/private (link-use! use-id def)
+       (hash-set! use->def use-id def)
+-      (hash-update! def->use-ids def (lambda (use-ids) (cons use-id use-ids)) '()))
++      (hash-update! def->use-ids def
++                    (lambda (use-ids) (if (member use-id use-ids) use-ids (cons use-id use-ids)))
++                    '()))
+ 
+     ;; Replay the snapshot CharRange in id->range through range-journal.
+     ;; Returns #f if an edit removed the range: a CharRange a deletion
+@@ -148,8 +156,9 @@
+         (define use-start (Pending-Module-Lang-Use-use-start pending))
+         (define use-end (Pending-Module-Lang-Use-use-end pending))
+         (unless (use-at-exact-range use-start use-end)
+-          (define use-id (alloc-use use-start use-end))
+-          (link-use! use-id (Pending-Module-Lang-Use-key pending))))
++          (define def (Pending-Module-Lang-Use-key pending))
++          (define use-id (alloc-use use-start use-end def))
++          (link-use! use-id def)))
+       (set! pending-module-lang-uses '()))
+ 
+     (define/private (sort-ranges ranges)
+@@ -159,18 +168,32 @@
+                   (and (= (CharRange-start left) (CharRange-start right))
+                        (< (CharRange-end left) (CharRange-end right)))))))
+ 
+-    (define/private (def-at pos)
+-      (define use-id (interval-map-ref use-at-position pos #f))
+-      (if use-id
+-          (hash-ref use->def use-id #f)
+-          (interval-map-ref def-at-position pos #f)))
+-
+-    (define/private (def->module-binding def)
++    (define/private (defs-at pos)
++      (define use-ids (interval-map-ref use-at-position pos #f))
++      (if use-ids
++          (let ([defs (remove-duplicates (map (lambda (id) (hash-ref use->def id)) use-ids))])
++            ;; An import alias can have both a lexical anchor and an exact
++            ;; jump. Suppress only anchors identified in expanded require
++            ;; forms; other lexical owners remain part of the selection.
++            (if (ormap Module-Binding? defs)
++                (remove-duplicates
++                  (append-map
++                    (lambda (def)
++                      (define bindings (def->module-bindings def))
++                      (cond [(hash-ref import-alias-def-ids def #f) '()]
++                            [(pair? bindings) bindings]
++                            [else (list def)]))
++                    defs))
++                defs))
++          (let ([def (interval-map-ref def-at-position pos #f)])
++            (if def (list def) '()))))
++
++    (define/private (def->module-bindings def)
+       (cond
+-        [(Module-Binding? def) def]
++        [(Module-Binding? def) (list def)]
+         [(exact-nonnegative-integer? def)
+-         (hash-ref def-id->module-binding def #f)]
+-        [else #f]))
++         (hash-ref def-id->module-bindings def '())]
++        [else '()]))
+ 
+     (define/public (occurrence-at pos)
+       (define-values (use-start use-end use-id)
+@@ -182,42 +205,71 @@
+         [def-id (CharRange def-start def-end)]
+         [else #f]))
+ 
+-    ;; Same-document definition range, or #f. Only a local def-id has one.
+-    ;; An import or a Module-Lang-Use-Key has no definition in this document.
++    ;; Same-document definition range, including exact same-file jumps.
++    ;; Imported and module-language owners have no local definition range.
++    (define/public (definition-ranges-at pos)
++      (sort-ranges
++        (remove-duplicates
++          (for*/list ([def (in-list (defs-at pos))]
++                      [id (in-value (if (Module-Binding? def)
++                                        (hash-ref module-binding->def-id def #f) def))]
++                      #:when (exact-nonnegative-integer? id)
++                      [range (in-value (live-range-for-id id))]
++                      #:when range)
++            range))))
++
+     (define/public (definition-at pos)
+-      (define def (def-at pos))
+-      (and (exact-nonnegative-integer? def)
+-           (live-range-for-id def)))
+-
+-    ;; Live use ranges for the graph owner at pos, including leftover
+-    ;; `#lang` uses. Do not skip imported owners or leftover `#lang` owners.
+-    ;; Do not include the owner's definition range.
++      (define ranges (definition-ranges-at pos))
++      (and (= (length ranges) 1) (car ranges)))
++
++    (define/public (binding-count-at pos)
++      (length
++        (remove-duplicates
++          (append-map (lambda (def)
++                        (define bindings (def->module-bindings def))
++                        (if (null? bindings) (list def) bindings))
++                      (defs-at pos)))))
++
++    ;; Union the selected identities, deduplicating physical occurrences.
++    ;; A shared definition range selects its whole family; an exact jump
++    ;; selects only that module binding.
+     (define/public (uses-at pos)
+-      (define def (def-at pos))
+-      (if def
+-          (sort-ranges
+-            (remove-duplicates
+-              (for*/list ([use-id (in-list (hash-ref def->use-ids def '()))]
+-                          [range (in-value (live-range-for-id use-id))]
+-                          #:when range)
+-                range)))
+-          '()))
+-
+-    ;; Cross-document identity at pos, or #f. Local-only names and
+-    ;; Module-Lang-Use-Key owners return #f.
++      (define selected (defs-at pos))
++      (define defs
++        (remove-duplicates
++          (append-map (lambda (def)
++                        (cons def (if (Module-Binding? def) '() (def->module-bindings def))))
++                      selected)))
++      (define owners
++        (remove-duplicates
++          (append defs
++                  (for/list ([def (in-list defs)]
++                             #:when (and (Module-Binding? def)
++                                         (hash-has-key? module-binding->def-id def)))
++                    (hash-ref module-binding->def-id def)))))
++      (sort-ranges
++        (remove-duplicates
++          (for*/list ([def (in-list owners)]
++                      [use-id (in-list (hash-ref def->use-ids def '()))]
++                      [range (in-value (live-range-for-id use-id))]
++                      #:when range)
++            range))))
++
++    (define/public (module-bindings-at pos)
++      (remove-duplicates (append-map (lambda (def) (def->module-bindings def)) (defs-at pos))))
++
++    ;; Scalar callers must never pick an arbitrary identity at a shared range.
+     (define/public (module-binding-at pos)
+-      (define def (def-at pos))
+-      (and def (def->module-binding def)))
+-
+-    ;; Each result is (cons live-use-range Module-Binding). Local-only uses and
+-    ;; leftover `#lang` uses are omitted; those names must not leave this
+-    ;; document.
++      (define bindings (module-bindings-at pos))
++      (and (= (length bindings) 1) (car bindings)))
++
++    ;; Export every identity at every live use range.
+     (define/public (module-binding-uses)
+-      (for*/list ([(range use-id) (in-dict use-at-position)]
+-                  [def (in-value (hash-ref use->def use-id #f))]
+-                  [module-binding (in-value (and def (def->module-binding def)))]
+-                  #:when module-binding)
+-        (cons (CharRange (car range) (cdr range)) module-binding)))
++      (remove-duplicates
++        (for*/list ([(range use-ids) (in-dict use-at-position)]
++                    [use-id (in-list use-ids)]
++                    [module-binding (in-list (def->module-bindings (hash-ref use->def use-id)))])
++          (cons (CharRange (car range) (cdr range)) module-binding))))
+ 
+     ;; Each result is (cons live-definition-range Module-Binding). Local-only
+     ;; definitions are omitted; those names must not leave this document.
+@@ -227,30 +279,14 @@
+                   #:when range)
+         (cons range module-binding)))
+ 
+-    ;; Record the Module-Binding for a definition in this document, then merge
+-    ;; any jumps that arrived before the definition target.
++    ;; Retain every identity for a definition range. Jumps keep their exact
++    ;; Module-Binding owner, independently of target callback order.
+     (define/private (attach-module-binding! def-id module-binding)
+-      (define old-module-binding
+-        (hash-ref def-id->module-binding def-id #f))
+-      (when old-module-binding
+-        (hash-remove! module-binding->def-id old-module-binding))
+-      (hash-set! def-id->module-binding def-id module-binding)
+-      (hash-set! module-binding->def-id module-binding def-id)
+-
+-      ;; A jump may run before the definition target. Move uses still keyed by
+-      ;; the Module-Binding onto the local def-id, then drop that Module-Binding
+-      ;; key from def->use-ids. Otherwise uses-at would miss those uses after
+-      ;; the graph owner changes.
+-      (define imported-use-ids
+-        (hash-ref def->use-ids module-binding '()))
+-      (unless (null? imported-use-ids)
+-        (for ([use-id (in-list imported-use-ids)])
+-          (hash-set! use->def use-id def-id))
+-        (hash-update! def->use-ids
+-                      def-id
+-                      (lambda (use-ids) (append imported-use-ids use-ids))
+-                      '())
+-        (hash-remove! def->use-ids module-binding)))
++      (hash-update! def-id->module-bindings def-id
++                    (lambda (bindings)
++                      (if (member module-binding bindings) bindings (cons module-binding bindings)))
++                    '())
++      (hash-set! module-binding->def-id module-binding def-id))
+ 
+     (define/override (reset)
+       (set! def-at-position (make-interval-map))
+@@ -259,14 +295,111 @@
+       (set! def->use-ids (make-hash))
+       (set! use->def (make-hash))
+       (set! module-binding->def-id (make-hash))
+-      (set! def-id->module-binding (make-hash))
++      (set! def-id->module-bindings (make-hash))
++      (set! import-alias-def-ids (make-hash))
+       (set! pending-module-lang-uses '())
+       (position-journal-reset! range-journal))
+ 
+-    ;; Apply leftover `#lang` uses after lexical arrows and jumps have claimed
+-    ;; ranges. ExpandResult is unused. Must run before any query or edit:
+-    ;; pending use ranges are still Check Syntax snapshot coordinates.
+-    (define/override (walk-stx _expand-result)
++    ;; Lexical arrows carry ranges but no names. For a shared target, use
++    ;; the expanded identifier's binding to separate those arrows. This runs
++    ;; in contribution-only mode too, before any queries or edits.
++    (define/override (walk-stx expand-result)
++      (define identified (make-hash))
++      (define seen (make-hash))
++      (when (and expand-result
++                 (or (for/or ([bindings (in-hash-values def-id->module-bindings)])
++                       (> (length bindings) 1))
++                     (for/or ([ids (in-dict-values use-at-position)])
++                       (> (length ids) 1))))
++        (let walk ([value (ExpandResult-post-syntax expand-result)] [phase 0])
++          (cond
++            [(syntax? value)
++             (unless (hash-ref seen (cons value phase) #f)
++               (hash-set! seen (cons value phase) #t)
++               (when (and file-path (identifier? value)
++                          (equal? (syntax-source value) (source-syntax-source source))
++                          (syntax-position value) (syntax-span value)
++                          (positive? (syntax-span value)))
++                 (define start (sub1 (syntax-position value)))
++                 (define end (+ start (syntax-span value)))
++                 (define binding (identifier-binding value phase))
++                 (when (and (list? binding) (not (def-at-exact-range start end)))
++                   (define module (resolve-module-path-index (car binding) file-path))
++                   (define-values (path submods)
++                     (match module
++                       [(? path? path) (values path '())]
++                       [`(submod ,(? path? path) ,submods ...) (values path submods)]
++                       [_ (values #f '())]))
++                   (when path
++                     (define export-phase (list-ref binding 6))
++                     (define key
++                       (Module-Binding (normalize-source-path path) submods
++                                       (if (pair? export-phase)
++                                           (cons (list-ref binding 4) (cdr export-phase))
++                                           (list-ref binding 4))
++                                       (cadr binding)))
++                     (define def (hash-ref module-binding->def-id key #f))
++                     (when (and def (> (length (hash-ref def-id->module-bindings def)) 1))
++                       (hash-update! identified (CharRange start end)
++                                     (lambda (keys) (if (member key keys) keys (cons key keys)))
++                                     '())))))
++               (walk (syntax-property value 'disappeared-use) phase)
++               (walk (syntax-property value 'origin) phase)
++               ;; Inspect core bindings so quoted data and shadowed spellings do
++               ;; not change the phase used to read an identifier's binding.
++               (define parts (syntax->list value))
++               (define head (and (pair? parts) (car parts)))
++               (define binding (and (identifier? head) (identifier-binding head phase)))
++               (define core
++                 (and (list? binding)
++                      (eq? '#%core (resolved-module-path-name (module-path-index-resolve (car binding))))
++                      (cadr binding)))
++               (case core
++                 [(quote quote-syntax) (void)]
++                 [(#%require)
++                  (let walk-require ([spec value])
++                    (when (syntax? spec)
++                      (define parts (syntax->list spec))
++                      (when (pair? parts)
++                        (when (and (eq? (syntax-e (car parts)) 'rename)
++                                   (= (length parts) 4))
++                          (define local-id (caddr parts))
++                          (when (and (equal? (syntax-source local-id) (source-syntax-source source))
++                                     (syntax-position local-id) (syntax-span local-id))
++                            (define start (sub1 (syntax-position local-id)))
++                            (define def (def-at-exact-range start (+ start (syntax-span local-id))))
++                            (when def (hash-set! import-alias-def-ids def #t))))
++                        (for ([part (in-list parts)]) (walk-require part)))))]
++                 [(module module*)
++                  (for ([part (in-list (cdddr parts))])
++                    (walk part (if (syntax-e (caddr parts)) 0 phase)))]
++                 [(begin-for-syntax)
++                  (for ([part (in-list (cdr parts))]) (walk part (add1 phase)))]
++                 [(define-syntaxes)
++                  (walk (cadr parts) phase)
++                  (walk (caddr parts) (add1 phase))]
++                 [else (walk (syntax-e value) phase)]))]
++            [(pair? value) (walk (car value) phase) (walk (cdr value) phase)])))
++      (for ([(range bindings) (in-hash identified)])
++        (define start (CharRange-start range))
++        (define end (CharRange-end range))
++        ;; Expanded identifiers also cover shared bindings whose generated
++        ;; Check Syntax arrows were absent or used the binder's shorter span.
++        (for ([use-id (in-list (interval-map-ref use-at-position start '()))])
++          (define def (hash-ref use->def use-id))
++          (when (and (exact-nonnegative-integer? def)
++                     (> (length (hash-ref def-id->module-bindings def '())) 1))
++            (define old-range (hash-ref id->range use-id))
++            (define old-start (CharRange-start old-range))
++            (define old-end (CharRange-end old-range))
++            (define remaining (remove use-id (use-at-exact-range old-start old-end)))
++            (if (null? remaining)
++                (interval-map-remove! use-at-position old-start old-end)
++                (interval-map-set! use-at-position old-start old-end remaining))
++            (hash-update! def->use-ids def (lambda (ids) (remove use-id ids)))
++            (hash-remove! use->def use-id)))
++        (for ([binding (in-list bindings)])
++          (link-use! (alloc-use start end binding) binding)))
+       (apply-pending-module-lang-uses!))
+ 
+     (define/override (expand start end)
+@@ -286,17 +419,14 @@
+     (define/override (syncheck:add-jump-to-definition/phase-level+space
+                        _src-obj start end id filename submods phase+space)
+       (define normalized-end (normalize-end start end))
+-      (define use-id (alloc-use start normalized-end))
+       ;; Check Syntax paths use the expansion's load directory when relative.
+       (define binding-path
+         (normalize-source-path
+           (path->complete-path filename
+                                (or (current-load-relative-directory) (current-directory)))))
+       (define module-binding (Module-Binding binding-path submods phase+space id))
+-      ;; Local def-id if the definition target has already run; otherwise
+-      ;; the Module-Binding itself is the graph owner until attach-module-binding! runs.
+-      (define def (hash-ref module-binding->def-id module-binding module-binding))
+-      (link-use! use-id def))
++      (define use-id (alloc-use start normalized-end module-binding))
++      (link-use! use-id module-binding))
+ 
+     (define/override (syncheck:add-definition-target/phase-level+space
+                        _src-obj start end id submods phase+space)
+@@ -320,7 +450,7 @@
+       (match require-arrow?
+         [#f
+          (define def-id (get-or-create-def start-left (normalize-end start-left start-right)))
+-         (define use-id (alloc-use end-left (normalize-end end-left end-right)))
++         (define use-id (alloc-use end-left (normalize-end end-left end-right) def-id))
+          (link-use! use-id def-id)]
+         ['module-lang
+          ;; Chosen over `normalize-end`: a zero-width report means disappeared
+diff --git a/lsp/compose/definition.rkt b/lsp/compose/definition.rkt
+--- a/lsp/compose/definition.rkt
++++ b/lsp/compose/definition.rkt
+@@ -3,7 +3,10 @@
+ ;; textDocument/definition. A local location, or no binding, is returned
+ ;; immediately. A module binding is resolved by `target-query`.
+ (require "../../common/interfaces.rkt"
++         "../../common/json-util.rkt"
+          "../../common/time.rkt"
++         json
++         racket/list
+          "../../doclib/doc.rkt"
+          "target.rkt"
+          "../../workspace/source-store.rkt"
+@@ -24,6 +27,25 @@
+       (lambda (sd)
+         (values (SafeDoc-source-view sd) (doc-definition (SafeDoc-doc sd) uri pos)))))
+   (cond
++    [(list? target)
++     (lambda ()
++       (let loop ([bindings target] [locations '()])
++         (cond
++           [(null? bindings) (success-response id (remove-duplicates (reverse locations)))]
++           [(Location? (car bindings))
++            (loop (cdr bindings) (cons (->jsexpr (car bindings)) locations))]
++           [else
++            (define reply
++              ((target-query id controller deadline view (car bindings) "Definition"
++                             (lambda (facts binding)
++                               (hash-ref (Analysis-Summary-definition-ranges facts) binding #f))
++                             (lambda (snapshot range)
++                               (and range (Location (Source-Snapshot-uri snapshot) range))))))
++            (if (hash-has-key? reply 'error)
++                reply
++                (let ([location (hash-ref reply 'result)])
++                  (loop (cdr bindings)
++                        (if (eq? location (json-null)) locations (cons location locations)))))])))]
+     [(Module-Binding? target)
+      (target-query id controller deadline view target "Definition"
+                    (lambda (facts binding)
+diff --git a/lsp/compose/references.rkt b/lsp/compose/references.rkt
+--- a/lsp/compose/references.rkt
++++ b/lsp/compose/references.rkt
+@@ -4,7 +4,8 @@
+          "../../common/interfaces.rkt"
+          "../../doclib/internal-types.rkt"
+          "../../workspace/state.rkt"
+-         racket/contract)
++         racket/contract
++         racket/list)
+ 
+ (provide reference-locations)
+ 
+@@ -24,19 +25,26 @@
+   (define live-source (Document-Reference-Result-source document-result))
+   (define module-binding (Document-Reference-Result-module-binding document-result))
+   (define live-id (Reference-Source-id live-source))
+-  (define workspace-sources
+-    (if module-binding
+-        (workspace-reference-sources workspace module-binding)
+-        '()))
+-  (define definition
+-    (and include-declaration?
+-         module-binding
+-         (not (equal? (source-id (path->source (Module-Binding-filepath module-binding)))
+-                      live-id))
+-         (workspace-definition-location workspace module-binding)))
+-  (append (Reference-Source-locations live-source)
+-          (if definition (list definition) '())
+-          (for*/list ([source (in-list workspace-sources)]
+-                      #:unless (equal? (Reference-Source-id source) live-id)
+-                      [location (in-list (Reference-Source-locations source))])
+-            location)))
++  (define bindings
++    (cond [(not module-binding) '()]
++          [(list? module-binding) module-binding]
++          [else (list module-binding)]))
++  (define definitions
++    (for*/list ([binding (in-list bindings)]
++                #:when (and include-declaration?
++                            (not (equal? (source-id (path->source (Module-Binding-filepath binding)))
++                                         live-id)))
++                [location (in-value (workspace-definition-location workspace binding))]
++                #:when location)
++      location))
++  (define locations
++    (append (Reference-Source-locations live-source)
++            definitions
++            (for*/list ([binding (in-list bindings)]
++                        [source (in-list (workspace-reference-sources workspace binding))]
++                        #:unless (equal? (Reference-Source-id source) live-id)
++                        [location (in-list (Reference-Source-locations source))])
++              location)))
++  ;; Several identities can select the same physical occurrence. Preserve
++  ;; the established ordering and duplicate behaviour for a single binding.
++  (if (list? module-binding) (remove-duplicates locations) locations))
+diff --git a/tests/lib/declaration-multiple-targets-test.rkt b/tests/lib/declaration-multiple-targets-test.rkt
+new file mode 100644
+--- /dev/null
++++ b/tests/lib/declaration-multiple-targets-test.rkt
+@@ -0,0 +1,167 @@
++#lang racket/base
++
++(require drracket/check-syntax
++         rackunit
++         racket/class
++         racket/list
++         "../../common/source.rkt"
++         "../../common/interfaces.rkt"
++         "../../doclib/internal-types.rkt"
++         "../../doclib/service/declaration.rkt"
++         "../../doclib/doc-trace.rkt"
++         "../../doclib/doc.rkt"
++         "../../doclib/editor.rkt"
++         "../../doclib/lexer.rkt")
++
++(define source (path->source (build-path (current-directory) "model.rkt")))
++(define path (source-file-path source))
++(define bindings
++  (for/list ([name '(struct:a a? a)]) (Module-Binding path '() 0 name)))
++(define (target declarations binding)
++  (send declarations syncheck:add-definition-target/phase-level+space
++        path 51 52 (Module-Binding-id binding) (Module-Binding-submods binding)
++        (Module-Binding-phase+space binding)))
++(define (jump declarations binding start)
++  (send declarations syncheck:add-jump-to-definition/phase-level+space
++        path start (add1 start) (Module-Binding-id binding)
++        (Module-Binding-filepath binding) (Module-Binding-submods binding)
++        (Module-Binding-phase+space binding)))
++(define (entries-at entries range)
++  (map cdr (filter (lambda (entry) (equal? (car entry) range)) entries)))
++(define (check-bindings actual expected)
++  (check-equal? (length actual) (length expected))
++  (for ([binding expected]) (check-not-false (member binding actual))))
++
++(define mixed-prefix
++  (string-append
++    "#lang racket/base\n"
++    "(module model racket/base (provide (struct-out a)) (struct a ()))\n"
++    "(require 'model (for-syntax racket/base racket/syntax))\n"
++    "(define-syntax (both stx)\n"
++    "  (syntax-case stx ()\n"
++    "    [(_ name)\n"
++    "     (with-syntax ([other (syntax-property (format-id #'name \"struct:a\" #:source #'name) 'original-for-check-syntax #t)])\n"
++    "       #'(list name other))]))\n"))
++
++(module+ test
++  (test-case "mixed local and imported occurrence refuses both rename queries"
++    (define doc (make-doc (source-uri source)
++                         (string-append mixed-prefix "(define a? 7)\n(both a?)\na?\nstruct:a\n")))
++    (check-true (doc-expand! doc))
++    (check-false (doc-rename doc (source-uri source) (Pos 9 6) "changed"))
++    (check-false (doc-prepare-rename doc (Pos 9 6))))
++
++  (test-case "shared lexical and imported occurrence retains both query owners"
++    (define doc (make-doc (source-uri source)
++                         (string-append mixed-prefix "(let ([a? 7]) (both a?) a? struct:a)\n")))
++    (check-true (doc-expand! doc))
++    (check-equal? (doc-definition-ranges-at doc (Pos 8 20))
++                  (list (Range (Pos 1 59) (Pos 1 60))
++                        (Range (Pos 8 7) (Pos 8 9))))
++    (check-equal? (doc-uses-at doc (Pos 8 20))
++                  (list (Range (Pos 8 20) (Pos 8 22))
++                        (Range (Pos 8 24) (Pos 8 26))
++                        (Range (Pos 8 27) (Pos 8 35)))))
++
++  (test-case "shared module local and imported occurrence returns every definition"
++    (define doc (make-doc (source-uri source)
++                         (string-append mixed-prefix "(define a? 7)\n(both a?)\n")))
++    (check-true (doc-expand! doc))
++    (define targets (doc-definition doc (source-uri source) (Pos 9 6)))
++    (check-true (list? targets))
++    (check-not-false (member (Location (source-uri source) (Range (Pos 8 8) (Pos 8 10))) targets))
++    (check-not-false (member (Module-Binding path '(model) 0 'struct:a) targets)))
++
++  (test-case "shared lexical occurrence includes all live declarations once"
++    (define declarations (new declaration% [source source] [doc-text #f]))
++    (for ([start '(10 20)])
++      (send declarations syncheck:add-arrow/name-dup path start (add1 start) path 30 31 #t 0 #f #f))
++    (check-equal? (send declarations definition-ranges-at 30) (list (CharRange 10 11) (CharRange 20 21)))
++    (check-false (send declarations definition-at 30))
++    (send declarations expand 0 2)
++    (check-equal? (send declarations definition-ranges-at 32) (list (CharRange 12 13) (CharRange 22 23)))
++    (send declarations contract 12 13)
++    (check-equal? (send declarations definition-ranges-at 31) (list (CharRange 21 22))))
++
++  (test-case "an explicit imported alias retains its module owner without a local definition"
++    (define doc (make-doc (source-uri source)
++                         "#lang racket/base\n(require (rename-in racket/list [add-between ab]))\n(ab '(1 2) 0)\n"))
++    (check-true (doc-expand! doc))
++    (check-false (doc-definition-at doc (Pos 2 1)))
++    (check-true (Module-Binding? (doc-module-binding-at doc (Pos 2 1))))))
++
++(module+ test
++  (test-case "all three struct identities share a definition range"
++    (define declarations (new declaration% [source source] [doc-text #f]))
++    (for ([binding bindings]) (target declarations binding))
++    (check-bindings (entries-at (send declarations module-binding-definitions) (CharRange 51 52)) bindings))
++
++  (test-case "one use range retains every imported identity"
++    (define declarations (new declaration% [source source] [doc-text #f]))
++    (for ([binding bindings]) (jump declarations binding 60))
++    (check-bindings (entries-at (send declarations module-binding-uses) (CharRange 60 61)) bindings))
++
++  (for ([targets-first? '(#t #f)])
++    (test-case (format "same-file uses retain their identities, targets first: ~a" targets-first?)
++      (define declarations (new declaration% [source source] [doc-text #f]))
++      (when targets-first? (for ([binding bindings]) (target declarations binding)))
++      (for ([binding bindings] [start '(60 70 80)]) (jump declarations binding start))
++      (unless targets-first? (for ([binding bindings]) (target declarations binding)))
++      (for ([binding bindings] [start '(60 70 80)])
++        (check-equal? (send declarations module-binding-at start) binding)
++        (check-equal? (send declarations definition-at start) (CharRange 51 52))
++        (check-equal? (send declarations uses-at start) (list (CharRange start (add1 start)))))
++      (check-equal? (send declarations uses-at 51)
++                    (list (CharRange 60 61) (CharRange 70 71) (CharRange 80 81)))))
++
++  (test-case "phase, space and submodule are part of each retained identity"
++    (define declarations (new declaration% [source source] [doc-text #f]))
++    (define distinct
++      (for/list ([phase '(0 1 (0 . names) #f)] [mods '(() () () (inner))])
++        (Module-Binding path mods phase 'a)))
++    (for ([binding distinct]) (target declarations binding) (jump declarations binding 60))
++    (check-bindings (entries-at (send declarations module-binding-definitions) (CharRange 51 52)) distinct)
++    (check-bindings (entries-at (send declarations module-binding-uses) (CharRange 60 61)) distinct))
++
++  (test-case "repeated callbacks do not duplicate facts and edits move every identity"
++    (define declarations (new declaration% [source source] [doc-text #f]))
++    (for* ([repeat '(1 2)] [binding bindings]) (target declarations binding) (jump declarations binding 60))
++    (send declarations expand 0 2)
++    (check-bindings (entries-at (send declarations module-binding-definitions) (CharRange 53 54)) bindings)
++    (check-bindings (entries-at (send declarations module-binding-uses) (CharRange 62 63)) bindings)
++    (send declarations contract 53 54)
++    (check-equal? (send declarations module-binding-definitions) '())
++    (send declarations reset)
++    (check-equal? (send declarations module-binding-uses) '()))
++
++  (test-case "full trace contributions retain shared targets and uses"
++    (define text (make-string 100 #\space))
++    (define editor (new lsp-editor%))
++    (send editor insert text 0)
++    (define trace (new build-trace% [source source] [doc-text editor]
++                       [lexer-state (build-lexer-state text (source-uri source))]))
++    (for ([binding bindings]) (target trace binding) (jump trace binding 60))
++    (define contribution (send trace get-contribution))
++    (check-bindings (hash-keys (Doc-Contribution-definitions contribution)) bindings)
++    (check-bindings (filter (lambda (binding) (member binding bindings))
++                            (hash-keys (Doc-Contribution-references contribution))) bindings)
++    (for ([binding bindings])
++      (check-equal? (hash-ref (Doc-Contribution-definitions contribution) binding)
++                    (Location (source-uri source) (Range (Pos 0 51) (Pos 0 52))))
++      (check-equal? (hash-ref (Doc-Contribution-references contribution) binding)
++                    (list (Location (source-uri source) (Range (Pos 0 60) (Pos 0 61))))))))
++
++(module+ test
++  (test-case "expanded local struct uses retain their exact identities"
++    (define text "#lang racket/base\n(provide (struct-out a))\n(struct a ())\na?\nstruct:a\na\n")
++    (define doc (make-doc (source-uri source) text))
++    (check-true (doc-expand! doc))
++    (for ([binding bindings] [line '(4 3 5)] [width '(8 2 1)])
++      (define pos (Pos line 0))
++      (check-equal? (doc-module-binding-at doc pos) binding)
++      (check-equal? (doc-definition-at doc pos) (Range (Pos 2 8) (Pos 2 9)))
++      (check-not-false (member (Range pos (Pos line width)) (doc-uses-at doc pos)))
++      (for ([other '(3 4 5)] #:unless (= other line))
++        (check-false (for/or ([range (in-list (doc-uses-at doc pos))])
++                       (= other (Pos-line (Range-start range))))))
++      (check-false (doc-rename doc (source-uri source) pos "changed")))))
+diff --git a/tests/lsp/definition-controller-test.rkt b/tests/lsp/definition-controller-test.rkt
+--- a/tests/lsp/definition-controller-test.rkt
++++ b/tests/lsp/definition-controller-test.rkt
+@@ -187,6 +187,8 @@
+                 (define start (doc-pos->abs-pos (SafeDoc-doc sd) (Pos 3 6)))
+                 (define trace
+                   (Analysis-Product-trace (Available-Analysis-product (SafeDoc-available sd))))
++                ;; Replace the fixture's graph before supplying one synthetic identity.
++                (send (send trace get-declaration) reset)
+                 (send trace syncheck:add-jump-to-definition/phase-level+space
+                       a start (+ start 6) 'shared b target-submods phase+space))))
+           (supply-jump! submods)

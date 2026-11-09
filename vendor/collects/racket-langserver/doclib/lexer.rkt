@@ -14,6 +14,7 @@
          LexerState?
          LexerState-snapshot
          LexerState-language-policy
+         LexerState-adapter
          lexer-state-body-mode
          lexer-state-token-at
          lexer-state-symbol-at

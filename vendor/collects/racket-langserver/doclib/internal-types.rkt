@@ -91,10 +91,11 @@
    [locations (listof Location?)])
   #:transparent)
 
-;; Live document references plus the exact cross-document identity, when any.
+;; Live references plus one exact cross-document identity, several at a shared
+;; occurrence or a confirmed family, or #f for local-only names.
 (struct/contract Document-Reference-Result
   ([source Reference-Source?]
-   [module-binding (or/c Module-Binding? #f)])
+   [module-binding (or/c Module-Binding? (listof Module-Binding?) #f)])
   #:transparent)
 
 (define (interval-map-of value/c)

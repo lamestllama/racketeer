@@ -579,6 +579,17 @@
     (language-match-expand? language-match)
     (language-match-inlay-hints language-match)))
 
+;; Omitted adapter fields inherit the policy already selected for this source.
+(define (language-policy-with-adapter policy adapter)
+  (define editor (and adapter (hash-ref adapter 'editor)))
+  (define (override key default)
+    (define value (if editor (hash-ref editor key 'policy) 'policy))
+    (if (eq? value 'policy) default value))
+  (struct-copy Language-Policy policy
+    [body-mode (override 'body-mode (Language-Policy-body-mode policy))]
+    [expand? (override 'expand? (Language-Policy-expand? policy))]
+    [require-header? (override 'require-header? (Language-Policy-require-header? policy))]))
+
 ;; Same as `source->language-policy` but reuses already-lexed spans.
 (define/contract (lexer-language-policy text spans [uri #f])
   (->* (string? (vectorof LexerTokenSpan?))
@@ -608,6 +619,7 @@
          (struct-out Language-Policy)
          parse-language-header
          source->language-policy
+         language-policy-with-adapter
          sexp-format-language?
          lexer-language-policy
          get-indenter)

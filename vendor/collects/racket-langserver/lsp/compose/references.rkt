@@ -4,7 +4,8 @@
          "../../common/interfaces.rkt"
          "../../doclib/internal-types.rkt"
          "../../workspace/state.rkt"
-         racket/contract)
+         racket/contract
+         racket/list)
 
 (provide reference-locations)
 
@@ -24,19 +25,26 @@
   (define live-source (Document-Reference-Result-source document-result))
   (define module-binding (Document-Reference-Result-module-binding document-result))
   (define live-id (Reference-Source-id live-source))
-  (define workspace-sources
-    (if module-binding
-        (workspace-reference-sources workspace module-binding)
-        '()))
-  (define definition
-    (and include-declaration?
-         module-binding
-         (not (equal? (source-id (path->source (Module-Binding-filepath module-binding)))
-                      live-id))
-         (workspace-definition-location workspace module-binding)))
-  (append (Reference-Source-locations live-source)
-          (if definition (list definition) '())
-          (for*/list ([source (in-list workspace-sources)]
-                      #:unless (equal? (Reference-Source-id source) live-id)
-                      [location (in-list (Reference-Source-locations source))])
-            location)))
+  (define bindings
+    (cond [(not module-binding) '()]
+          [(list? module-binding) module-binding]
+          [else (list module-binding)]))
+  (define definitions
+    (for*/list ([binding (in-list bindings)]
+                #:when (and include-declaration?
+                            (not (equal? (source-id (path->source (Module-Binding-filepath binding)))
+                                         live-id)))
+                [location (in-value (workspace-definition-location workspace binding))]
+                #:when location)
+      location))
+  (define locations
+    (append (Reference-Source-locations live-source)
+            definitions
+            (for*/list ([binding (in-list bindings)]
+                        [source (in-list (workspace-reference-sources workspace binding))]
+                        #:unless (equal? (Reference-Source-id source) live-id)
+                        [location (in-list (Reference-Source-locations source))])
+              location)))
+  ;; A confirmed family or several selected identities can share a location. Preserve
+  ;; the established ordering and duplicate behaviour for a single binding.
+  (if (list? module-binding) (remove-duplicates locations) locations))

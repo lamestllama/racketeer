@@ -6,6 +6,7 @@
 
 ;; Serve resident worker requests under the memory and answer limits.
 (require json racket/port
+         "../../language-adapters.rkt"
          "../macro-source.rkt" "printing.rkt" "expansion.rkt" "facts.rkt" "limits.rkt")
 (provide run-worker)
 
@@ -128,6 +129,10 @@
                         (define line (read-line (current-input-port) 'any))
                         (unless (eof-object? line)
                           (with-handlers ([exn:fail? (lambda (e) (emit (failure-answer "incompatible" (exn-message e))))])
+                            (unless (language-adapter-current?
+                                      (and captured-syntax
+                                           (syntax-property captured-syntax 'racketeer:language-profile)))
+                              (incompatible "Language adapter changed. Open a fresh macro expansion."))
                             (define query (string->jsexpr line))
                             (unless (equal? (hash-ref query 'snapshot #f) (hash-ref request 'snapshot))
                               (incompatible "Request does not name this expansion snapshot."))

@@ -9,6 +9,7 @@
          "../../doclib/doc.rkt"
          "../../workspace/state.rkt"
          "../analysis.rkt"
+         racket/class
          "../safedoc.rkt")
 
 (provide Analysis-Publisher?
@@ -35,16 +36,21 @@
 ;; A restored product has no fresh completion. Source errors clear exact
 ;; availability while preserving the old trace for approximate local queries.
 (define (publish-document-analysis! publisher sd snapshot product [completion #f])
-  (define doc (SafeDoc-doc sd))
-  (cond
-    [(Analysis-Product-succeeded? product)
-     (define contribution (Analysis-Product-contribution product))
-     (doc-update-trace! doc (Analysis-Product-trace product) contribution (Doc-version doc))
-     (set-SafeDoc-available! sd (Available-Analysis snapshot product completion))
-     (when contribution
-       (workspace-set-contribution! (Analysis-Publisher-workspace publisher) contribution))]
-    [else (set-SafeDoc-available! sd #f)])
-  (publish-diagnostics! publisher (Doc-uri doc) (Analysis-Product-diagnostics product)))
+  (and (send (Analysis-Product-trace product) adapter-current?)
+       (let ()
+         (define doc (SafeDoc-doc sd))
+         (cond
+           [(Analysis-Product-succeeded? product)
+            (define contribution (Analysis-Product-contribution product))
+            (doc-update-trace! doc (Analysis-Product-trace product) contribution (Doc-version doc))
+            (set-SafeDoc-available! sd (Available-Analysis snapshot product completion))
+            (when contribution
+              (workspace-set-contribution! (Analysis-Publisher-workspace publisher) contribution))]
+           [else
+            (doc-update-language-policy! doc (Analysis-Product-trace product))
+            (set-SafeDoc-available! sd #f)])
+         (publish-diagnostics! publisher (Doc-uri doc) (Analysis-Product-diagnostics product))
+         #t)))
 
 ;; Completion identity distinguishes same-revision retries. Old Resyntax
 ;; findings cannot apply to a restored product or a later accepted attempt.

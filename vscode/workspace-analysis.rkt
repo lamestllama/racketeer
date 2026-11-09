@@ -25,6 +25,7 @@
          racket-langserver/workspace/api
          racket-langserver/lsp/compose/references
          "workspace-memory.rkt"
+         "language-adapters.rkt"
          "workspace-rename.rkt"
          "workspace-wire.rkt")
 
@@ -281,7 +282,9 @@
            (unless (snapshot-current? sources roots excluded limit buffers)
              (error 'rename "Workspace files changed. Try Rename again.")))
          (check-snapshot!)
-         (define result (workspace-rename sources path position name))
+         (define result
+           (parameterize ([current-language-adapter-roots roots])
+             (workspace-rename sources path position name)))
          (check-snapshot!)
          (list 'ok result)]))))
 
@@ -544,6 +547,7 @@
   ;; Trace construction and queries use a fresh namespace as well as expansion.
   ;; A previously loaded dependency must not survive a watched change.
   (parameterize ([current-namespace (make-base-namespace)]
+                 [current-language-adapter-roots roots]
                  [current-directory (path-only path)]
                  [current-load-relative-directory (path-only path)]
                  [current-module-name-resolver
@@ -577,9 +581,7 @@
           (and query
                (let ([result (doc-references doc (car query) (jsexpr->Pos (cadr query)) (caddr query))])
                  (and result
-                      (list (map ->jsexpr (Reference-Source-locations (Document-Reference-Result-source result)))
-                            (and (Document-Reference-Result-module-binding result)
-                                 (binding->datum (Document-Reference-Result-module-binding result)))))))
+                      (reference-query->datum result))))
           (and (not query)
                (list (sha1-bytes bytes) (hash->list reads) (external-reads externals before)
                      (hash->list resolutions))))))))
@@ -663,6 +665,23 @@
 (define (binding->datum binding)
   (list (Module-Binding-filepath binding) (Module-Binding-submods binding)
         (Module-Binding-phase+space binding) (Module-Binding-id binding)))
+
+;; Exact identities and confirmed family lookup keys share the existing worker
+;; record. Keep ordinary single-binding requests in their scalar form.
+(define (reference-query->datum result)
+  (define binding (Document-Reference-Result-module-binding result))
+  (list (map ->jsexpr (Reference-Source-locations (Document-Reference-Result-source result)))
+        (and binding (if (list? binding)
+                         (cons 'bindings (map binding->datum binding))
+                         (binding->datum binding)))))
+
+(define (datum->reference-query path record)
+  (match-define (list locations binding) record)
+  (Document-Reference-Result
+    (Reference-Source (source-id (path->source path)) (map jsexpr->Location locations))
+    (and binding (if (eq? (car binding) 'bindings)
+                     (map (lambda (entry) (apply Module-Binding entry)) (cdr binding))
+                     (apply Module-Binding binding)))))
 
 (define (contribution->datum contribution)
   (list (Doc-Contribution-path contribution)
@@ -1105,11 +1124,7 @@
                              (match result
                                [(list 'ok _ _ _ #f _) (accepted run '())]
                                [(list 'ok _ _ _ (list locations binding) _)
-                                (define live
-                                  (Document-Reference-Result
-                                    (Reference-Source (source-id (path->source path))
-                                                      (map jsexpr->Location locations))
-                                    (and binding (apply Module-Binding binding))))
+                                (define live (datum->reference-query path (list locations binding)))
                                 (accepted run
                                           (for/list ([location (in-list (reference-locations (Run-workspace run) live include?))])
                                             (->jsexpr location)))]

@@ -23,6 +23,9 @@
          racket-langserver/doclib/doc
          racket-langserver/doclib/doc-trace
          racket-langserver/doclib/check-syntax
+         racket-langserver/doclib/rename-validation
+         (only-in racket-langserver/doclib/service/declaration current-retain-binding-facts?)
+         racket-langserver/doclib/expanded-core
          racket-langserver/doclib/internal-types
          racket-langserver/doclib/lexer)
 
@@ -32,20 +35,11 @@
 ;; say which file it was analysing when it was stopped.
 (define current-analysis-observer (make-parameter void))
 
-(struct Source (doc forms arrows bindings) #:transparent)
+(struct Source (doc forms arrows bindings snapshot) #:transparent)
 (struct Arrow (from to imported?) #:transparent)
 
 (define (refuse message)
   (error 'rename message))
-
-(define (identifier-name text)
-  (with-handlers ([exn:fail? (lambda (_) #f)])
-    (define in (open-input-string text))
-    (define value (read in))
-    (and (symbol? value) (eof-object? (read in))
-         ;; Keep the edit a single identifier, without reader directives,
-         ;; comments, leading whitespace, or a changed spelling convention.
-         (equal? text (format "~s" value)) value)))
 
 (define (in-snapshot path sources proc)
   (parameterize ([current-namespace (make-base-namespace)]
@@ -53,7 +47,7 @@
                  [current-load-relative-directory (path-only path)])
     (call-with-source-snapshot sources proc)))
 
-(define (analyse path sources)
+(define (analyse path sources [paths (make-hash)])
   ((current-analysis-observer) path)
   (in-snapshot path sources
     (lambda ()
@@ -84,15 +78,23 @@
       (unless (and (ExpandResult-pre-syntax result)
                    (or (not expand?) (ExpandResult-post-syntax result)))
         (refuse (format "Cannot analyse ~a with the proposed names and current buffers." path)))
-      (send trace walk-stx result)
+      (parameterize ([current-retain-binding-facts? #t])
+        (send trace walk-stx result))
       (send trace walk-log (ExpandResult-logs result))
       (doc-update-trace! doc trace (send trace get-contribution) (Doc-version doc))
       ;; Keep source and origin identifiers, not the whole expansion result
       ;; and the module namespaces it retains, while other files are analysed.
       (define original (ExpandResult-pre-syntax result))
       (define contexts (expansion-contexts (ExpandResult-post-syntax result) path))
+      (define facts (send (send trace get-declaration) get-binding-facts))
+      (define bindings (expansion-bindings doc (ExpandResult-post-syntax result) path))
+      ;; Confirmed scoped names can differ from their authored component spelling.
+      (for ([fact (in-list (hash-ref facts 'names))])
+        (define binding (rename-module-binding fact))
+        (when (and binding (eq? (hash-ref fact 'certainty 'confirmed) 'confirmed))
+          (hash-update! bindings (hash-ref fact 'range) (lambda (old) (set-add old binding)) (set))))
       (Source doc (delay (standard-imports doc original contexts path)) arrows
-              (expansion-bindings doc (ExpandResult-post-syntax result) path)))))
+              bindings (rename-snapshot facts (path->source path) text paths)))))
 
 ;; A resolved module in the spelling bindings use: "../a.rkt" and the file it names
 ;; must compare as one module.
@@ -103,30 +105,6 @@
     [_ module]))
 (define (resolved-index index file)
   (normalized-module (resolve-module-path-index index file)))
-
-;; The core form a fully expanded form is: what its head is bound to at this phase.
-;; Its spelling alone would misread quoted data, a variable in a list of formals, and
-;; a core form imported under another name.
-(define (core-form value phase)
-  (define parts (syntax->list value))
-  (define head (and (pair? parts) (car parts)))
-  (define binding (and (identifier? head) (identifier-binding head phase)))
-  (and (list? binding)
-       (eq? '#%core (resolved-module-path-name (module-path-index-resolve (car binding))))
-       (cadr binding)))
-
-;; What in a fully expanded form is code, each part with its phase. A submodule
-;; that names no language shares the phase numbering of the module around it.
-(define (code-parts value phase)
-  (define parts (syntax->list value))
-  (case (core-form value phase)
-    [(quote quote-syntax) '()]
-    [(module module*)
-     (define inner (if (syntax-e (caddr parts)) 0 phase))
-     (for/list ([part (in-list (cdddr parts))]) (cons part inner))]
-    [(begin-for-syntax) (for/list ([part (in-list (cdr parts))]) (cons part (add1 phase)))]
-    [(define-syntaxes) (list (cons (cadr parts) phase) (cons (caddr parts) (add1 phase)))]
-    [else (list (cons (syntax-e value) phase))]))
 
 ;; Source identifiers in the expansion retain their defining module and phase,
 ;; including references that Check Syntax cannot attach to relative imports.
@@ -181,15 +159,47 @@
 (define (source-bindings-at source position)
   (define doc (Source-doc source))
   (define occurrence (doc-occurrence-at doc position))
-  (or (and occurrence (hash-ref (Source-bindings source) (absolute-range doc occurrence) #f))
-      (let ([binding (doc-module-binding-at doc position)])
-        (if binding (set binding) (set)))))
+  (define expanded
+    (and occurrence (hash-ref (Source-bindings source) (absolute-range doc occurrence) #f)))
+  (define declared (doc-module-bindings-at doc position))
+  ;; Scoped expansion facts retain all confirmed identities at this range,
+  ;; including generated spellings and the defining phase of shifted imports.
+  ;; Check Syntax jumps can retain an older resolved import path.
+  (or expanded (list->set declared)))
 
-;; Only the identifier being renamed must name one binding.
-(define (source-binding-at source position)
+(define (source-binding-at source position sources)
   (define bindings (source-bindings-at source position))
-  (when (> (set-count bindings) 1) (refuse "This source identifier represents more than one binding."))
-  (and (= (set-count bindings) 1) (set-first bindings)))
+  (cond
+    [(set-empty? bindings) #f]
+    [(= (set-count bindings) 1) (set-first bindings)]
+    [else
+     (define doc (Source-doc source))
+     (define range (absolute-range doc (doc-occurrence-at doc position)))
+     (define spelling (identifier-name (substring (doc-get-text doc) (car range) (cdr range))))
+     (define canonical (filter (lambda (binding) (eq? spelling (Module-Binding-id binding))) (set->list bindings)))
+     (unless (= (length canonical) 1)
+       (refuse "This source identifier represents more than one binding."))
+     (define target (car canonical))
+     (define file (Module-Binding-filepath target))
+     (define defining-source
+       (cond [(equal? file (source-file-path (Doc-source doc))) source]
+             [(hash-has-key? sources file) (analyse file sources)]
+             [else #f]))
+     (define anchors
+       (and defining-source
+            (for/list ([(anchor entry) (in-hash (hash-ref (Source-snapshot defining-source) 'binders))]
+                       #:when (set-member? bindings (car entry)))
+              (cons anchor entry))))
+     (unless (and anchors (= (length anchors) (set-count bindings))
+                  (andmap (lambda (entry) (equal? (caddr entry) (caddar anchors))) anchors)
+                  (let ([range (caddar anchors)])
+                    (and range
+                         (equal? spelling
+                                 (identifier-name
+                                  (substring (doc-get-text (Source-doc defining-source))
+                                             (car range) (cdr range)))))))
+       (refuse "This source identifier represents more than one binding."))
+     target]))
 
 (define (absolute-range doc range)
   (cons (doc-pos->abs-pos doc (Range-start range))
@@ -206,7 +216,7 @@
            #:when (and (not (Arrow-imported? arrow)) (equal? range (Arrow-to arrow))))
     (define from (Arrow-from arrow))
     (define pos (doc-abs-pos->pos doc (car from)))
-    (and (not (doc-module-binding-at doc pos)) (doc-definition-at doc pos) from)))
+    (and (null? (doc-module-bindings-at doc pos)) (doc-definition-at doc pos) from)))
 
 (struct ImportName (name alias anchor active? relevant?) #:transparent)
 (struct ImportPlan (selectors names) #:transparent)
@@ -421,43 +431,30 @@
       (and (member (list (Module-Binding-phase+space target) '() (Module-Binding-id target)) exports)
            (if (= (length exports) 1) 'local 'shared)))))
 
-(define (renamed-text text ranges name)
-  (for/fold ([text text]) ([range (in-list (reverse ranges))])
-    (string-append (substring text 0 (car range)) name (substring text (cdr range)))))
-
 ;; Compare every source identifier's binding before and after the edit. This
 ;; detects both capture of a renamed use and capture of an unchanged use by the
 ;; new name, including unused binders that have no Check Syntax arrow.
-(define (bindings source text ranges new-name target)
+(define (bindings source text ranges new-name correspondence shift)
   (define doc (Source-doc source))
-  (define (shift offset)
-    (+ offset (for/sum ([range (in-list ranges)] #:when (<= (cdr range) offset))
-                (- (string-length new-name) (- (cdr range) (car range))))))
-  (for/list ([token (in-lexer-snapshot (build-lexer-snapshot text (Doc-uri doc)))]
-             #:when (eq? (LexerEntry-type token) 'symbol))
-    (define position (doc-abs-pos->pos doc (LexerEntry-start token)))
-    (define module-bindings (source-bindings-at source position))
-    (define local-definition (and (set-empty? module-bindings) (doc-definition-at doc position)))
-    (list (shift (LexerEntry-start token)) (shift (LexerEntry-end token))
-          (cond
-            [(not (set-empty? module-bindings))
-             (for/set ([binding (in-set module-bindings)])
-               (if (equal? binding target)
-                   (struct-copy Module-Binding binding [id (identifier-name new-name)])
-                   binding))]
-            [local-definition
-             (define range (absolute-range doc local-definition))
-             (cons (shift (car range)) (shift (cdr range)))]
-            [else #f]))))
+  (rename-token-relations
+   text (Doc-uri doc) ranges new-name correspondence
+   (lambda (offset)
+     (define position (doc-abs-pos->pos doc offset))
+     (define module-bindings (source-bindings-at source position))
+     (define local-definition (and (set-empty? module-bindings) (doc-definition-at doc position)))
+     (cond [(not (set-empty? module-bindings)) module-bindings]
+           [local-definition (absolute-range doc local-definition)]
+           [else #f])) shift))
 
 (define (workspace-rename sources path position new-name)
   (unless (hash-has-key? sources path)
     (refuse "Save this document inside the analysed workspace before renaming."))
-  (define origin-source (analyse path sources))
+  (define paths (make-hash))
+  (define origin-source (analyse path sources paths))
   (define origin (Source-doc origin-source))
   (define pos (jsexpr->Pos position))
   (define occurrence (doc-occurrence-at origin pos))
-  (define module-target (source-binding-at origin-source pos))
+  (define module-target (source-binding-at origin-source pos sources))
   (define origin-plan
     (and module-target (import-plan origin-source path sources module-target)))
   (define matched-imports
@@ -495,7 +492,7 @@
      (unless (identifier-name new-name) (refuse "Enter a single Racket identifier."))
      (define docs
        (for/hash ([(file text) (in-hash sources)])
-         (values file (if (equal? file path) origin-source (analyse file sources)))))
+         (values file (if (equal? file path) origin-source (analyse file sources paths)))))
      (define target-definitions
        (and target (Doc-Contribution-definitions
                     (Doc-contribution (Source-doc (hash-ref docs (Module-Binding-filepath target)))))))
@@ -561,14 +558,30 @@
          (for ([left (in-list ranges)] [right (in-list (if (pair? ranges) (cdr ranges) '()))])
            (when (> (cdr left) (car right)) (refuse "The binding has overlapping source locations.")))
          (values file ranges)))
+     (define shifts (for/hash ([(file ranges) (in-hash edits)]) (values file (rename-offset ranges new-name))))
      (define proposed
        (for/hash ([(file text) (in-hash sources)])
          (values file (renamed-text text (hash-ref edits file) new-name))))
+     (define after-snapshots (make-hash))
+     (define after-relations (make-hash))
+     (for ([(file text) (in-hash proposed)])
+       (define after (analyse file proposed paths))
+       (hash-set! after-snapshots file (Source-snapshot after))
+       (hash-set! after-relations file (bindings after text '() new-name (hash) values)))
+     (define correspondence (make-hash))
      (for ([(file source) (in-hash docs)])
-       (define after (analyse file proposed))
-       (unless (equal? (bindings source (hash-ref sources file) (hash-ref edits file) new-name target)
-                       (bindings after (hash-ref proposed file) '() new-name #f))
-         (refuse (format "Renaming would change another binding or requires unsupported import edits in ~a." file))))
+       (define mapped
+         (rename-correspondence (Source-snapshot source) (hash-ref after-snapshots file)
+                                (hash-ref edits file) new-name (hash-ref shifts file)))
+       (for ([(old new) (in-hash mapped)])
+         (when (and (hash-has-key? correspondence old) (not (equal? (hash-ref correspondence old) new)))
+           (refuse "The binding correspondence is ambiguous."))
+         (hash-set! correspondence old new)))
+     (for ([(file source) (in-hash docs)])
+       (validate-rename-proposal
+        (Source-snapshot source) (hash-ref after-snapshots file) (hash-ref edits file) new-name correspondence
+        (bindings source (hash-ref sources file) (hash-ref edits file) new-name correspondence (hash-ref shifts file))
+        (hash-ref after-relations file) (hash-ref shifts file)))
      (hasheq 'changes
              (for/hasheq ([(file ranges) (in-hash edits)] #:unless (null? ranges))
                (define doc (Source-doc (hash-ref docs file)))

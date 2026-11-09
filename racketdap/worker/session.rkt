@@ -3,8 +3,8 @@
 ;; SPDX-License-Identifier: Apache-2.0 OR MIT
 
 (require racket/async-channel racket/file racket/list racket/path racket/port
-         racket/string
-         "../protocol.rkt" "../commands.rkt" "../source.rkt" "../packages.rkt" "load.rkt" "../instrumentation/instrument.rkt"
+         racket/string syntax/modresolve
+         "../protocol.rkt" "../language-adapters.rkt" "../commands.rkt" "../source.rkt" "../packages.rkt" "load.rkt" "../instrumentation/instrument.rkt"
          "inspect.rkt" "stepping.rkt" "expressions.rkt" "cancel.rkt" "images.rkt" "plots.rkt" "coverage.rkt" "interactions.rkt" "logs.rkt" "error-locations.rkt"
          (only-in "debug-cache.rkt" default-cache-directory))
 
@@ -15,7 +15,204 @@
 (struct attached-controller (on-event on-thread on-exception on-sites on-source-snapshot selected? run-code pause! close!) #:transparent)
 
 ;; One connection owns all mutable debugger state and its program launcher.
-(define (serve-session control-in control-out config client run-program #:attach [attach #f])
+(define (serve-session control-in control-out config client run-program #:attach [attach #f]
+                       #:module-context [module-context #f])
+  (define descriptors (make-hash))
+  (define module-contexts (make-weak-hasheq))
+  (define default-context? (not module-context))
+  (define configurations (make-hash))
+  (define launch-namespace #f)
+  (define ordinary-load (current-load/use-compiled))
+  (define ordinary-source-load (current-load))
+  (define ordinary-eval (current-eval))
+  (define ordinary-compile (current-compile))
+  (define (remember-adapter identity descriptor)
+    (hash-set! descriptors identity descriptor)
+    (when (and default-context?
+               (or (pair? (hash-ref descriptor 'bootstrap))
+                   (not (eq? (cadr (hash-ref (hash-ref descriptor 'debugger) 'expressions)) 'identity))))
+      (set! module-context adapter-context)))
+  (define (adapter-context where namespace)
+    (define source (if where (site-source where) (string->path (hash-ref config 'program))))
+    (define target-namespace (or namespace (and (not where) launch-namespace)))
+    (define (resolve)
+      (define frame-module
+        (or (and target-namespace
+                 (let ([resolved (variable-reference->resolved-module-path
+                                  (parameterize ([current-eval ordinary-eval])
+                                    (let* ([binding (identifier-binding #'#%variable-reference 0)]
+                                           [head (syntax-binding-set->syntax
+                                                  (syntax-binding-set-extend
+                                                   (syntax-binding-set) '#%variable-reference 0 (car binding)
+                                                   #:source-symbol (cadr binding))
+                                                  '#%variable-reference)])
+                                      (eval (datum->syntax #f (list head)) target-namespace))))])
+                   (and resolved (resolved-module-path-name resolved))))
+            source))
+      (define identity (if (pair? frame-module) `(submod ,@frame-module) frame-module))
+      (define descriptor (hash-ref descriptors identity (lambda () (hash-ref descriptors source #f))))
+      (define debugger (and descriptor (hash-ref descriptor 'debugger)))
+      (define expression-ref (and debugger (cadr (hash-ref debugger 'expressions))))
+      (define bootstrap (and descriptor (hash-ref descriptor 'bootstrap)))
+      ;; A bridge or bootstrap opts into native expression and value services.
+      ;; Other languages retain their existing interaction behaviour.
+      (and expression-ref (or (pair? bootstrap) (not (eq? expression-ref 'identity)))
+           (if (not target-namespace)
+               (hasheq 'expressions (hasheq))
+               (let ()
+                 ;; A private instance of configuration cannot run the ordinary
+                 ;; module body or alter the paused programme's parameters.
+                 (define private (make-base-namespace))
+                 (define module-path identity)
+                 (namespace-attach-module-declaration target-namespace module-path private)
+                 ;; Share instantiated language libraries so their value properties
+                 ;; have the same identities as the values in the selected frame.
+                 ;; Configuration itself gets a fresh instance below.
+                 (define shared (make-hash))
+                 (define (share-imports path [configuration? #f])
+                   (parameterize ([current-namespace target-namespace])
+                     (for* ([imports (in-list (module->imports path))]
+                            #:when (equal? (car imports) 0)
+                            [index (in-list (cdr imports))])
+                       (define owner (if (resolved-module-path? path) (resolved-module-path-name path) path))
+                       (define base (cond [(and (pair? owner) (eq? (car owner) 'submod)) (cadr owner)]
+                                          [(pair? owner) (car owner)]
+                                          [else (and (path-string? owner) owner)]))
+                       (define resolved (resolve-module-path-index index base))
+                       (define dependency
+                         (make-resolved-module-path
+                          (if (and (pair? resolved) (eq? (car resolved) 'submod))
+                              (cdr resolved) resolved)))
+                       (unless (hash-ref shared dependency #f)
+                         (hash-set! shared dependency #t)
+                         (if (and (not configuration?)
+                                  (with-handlers ([exn:fail? (lambda (_) #f)])
+                                    (module->namespace dependency) #t))
+                             (namespace-attach-module target-namespace dependency private)
+                             (share-imports dependency))))))
+                 (share-imports `(submod ,module-path configure-runtime) #t)
+                 (define captured
+                   (hash-ref! configurations module-path
+                     (lambda ()
+                       (define result #f)
+                       (define failure #f)
+                       (define worker
+                         (thread
+                          (lambda ()
+                            (with-handlers ([(lambda (_) #t) (lambda (value) (set! failure value))])
+                              (set! result
+                                    (parameterize ([current-namespace private]
+                                                   [current-load/use-compiled ordinary-load]
+                                                   [current-load ordinary-source-load]
+                                                   [current-eval ordinary-eval]
+                                                   [current-compile ordinary-compile]
+                                                   [current-output-port (open-output-nowhere)]
+                                                   [current-error-port (open-output-nowhere)])
+                                      (define configuration `(submod ,module-path configure-runtime))
+                                      (when (module-declared? configuration #t)
+                                        (dynamic-require configuration #f))
+                                      (define info (module->language-info module-path #t))
+                                      (when info
+                                        (define (invoke spec)
+                                          ((dynamic-require (vector-ref spec 0) (vector-ref spec 1))
+                                           (vector-ref spec 2)))
+                                        (for ([configuration (in-list ((invoke info) 'configure-runtime '()))])
+                                          (invoke configuration)))
+                                      ;; Keep only language reader, print and error settings.
+                                      (for/list ([parameter
+                                                  (in-list
+                                                   (list current-read-interaction current-print
+                                                         current-readtable read-case-sensitive
+                                                         read-decimal-as-inexact read-single-flonum
+                                                         read-accept-infix-dot read-accept-dot
+                                                         read-accept-bar-quote read-accept-graph
+                                                         print-as-expression print-graph print-struct
+                                                         print-box print-vector-length print-hash-table
+                                                         print-reader-abbreviations print-boolean-long-form
+                                                         print-pair-curly-braces print-mpair-curly-braces
+                                                         global-port-print-handler error-display-handler
+                                                         current-error-message-adjuster
+                                                         error-syntax->string-handler error-syntax->name-handler
+                                                         error-module-path->string-handler error-print-width
+                                                         error-print-context-length error-value->string-handler))])
+                                        (cons parameter (parameter)))))))))
+                       (thread-wait worker)
+                       (when failure (raise failure))
+                       result)))
+                 (define (with-context thunk)
+                   ((for/fold ([next thunk]) ([setting (in-list captured)])
+                      (lambda () (parameterize ([(car setting) (cdr setting)]) (next))))))
+                 (define reader (with-context current-read-interaction))
+                 (define printer (with-context current-print))
+                 (define formatter (with-context error-display-handler))
+                 (define hooks
+                   (hasheq 'read-interaction reader
+                           'print (lambda (value out)
+                                    (parameterize ([current-output-port out]) (printer value)))
+                           'error-display (lambda (message exception out)
+                                            (parameterize ([current-error-port out]) (formatter message exception)))
+                           'call-with-interaction-context with-context))
+                 (define configured
+                   (if (pair? bootstrap)
+                       (let* ([snapshot (hash-ref sources source #f)]
+                              [replacements
+                               (call-language-provider
+                                (cadr bootstrap)
+                                (make-provider-request 'bootstrap
+                                  #:text (and snapshot (source-file-text snapshot)) #:hooks hooks)
+                                #:field 'bootstrap)])
+                         (for/fold ([services hooks]) ([(key value) (in-hash (or replacements (hasheq)))])
+                           (unless (and (hash-has-key? hooks key) (procedure? value))
+                             (error 'bootstrap "Invalid interaction service: ~a" key))
+                           (hash-set services key value)))
+                       hooks))
+                 (hasheq
+                  'expressions
+                  (hasheq 'read-interaction (hash-ref configured 'read-interaction)
+                          'lower (lambda (request)
+                                   (if (eq? expression-ref 'identity)
+                                       (hash-ref request 'term)
+                                       (call-language-provider expression-ref request #:field 'debugger.expressions))))
+                  'values
+                  (hasheq 'print (hash-ref configured 'print)
+                          'call-with-print-context with-context)
+                  'error-display (hash-ref configured 'error-display)
+                  'call-with-error-context with-context
+                  'call-with-interaction-context
+                  (lambda (thunk)
+                    (define output (current-output-port))
+                    (define errors (current-error-port))
+                    (define owner (current-custodian))
+                    ((hash-ref configured 'call-with-interaction-context)
+                     (lambda ()
+                       (parameterize ([current-namespace target-namespace]
+                                      [current-custodian owner]
+                                      [current-output-port output] [current-error-port errors])
+                         (thunk))))))))))
+    (if target-namespace
+        (hash-ref! module-contexts target-namespace resolve)
+        (resolve)))
+  ;; The loader supplies stable context hashes for a frame site/namespace, or #f for the
+  ;; launch console. No resolver means the original Racket-only behaviour.
+  (define (context [stop #f] [index 0])
+    (and module-context
+         (module-context (and stop (stop-frame-site stop index))
+                         (and stop (stop-frame-namespace stop index)))))
+  (define (choice key [stop #f] [index 0])
+    (define selected (context stop index))
+    (and selected (hash-ref selected key #f)))
+  (define (lexical stop index)
+    (lambda (name) (and stop (stop-lexical-identifier stop name index))))
+  (define (with-interaction stop index thunk [needed? #t])
+    (define selected (and needed? (context stop index)))
+    (cond
+      [(and selected (hash-ref selected 'expressions #f))
+       (define wrapper (hash-ref selected 'call-with-interaction-context #f))
+       (unless wrapper (error 'evaluate "Native interactions require an isolated interaction context."))
+       (wrapper thunk)]
+      [else (thunk)]))
+  (define (preview value) (value-preview value #:values (current-value-choices)))
+  (define current-value-choices (make-parameter #f))
   (define output-lock (make-semaphore 1))
   (define (send object)
     (unless (and attach ended?)
@@ -45,17 +242,31 @@
     (with-continuation-mark debugger-active-key #t
       (call-with-semaphore id-lock (lambda () (set! next-id (add1 next-id)) next-id))))
   (define sources (make-hash))
+  (struct failure-record (value context sites))
   (define failure-sites (make-ephemeron-hasheq))
   (define (error-info value [expression #f])
     (with-handlers ([(lambda (_) #t) (lambda (_) (hasheq 'sources '() 'locations '() 'omitted #t))])
       (define observed (hash-ref failure-sites (current-thread) #f))
-      (hash-remove! failure-sites (current-thread))
-      (error-locations value sources (if (and observed (eq? (car observed) value)) (cdr observed) '()) expression)))
+      (when (and observed (eq? (failure-record-value observed) value))
+        (hash-remove! failure-sites (current-thread)))
+      (error-locations value sources (if (and observed (eq? (failure-record-value observed) value)) (failure-record-sites observed) '()) expression)))
   (define (on-error value)
     (when (and (arg config 'racketdapRichInteractions #f) (not (exn:break? value)))
-      (event "racketdap/interactionError" (hash-set (error-info value) 'message (error-text value)))))
-  (define (read-interaction expression)
-    (read-expression expression #:source (and (arg config 'racketdapRichInteractions #f) interaction-source)))
+      (define observed (hash-ref failure-sites (current-thread) #f))
+      (define selected (if (and observed (eq? (failure-record-value observed) value)) (failure-record-context observed) (context)))
+      (event "racketdap/interactionError" (hash-set (error-info value) 'message (error-text value selected)))))
+  (define (read-interaction expression [stop #f] [index 0] #:source? [source? #t])
+    (parameterize ([current-output-port (current-error-port)])
+      (read-expression expression
+                       #:source (and source? (arg config 'racketdapRichInteractions #f) interaction-source)
+                       #:expressions (choice 'expressions stop index)
+                       #:lexical-identifier (lexical stop index))))
+  (define (breakpoint-expression form stop)
+    (define selected (context stop))
+    (parameterize ([current-output-port (current-error-port)])
+      (resolve-expression form #:expressions (and selected (hash-ref selected 'expressions #f))
+                          #:context selected
+                          #:lexical-identifier (lexical stop 0))))
   (define sites (make-hash))
   (define coverage-hits (make-hasheqv))
   (define (on-coverage-visit descriptor)
@@ -63,6 +274,8 @@
   (define breakpoints (make-hash))
   (define frames (make-hasheqv))
   (define variables (make-hasheqv))
+  (define variable-contexts (make-hasheqv))
+  (define current-frame-index (make-parameter 0))
   (define states (make-hasheq))
   (define states-by-id (make-hasheqv))
   (struct state (id thread paused step pause? run-to pause-lock) #:mutable)
@@ -80,7 +293,17 @@
   (define evaluations (make-evaluations))
   (define exception-enabled? #f)
   (define interaction #f)
-  (define (error-text value) (if (exn? value) (exn-message value) (value-preview value)))
+  (define (error-text value [selected (context)])
+    (define formatter (and selected (hash-ref selected 'error-display #f)))
+    (cond
+      [(and (exn? value) formatter)
+       (value-preview value #:fallback (exn-message value)
+                      #:values (hasheq 'call-with-print-context
+                                       (hash-ref selected 'call-with-error-context (lambda () (lambda (thunk) (thunk))))
+                                       'print (lambda (exception out)
+                                               (formatter (exn-message exception) exception out))))]
+      [(exn? value) (exn-message value)]
+      [else (value-preview value)]))
   (define (flush-program-output #:final? [final? #f])
     (application-log-flush! application-log #:final? final?)
     (for ([port (in-list (list (current-output-port) (current-error-port)))])
@@ -122,11 +345,16 @@
          (for ([target (in-list armed-sites)] #:unless (hash-ref still-wanted target #f))
            (arm-site! target #f))
          (set! armed-sites wanted)))))
-  (define (new-breakpoint request [refusal #f])
+  (define (new-breakpoint request path [refusal #f])
     (define bp (breakpoint (fresh-id) request '() (or refusal "Pending source loading") #f 0 'before))
     (unless refusal
       (with-handlers ([exn:fail? (lambda (e) (set-breakpoint-description! bp (exn-message e)))])
-        (set-breakpoint-rule! bp (compile-breakpoint-rule request))))
+        (define selected
+          (and module-context
+               (module-context (site 0 path #f #f #f #f #f #f 0 #t #t) #f)))
+        (set-breakpoint-rule! bp
+                              (compile-breakpoint-rule request
+                               #:defer? (and selected (hash-ref selected 'expressions #f) #t)))))
     bp)
   (define started? #f)
   (define ended? #f)
@@ -332,10 +560,12 @@
   (define (new-handle table pause value)
     (define id (fresh-id))
     (hash-set! table id (cons pause value))
+    (when (eq? table variables) (hash-set! variable-contexts id (current-frame-index)))
     (set-box! (paused-ids pause) (cons (cons table id) (unbox (paused-ids pause))))
     id)
   (define (invalidate! pause)
-    (for ([entry (in-list (unbox (paused-ids pause)))]) (hash-remove! (car entry) (cdr entry)))
+    (for ([entry (in-list (unbox (paused-ids pause)))]) (hash-remove! (car entry) (cdr entry))
+      (hash-remove! variable-contexts (cdr entry)))
     (set-box! (paused-ids pause) '()))
   (define (release-pause! pause)
     (invalidate! pause)
@@ -345,7 +575,7 @@
     (define image? (image-value? value))
     (define plot? (plot-value? value))
     (define result
-      (hasheq 'name name 'value (if plot? "#<interactive plot>" (value-preview value))
+      (hasheq 'name name 'value (if (and plot? (not (current-value-choices))) "#<interactive plot>" (preview value))
               'type (if plot? "plot" (value-type value))
               'variablesReference (if (or image? plot? (expandable? value))
                                       (new-handle variables pause (cons 'value value)) 0)))
@@ -365,7 +595,7 @@
             [else
              ;; Bound the picker metadata and retained handles like a variables page.
              (define image-count 0)
-             (hasheq 'value (string-join (map value-preview (take result (min 10 (length result)))) "\n")
+             (hasheq 'value (string-join (map preview (take result (min 10 (length result)))) "\n")
                           'type "values" 'variablesReference (new-handle variables pause (cons 'results result))
                           'racketdapImages
                           (for/list ([value (in-list result)] [i (in-naturals 1)]
@@ -392,6 +622,21 @@
     (when (and (command-flag? command 'executing) (arg a 'frameId)
                (not (zero? (owned frames (arg a 'frameId) pause))))
       (error 'debugger "Expression actions apply to the executing frame."))
+    (define index
+      (cond [(arg a 'frameId) (owned frames (arg a 'frameId) pause)]
+            [(arg a 'variablesReference)
+             (define descriptor (owned variables (arg a 'variablesReference) pause))
+             (if (eq? (car descriptor) 'locals) (cdr descriptor)
+                 (hash-ref variable-contexts (arg a 'variablesReference) 0))]
+            [else 0]))
+    ((if (and (member command '("evaluate" "setVariable" "racketdap/setBinding"
+                                           "racketdap/skipExpression" "racketdap/replaceResults"))
+              (not (and (equal? command "evaluate") (equal? (arg a 'context) "hover"))))
+         (lambda (thunk) (with-interaction stop index thunk))
+         (lambda (thunk) (thunk)))
+     (lambda ()
+    (parameterize ([current-value-choices (choice 'values stop index)]
+                   [current-frame-index index])
     (case (string->symbol command)
       [(racketdap/openPlot)
        (define descriptor (owned variables (hash-ref a 'variablesReference) pause))
@@ -402,7 +647,7 @@
        (unless (eq? (car descriptor) 'value) (error 'image "Select a single image value."))
        (render-image (cdr descriptor))]
       [(racketdap/skipExpression racketdap/replaceResults)
-       (define result (call-with-values (lambda () (stop-evaluate stop (read-expression (hash-ref a 'expression)))) list))
+       (define result (call-with-values (lambda () (stop-evaluate stop (read-interaction (hash-ref a 'expression) stop index #:source? #f))) list))
        (if (equal? command "racketdap/skipExpression")
            (stop-skip! stop result)
            (stop-replace-results! stop result))
@@ -414,7 +659,7 @@
        (define index (if (arg a 'frameId) (owned frames (arg a 'frameId) pause) 0))
        (define value
          (if (equal? (hash-ref request 'command) "racketdap/setBinding")
-             (stop-set-binding! stop (hash-ref a 'name) (read-expression (hash-ref a 'expression)) index)
+             (stop-set-binding! stop (hash-ref a 'name) (read-interaction (hash-ref a 'expression) stop index #:source? #f) index)
              (stop-binding-value stop (hash-ref a 'name) index)))
        (if (equal? (hash-ref request 'command) "racketdap/printBinding")
            (event "output" (hasheq 'category "console" 'output
@@ -435,8 +680,9 @@
        (define value (car (stop-results stop)))
        (define name (cond [(exn:fail:contract? value) "exn:fail:contract"]
                           [(exn:fail? value) "exn:fail"] [(exn? value) "exn"] [else "raised value"]))
-       (hasheq 'exceptionId name 'description (error-text value) 'breakMode "unhandled"
-               'details (hasheq 'message (error-text value) 'typeName name))]
+       (define message (error-text value (context stop index)))
+       (hasheq 'exceptionId name 'description message 'breakMode "unhandled"
+               'details (hasheq 'message message 'typeName name))]
       [(stackTrace)
        (define total (stop-frame-count stop))
        (define start (max 0 (arg a 'startFrame 0)))
@@ -462,7 +708,9 @@
                              [(before) "Before evaluation"]
                              [(exception) "Exception"]
                              [else "Paused (approximate)"])]))
-                 (hash-set (hash-set loc 'id (new-handle frames pause i))
+                 (define presented
+                   (if (choice 'expressions stop i) (hash-set loc 'racketdapNativeExpressions #t) loc))
+                 (hash-set (hash-set presented 'id (new-handle frames pause i))
                            'name (format "~a at ~a:~a" label
                                          (if source (path->string (file-name-from-path (source-file-path source))) "Racket")
                                          (hash-ref loc 'line)))))]
@@ -497,7 +745,12 @@
             ;; These rows are named, by a variable or by their position among values.
             (values (if (equal? (arg a 'filter #f) "indexed") '() (page all start (or count (length all)))) 0)]))
        (hasheq 'variables
-               (append (map (lambda (pair) (describe pause (car pair) (cdr pair))) pairs)
+               (append (map (lambda (pair)
+                              (define row (describe pause (car pair) (cdr pair)))
+                              (if (and (eq? (car descriptor) 'locals)
+                                       (not (stop-binding-assignable? stop (car pair) (cdr descriptor))))
+                                  (hash-set row 'presentationHint (hasheq 'attributes '("readOnly")))
+                                  row)) pairs)
                        (if (zero? omitted)
                            '()
                            (list (hasheq 'name "…" 'type "omitted rows" 'variablesReference 0
@@ -508,29 +761,40 @@
        (define result
          (if (equal? (arg a 'context) "hover")
              (list (stop-binding-value stop expression index #:at (hover-place a)))
-             (call-with-values (lambda () (stop-evaluate stop (read-interaction expression) index)) list)))
+             (call-with-values (lambda () (stop-evaluate stop (read-interaction expression stop index) index)) list)))
        (interaction-results request pause result)]
       [(setVariable)
        (define descriptor (owned variables (hash-ref a 'variablesReference) pause))
        (unless (eq? (car descriptor) 'locals) (error 'setVariable "Only lexical variables can be assigned here."))
        (hash-remove (describe pause (hash-ref a 'name)
                               (stop-set-binding! stop (hash-ref a 'name)
-                                                  (read-expression (hash-ref a 'value)) (cdr descriptor) #:scope 'lexical)) 'name)]
-      [else (error 'debugger "Unsupported paused request")]))
-  (define (respond-to request thunk)
+                                                  (read-interaction (hash-ref a 'value) stop (cdr descriptor) #:source? #f) (cdr descriptor) #:scope 'lexical)) 'name)]
+      [else (error 'debugger "Unsupported paused request")])))))
+  (define (respond-to request thunk [pause #f])
     (define a (arg request 'arguments (hasheq)))
     (define echo? (and (equal? (hash-ref request 'command) "evaluate")
                        (equal? (arg a 'context) "repl") (arg a 'racketdapEcho #f)))
     (define (echo text)
       (when echo? (event "output" (hasheq 'category "console" 'output (string-append text "\n")))))
+    (define selected (context (and pause (paused-stop pause))))
     (with-handlers ([(lambda (_) #t)
                      (lambda (e)
-                       (echo (error-text e))
+                       (define message (error-text e selected))
+                       (echo message)
                        (reply request
                               (if (and (arg config 'racketdapRichInteractions #f)
                                        (equal? (hash-ref request 'command) "evaluate") (equal? (arg a 'context) "repl"))
                                   (hasheq 'racketdapError (error-info e (arg a 'expression))) (hasheq))
-                              (error-text e)))])
+                              message))])
+      (when pause
+        (define index
+          (cond [(arg a 'frameId) (owned frames (arg a 'frameId) pause)]
+                [(arg a 'variablesReference)
+                 (define descriptor (owned variables (arg a 'variablesReference) pause))
+                 (if (eq? (car descriptor) 'locals) (cdr descriptor)
+                     (hash-ref variable-contexts (arg a 'variablesReference) 0))]
+                [else 0]))
+        (set! selected (context (paused-stop pause) index)))
       (when echo? (echo (string-append "> " (hash-ref a 'expression))))
       (define result
         (if (command-flag? (hash-ref request 'command) 'evaluate)
@@ -550,12 +814,21 @@
     (set-state-paused! st pause)
     (set-state-step! st #f)
     (set-state-pause?! st #f)
-    (event "stopped" (hasheq 'reason reason 'description description 'threadId (state-id st)
+    (define native (choice 'expressions stop))
+    (define body (hasheq 'reason reason 'description description 'threadId (state-id st)
                               'preserveFocusHint preserve-focus?
                               'allThreadsStopped #f 'hitBreakpointIds hit-ids
                               'racketdapStopKind (symbol->string (stop-kind stop))
                               'racketdapApproximate (stop-approximate? stop)
-                              'racketdapActions (stop-actions (stop-kind stop))))
+                              'racketdapActions
+                              (filter (lambda (action)
+                                        (not (and (stop-site stop) (eq? (site-replaceable? (stop-site stop)) 'disabled)
+                                                  (member action '("racketdap/skipExpression" "racketdap/replaceResults")))))
+                                      (stop-actions (stop-kind stop)))))
+    (event "stopped" (if native
+                         (hash-set (hash-set body 'racketdapNativeExpressions #t)
+                                   'source (source-json (hash-ref sources (site-source (stop-site stop)))))
+                         body))
     (dynamic-wind
       void
       (lambda ()
@@ -593,7 +866,7 @@
                 (event "continued" (hasheq 'threadId (state-id st) 'allThreadsContinued #f))]
                [else (loop)])]
             [else
-             (respond-to request (lambda () (inspect-request request pause)))
+             (respond-to request (lambda () (inspect-request request pause)) pause)
              (loop)])))
       (lambda ()
         (release-pause! pause)
@@ -630,15 +903,15 @@
                        (and ((breakpoint-rule-hit? rule) (breakpoint-hits bp))
                             (with-handlers ([(lambda (_) #t)
                                              (lambda (e)
-                                               (set! failure (string-append "Breakpoint expression failed: " (error-text e)))
+                                               (set! failure (string-append "Breakpoint expression failed: " (error-text e (context stop))))
                                                #t)])
                               (define id (- (fresh-id)))
                               (queue-evaluation! evaluations id)
                               (call-with-evaluation
                                evaluations id
-                               (lambda ()
+                               (lambda () (with-interaction stop 0 (lambda ()
                                  (define condition (breakpoint-rule-condition rule))
-                                 (and (or (not condition) (stop-evaluate stop (expression-form condition)))
+                                 (and (or (not condition) (stop-evaluate stop (breakpoint-expression (expression-form condition) stop)))
                                       (if (breakpoint-rule-log rule)
                                           (begin
                                             (event "output"
@@ -647,9 +920,12 @@
                                                               (site-position where) (site-span where))
                                                     'output (render-log-message
                                                              (breakpoint-rule-log rule)
-                                                             (lambda (form) (stop-evaluate stop form)) value-preview)))
+                                                             (lambda (form) (stop-evaluate stop (breakpoint-expression form stop)))
+                                                             (lambda (value) (value-preview value #:values (choice 'values stop))))))
                                             #f)
-                                          #t))))))))
+                                          #t)))
+                                 (or (breakpoint-rule-condition rule)
+                                     (ormap expression? (or (breakpoint-rule-log rule) '()))))))))))
             (breakpoint-id bp)))
     (define step-message (step-reason (state-step st) stop))
     (define run-to (state-run-to st))
@@ -676,12 +952,13 @@
   (define (on-exception stop)
     (when (accepted-thread?) (handle-exception stop)))
   (define (handle-exception stop)
+    (define selected (context stop))
     (when (arg config 'racketdapRichInteractions #f)
       (hash-set! failure-sites (current-thread)
-                 (cons (car (stop-results stop))
+                 (failure-record (car (stop-results stop)) selected
                        (for/list ([i (in-range (min 8 (stop-frame-count stop)))]) (stop-frame-site stop i)))))
     (when exception-enabled?
-      (pause-loop (register-thread) stop "exception" (error-text (car (stop-results stop))) '())))
+      (pause-loop (register-thread) stop "exception" (error-text (car (stop-results stop)) selected) '())))
   (define (request-pause! st batch)
     (cond
       [(host-pauses? (state-thread st)) ((attach-hooks-on-pause attach) (state-thread st))]
@@ -715,12 +992,16 @@
                        (sleep 0.001)
                        (retry))]))))))))))
   (define (interactive-loop namespace)
+    (set! launch-namespace namespace)
     (define st (register-thread))
     (set! interaction (paused st #f (make-async-channel) (box '())))
     (flush-program-output)
     (event "output" (hasheq 'category "console" 'output "Module loaded. Evaluate Racket expressions in the Debug Console.\n"))
     (let loop ()
-      (event "racketdap/ready")
+      (event "racketdap/ready"
+             (if (choice 'expressions)
+                 (hasheq 'racketdapNativeExpressions #t 'source (hasheq 'path (arg config 'program)))
+                 (hasheq)))
       (define gui-namespace
         (with-handlers ([exn:fail? (lambda (_) #f)]) (module->namespace 'racket/gui/base)))
       (define request
@@ -733,14 +1014,16 @@
          (cond
            [(equal? (hash-ref request 'command) "evaluate")
             (invalidate! interaction)
+            (parameterize ([current-value-choices (choice 'values)])
             (interaction-results
              request interaction
              (call-with-values
               (lambda ()
                 (call-with-exception-handler
                  (make-debug-exception-handler on-exception #f)
-                 (lambda () (eval (read-interaction (hash-ref (arg request 'arguments) 'expression)) namespace))))
-              list))]
+                 (lambda () (with-interaction #f 0
+                              (lambda () (eval (read-interaction (hash-ref (arg request 'arguments) 'expression)) namespace))))))
+              list)))]
            [else (inspect-request request interaction)])))
       (flush-program-output)
       (loop)))
@@ -795,6 +1078,9 @@
                                         (not (arg config 'noDebug #f))
                                         (lambda (stop) (on-event stop #:entry? #t)))
                         #:language (and (arg config 'language) (string->symbol (arg config 'language)))
+                        #:language-adapter (arg config 'languageAdapter #f)
+                        #:workspace (arg config 'workspaceFolder #f)
+                        #:on-language-adapter remember-adapter
                         #:on-sites on-sites #:on-source-snapshot on-source-snapshot
                         #:source-roots (append (arg config 'sourceRoots (list (arg config 'cwd)))
                                                (if (arg config 'noDebug #f) '()
@@ -868,8 +1154,8 @@
                (findf (lambda (o) (and (equal? (breakpoint-request o) b) (or stale? (breakpoint-rule o)))) old))
              (or existing
                  (if stale?
-                     (new-breakpoint b "The file has changed since it was loaded. Restart to debug the edit.")
-                     (new-breakpoint b)))))
+                     (new-breakpoint b path "The file has changed since it was loaded. Restart to debug the edit.")
+                     (new-breakpoint b path)))))
          (hash-set! breakpoints name updated)
          (resolve! path)
          (reply request (hasheq 'breakpoints (map (lambda (b) (answered b path)) updated)))))]

@@ -212,9 +212,18 @@
 ;; that policy belongs here rather than in the scheduler.
 (define (available-analysis controller snapshot)
   (define buffer (source-buffer controller (Source-Snapshot-source snapshot)))
-  (if buffer
-      (with-read-safedoc buffer SafeDoc-available)
-      (find-closed-analysis! (Source-Controller-closed-analysis controller) snapshot)))
+  (define available
+    (if buffer
+        (with-read-safedoc buffer SafeDoc-available)
+        (find-closed-analysis! (Source-Controller-closed-analysis controller) snapshot)))
+  (and available
+       (or (not (adapter-analysis? (Available-Analysis-product available)))
+           (not (stale-imports? controller (Available-Analysis-product available))))
+       available))
+
+(define (adapter-analysis? product)
+  (define adapter (send (Analysis-Product-trace product) get-language-adapter))
+  (and adapter (hash-ref adapter 'fingerprint #f)))
 
 (define (reusable-completion controller snapshot)
   (define available (available-analysis controller snapshot))
@@ -277,12 +286,14 @@
 ;; that have since changed, opened or closed make the result stale.
 (define (stale-imports? controller product)
   (define dependencies (Analysis-Product-dependencies product))
-  (and dependencies
+  (or (not (send (Analysis-Product-trace product) adapter-current?))
+      (and dependencies
        (let ([buffers (Analysis-Context-buffers (analysis-context controller))])
          (for/or ([(path text) (in-hash dependencies)])
-           (not (equal? text (hash-ref buffers path #f)))))))
+           (not (equal? text (hash-ref buffers path #f))))))))
 
-(define (source-controller-ensure-analysis! controller snapshot #:refresh? [refresh? #f])
+(define (source-controller-ensure-analysis! controller snapshot #:refresh? [refresh? #f]
+                                            #:completion-position [position #f])
   (cond
     [(or (source-controller-stopped? controller) (not (snapshot-current? controller snapshot)))
      (ready-evt (Analysis-Outcome 'stopped 'ineligible))]
@@ -290,12 +301,16 @@
      (define source (Source-Snapshot-source snapshot))
      (define scheduler (Source-Controller-scheduler controller))
      (define active (scheduled-analysis-event scheduler source))
-     (define reused (and (not refresh?) (not active) (reusable-completion controller snapshot)))
+     (define reused (and (not position) (not refresh?) (not active) (reusable-completion controller snapshot)))
      (define event (or reused (request-analysis! scheduler snapshot
-                                                 #:context (analysis-context controller))))
+                                                 #:context (analysis-context controller)
+                                                 #:completion-position position)))
      (define buffer (source-buffer controller source))
      (when buffer
-       (with-write-safedoc buffer (lambda (sd) (set-SafeDoc-analysis-completion! sd event))))
+       (with-write-safedoc buffer
+         (lambda (sd)
+           (when position (set-SafeDoc-available! sd #f))
+           (set-SafeDoc-analysis-completion! sd event))))
      (source-controller-pump! controller)
      event]))
 
@@ -332,19 +347,22 @@
                        (if (source-file-path source) contribution (not contribution)))))
     (error 'record-analysis! "successful analysis requires facts and a file-only contribution"))
   (define buffer (source-buffer controller source))
-  (when buffer
+  (define accepted?
+    (cond
+      [buffer
+       (with-write-safedoc buffer
+         (lambda (sd)
+           (publish-document-analysis! (Source-Controller-publisher controller)
+                                       sd snapshot product completion)))]
+      [else
+       (when (and succeeded? (eq? 'disk (Source-Snapshot-origin snapshot)))
+         (store-closed-analysis! (Source-Controller-closed-analysis controller)
+                                 (Available-Analysis snapshot product completion)))
+       #t]))
+  (when (and accepted? buffer)
     (hash-set! (Source-Controller-dependencies controller) (source-id source)
                (Analysis-Product-dependencies product)))
-  (cond
-    [buffer
-     (with-write-safedoc buffer
-       (lambda (sd)
-         (publish-document-analysis! (Source-Controller-publisher controller)
-                                     sd snapshot product completion)))]
-    [(and succeeded? (eq? 'disk (Source-Snapshot-origin snapshot)))
-     (store-closed-analysis! (Source-Controller-closed-analysis controller)
-                             (Available-Analysis snapshot product completion))])
-  (Analysis-Outcome (if succeeded? 'succeeded 'errors) (Analysis-Product-summary product)))
+  accepted?)
 
 ;; A handled acceptance failure clears exact eligibility before the scheduler
 ;; broadcasts failure. Mutable traces are never returned to request threads.
@@ -355,10 +373,16 @@
       (cond
         [(not (snapshot-current? controller snapshot)) (Analysis-Outcome 'stopped 'source-changed)]
         [(Analysis-Outcome? result) result]
-        [(and (eq? kind 'analysis) (source-buffer controller source) (stale-imports? controller result))
-         (restart-buffers! controller (list (cons source (source-buffer controller source))))
+        [(and (eq? kind 'analysis)
+              (or (and (or (source-buffer controller source) (adapter-analysis? result))
+                       (stale-imports? controller result))
+                  (not (record-analysis! controller snapshot result completion))))
+         (when (source-buffer controller source)
+           (restart-buffers! controller (list (cons source (source-buffer controller source)))))
          (Analysis-Outcome 'stopped 'dependency-changed)]
-        [(eq? kind 'analysis) (record-analysis! controller snapshot result completion)]
+        [(eq? kind 'analysis)
+         (Analysis-Outcome (if (Analysis-Product-succeeded? result) 'succeeded 'errors)
+                           (Analysis-Product-summary result))]
         [else
          (define buffer (source-buffer controller source))
          (when buffer
@@ -395,6 +419,8 @@
   (define available (take-closed-analysis! (Source-Controller-closed-analysis controller) source))
   (define snapshot (and available (source-controller-snapshot controller source)))
   (when (and available
+             (or (not (adapter-analysis? (Available-Analysis-product available)))
+                 (not (stale-imports? controller (Available-Analysis-product available))))
              (equal? (Source-Snapshot-text snapshot)
                      (Source-Snapshot-text (Available-Analysis-snapshot available))))
     (define product (Available-Analysis-product available))

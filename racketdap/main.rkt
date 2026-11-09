@@ -154,7 +154,18 @@
   (unless (and (list? packages)
                (andmap (lambda (name) (and (string? name) (positive? (string-length name)))) packages))
     (error 'launch "debugPackages must be an array of nonempty package names."))
-  (define config (hash-set (hash-set args 'program (path->string program)) 'cwd (path->string cwd)))
+  (define adapter (hash-ref args 'languageAdapter #f))
+  (when (and adapter (not (and (string? adapter) (positive? (string-length adapter)))))
+    (error 'launch "languageAdapter must be a non-empty descriptor-file path."))
+  (define launch-args
+    (if adapter
+        (hash-set args 'languageAdapter
+          (path->string
+            (simplify-path (path->complete-path adapter
+              (path->complete-path (or (hash-ref args 'cwd #f)
+                                      (hash-ref args 'workspaceFolder #f) cwd))))))
+        args))
+  (define config (hash-set (hash-set launch-args 'program (path->string program)) 'cwd (path->string cwd)))
   (define executable
     (or (find-executable-path (hash-ref args 'racketExecutable (path->string (find-system-path 'exec-file))))
         (error 'launch "Cannot find the configured Racket executable.")))

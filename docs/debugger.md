@@ -237,6 +237,13 @@ references and quoted data do have stops.
 - Logpoints interpolate expressions: `subtotal={subtotal}, tax={(* subtotal rate)}`.
   `{{` and `}}` give literal braces. Conditions and hit counts also apply to
   logpoints. Logpoints write to Debug Console and continue without stopping.
+  For a selected source with native expressions, the source menu and palette
+  expose **Racket: Edit Logpoint Segments**, which accepts an array such as
+  `["result: ", {"expression": "native text"}]` for a language adapter's native
+  syntax. Strings are literal output, including braces; expression records use
+  the selected module's interaction reader. The original brace grammar stays
+  available in ordinary log messages. Explicit segment metadata is retained
+  separately against the edited breakpoint in workspace state.
 - A condition or log expression error stops at the breakpoint with a diagnostic.
   These expressions can have real effects, like ordinary console evaluation.
 
@@ -300,6 +307,7 @@ From the editor context menu or the Command Palette:
 | **Racket: Print Return Values** | After an expression | Prints its results in the Debug Console with full Racket printing. |
 | **Racket: Print Variable Value** | At a variable | Prints the variable under the cursor for the selected frame. |
 | **Racket: Set Variable Value** | At a variable | Assigns to the variable under the cursor with `set!`. |
+| **Racket: Edit Logpoint Segments** | At a source location with native expressions selected | Edits literal text and native expression segments from the source menu or palette, preserving the breakpoint's condition and hit-count condition. |
 | **Racket: Cancel Evaluation** | While evaluating | Interrupts a blocked console, watch, condition or logpoint evaluation. |
 
 A long container opens in groups of rows. Structure fields are numbered because

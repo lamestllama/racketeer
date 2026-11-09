@@ -9,6 +9,7 @@
          "../../common/time.rkt"
          "../../workspace/source-store.rkt"
          "../analysis.rkt"
+         "../../doclib/language-adapter.rkt"
          "completion-event.rkt"
          "supervised-worker.rkt")
 
@@ -37,6 +38,7 @@
 (struct/contract Analysis-Attempt
   ([snapshot Source-Snapshot?]
    [(context #:mutable) (or/c #f Analysis-Context?)]
+   [completion-position (or/c #f exact-nonnegative-integer?)]
    [kind (or/c 'analysis 'resyntax)]
    [parent-completion (or/c #f evt?)]
    [completion Completion-Event?]
@@ -87,31 +89,33 @@
     (hash-ref (Analysis-Scheduler-attempts scheduler) (cons (source-id source) 'analysis) #f))
   (and attempt (Analysis-Attempt-context attempt)))
 
-(define (enqueue! scheduler snapshot kind parent-completion [context #f])
+(define (enqueue! scheduler snapshot kind parent-completion [context #f] [position #f])
   (define attempt
-    (Analysis-Attempt snapshot context kind parent-completion (make-completion-event) 0 'queued #f))
+    (Analysis-Attempt snapshot context position kind parent-completion (make-completion-event) 0 'queued #f))
   (hash-set! (Analysis-Scheduler-attempts scheduler) (attempt-key attempt) attempt)
   (set-Analysis-Scheduler-queue! scheduler
                                  (append (Analysis-Scheduler-queue scheduler) (list attempt)))
   (Analysis-Attempt-completion attempt))
 
-;; Requests for the same revision share an attempt, and do not wait for it. A
-;; successor revision supersedes outstanding work for this source, including its
-;; Resyntax.
-(define (request-analysis! scheduler snapshot #:context [context #f])
+;; Requests for the same revision and access share an attempt. Other analysis
+;; queries can join it. A successor revision supersedes outstanding work for
+;; this source, including its Resyntax.
+(define (request-analysis! scheduler snapshot #:context [context #f]
+                           #:completion-position [position #f])
   (define source (Source-Snapshot-source snapshot))
   (define active
     (hash-ref (Analysis-Scheduler-attempts scheduler) (cons (source-id source) 'analysis) #f))
   (cond
     [(Analysis-Scheduler-stopped? scheduler) (ready-evt (Analysis-Outcome 'stopped 'shutdown))]
     [(and active
+          (or (not position) (equal? position (Analysis-Attempt-completion-position active)))
           (eq? (Source-Snapshot-revision snapshot)
                (Source-Snapshot-revision (Analysis-Attempt-snapshot active))))
      (hasten-analysis! scheduler source)
      (Analysis-Attempt-completion active)]
     [else
      (cancel-source-analysis! scheduler source)
-     (enqueue! scheduler snapshot 'analysis #f context)]))
+     (enqueue! scheduler snapshot 'analysis #f context position)]))
 
 ;; Supersede outstanding work for this source with an attempt that joins the
 ;; queue once the wait has passed, unless a further call supersedes it first.
@@ -123,7 +127,7 @@
     [else
      (cancel-source-analysis! scheduler (Source-Snapshot-source snapshot) reason)
      (define attempt
-       (Analysis-Attempt snapshot #f 'analysis #f (make-completion-event)
+       (Analysis-Attempt snapshot #f #f 'analysis #f (make-completion-event)
                          (+ (current-deadline-milliseconds)
                             (* 1000 (or (Analysis-Scheduler-wait scheduler) (get-analysis-wait))))
                          'waiting #f))
@@ -230,7 +234,8 @@
       (Analysis-Scheduler-events scheduler) (Analysis-Scheduler-timeout scheduler)
       (if analysis?
           (lambda ()
-            (parameterize ([current-analysis-context (Analysis-Attempt-context attempt)])
+            (parameterize ([current-analysis-context (Analysis-Attempt-context attempt)]
+                           [current-completion-position (Analysis-Attempt-completion-position attempt)])
               ((Analysis-Scheduler-analyze scheduler) snapshot)))
           (lambda () ((Analysis-Scheduler-resyntax scheduler)
                       (Source-Snapshot-text snapshot) (Source-Snapshot-uri snapshot))))

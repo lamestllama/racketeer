@@ -9,7 +9,7 @@
 (require compiler/cm compiler/compilation-path file/sha1 racket/file racket/list racket/promise racket/runtime-path)
 (provide cache-root default-cache-directory evict-cache! entry-path remove-entry! mark-entry-used!
          read-entry-bytes entry-records-hash? ordinary-compiled-stamp instrumenter-stamp cache-size-limit
-         add-replay-log take-replay-log replay-source-hash replay-unit replay-events)
+         add-replay-log take-replay-log replay-source-hash replay-unit replay-events replay-adapter)
 
 (define-runtime-path instrumenter-root "..")
 ;; Every file that decides generated code or how it is read back.
@@ -151,7 +151,7 @@
 ;; The record: the hash of the source bytes compiled, the unit its forms name, and
 ;; what happened during expansion, in order.
 (define replay-module-name 'racketdap-replay)
-(define (add-replay-log code source-hash unit events compile)
+(define (add-replay-log code source-hash unit events compile #:adapter [adapter #f])
   (define holder
     (compile
      (namespace-syntax-introduce
@@ -160,7 +160,7 @@
        `(,(namespace-module-identifier) holder '#%kernel
          (module ,replay-module-name '#%kernel
            (#%provide log)
-           (define-values (log) (quote ,(vector source-hash unit events)))))))))
+           (define-values (log) (quote ,(if adapter (vector source-hash unit events adapter) (vector source-hash unit events))))))))))
   ;; Taken from a holder, a submodule has the form a parent's directory accepts.
   (module-compiled-submodules
    code #t
@@ -181,3 +181,4 @@
 (define (replay-source-hash log) (vector-ref log 0))
 (define (replay-unit log) (vector-ref log 1))
 (define (replay-events log) (vector-ref log 2))
+(define (replay-adapter log) (and (> (vector-length log) 3) (vector-ref log 3)))

@@ -90,7 +90,77 @@
                                       (cons (number->string (+ offset i)) (field-value ref value i))))))])))
     fields))
 
-(define (value-preview value [initial-depth 0])
+(define (value-preview value [initial-depth 0] #:values [choices #f]
+                       #:output-limit [output-limit 4096] #:time-limit [time-limit 0.1]
+                       #:fallback [fallback #f])
+  (cond
+    [(or (not choices) (unavailable? value) (eq? value unsafe-undefined))
+     (structural-preview value initial-depth)]
+    [else
+     (define owner (make-custodian))
+     (define result (box #f))
+     (define output (open-output-bytes))
+     (define used 0)
+     (define exceeded? #f)
+     (define (bounded-port destination)
+       (make-output-port
+        'value-preview always-evt
+        (lambda (bytes start end _non-block? _breakable?)
+          (set! used (+ used (- end start)))
+          (when (> used output-limit)
+            (set! exceeded? #t)
+            (error 'values "Preview output limit exceeded."))
+          (write-bytes bytes destination start end))
+        void))
+     (define bounded (bounded-port output))
+     (define bounded-error (bounded-port output))
+     (dynamic-wind
+       void
+       (lambda ()
+         (define worker
+           (parameterize ([current-custodian owner])
+             (thread
+              (lambda ()
+                (with-handlers ([(lambda (_) #t) void])
+                  ((hash-ref choices 'call-with-print-context (lambda () (lambda (thunk) (thunk))))
+                   (lambda ()
+                     (define configured-output (current-output-port))
+                     (define (handlers! port template)
+                       (port-display-handler port (port-display-handler template))
+                       (port-write-handler port (port-write-handler template))
+                       (port-print-handler port (port-print-handler template)))
+                     (handlers! bounded configured-output)
+                     (handlers! bounded-error (current-error-port))
+                     (with-continuation-mark debugger-active-key #t
+                       (call-with-debugging-disabled
+                        (lambda ()
+                          (parameterize ([current-custodian owner]
+                                         [current-output-port bounded] [current-error-port bounded-error])
+                            (define (printer item destination)
+                              (define port (bounded-port destination))
+                              (handlers! port configured-output)
+                              (dynamic-wind void
+                                (lambda () ((hash-ref choices 'print) item port))
+                                (lambda () (close-output-port port))))
+                            (define provider (hash-ref choices 'render #f))
+                            (define text
+                              (if provider
+                                  (provider (hasheq 'operation 'value 'value value
+                                                    'hooks (hasheq 'print printer)))
+                                  (begin (printer value output)
+                                         (bytes->string/utf-8 (get-output-bytes output)))))
+                            (when (and (string? text) (not exceeded?)
+                                       (<= (string-utf-8-length text) output-limit))
+                              (set-box! result (string-trim text "\n" #:left? #f))))))))))))))
+         (or (and (sync/timeout time-limit worker) (unbox result))
+             fallback
+             (string-append "[structural] " (structural-preview value initial-depth))))
+       (lambda ()
+         (custodian-shutdown-all owner)
+         (close-output-port bounded)
+         (close-output-port bounded-error)
+         (close-output-port output)))]))
+(define (structural-preview value [initial-depth 0])
   ;; A per-preview node budget bounds shared graphs as well as individual
   ;; containers. No generic printing, list-length walk, or syntax->datum here.
   (define remaining 64)

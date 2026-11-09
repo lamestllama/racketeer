@@ -17,6 +17,21 @@ const { sentenceFixture } = require('./support/macro-sentence');
 const { fakeStepper, opened } = require('./support/macro-stepper');
 const { pageScripts } = require('./support/macro-page-startup');
 
+test('macro requests carry their owning workspace independently of the source directory', () => {
+  const module = { exports: {} };
+  const folder = { uri: { fsPath: path.resolve('/project') } };
+  const document = { languageId: 'racket', uri: { scheme: 'file', fsPath: path.resolve('/project/src/program.rkt') },
+    getText: () => '#lang racket/base\n(void)' };
+  const vscode = { workspace: { getWorkspaceFolder: () => folder,
+    getConfiguration: () => ({ get: (_key, fallback) => fallback }) } };
+  vm.runInNewContext(fs.readFileSync(path.join(root, 'vscode/macro-steps/target.js'), 'utf8'),
+    { module, require: name => name === 'vscode' ? vscode : require(name) });
+  const target = module.exports.macroTarget({ document }, true);
+  assert.equal(target.module.workspace, folder.uri.fsPath);
+  assert.equal(target.module.directory, path.dirname(document.uri.fsPath));
+  assert.equal(target.fragment.workspace, folder.uri.fsPath);
+});
+
 test('current term follows the editor cursor and selection start without term boxes', () => {
   for (const side of ['before', 'after']) {
     const pane = fakeMacroConnections(side), sent = [];

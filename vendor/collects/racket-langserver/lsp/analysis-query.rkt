@@ -57,7 +57,7 @@
           (loop response-or-completion)
           response-or-completion))))
 
-(define (analysis-query safe-doc request-id read-result empty-result)
+(define (analysis-query safe-doc request-id read-result empty-result #:read-errors? [read-errors? #f])
   (define deadline-ms (+ (current-deadline-milliseconds)
                          (* 1000 (current-analysis-request-timeout))))
   (define shutdown-evt (source-controller-shutdown-evt (current-source-controller)))
@@ -83,7 +83,7 @@
           [(and current-completion (not (eq? awaited-completion current-completion)))
            current-completion]
           [(and (Analysis-Outcome? wake-result) (eq? 'errors (Analysis-Outcome-state wake-result)))
-           (success-response request-id (->jsexpr empty-result))]
+           (success-response request-id (->jsexpr (if read-errors? (read-result (SafeDoc-doc locked-safe-doc)) empty-result)))]
           [else (analysis-failed-response request-id "Check Syntax did not succeed" wake-result)]))))
   (or immediate-response
       (lambda ()

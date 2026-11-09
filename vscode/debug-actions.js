@@ -3,11 +3,28 @@
 'use strict';
 const vscode = require('vscode');
 const { selectedEditor } = require('./selected-editor');
+function parseSegments(text) {
+  const parts = JSON.parse(text);
+  if (!Array.isArray(parts) || !parts.every(part => typeof part === 'string' ||
+      (part && typeof part === 'object' && !Array.isArray(part) &&
+       Object.keys(part).length === 1 && typeof part.expression === 'string'))) {
+    throw new Error('Use an array of strings and {"expression":"native text"} records.');
+  }
+  return parts;
+}
 
 function registerDebugActions(context, debugSources) {
   const stops = new Map();
   const requests = new Map();
   const enabled = new Map();
+  const nativeSources = new Map();
+  const segmentKey = 'racketdap.logpointSegments';
+  const segments = new Map(context.workspaceState?.get(segmentKey, []) || []);
+  const saveSegments = () => context.workspaceState?.update(segmentKey, [...segments]);
+  function nativeLocation(location) {
+    const session = vscode.debug.activeDebugSession;
+    return !!(session && nativeSources.get(session.id)?.has(location?.uri.toString()));
+  }
   function selected() {
     const session = vscode.debug.activeDebugSession;
     if (session?.type !== 'racketdap') throw new Error('Start a Racket debug session first.');
@@ -28,6 +45,9 @@ function registerDebugActions(context, debugSources) {
         void vscode.commands.executeCommand('setContext', `${name}.enabled`, value);
       }
     }
+    const editor = selectedEditor(vscode.window);
+    void vscode.commands.executeCommand('setContext', 'racketdap.nativeExpressions',
+      nativeLocation(editor && { uri: editor.document.uri }));
   }
   function command(name, action, requestName = name) {
     const id = `racketdap.${name}`, request = `racketdap/${requestName}`;
@@ -44,9 +64,37 @@ function registerDebugActions(context, debugSources) {
     vscode.debug.registerDebugAdapterTrackerFactory('racketdap', {
       createDebugAdapterTracker(session) {
         const threads = new Map(); stops.set(session.id, threads);
-        return { onDidSendMessage(message) {
+        const sources = new Set(); nativeSources.set(session.id, sources);
+        return { onWillReceiveMessage(message) {
+          if (message.command !== 'setBreakpoints') return;
+          for (const breakpoint of message.arguments?.breakpoints || []) {
+            const source = message.arguments.source;
+            const owned = vscode.debug.breakpoints.find(item => item.location &&
+              item.location.uri.fsPath === source?.path &&
+              item.location.range.start.line + 1 === breakpoint.line &&
+              item.location.range.start.character + 1 === (breakpoint.column || 1) &&
+              item.condition === breakpoint.condition && item.hitCondition === breakpoint.hitCondition &&
+              item.logMessage === breakpoint.logMessage && segments.has(item.id));
+            const metadata = owned && segments.get(owned.id);
+            if (!metadata || metadata.logMessage !== breakpoint.logMessage) continue;
+            breakpoint.logSegments = metadata.parts;
+            delete breakpoint.logMessage;
+          }
+        }, onDidSendMessage(message) {
+          const remember = item => {
+            if (item.source?.path) {
+              const uri = vscode.Uri.file(item.source.path).toString();
+              if (item.racketdapNativeExpressions) sources.add(uri); else sources.delete(uri);
+            }
+          };
+          if (message.type === 'response' && message.command === 'stackTrace') {
+            for (const frame of message.body?.stackFrames || []) remember(frame);
+            updateContext();
+          }
           if (message.type !== 'event') return;
           const body = message.body || {};
+          if (['stopped', 'racketdap/ready'].includes(message.event)) remember(body);
+          if (message.event === 'racketdap/ready') updateContext();
           if (!['stopped', 'continued', 'terminated'].includes(message.event) &&
               !(message.event === 'thread' && body.reason === 'exited')) return;
           if (message.event === 'stopped') threads.set(body.threadId, body.racketdapActions || []);
@@ -54,15 +102,50 @@ function registerDebugActions(context, debugSources) {
             if (body.allThreadsContinued) threads.clear(); else threads.delete(body.threadId);
           }
           if (message.event === 'thread' && body.reason === 'exited') threads.delete(body.threadId);
-          if (message.event === 'terminated') stops.delete(session.id);
+          if (message.event === 'terminated') { stops.delete(session.id); nativeSources.delete(session.id); }
           updateContext();
         } };
       }
     }),
     vscode.debug.onDidChangeActiveDebugSession(updateContext),
-    vscode.debug.onDidTerminateDebugSession(session => { stops.delete(session.id); updateContext(); })
+    vscode.debug.onDidTerminateDebugSession(session => { stops.delete(session.id); nativeSources.delete(session.id); updateContext(); })
   );
+  if (vscode.window.onDidChangeActiveTextEditor) context.subscriptions.push(vscode.window.onDidChangeActiveTextEditor(updateContext));
+  if (vscode.debug.onDidChangeBreakpoints) context.subscriptions.push(vscode.debug.onDidChangeBreakpoints(event => {
+    for (const breakpoint of [...event.removed, ...event.changed]) {
+      const metadata = segments.get(breakpoint.id);
+      if (metadata && (event.removed.includes(breakpoint) || metadata.logMessage !== breakpoint.logMessage)) segments.delete(breakpoint.id);
+    }
+    void saveSegments();
+  }));
   if (vscode.debug.onDidChangeActiveStackItem) context.subscriptions.push(vscode.debug.onDidChangeActiveStackItem(updateContext));
+  context.subscriptions.push(vscode.commands.registerCommand('racketdap.editLogpointSegments', async breakpoint => {
+    try {
+      if (!breakpoint?.location) breakpoint = undefined;
+      const editor = selectedEditor(vscode.window);
+      let location = breakpoint?.location || (editor && new vscode.Location(editor.document.uri, editor.selection.active));
+      if (!location) throw new Error('Select a source location for the logpoint.');
+      if (!nativeLocation(location)) throw new Error('Select a source file with native expressions.');
+      breakpoint ||= vscode.debug.breakpoints.find(item => item.location?.uri.toString() === location.uri.toString() &&
+        item.location.range.start.line === location.range.start.line);
+      if (breakpoint) location = breakpoint.location;
+      const text = await vscode.window.showInputBox({
+        prompt: 'Logpoint segments: an array of literal strings and {"expression":"native text"} records',
+        value: segments.has(breakpoint?.id) ? JSON.stringify(segments.get(breakpoint.id).parts) : '["result: ", {"expression": ""}]',
+        ignoreFocusOut: true,
+        validateInput: value => { try { parseSegments(value); } catch (error) { return error.message; } }
+      });
+      if (text === undefined) return;
+      const parts = parseSegments(text);
+      const replacement = new vscode.SourceBreakpoint(location, breakpoint?.enabled ?? true,
+        breakpoint?.condition, breakpoint?.hitCondition,
+        parts.map(part => typeof part === 'string' ? part : `{${part.expression}}`).join(''));
+      segments.set(replacement.id, { parts, logMessage: replacement.logMessage });
+      await saveSegments();
+      if (breakpoint) vscode.debug.removeBreakpoints([breakpoint]);
+      vscode.debug.addBreakpoints([replacement]);
+    } catch (error) { vscode.window.showErrorMessage(error.message); throw error; }
+  }));
   for (const [name, prompt] of [
     ['skipExpression', 'Replacement return values as a Racket expression; use (values ...) for multiple values'],
     ['replaceResults', 'New return values as a Racket expression; use (values ...) for multiple values']

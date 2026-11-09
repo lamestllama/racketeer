@@ -73,6 +73,8 @@ function activate(context) {
         return undefined;
       }
       if (config.request === 'launch') config.cwd ||= folder?.uri.fsPath || path.dirname(config.program);
+      if (config.request === 'launch' && folder) config.workspaceFolder = folder.uri.fsPath;
+      if (config.request === 'launch' && config.languageAdapter) config.languageAdapter = path.resolve(config.cwd, config.languageAdapter);
       config.sourceRoots ||= folder ? [folder.uri.fsPath] : config.request === 'launch' ? [path.dirname(config.program)] : [];
       config.debugPackages ??= vscode.workspace.getConfiguration('racketdap', folder?.uri).get('debug.packages', []);
       config.logFilter ??= vscode.workspace.getConfiguration('racketdap', folder?.uri).get('logs.filter', 'error');

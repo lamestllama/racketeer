@@ -21,3 +21,6 @@
 (make-directory* cache)
 (current-compiled-file-roots (cons cache (current-compiled-file-roots)))
 (current-load/use-compiled (make-compilation-manager-load/use-compiled-handler))
+
+(define-runtime-path adapters "language-adapters.rkt")
+(dynamic-require adapters #f)

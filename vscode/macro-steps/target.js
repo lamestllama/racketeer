@@ -26,7 +26,8 @@ function macroTarget(editor, wholeFile) {
   const settings = vscode.workspace.getConfiguration('racketdap', document.uri);
   const cwd = folder?.uri.fsPath || (file ? path.dirname(document.uri.fsPath) : os.homedir());
   const shared = {
-    cwd, source: file ? document.uri.fsPath : document.uri.toString(), sourceIsFile: file,
+    cwd, workspace: folder?.uri.fsPath || false,
+    source: file ? document.uri.fsPath : document.uri.toString(), sourceIsFile: file,
     // Relative module imports belong to the source directory, independent
     // of the process cwd. Untitled sources use their workspace.
     directory: file ? path.dirname(document.uri.fsPath) : folder?.uri.fsPath || os.homedir()

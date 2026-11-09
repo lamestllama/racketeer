@@ -42,10 +42,11 @@
 ;; runtime expressions wait for the second, so the identifiers are complete when
 ;; the module's first form is instrumented. Children expand after their parents.
 ;; That first form hands their names to the runtime under the key.
-(struct module-binding-context (key [own-identifiers #:mutable] parent children [registered? #:mutable])
+(struct module-binding-context (key [own-identifiers #:mutable] parent children [registered? #:mutable]
+                                   [storage #:mutable])
   #:constructor-name new-module-binding-context)
 (define (make-module-binding-context [parent #f] [key (fresh-context-key)])
-  (new-module-binding-context key '() parent (make-hasheq) #f))
+  (new-module-binding-context key '() parent (make-hasheq) #f '()))
 (define (fresh-context-key)
   (string->symbol (symbol->string (gensym 'module-context))))
 (define (module-binding-context-child! parent name [inherit? #t])
@@ -66,6 +67,8 @@
   (syntax-case* declaration (define-values define-syntaxes begin)
                 free-identifier=?
     [(define-values (id ...) rhs)
+     (set-module-binding-context-storage!
+      context (append (syntax->list #'(id ...)) (module-binding-context-storage context)))
      (set-module-binding-context-own-identifiers!
       context
       (append (filter (lambda (id) (original-binding? id source))
@@ -158,7 +161,46 @@
                            #:source-operands [source-operands '()]
                            #:template-source? [template-source? (lambda (_file) #f)]
                            #:coverage? [coverage? #f]
+                           #:runtime-bindings [runtime-bindings '()]
+                           #:site-facts [site-facts '()]
+                           #:source-text [source-text #f]
                            #:tail? [initial-tail? #f])
+  ;; Provider ranges refer to captured text. Convert them through a counted port,
+  ;; including CRLF and any language prefix, rather than guessing reader offsets.
+  (define locations
+    (and (or (pair? runtime-bindings) (pair? site-facts))
+         (begin
+           (unless (string? source-text) (error 'debugger-facts "Captured source text is required."))
+           (let ([in (open-input-string source-text)])
+             (port-count-lines! in)
+             (for/vector ([i (in-range (add1 (string-length source-text)))])
+               (define-values (line column position) (port-next-location in))
+               (read-char in)
+               (list line column position))))))
+  (define (range-locations range)
+    (unless (and (pair? range) (exact-nonnegative-integer? (car range))
+                 (exact-nonnegative-integer? (cdr range))
+                 (< (car range) (cdr range) (vector-length locations)))
+      (error 'debugger-facts "Invalid source range: ~s" range))
+    (values (vector-ref locations (car range)) (vector-ref locations (cdr range))))
+  (define aliases (make-free-id-table))
+  (define used-aliases (make-hasheq))
+  (for ([fact (in-list runtime-bindings)])
+    (define id (hash-ref fact 'identifier))
+    (unless (and (identifier? id) (string? (hash-ref fact 'name))
+                 (equal? (hash-ref fact 'phase 0) 0) (not (hash-ref fact 'space #f)))
+      (error 'bindings "Expected a runtime identifier and source name at phase zero."))
+    (define-values (start end) (range-locations (hash-ref fact 'scope)))
+    (define extent (list source (caddr start) (caddr end)))
+    (free-id-table-update! aliases id (lambda (old) (cons (cons fact extent) old)) '()))
+  (define sites-by-term (make-hasheq))
+  (for ([fact (in-list site-facts)])
+    (define term (hash-ref fact 'term))
+    (unless (and (syntax? term) (not (hash-has-key? sites-by-term term)))
+      (error 'steps "Expected one site record per expanded term."))
+    (define-values (_start _end) (range-locations (hash-ref fact 'range)))
+    (hash-set! sites-by-term term fact))
+  (define used-sites (make-hasheq))
   (define descriptors '())
   (define table '())
   ;; Retain source-facing aliases for module bindings that expansion may rename.
@@ -296,10 +338,33 @@
   ;; visible in it, innermost first. Nothing is built for a scope no site or closure
   ;; of a site can reach.
   (define (new-scope ids parent)
+    (when (pair? runtime-bindings)
+      (define names (make-hasheq))
+      (define (claim! name id)
+        (define previous (hash-ref names name #f))
+        (when (and previous (not (free-identifier=? id previous)))
+          (error 'bindings "Conflicting runtime identifiers for ~a" name))
+        (hash-set! names name id))
+      (for ([id (in-list ids)])
+        (define name (if (original-binding? id source) (syntax-e id)
+                         (free-id-table-ref lexical-aliases id #f)))
+        (when name (claim! name id)))
+      (for* ([id (in-list ids)] [entry (in-list (free-id-table-ref aliases id '()))])
+        (claim! (string->symbol (hash-ref (car entry) 'name)) id)))
     (define live-bindings
       (if coverage?
           '()
           (append
+           (for*/list ([id (in-list ids)]
+                       [entry (in-list (free-id-table-ref aliases id '()))])
+             (define fact (car entry))
+             (hash-set! used-aliases fact #t)
+             #`(#%plain-app make-live-binding '#,(string->symbol (hash-ref fact 'name))
+                            '#,(number-binding! id)
+                            (case-lambda [() #,id]
+                              #,@(if (hash-ref fact 'mutable? #f)
+                                     (list #`[(replacement) (set! #,id replacement)]) '()))
+                            '#,(cdr entry)))
            (for*/list ([id (in-list ids)]
                        [name (in-value (if (original-binding? id source)
                                            (syntax-e id)
@@ -581,23 +646,32 @@
                     (unbox (body-parts))))
     #`(#%plain-app #,procedure #,@variables #,@arguments))
   (define (walk expression environment act tail? [context-name #f])
-    (define located (location-of expression))
+    (define fact (hash-ref sites-by-term expression #f))
+    (when fact (hash-set! used-sites fact #t))
+    (define located
+      (if fact
+          (let-values ([(start end) (range-locations (hash-ref fact 'range))])
+            (datum->syntax expression (syntax-e expression)
+                           (list source (car start) (cadr start) (caddr start)
+                                 (- (caddr end) (caddr start))) expression))
+          (location-of expression)))
     (define range (range-of located))
     (define parent (enclosing-boundary))
     (define gives-owner-value? (memq expression (owner-results)))
     ;; A range an execution of authored code owns, once for each time it runs: not a copy
     ;; of what encloses it, and not generated code that borrowed the location.
     (define visible?
+      (if fact (hash-ref fact 'visible? #t)
       (not (or (binding-container? expression)
                (and range (equal? range parent))
                (and range (not (authored? expression range))
                     (or (range-belongs-to-authored? expression range)
                         (and (not gives-owner-value?)
-                             (range-holds? range (enclosing-owner))))))))
+                             (range-holds? range (enclosing-owner)))))))))
     (define inferred-name (or (syntax-property expression 'inferred-name) context-name))
     (define slot
       (and located
-           (or coverage? (stoppable? expression)
+           (or fact coverage? (stoppable? expression)
                ;; A complete module expression is executable even when it is
                ;; only a constant or reference. Keep atomic operands inside
                ;; other expressions out of the ordinary stepping sequence.
@@ -729,7 +803,15 @@
                (syntax-position located) (syntax-span located)
                ;; A body's binding form holds all of the body after it.
                tail? (and (not (binding-container? expression)) (syntax->datum expression)) enclosing
-               visible? (not (and range (shows-other-value? expression range)))))
+               visible? (if (and fact (eq? (hash-ref fact 'role 'expression) 'statement))
+                            (and (hash-ref fact 'result #f)
+                                 (let produces? ([term expression])
+                                   (or (eq? term (hash-ref fact 'result))
+                                       (let ([results (result-subexpressions term)])
+                                         (and (pair? results) (andmap produces? results))))))
+                            (not (and range (shows-other-value? expression range))))))
+       (when (and fact (not (and (site-value-shown? descriptor) (hash-ref fact 'replaceable? #f))))
+         (set-site-replaceable?! descriptor 'disabled))
        (when visible? (set! descriptors (cons descriptor descriptors)))
        (unless (authored? expression range) (set! template-slots (cons slot template-slots)))
        (set! table (cons (cons slot (cons descriptor visible?)) table))
@@ -794,8 +876,17 @@
                  [#,results (begin #,leave (#%plain-app kernel-apply values #,results))])))])]))
   (define local-name (and (syntax-transforming?) (syntax-local-name)))
   (define form-activation (activation (car (generate-temporaries '(frame))) #f))
-  (define result (walk expanded #f form-activation initial-tail?
+  (define module-aliases
+    (if module-context
+        (filter (lambda (id) (pair? (free-id-table-ref aliases id '())))
+                (module-binding-context-storage module-context)) '()))
+  (define module-scope (and (pair? module-aliases) (new-scope module-aliases #f)))
+  (define result (walk expanded module-scope form-activation initial-tail?
                        (if (identifier? local-name) (syntax-e local-name) local-name)))
+  (for ([fact (in-list runtime-bindings)] #:unless (hash-ref used-aliases fact #f))
+    (error 'bindings "The runtime identifier has no expanded storage: ~a" (hash-ref fact 'name)))
+  (for ([fact (in-list site-facts)] #:unless (hash-ref used-sites fact #f))
+    (error 'steps "The site term is not an expanded runtime expression."))
   (define (identifiers-thunk identifiers)
     #`(#%plain-lambda () (#%plain-app list #,@(for/list ([id (in-list identifiers)]) #`(quote-syntax #,id)))))
   ;; A context's definitions as (source name . defined symbol). Names, not syntax: a
@@ -821,7 +912,8 @@
                         (cons (module-binding-context-key ancestor)
                               (defined-names (module-binding-context-own-identifiers ancestor)))))))
         '()))
-  (define framed (car (frame-around form-activation #f (list result))))
+  (define framed
+    (car (in-scope-binding-only module-scope #f (frame-around form-activation module-scope (list result)))))
   (values (if (and (zero? next-slot) (null? register-context))
               result
               #`(let-values ([(#,form-id)

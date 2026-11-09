@@ -14,7 +14,10 @@
 ;; for snapshot, language, and forest.
 (struct/contract LexerState
   ([snapshot LexerSnapshot?]
-   [language-policy Language-Policy?]
+   [base-policy Language-Policy?]
+   [(language-policy #:mutable) Language-Policy?]
+   [(adapter #:mutable) (or/c hash? #f)]
+   [(editor-facts #:mutable) (or/c hash? #f)]
    [body-forest-cache (lazy-cache-of Token-Forest?)])
   #:transparent)
 
@@ -56,7 +59,13 @@
   (define policy (lexer-language-policy (LexerSnapshot-text snapshot)
                                         (LexerSnapshot-tokens snapshot)
                                         uri))
-  (LexerState snapshot policy (make-lazy-cache)))
+  (LexerState snapshot policy policy #f #f (make-lazy-cache)))
+
+(define (lexer-state-apply-adapter! state adapter)
+  (set-LexerState-adapter! state adapter)
+  (set-LexerState-language-policy!
+    state (language-policy-with-adapter (LexerState-base-policy state) adapter))
+  (lazy-cache-invalidate! (LexerState-body-forest-cache state)))
 
 (define (lexer-state-body-forest state)
   (call-with-lazy-cache!
@@ -102,6 +111,7 @@
       '()))
 
 (provide (struct-out LexerState)
+         lexer-state-apply-adapter!
          build-lexer-snapshot
          build-lexer-state
          build-snapshot-token-forest

@@ -31,6 +31,7 @@
          (json-type-out DocumentSymbol)
          (json-type-out Hover)
          (json-type-out SignatureInformation)
+         (json-type-out ParameterInformation)
          (json-type-out SignatureHelp)
          (json-type-out CompletionItem)
          (json-type-out CompletionList)
@@ -192,15 +193,23 @@
   [contents string?]
   [range Range])
 
+(define-json-struct ParameterInformation
+  [label string?]
+  [documentation (optional string?)])
+
 (define-json-struct SignatureInformation
   [label string?]
-  [documentation string?])
+  [documentation string?]
+  [parameters (optional (listof ParameterInformation))])
 
 (define-json-struct SignatureHelp
-  [signatures (listof SignatureInformation)])
+  [signatures (listof SignatureInformation)]
+  [activeSignature (optional exact-nonnegative-integer?)]
+  [activeParameter (optional exact-nonnegative-integer?)])
 
 (define-json-struct CompletionItem
-  [label string?])
+  [label string?]
+  [textEdit (optional TextEdit)])
 
 (define-json-struct CompletionList
   [isIncomplete boolean?]
@@ -351,7 +360,13 @@
   [string "string"]
   [number "number"]
   [regexp "regexp"]
-  [comment "comment"])
+  [comment "comment"]
+  [class "class"]
+  [property "property"]
+  [method "method"]
+  [namespace "namespace"]
+  [operator "operator"]
+  [macro "macro"])
 
 (define-json-enum SemanticTokenModifier
   [definition "definition"])
@@ -372,7 +387,13 @@
         SemanticTokenType-string
         SemanticTokenType-number
         SemanticTokenType-regexp
-        SemanticTokenType-comment))
+        SemanticTokenType-comment
+        SemanticTokenType-class
+        SemanticTokenType-property
+        SemanticTokenType-method
+        SemanticTokenType-namespace
+        SemanticTokenType-operator
+        SemanticTokenType-macro))
 
 ;; The order of this list is irrelevant, similar to *semantic-token-types*.
 (define *semantic-token-modifiers*

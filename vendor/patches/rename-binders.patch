@@ -1,0 +1,692 @@
+diff --git a/doclib/binding-facts.rkt b/doclib/binding-facts.rkt
+--- a/doclib/binding-facts.rkt
++++ b/doclib/binding-facts.rkt
+@@ -117,6 +117,11 @@
+   (define current-modules (make-parameter '(())))
+   (define regions '())
+   (define names '())
++  (define occurrences '())
++  (define structure '())
++  (define edges '())
++  (define target-factory
++    (with-handlers ([exn:fail? (lambda (_) #f)]) (resolve-module-path 'lang/private/teachhelp #f)))
+   (define core-binders '())
+   (define components '())
+   (define origin-links (make-hash))
+@@ -173,7 +178,10 @@
+          (define start (+ (sub1 (syntax-position target)) target-offset))
+          (when (<= 0 start (+ start width) (string-length text))
+            (set! components
+-                 (cons (hasheq 'identifier id 'phase phase 'target target 'offset offset 'width width
++                 (cons (hasheq 'identifier id 'phase phase
++                               'space (let ([info (identifier-binding id phase)])
++                                        (and (list? info) (pair? (list-ref info 6)) (cdr (list-ref info 6))))
++                               'target target 'offset offset 'width width
+                                'range (cons start (+ start width))) components))))]))
+   (define (metadata value phase role anchor)
+     (cond [(identifier? value) (record! value phase role anchor)]
+@@ -221,11 +229,13 @@
+       [(pair? value)
+        (binders (car value) phase (cons 0 anchor) role form rhs exclusions)
+        (binders (cdr value) phase (cons 1 anchor) role form rhs exclusions)]))
+-  (define (walk value phase anchor)
++  (define (walk value phase anchor [export? #f])
++    (define core (and (syntax? value) (core-form value phase)))
++    (when (memq core '(#%require #%provide))
++      (set! structure (cons (list anchor phase (list core (cdr (syntax->list value)))) structure)))
+     (cond
+       [(syntax? value)
+        (define parts (syntax->list value))
+-       (define core (core-form value phase))
+        (define root-module? (and (memq core '(module module*)) (null? (current-module))))
+        (define module
+          (if (and project? (memq core '(module module*)))
+@@ -244,13 +254,25 @@
+                                          (ormap (lambda (id) (and (syntax? id) (syntax-original? id))) origins)))
+                                 (current-qualifying-origin?))
+                            (qualifying-origins? origins phase))])
+-         (unless (hash-ref seen (cons value phase) #f)
+-           (hash-set! seen (cons value phase) #t)
++         (define seen-key (if export? (list value phase 'export) (cons value phase)))
++         (unless (hash-ref seen seen-key #f)
++           (hash-set! seen seen-key #t)
+            (component-directives (syntax-property value 'sub-range-binders) phase)
+            (metadata (syntax-property value 'disappeared-binding) phase 'definition anchor)
+            (metadata (syntax-property value 'disappeared-use) phase 'use anchor)
+            (metadata (syntax-property value 'origin) phase 'use anchor)
+-           (when (identifier? value) (record! value phase 'use anchor))
++           (when (identifier? value)
++             (record! value phase 'use anchor)
++             ;; Export bindings are checked through unordered provide leaves.
++             ;; Other generated uses keep their structural positions.
++             (unless export?
++               (set! occurrences
++                     (cons (hasheq 'identifier value 'phase phase 'anchor anchor
++                                   'binding (identifier-module-binding value phase file)
++                                   'space (let ([info (identifier-binding value phase)])
++                                            (and (list? info) (pair? (list-ref info 6))
++                                                 (cdr (list-ref info 6)))))
++                           occurrences))))
+            (when (and project? (memq core '(module module* begin-for-syntax define-syntaxes)))
+              (define range (range-of (if (eq? core 'define-syntaxes) (caddr parts) value)))
+              (when range
+@@ -283,7 +305,50 @@
+                  [(pair? origin) (origins (car origin)) (origins (cdr origin))])))
+            (case core
+              [(define-values define-syntaxes)
+-              (binders (cadr parts) phase (cons 'definition anchor) core value (caddr parts))]
++              (binders (cadr parts) phase (cons 'definition anchor) core value (caddr parts))
++              ;; Pair declaration outputs with the scoped local binders they return.
++              (when (eq? core 'define-values)
++                (define locals (make-free-id-table #:phase phase))
++                (define results
++                  (let tail ([rhs (caddr parts)])
++                    (define body (syntax->list rhs))
++                    (case (core-form rhs phase)
++                      [(let-values letrec-values)
++                       (for* ([clause (in-list (syntax->list (cadr body)))]
++                              [id (in-list (syntax->list (car (syntax->list clause))))])
++                         (free-id-table-set! locals id #t))
++                       (tail (last body))]
++                      [(begin) (tail (last body))]
++                      [(#%app #%plain-app)
++                       (and (identifier? (cadr body)) (free-identifier=? (cadr body) #'values phase 0) (cddr body))]
++                      [else #f])))
++                (when (and results (= (length results) (length (syntax->list (cadr parts)))))
++                  (for ([id (in-list (syntax->list (cadr parts)))] [result (in-list results)] [i (in-naturals)]
++                        #:when (and (identifier? result) (free-id-table-ref locals result #f)))
++                    (set! edges
++                          (cons (hasheq 'key (list 'returned-binder anchor phase i) 'complete? #t
++                                        'members (for/list ([member (in-list (list id result))])
++                                                   (hasheq 'identifier member 'phase phase
++                                                           'binding (identifier-module-binding member phase file))))
++                                edges)))))
++              ;; The scoped transformer factory supplies its value target explicitly.
++              (when (eq? core 'define-syntaxes)
++                (define rhs (caddr parts))
++                (define call (and (memq (core-form rhs (add1 phase)) '(#%app #%plain-app)) (syntax->list rhs)))
++                (define binding (and call (= (length call) 6) (identifier? (cadr call))
++                                     (identifier-binding (cadr call) (add1 phase))))
++                (define target (and binding (list? binding) (eq? (cadr binding) 'make-first-order-function)
++                                    (equal? (resolved-module-path-name (module-path-index-resolve (car binding))) target-factory)
++                                    (eq? (core-form (list-ref call 4) (add1 phase)) 'quote-syntax)
++                                    (cadr (syntax->list (list-ref call 4)))))
++                (define ids (syntax->list (cadr parts)))
++                (when (and target (identifier? target) (= (length ids) 1) (identifier-binding target phase))
++                  (set! edges
++                        (cons (hasheq 'key (list 'transformer-target anchor phase) 'complete? #t
++                                      'members (for/list ([id (in-list (list (car ids) target))])
++                                                 (hasheq 'identifier id 'phase phase
++                                                         'binding (identifier-module-binding id phase file))))
++                              edges))))]
+              [(#%plain-lambda lambda)
+               (binders (cadr parts) phase (cons 'argument anchor) core value)]
+              [(case-lambda)
+@@ -319,10 +384,11 @@
+                [(#%provide)
+                 (for ([spec (in-list (cdr parts))] [i (in-naturals)])
+                   (for ([part (in-list (provide-parts spec phase (cons i anchor)))])
+-                    (walk (car part) (cadr part) (caddr part))))]
++                    (walk (car part) (cadr part) (caddr part) #t)))]
+                [else
+-                (for ([part (in-list (code-parts value phase))] [i (in-naturals)])
+-                  (walk (car part) (cdr part) (cons i anchor)))]))))]
++                (unless (identifier? value)
++                  (for ([part (in-list (code-parts value phase))] [i (in-naturals)])
++                    (walk (car part) (cdr part) (cons i anchor))))]))))]
+       [(pair? value)
+        (walk (car value) phase (cons 0 anchor))
+        (walk (cdr value) phase (cons 1 anchor))]))
+@@ -334,7 +400,10 @@
+                   (hash-set binder 'authored?
+                             (not (and range (interval-map-ref template-ranges (car range) #f)))))
+                 binder))
+-          'names
++          'structure (append (reverse structure)
++                             (for/list ([edge (in-list (reverse edges))])
++                               (list (hash-ref edge 'key) 0 (list 'family edge))))
++          'occurrences (reverse occurrences) 'names
+           (for/list ([name (in-list (reverse names))])
+             (define id (hash-ref name 'identifier))
+             (define phase (hash-ref name 'phase))
+diff --git a/doclib/bindings-provider.rkt b/doclib/bindings-provider.rkt
+--- a/doclib/bindings-provider.rkt
++++ b/doclib/bindings-provider.rkt
+@@ -75,6 +75,14 @@
+     (when (hash-has-key? family-members (hash-ref family 'key))
+       (fail "duplicate family key" family))
+     (hash-set! family-members (hash-ref family 'key) members))
+-  (hash-set (hash-set (hash-set facts 'names (append (hash-ref facts 'names) names))
+-                      'families (append (hash-ref facts 'families) families))
++  ;; Resolve module identities in the namespace that established the scopes.
++  ;; Rename retains these records after that namespace has been released.
++  (define (resolved record)
++    (hash-set record 'binding
++              (identifier-module-binding (hash-ref record 'identifier) (hash-ref record 'phase 0)
++                                         (source-file-path source) (hash-ref record 'space #f))))
++  (hash-set (hash-set (hash-set facts 'names (append (hash-ref facts 'names) (map resolved names)))
++                      'families (append (hash-ref facts 'families)
++                                        (for/list ([family (in-list families)])
++                                          (hash-set family 'members (map resolved (hash-ref family 'members))))))
+             'runtime (append (hash-ref facts 'runtime) (hash-ref result 'runtime '()))))
+diff --git a/doclib/doc.rkt b/doclib/doc.rkt
+--- a/doclib/doc.rkt
++++ b/doclib/doc.rkt
+@@ -9,12 +9,15 @@
+          (only-in "../common/json-util.rkt" Nothing)
+          "editor.rkt"
+          "../common/source.rkt"
++         "../common/source-snapshot.rkt"
+          "lazy-cache.rkt"
+          "doc-trace.rkt"
+          (only-in "autocomplete.rkt" binding-completions)
+          "formatting.rkt"
+          (only-in "formatter/fmt.rkt" empty-fmt-settings)
+          "internal-types.rkt"
++         "rename-validation.rkt"
++         (only-in "service/declaration.rkt" current-retain-binding-facts?)
+          "lexer.rkt"
+          (only-in "lexer/state.rkt"
+                   lexer-state-body-forest)
+@@ -1249,49 +1252,83 @@
+        (DocumentHighlight #:range range))]
+     [else '()]))
+ 
+-;; Rename: returns a WorkspaceEdit or #f.
++(define (doc-rename-ranges doc pos)
++  (define decls (send (Doc-trace doc) get-declaration))
++  (define absolute (doc-pos->abs-pos doc pos))
++  (define occurrence (doc-occurrence-at doc pos))
++  (define definition (doc-definition-at doc pos))
++  (define components (send decls component-edit-ranges-at absolute))
++  (and (doc-trace-latest? doc) occurrence
++       (or components (and definition
++                           (not (send decls coarse-definition-at? absolute))
++                           (not (send decls component-definition-at absolute))))
++       (let* ([text (doc-get-text doc)]
++              [start (doc-pos->abs-pos doc (Range-start occurrence))]
++              [end (doc-pos->abs-pos doc (Range-end occurrence))]
++              [spelling (substring text start end)]
++              [ranges (if components
++                          (map (lambda (range) (cons (CharRange-start range) (CharRange-end range))) components)
++                          (map (lambda (range) (cons (doc-pos->abs-pos doc (Range-start range))
++                                                    (doc-pos->abs-pos doc (Range-end range))))
++                               (remove-duplicates
++                                (append (doc-binding-ranges-at doc pos)
++                                        (doc-binding-ranges-at doc (Range-start definition))))))])
++         (and (identifier-name spelling)
++              (pair? ranges)
++              (andmap (lambda (range) (equal? (substring text (car range) (cdr range)) spelling)) ranges)
++              (sort (remove-duplicates ranges) < #:key car)))))
++
++(define (doc-rename-relations doc ranges name correspondence shift)
++  (rename-token-relations
++   (doc-get-text doc) (Doc-uri doc) ranges name correspondence
++   (lambda (offset)
++     (define pos (doc-abs-pos->pos doc offset))
++     (define bindings (doc-module-bindings-at doc pos))
++     (define definition (and (null? bindings) (doc-definition-at doc pos)))
++     (cond [(pair? bindings) (list->set bindings)]
++           [definition (cons (doc-pos->abs-pos doc (Range-start definition))
++                             (doc-pos->abs-pos doc (Range-end definition)))]
++           [else #f])) shift))
++
++;; The live document supplies edit ranges; immutable expansions validate them.
++;; A failed proposal returns no edits, including for virtual source URIs.
+ (define/contract (doc-rename doc uri pos new-name)
+   (-> Doc? string? Pos? string? (or/c WorkspaceEdit? #f))
+-  (define definition-range (doc-definition-at doc pos))
+-  (define shared-definition?
+-    (or (> (send (send (Doc-trace doc) get-declaration) binding-count-at (doc-pos->abs-pos doc pos)) 1)
+-        (and definition-range
+-             (> (length (doc-module-bindings-at doc (Range-start definition-range))) 1))))
+-  (define components
+-    (send (send (Doc-trace doc) get-declaration) component-edit-ranges-at (doc-pos->abs-pos doc pos)))
+-  (cond
+-    [components
+-     (WorkspaceEdit #:changes
+-                    (hasheq (string->symbol uri)
+-                            (for/list ([range (in-list components)])
+-                              (TextEdit #:range (abs-range->range doc (CharRange-start range) (CharRange-end range))
+-                                        #:newText new-name))))]
+-    [(send (send (Doc-trace doc) get-declaration) component-definition-at (doc-pos->abs-pos doc pos)) #f]
+-    [(send (send (Doc-trace doc) get-declaration) coarse-definition-at? (doc-pos->abs-pos doc pos)) #f]
+-    [shared-definition? #f]
+-    [definition-range
+-     (define ranges (doc-binding-ranges-at doc pos))
+-     (WorkspaceEdit
+-       #:changes
+-       (hasheq (string->symbol uri)
+-               (for/list ([range (in-list ranges)])
+-                 (TextEdit #:range range #:newText new-name))))]
+-    [else #f]))
++  (with-handlers ([exn:fail? (lambda (_) #f)])
++    (define ranges (and (identifier-name new-name) (doc-rename-ranges doc pos)))
++    (and ranges
++         (if (equal? (substring (doc-get-text doc) (caar ranges) (cdar ranges)) new-name)
++             (WorkspaceEdit #:changes (hasheq))
++         (let* ([text (doc-get-text doc)]
++                [shift (rename-offset ranges new-name)]
++                [before (make-doc (Doc-uri doc) text)]
++                [after (make-doc (Doc-uri doc) (renamed-text text ranges new-name))])
++           (define (expand-snapshot document)
++             (define file (source-file-path (Doc-source document)))
++             (call-with-source-snapshot (if file (hash file (doc-get-text document)) (hash))
++               (lambda ()
++                 (parameterize ([current-retain-binding-facts? #t])
++                   (doc-expand! document #:contribution-only? #t)))))
++           (and (expand-snapshot before)
++                (expand-snapshot after)
++                (let* ([paths (make-hash)]
++                       [old (rename-snapshot (send (send (Doc-trace before) get-declaration) get-binding-facts)
++                                             (Doc-source before) (doc-get-text before) paths)]
++                       [new (rename-snapshot (send (send (Doc-trace after) get-declaration) get-binding-facts)
++                                             (Doc-source after) (doc-get-text after) paths)]
++                       [correspondence (rename-correspondence old new ranges new-name shift)])
++                  (validate-rename-proposal old new ranges new-name correspondence
++                                            (doc-rename-relations before ranges new-name correspondence shift)
++                                            (doc-rename-relations after '() new-name (hash) values) shift)
++                  (WorkspaceEdit
++                   #:changes (hasheq (string->symbol uri)
++                                     (for/list ([range (in-list ranges)])
++                                       (TextEdit #:range (abs-range->range doc (car range) (cdr range))
++                                                 #:newText new-name)))))))))))
+ 
+-;; Prepare Rename: returns a Range or #f.
+ (define/contract (doc-prepare-rename doc pos)
+   (-> Doc? Pos? (or/c Range? #f))
+-  (define occurrence-range (doc-occurrence-at doc pos))
+-  (define definition-range (doc-definition-at doc pos))
+-  (define components
+-    (send (send (Doc-trace doc) get-declaration) component-edit-ranges-at (doc-pos->abs-pos doc pos)))
+-  (or (and components occurrence-range)
+-      (and (not (send (send (Doc-trace doc) get-declaration) component-definition-at (doc-pos->abs-pos doc pos)))
+-           (not (send (send (Doc-trace doc) get-declaration) coarse-definition-at? (doc-pos->abs-pos doc pos)))
+-           definition-range occurrence-range
+-       (<= (send (send (Doc-trace doc) get-declaration) binding-count-at (doc-pos->abs-pos doc pos)) 1)
+-       (<= (length (doc-module-bindings-at doc (Range-start definition-range))) 1)
+-       occurrence-range)))
++  (and (doc-rename-ranges doc pos) (doc-occurrence-at doc pos)))
+ 
+ ;; Document Symbols: returns a list of SymbolInformation.
+ (define/contract (doc-symbols doc uri)
+diff --git a/doclib/rename-validation.rkt b/doclib/rename-validation.rkt
+new file mode 100644
+--- /dev/null
++++ b/doclib/rename-validation.rkt
+@@ -0,0 +1,351 @@
++#lang racket/base
++;; Copyright (c) 2026 Eric Parsonage
++;; SPDX-License-Identifier: Apache-2.0 OR MIT
++
++(require racket/list racket/match racket/set syntax/id-table data/interval-map
++         "internal-types.rkt" "lexer.rkt" "binding-facts.rkt"
++         "../common/source.rkt" "../common/interfaces.rkt")
++
++(provide identifier-name renamed-text rename-offset rename-snapshot
++         rename-correspondence validate-rename-proposal rename-token-relations
++         rename-module-binding)
++
++(define (refuse) (error 'rename "Renaming would change another binding or an incomplete binding family."))
++
++(define (identifier-name text)
++  (with-handlers ([exn:fail? (lambda (_) #f)])
++    (parameterize ([read-accept-reader #f] [read-accept-lang #f])
++      (define in (open-input-string text))
++      (define value (read in))
++      (and (symbol? value) (eof-object? (read in))
++           (equal? text (format "~s" value)) value))))
++
++(define (renamed-text text ranges name)
++  (define out (open-output-string))
++  (define end
++    (for/fold ([start 0]) ([range (in-list ranges)])
++      (write-string text out start (car range))
++      (display name out)
++      (cdr range)))
++  (write-string text out end)
++  (get-output-string out))
++
++;; Cumulative deltas include replacements ending exactly at the queried offset.
++(define (rename-offset ranges name)
++  (define ends (list->vector (map cdr ranges)))
++  (define deltas (make-vector (add1 (vector-length ends)) 0))
++  (for ([range (in-list ranges)] [i (in-naturals)])
++    (vector-set! deltas (add1 i)
++                 (+ (vector-ref deltas i) (- (string-length name) (- (cdr range) (car range))))))
++  (lambda (offset)
++    (let loop ([lo 0] [hi (vector-length ends)])
++      (if (= lo hi) (+ offset (vector-ref deltas lo))
++          (let ([mid (quotient (+ lo hi) 2)])
++            (if (<= (vector-ref ends mid) offset)
++                (loop (add1 mid) hi) (loop lo mid)))))))
++
++(define (rename-module-binding fact)
++  (define binding (hash-ref fact 'binding #f))
++  (define space (hash-ref fact 'space #f))
++  (and binding
++       (if (and space (not (pair? (Module-Binding-phase+space binding))))
++           (struct-copy Module-Binding binding [phase+space (cons (Module-Binding-phase+space binding) space)])
++           binding)))
++
++(define (rename-token-relations text uri ranges name correspondence query [shift (rename-offset ranges name)])
++  (for/list ([token (in-lexer-snapshot (build-lexer-snapshot text uri))]
++             #:when (eq? (LexerEntry-type token) 'symbol))
++    (define binding (query (LexerEntry-start token)))
++    (list (shift (LexerEntry-start token)) (shift (LexerEntry-end token))
++          (cond [(set? binding)
++                 (for/set ([owner (in-set binding)]) (hash-ref correspondence owner owner))]
++                [(pair? binding) (cons (shift (car binding)) (shift (cdr binding)))]
++                [else #f]))))
++
++;; Resolve scoped local identities while their expansion is still available.
++;; Structural positions include the core role, module nesting, phase and space;
++;; printed generated names never establish correspondence.
++(define (rename-snapshot facts source text paths)
++  (unless facts (refuse))
++  (define-values (tables binders) (values (make-hash) (make-hash)))
++  ;; Shared tails are visited once; both analyses share the same compact IDs.
++  ;; Atomic path elements and pairs of IDs occupy distinct interning keys.
++  (define memo (make-hasheq))
++  (define (path value)
++    (hash-ref! memo value
++      (lambda ()
++        (define key (if (pair? value) (cons (path (car value)) (path (cdr value))) value))
++        (hash-ref! paths key (lambda () (hash-count paths))))))
++  (define (table fact)
++    (hash-ref! tables (cons (hash-ref fact 'phase 0) (hash-ref fact 'space #f))
++               (lambda () (make-free-id-table #:phase (hash-ref fact 'phase 0)))))
++  (define (anchor fact)
++    (list (path (hash-ref fact 'anchor)) (hash-ref fact 'role)
++          (hash-ref fact 'phase 0) (hash-ref fact 'space #f)))
++  (define (range id)
++    (and (equal? (syntax-source id) (source-syntax-source source))
++         (syntax-position id) (syntax-span id)
++         (cons (sub1 (syntax-position id)) (+ (sub1 (syntax-position id)) (syntax-span id)))))
++  (define (external-owner fact)
++    (define binding (identifier-binding (hash-ref fact 'identifier) (hash-ref fact 'phase 0)))
++    (and (list? binding)
++         (list 'external (resolved-module-path-name (module-path-index-resolve (car binding)))
++               (cadr binding) (list-ref binding 4) (hash-ref fact 'space #f))))
++  (define (bound-owner fact)
++    (or (free-id-table-ref (table fact) (hash-ref fact 'identifier) #f)
++        (rename-module-binding fact)
++        (let ([binding (identifier-binding (hash-ref fact 'identifier) (hash-ref fact 'phase 0))])
++          (and (list? binding)
++               (let-values ([(path base) (module-path-index-split (car binding))])
++                 (and path (external-owner fact)))))))
++  (for ([fact (in-list (hash-ref facts 'binders))])
++    (define-values (id key) (values (hash-ref fact 'identifier) (anchor fact)))
++    (when (hash-has-key? binders key) (refuse))
++    (define binding (bound-owner fact))
++    (define owner
++      (if (and (not (range id)) (Module-Binding? binding)
++               (equal? (Module-Binding-filepath binding) (source-file-path source)))
++          ;; A private generated name keeps its structural owner and scoped uses.
++          (cons 'local key)
++          (or binding (cons 'local key))))
++    (free-id-table-set! (table fact) id owner)
++    (hash-set! binders key (list owner (range id) (syntax-e id))))
++  ;; Join disappeared bindings by their retained context and property order.
++  (for ([fact (in-list (hash-ref facts 'names))] [index (in-naturals)]
++        #:when (and (eq? (hash-ref fact 'certainty 'confirmed) 'confirmed)
++                    (eq? (hash-ref fact 'role) 'definition)
++                    (hash-has-key? fact 'anchor)
++                    (not (free-id-table-ref (table fact) (hash-ref fact 'identifier) #f))))
++    (define key (list (path (list 'metadata (hash-ref fact 'anchor) index)) 'definition
++                      (hash-ref fact 'phase 0) (hash-ref fact 'space #f)))
++    (define owner (or (bound-owner fact) (cons 'local key)))
++    (free-id-table-set! (table fact) (hash-ref fact 'identifier) owner)
++    (hash-set! binders key (list owner (hash-ref fact 'range) (syntax-e (hash-ref fact 'identifier)))))
++  (for ([fact (in-list (hash-ref facts 'names))]
++        #:when (rename-module-binding fact))
++    (unless (free-id-table-ref (table fact) (hash-ref fact 'identifier) #f)
++      (free-id-table-set! (table fact) (hash-ref fact 'identifier) (rename-module-binding fact))))
++  (define (owner fact)
++    (define-values (id phase) (values (hash-ref fact 'identifier) (hash-ref fact 'phase 0)))
++    (define binding (identifier-binding id phase))
++    (define scoped
++      (hash-set* fact 'space (hash-ref fact 'space (lambda () (and (list? binding) (pair? (list-ref binding 6)) (cdr (list-ref binding 6)))))
++                 'binding (hash-ref fact 'binding (lambda () (identifier-module-binding id phase (source-file-path source))))))
++    (or (bound-owner scoped)
++        (begin (when (eq? binding 'lexical) (refuse)) (external-owner scoped))))
++  (define (capture id phase)
++    (define level (if (identifier-binding id phase) phase 0))
++    (define fact (hasheq 'identifier id 'phase level))
++    (vector (syntax-e id)
++            (if (eq? (identifier-binding id level) 'lexical)
++                (free-id-table-ref (table fact) id #f) (owner fact))
++            (or (range id)
++                ;; Prefix expansion carries the authored base identifier explicitly.
++                (match (syntax-property id 'import-or-export-prefix-ranges)
++                  [(vector _ (? pair? parts)) (range (vector-ref (last parts) 2))]
++                  [_ #f]))))
++  (define (export-spec spec phase [space #f] [protected? #f])
++    (define (leaf id out)
++      (define internal (owner (hasheq 'identifier id 'phase phase)))
++      (list (list phase space protected?
++                  (vector (capture id phase)
++                          (vector (syntax-e out) (and (free-identifier=? id out phase) internal) (range out))))))
++    (cond
++      [(identifier? spec) (leaf spec spec)]
++      [else
++       (define parts (or (syntax->list spec) '()))
++       (match (map syntax-e parts)
++         [(list 'rename _ _) (leaf (cadr parts) (caddr parts))]
++         [(list 'protect _ ...)
++          (append-map (lambda (p) (export-spec p phase space #t)) (cdr parts))]
++         [(list (and kind (or 'for-meta 'for-space)) shift _ ...)
++          (append-map (lambda (p) (export-spec p (if (eq? kind 'for-meta) (and phase shift (+ phase shift)) phase)
++                                              (if (eq? kind 'for-space) shift space) protected?)) (cddr parts))]
++         [_ (list (list phase space protected? (list 'exact (syntax->datum spec))))])]))
++  ;; Module paths and phase/space wrappers are exact; only names carry permission.
++  (define (import-spec spec phase)
++    (define parts (and (syntax? spec) (syntax->list spec)))
++    (match (and parts (map syntax-e parts))
++      [(list (and kind (or 'for-meta 'for-space 'just-meta 'just-space)) shift _ ...)
++       (list kind shift (map (lambda (p) (import-spec p (if (eq? kind 'for-meta) (and phase shift (+ phase shift)) phase)))
++                             (cddr parts)))]
++      [(list 'rename path _ _)
++       ;; Both name slots belong to the scoped import declared by this spec.
++       (define local (capture (caddr parts) phase))
++       (list 'rename (syntax->datum (cadr parts))
++             (list local (vector (syntax-e (cadddr parts)) (vector-ref local 1) (range (cadddr parts)))))]
++      [(list (and kind (or 'only 'all-except)) path _ ...)
++       (list kind (syntax->datum (cadr parts)) (map (lambda (p) (capture p phase)) (cddr parts)))]
++      [(list (and kind (or 'prefix 'prefix-all-except)) _ path _ ...)
++       (list kind (capture (cadr parts) phase) (syntax->datum (caddr parts))
++             (map (lambda (p) (capture p phase)) (cdddr parts)))]
++      [_ (syntax->datum spec)]))
++  (hash 'file (source-file-path source) 'binders binders
++        'structure (for/list ([entry (in-list (hash-ref facts 'structure))] #:unless (eq? (caaddr entry) 'family))
++                     (match entry
++                       [(list anchor phase (list '#%provide specs))
++                        (list (path anchor) phase (list '#%provide (append-map (lambda (p) (export-spec p phase)) specs)))]
++                       [(list anchor phase (list '#%require specs))
++                        (list (path anchor) phase (list '#%require (map (lambda (p) (import-spec p phase)) specs)))]))
++        'components
++        (for/list ([fact (in-list (hash-ref facts 'components))])
++          (define range (hash-ref fact 'range))
++          (define spelling (symbol->string (syntax-e (hash-ref fact 'identifier))))
++          (define start (hash-ref fact 'offset))
++          (define end (+ start (hash-ref fact 'width)))
++          (list range (owner fact)
++                (and (<= 0 start end (string-length spelling))
++                     (equal? (substring text (car range) (cdr range)) (substring spelling start end)))))
++        'occurrences
++        (for/set ([fact (in-list (hash-ref facts 'occurrences))])
++          (list (path (hash-ref fact 'anchor)) (hash-ref fact 'phase 0) (hash-ref fact 'space #f) (owner fact)))
++        'families
++        (for/list ([family (in-list (append (hash-ref facts 'families '())
++                                          (for/list ([entry (in-list (hash-ref facts 'structure))] #:when (eq? (caaddr entry) 'family))
++                                            (cadr (caddr entry)))))])
++          (list (path (hash-ref family 'key)) (hash-ref family 'complete? #f)
++                (for/set ([member (in-list (hash-ref family 'members))]) (owner member))))
++        'names (for/set ([fact (in-list (hash-ref facts 'names))]
++                        #:when (eq? (hash-ref fact 'certainty 'confirmed) 'confirmed))
++                 (list (hash-ref fact 'range) (hash-ref fact 'phase 0) (hash-ref fact 'space #f)
++                       (hash-ref fact 'role) (owner fact)))))
++
++(define (edit-index ranges)
++  (define edits (make-interval-map))
++  (for ([range (in-list ranges)]) (interval-map-set! edits (car range) (cdr range) (cdr range)))
++  edits)
++(define (edited-location? range edits)
++  (and range (< (car range) (cdr range)) (<= (cdr range) (interval-map-ref edits (car range) -1))))
++
++;; Index explicit family edges once.
++(define (selected-owners before ranges)
++  (define edits (edit-index ranges))
++  (define edges (make-hash))
++  (define-values (selected visited) (values (mutable-set) (mutable-seteq)))
++  (for ([entry (in-hash-values (hash-ref before 'binders))])
++    (when (edited-location? (cadr entry) edits) (set-add! selected (car entry))))
++  (for ([component (in-list (hash-ref before 'components))]
++        #:when (edited-location? (car component) edits))
++    (unless (caddr component) (refuse))
++    (set-add! selected (cadr component)))
++  (for ([members (in-list (map caddr (hash-ref before 'families)))])
++    (for ([owner (in-set members)]) (hash-update! edges owner (lambda (sets) (cons members sets)) '())))
++  (let loop ([pending (set->list selected)])
++    (unless (null? pending)
++      (define next (cdr pending))
++      (for ([members (in-list (hash-ref edges (car pending) '()))] #:unless (set-member? visited members))
++        (set-add! visited members)
++        (for ([owner (in-set members)] #:unless (set-member? selected owner))
++          (set-add! selected owner)
++          (set! next (cons owner next))))
++      (loop next)))
++  selected)
++
++;; Check every binder; only edited owners may change identity, injectively.
++(define (rename-correspondence before after ranges name [shift (rename-offset ranges name)])
++  (for ([left (in-list ranges)] [right (in-list (if (pair? ranges) (cdr ranges) '()))])
++    (when (> (cdr left) (car right)) (refuse)))
++  (define-values (old new) (values (hash-ref before 'binders) (hash-ref after 'binders)))
++  (unless (equal? (list->set (hash-keys old)) (list->set (hash-keys new))) (refuse))
++  (define-values (forward backward) (values (make-hash) (make-hash)))
++  (define edited-owners (selected-owners before ranges))
++  (define edits (edit-index ranges))
++  (for ([(anchor entry) (in-hash old)])
++    (match-define (list owner range spelling) entry)
++    (match-define (list next next-range next-spelling) (hash-ref new anchor))
++    (unless (equal? (and range (cons (shift (car range)) (shift (cdr range)))) next-range) (refuse))
++    (when (and (edited-location? range edits) (equal? spelling next-spelling)) (refuse))
++    (unless (or (equal? owner next)
++                (and (set-member? edited-owners owner)
++                     (Module-Binding? owner) (Module-Binding? next)
++                     (equal? (Module-Binding-filepath owner) (hash-ref before 'file))
++                     (equal? (struct-copy Module-Binding owner [id (Module-Binding-id next)]) next)))
++      (refuse))
++    (when (or (and (hash-has-key? forward owner) (not (equal? (hash-ref forward owner) next)))
++              (and (hash-has-key? backward next) (not (equal? (hash-ref backward next) owner))))
++      (refuse))
++    (hash-set! forward owner next) (hash-set! backward next owner))
++  (unless (equal?
++           (for/set ([family (in-list (hash-ref before 'families))])
++             (when (and (not (cadr family)) (not (set-empty? (set-intersect edited-owners (caddr family))))) (refuse))
++             (list (car family) (cadr family)
++                   (for/set ([owner (in-set (caddr family))]) (hash-ref forward owner owner))))
++           (list->set (hash-ref after 'families)))
++    (refuse))
++  forward)
++
++;; Check token/alias relations and every confirmed source name through the correspondence.
++(define (validate-rename-proposal before after ranges name correspondence before-relations after-relations
++                                  [shift (rename-offset ranges name)])
++  (define expected
++    (for/set ([entry (in-set (hash-ref before 'names))])
++      (match-define (list range phase space role owner) entry)
++      (list (cons (shift (car range)) (shift (cdr range))) phase space role
++            (hash-ref correspondence owner owner))))
++  (define expected-occurrences
++    (for/set ([entry (in-set (hash-ref before 'occurrences))])
++      (append (take entry 3) (list (hash-ref correspondence (last entry) (last entry))))))
++  (define (component-counts entries) (for/fold ([counts (hash)]) ([entry (in-list entries)]) (hash-update counts entry add1 0)))
++  (define expected-components
++    (for/list ([entry (in-list (hash-ref before 'components))])
++      (match-define (list range owner valid?) entry)
++      (list (cons (shift (car range)) (shift (cdr range))) (hash-ref correspondence owner owner) valid?)))
++  (define selected (selected-owners before ranges))
++  (define edits (edit-index ranges))
++  (for ([(owner next) (in-hash correspondence)] #:unless (equal? owner next)) (set-add! selected owner))
++  (define binder-spellings (make-hash))
++  (for ([(anchor entry) (in-hash (hash-ref before 'binders))])
++    (define next (hash-ref (hash-ref after 'binders) anchor))
++    (when (equal? (hash-ref correspondence (car entry) (car entry)) (car next))
++      (hash-update! binder-spellings (car entry)
++                    (lambda (pairs) (set-add pairs (cons (caddr entry) (caddr next)))) (set))))
++  (define (same-name? old new)
++    (match-define (vector spelling owner range) old)
++    (match-define (vector next-spelling next-owner next-range) new)
++    (or (equal? spelling next-spelling)
++        (and (edited-location? range edits)
++             (equal? (cons (shift (car range)) (shift (cdr range))) next-range))
++        (and owner (set-member? selected owner)
++             (equal? (hash-ref correspondence owner owner) next-owner))))
++  (define (same-specs? old new)
++    (match* (old new)
++      [((vector (and internal (vector spelling owner range)) external)
++        (vector (and next-internal (vector next-spelling next _)) next-external))
++       (and (equal? (hash-ref correspondence owner owner) next)
++            (or (same-name? internal next-internal)
++                (set-member? (hash-ref binder-spellings owner (set)) (cons spelling next-spelling)))
++            (same-name? external next-external))]
++      [((vector _ _ _) (vector _ _ _)) (same-name? old new)]
++      [((list 'exact left) (list 'exact right)) (equal? left right)]
++      [((cons left rest) (cons right next))
++       (and (same-specs? left right) (same-specs? rest next))]
++      [(_ _) (equal? old new)]))
++  ;; Consume each scoped leaf once, reassigning aliases when permissions overlap.
++  (define (same-exports? old new)
++    (define buckets (make-hash))
++    (define (key entry mapped?)
++      (define owner (match (last entry) [(vector (vector _ owner _) _) owner] [_ #f]))
++      (append (take entry 3) (list (if mapped? (hash-ref correspondence owner owner) owner))))
++    (for ([entry (in-list new)])
++      (hash-update! buckets (key entry #f) (lambda (entries) (cons (cons entry (box #f)) entries)) '()))
++    (define (place entry seen)
++      (for/or ([slot (in-list (hash-ref buckets (key entry #t) '()))]
++               #:unless (set-member? seen slot)
++               #:when (same-specs? (last entry) (last (car slot))))
++        (set-add! seen slot)
++        (and (or (not (unbox (cdr slot))) (place (unbox (cdr slot)) seen))
++             (begin (set-box! (cdr slot) entry) #t))))
++    (and (= (length old) (length new))
++         (for/and ([entry (in-list old)]) (place entry (mutable-seteq)))))
++  (define-values (old-structure new-structure) (values (hash-ref before 'structure) (hash-ref after 'structure)))
++  (unless (and (equal? expected (hash-ref after 'names))
++               (equal? (component-counts expected-components) (component-counts (hash-ref after 'components)))
++               (equal? expected-occurrences (hash-ref after 'occurrences))
++               (= (length old-structure) (length new-structure))
++               (for/and ([old (in-list old-structure)] [new (in-list new-structure)])
++                 (and (equal? (take old 2) (take new 2))
++                      (match* ((caddr old) (caddr new))
++                        [((list '#%provide left) (list '#%provide right)) (same-exports? left right)]
++                        [(left right) (same-specs? left right)])))
++               (equal? before-relations after-relations))
++    (refuse)))
+diff --git a/doclib/service/declaration.rkt b/doclib/service/declaration.rkt
+--- a/doclib/service/declaration.rkt
++++ b/doclib/service/declaration.rkt
+@@ -42,7 +42,10 @@
+          syntax/id-table
+          syntax/modresolve)
+ 
+-(provide declaration%)
++(provide declaration% current-retain-binding-facts?)
++
++;; Rename validates transient expansions before discarding their scoped facts.
++(define current-retain-binding-facts? (make-parameter #f))
+ 
+ ;; Private graph owner for a leftover `#lang` export use. Not a
+ ;; Module-Binding. Do not return this key from public methods or treat the
+@@ -809,7 +812,7 @@
+       (apply-pending-module-lang-uses!)
+       ;; Resolve scoped identities before releasing the expansion and its syntax
+       ;; properties. Later service queries need only names, keys and source data.
+-      (when accepted-binding-facts
++      (when (and accepted-binding-facts (not (current-retain-binding-facts?)))
+         (define facts accepted-binding-facts)
+         (cond
+           [contribution-only? (set! accepted-binding-facts (hasheq))]

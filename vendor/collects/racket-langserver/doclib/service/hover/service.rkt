@@ -21,6 +21,7 @@
          data/interval-map
          drracket/check-syntax
          (only-in "../../lexer.rkt"
+                  LexerState-adapter
                   LexerState-language-policy
                   Language-Policy-policy-language
                   Language-Policy-body-mode)
@@ -63,14 +64,18 @@
     ;; Filled only during `walk-stx`. Edits replay stored comment ranges.
     (define leading-comments-by-display-start (make-hash))
     ;; From lexer policy at build time. Chooses candidates and fence language.
-    (define source-kind
-      (let ([policy (LexerState-language-policy lexer-state)])
-        (cond
-          [(eq? (Language-Policy-policy-language policy) 'rhombus) 'rhombus]
-          [(eq? (Language-Policy-body-mode policy) 'sexp) 'sexp]
-          [else 'none])))
-    (define fence-language
-      (if (eq? source-kind 'rhombus) "rhombus" "racket"))
+    (define (source-kind)
+      (define policy (LexerState-language-policy lexer-state))
+      (define adapter (LexerState-adapter lexer-state))
+      (case (if adapter (hash-ref (hash-ref adapter 'editor) 'source-details 'auto) 'auto)
+        [(sexp) 'sexp]
+        [(shrubbery) 'rhombus]
+        [(none) 'none]
+        [else
+         (cond
+           [(eq? (Language-Policy-policy-language policy) 'rhombus) 'rhombus]
+           [(eq? (Language-Policy-body-mode policy) 'sexp) 'sexp]
+           [else 'none])]))
 
     ;; Do not expose interval-maps. Bounds are the atomic range over which this
     ;; exact winner remains active.
@@ -185,12 +190,12 @@
 
     (define/override (walk-stx expand-result)
       (define pre-stx (ExpandResult-pre-syntax expand-result))
-      (when (and pre-stx (not (eq? source-kind 'none)))
+      (when (and pre-stx (not (eq? (source-kind) 'none)))
         (define candidates
           (source-candidates pre-stx
                              src
                              (send doc-text end-pos)
-                             source-kind))
+                             (source-kind)))
         ;; Definition targets: module-level decls with no uses.
         ;; Arrow starts: local decls in let and clauses.
         (for ([range (in-set definition-target-ranges)])
@@ -226,7 +231,7 @@
                         display-start
                         display-end
                         (cdr source-range)
-                        fence-language))))
+                        (if (eq? (source-kind) 'rhombus) "rhombus" "racket")))))
 
     (define/private (comments-for-display display-start)
       (define cached

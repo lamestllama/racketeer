@@ -81,6 +81,75 @@ applies Racketeer's own patches in order:
   construction must preserve the indexer's resource failure reporting. Full
   document analysis retains its existing diagnostics.
 
+- `binding-identities.patch`: retain every module binding, including its phase and
+  space, when definitions or uses share a source range. Keep local queries and
+  workspace contributions distinct for generated struct and macro names, and refuse
+  document renames that would change only part of a shared binding family. Meant for
+  upstream; see [issue #255](https://github.com/jeapostrophe/racket-langserver/issues/255).
+
+- `generic-bindings.patch`: collect scoped core binders, origins and disappeared
+  bindings/uses in the expansion namespace, including unused generated local
+  binders whose originalness prevents Check Syntax arrows. Retain structural
+  anchors and exact module identities in full and contribution-only analysis.
+  Recover defining phases for shifted imports from scoped identifiers.
+  Reference queries expand explicitly supplied families and deduplicate their
+  locations, while unrelated identities at a shared range remain separate.
+  The phase-aware core walker is also used by workspace rename. Meant for upstream.
+
+- `bindings-provider.patch`: add Racketeer's optional `#:bindings-provider`
+  argument to `expand-source`. The supplied procedure receives the documented
+  immutable `bindings` request; its provider data is captured by the caller.
+  It runs once in the expansion namespace after generic collection, in either
+  analysis mode. Confirmed names require scoped bindings and source ranges;
+  family members require distinct structural anchors. Without a supplied
+  procedure, analysis uses generic facts alone. Discovery and loading remain
+  the embedding application's responsibility. Shared-binder disambiguation
+  preserves verified component ranges supplied for the same scoped occurrence.
+
+- `language-adapter-discovery.patch`: accept an optional descriptor resolver
+  installed by the embedding launcher. Full and contribution-only expansion
+  retain the selected descriptor on the reader syntax. Standalone callers keep
+  ordinary analysis; the bundled sources have no dependency on Racketeer code.
+  This selects data only; language policy and service behaviour are unchanged.
+
+- `language-adapter-policy-cache.patch`: apply optional editor policy fields at
+  analysis, source hover and formatting boundaries. Keep adapter dependency
+  observations in source snapshots and validate fingerprints before retaining,
+  restoring or publishing editor results. The embedding launcher supplies the
+  resolver and freshness check; standalone callers retain existing defaults.
+
+- `language-adapter-bindings.patch`: when the embedding launcher maps a selected
+  adapter to a bindings procedure, pass it to the existing `#:bindings-provider`
+  argument. An explicit argument still wins; standalone callers are unchanged.
+
+- `binding-facts-services.patch`: supplement completion, the structural declaration
+  outline and semantic kinds with confirmed source bindings. Retain scoped core
+  identities, original form extents and local visibility; exclude generated helpers
+  and template predictions while preserving structure families and lexical recovery.
+
+- `language-adapter-declarations.patch`: dispatch optional declaration and native
+  call providers through the embedding launcher. Keep immutable declaration and
+  call records for the current snapshot, and release reader syntax when analysis
+  ends. Share declaration trees, source signatures, declared annotations and
+  semantic kinds with outline, hover and signature services; flatten native
+  outlines only at transport. Preserve generic service behaviour and advertised
+  capabilities when no provider is selected.
+
+- `rename-binders.patch`: share identifier token and proposal validation between
+  document and workspace rename. Match retained binder anchors through a checked
+  bijection, preserving occurrence ownership for generated families, local
+  bindings and virtual documents. Check scoped component mappings and storage
+  binders in the same core declaration. Retain generated uses and disappeared
+  bindings, and resolve provider identities in their expansion namespace. Refuse capture and incomplete families before
+  returning edits. Preserve require and provide paths and wrappers; changed names
+  need an edited location or a scoped owner in the renamed family.
+
+- `language-adapter-completion.patch`: add one optional completion dispatch through
+  the embedding launcher and an optional completion edit. Native providers supply
+  contextual members and exact replacement ranges; ordinary completion retains
+  its existing output and trigger characters when no provider handles the cursor.
+  Rhombus recovery and static member knowledge remain in Racketeer's provider.
+
 Racketeer provides a language server and a workspace indexing server, both over LSP, and
 a debug adapter over DAP. The sources here supply the language server and the libraries
 used by the index. The index does not start until references or rename asks for it.

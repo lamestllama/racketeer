@@ -14,6 +14,7 @@
          syntax/modcode
          "../test-discovery.rkt"
          "../wxme-source.rkt"
+         "../language-adapters.rkt"
          "../instrumentation/instrument.rkt"
          "../launcher.rkt"
          (only-in "../source.rkt" make-within?)
@@ -53,6 +54,10 @@
                            #:instrument? [instrument? #t]
                            #:coverage? [coverage? #f]
                            #:language [language #f]
+                           #:language-adapter [language-adapter #f]
+                           #:submodule [launch-submodules '()]
+                           #:workspace [workspace #f]
+                           #:on-language-adapter [on-language-adapter void]
                            #:on-sites [on-sites void]
                            #:on-event [on-event #f]
                            #:on-entry [on-entry #f]
@@ -71,6 +76,63 @@
   (define selected-sources
     (cons source (map (lambda (path) (simplify-path (path->complete-path path)))
                       additional-sources)))
+  (define adapters (make-hash))
+  (define adapter-identities (make-hash))
+  (define adapter-source-texts (make-hash))
+  (define (select-adapter! resolved [pre #f] [submodules '()])
+    (define identity (if (null? submodules) resolved `(submod ,resolved ,@submodules)))
+    (define descriptor
+     (hash-ref! adapters identity
+      (lambda ()
+        (define descriptor
+          ;; Tooling modules are loaded normally, rather than instrumented as
+          ;; another target module while their own profile is being selected.
+          (parameterize ([current-load/use-compiled ordinary-load]
+                         [current-load ordinary-source-load]
+                         [current-eval ordinary-eval]
+                         [current-compile ordinary-compile]
+                         [use-compiled-file-paths compiled-paths]
+                         [current-compiled-file-roots compiled-roots]
+                         [use-compiled-file-check compiled-check]
+                         [current-path->mode #f])
+            ;; Source loading has already instantiated its reader before this
+            ;; boundary. Put a cached identity in the same state before observing
+            ;; adapter dependencies, so incidental reader loads do not change it.
+            ;; Racket-based providers can declare this implicit dependency.
+            (dynamic-require 'racket/runtime-config (void))
+            (define saved (hash-ref adapter-identities identity #f))
+            (when saved
+              (for ([reader (in-list (hash-ref saved 'readers '()))])
+                (dynamic-require reader #f)))
+            (resolve-language-adapter resolved #:pre pre #:declare-bindings? instrument?
+              #:saved-identity (hash-ref adapter-identities identity #f)
+              #:submodules submodules
+              #:text (hash-ref adapter-source-texts resolved #f)
+              #:legacy-info (and (module-declared? identity #f)
+                                 (module->language-info identity #t))
+              #:language (and (equal? resolved source) language)
+              #:workspace (language-adapter-workspace resolved (if workspace (list workspace) '()))
+              #:explicit (and (equal? resolved source) (equal? submodules launch-submodules)
+                              language-adapter)
+              #:cwd (current-directory))))
+        (on-language-adapter identity descriptor)
+        descriptor)))
+    descriptor)
+  (define (select-launch-child! resolved [pre #f])
+    (when (and (equal? resolved source) (pair? launch-submodules))
+      (select-adapter! resolved pre launch-submodules)))
+  (define (adapter-basis resolved pre)
+    (select-adapter! resolved pre)
+    (select-launch-child! resolved pre)
+    (define identities
+      (cons resolved (if (and (equal? resolved source) (pair? launch-submodules))
+                         (list `(submod ,resolved ,@launch-submodules)) '())))
+    (define entries
+      (for/list ([identity (in-list identities)]
+                 #:do [(define descriptor (hash-ref adapters identity))]
+                 #:when (hash-ref descriptor 'fingerprint #f))
+        (cons identity (hash-ref descriptor 'fingerprint))))
+    (and (pair? entries) entries))
   (define under-root?
     (make-within? (map (lambda (p) (simplify-path (path->complete-path p))) source-roots)))
   (define debugger-source? (make-within? (list (simplify-path debugger-root))))
@@ -183,13 +245,23 @@
           (datum->syntax context `(quote ,name)))
         (define (annotate expanded [bindings #f] #:expression-boundary? [expression-boundary? #f])
           (define index (begin0 next-form (set! next-form (add1 next-form))))
+          (define module-path (hash-ref module-paths bindings '()))
+          (define descriptor (select-adapter! selected-source #f module-path))
+          (define binding-choice (hash-ref descriptor 'bindings))
+          (define text (hash-ref adapter-source-texts selected-source #f))
+          (define facts
+            (and (pair? binding-choice) text
+                 (call-language-provider (cadr binding-choice)
+                   (make-provider-request 'bindings #:pre form #:expanded expanded #:text text)
+                   #:source selected-source #:field 'bindings)))
           (define-values (annotated sites table)
             (instrument-module expanded selected-source fresh-id
                                #:form (cons unit index) #:module-context bindings
+                               #:runtime-bindings (if facts (hash-ref facts 'runtime '()) '())
+                               #:source-text text
                                #:coverage? coverage? #:source-operands source-operands
                                #:template-source? (lambda (file) (and (path? file) (selected-source? file)))
                                #:expression-boundary? expression-boundary?))
-          (define module-path (hash-ref module-paths bindings '()))
           (when live?
             (register-form-sites! unit index (form-callback selected-source module-path) (map car table)
                                   #:gate gate #:on-thread on-thread #:armed? coverage?)
@@ -203,7 +275,27 @@
                                          (site-value-shown? s)
                                          (and (not (equal? (site-source s) selected-source))
                                               (path->bytes (site-source s))))))))
-          annotated)
+          ;; Generated references must survive writing this module outside the
+          ;; debugger's directory, including an import compiled during expansion.
+          (define (anchor-runtime value)
+            (cond
+              [(identifier? value)
+               (define binding (identifier-binding value))
+               (if (and (list? binding)
+                        (equal? (resolved-module-path-name (module-path-index-resolve (car binding)))
+                                (simplify-path instrumentation-runtime-path)))
+                   (let ([id (syntax-binding-set->syntax
+                              (syntax-binding-set-extend
+                               (syntax-binding-set) (syntax-e value) 0
+                               (module-path-index-join `(file ,(path->string instrumentation-runtime-path)) #f)
+                               #:source-symbol (cadr binding))
+                              (syntax-e value))])
+                     (datum->syntax id (syntax-e value) value value))
+                   value)]
+              [(syntax? value) (datum->syntax value (anchor-runtime (syntax-e value)) value value)]
+              [(pair? value) (cons (anchor-runtime (car value)) (anchor-runtime (cdr value)))]
+              [else value]))
+          (if rec (anchor-runtime annotated) annotated))
         (define (make-transform bindings)
           (lambda (kind stx)
             (case kind
@@ -217,7 +309,7 @@
           ;; Bind the core import explicitly; program definitions must not
           ;; capture the import or its module-path spelling.
           (define require-name (gensym 'require))
-          (define require-binding (identifier-binding #'#%require))
+          (define require-binding (identifier-binding #'#%require 0))
           (define require-id
             (syntax-binding-set->syntax
              (syntax-binding-set-extend (syntax-binding-set) require-name 0 (car require-binding)
@@ -257,8 +349,13 @@
                            '()))
             context)
           ;; Keep declaration bindings when a module is loaded during expansion.
+          ;; A macro's namespace sits one phase above the form it expands, so only
+          ;; a form given to the load handler is read at the namespace's own phase.
+          (define form-phase
+            (if parent-bindings (syntax-local-phase-level) (namespace-base-phase (current-namespace))))
           (define rewritten
-            (syntax-case form (module module* module+ begin)
+            (syntax-case* form (module module* module+ begin)
+              (lambda (incoming literal) (free-identifier=? incoming literal form-phase 0))
             [(module . _) (not (equal? (syntax-source form) selected-source)) form]
             [(module* . _) (not (equal? (syntax-source form) selected-source)) form]
             [(module name language (mb body ...))
@@ -376,6 +473,7 @@
   (define (mode-for path) (if (selected-source? path) cache-mode plain-mode))
   ;; Bytes captured for files this session is loading now, by path.
   (define captured-sources (make-hash))
+  (define original-forms (make-hash))
   ;; Source hash of the bytes the manager's reader hands out, awaiting compilation.
   (define pending-compiles (make-hash))
   ;; Files whose expansion already told the session everything.
@@ -414,6 +512,8 @@
         (parameterize ([current-load/use-compiled load-selected])
          (cond
            [(selected-source? resolved)
+            (hash-set! original-forms resolved form)
+            (define basis (adapter-basis resolved form))
             (define rec (recording (cached-unit resolved) hash
                                    (hash-has-key? captured-sources resolved) '()))
             (define code
@@ -427,7 +527,7 @@
             ;; be recorded against it. It still runs: nothing need expand again.
             (unless cache-usable? (raise (abandoned-build resolved code)))
             (add-replay-log code hash (recording-unit rec) (reverse (recording-events rec))
-                            (lambda (holder) (ordinary-compile holder #f)))]
+                            (lambda (holder) (ordinary-compile holder #f)) #:adapter basis)]
            [else
             (parameterize ([compile-enforce-module-constants enforce-module-constants?])
               (ordinary-compile form immediate?))]))
@@ -448,8 +548,8 @@
       (unless (entry-records-hash? cache-root-path mode (car compiled) (cdr compiled))
         (remove-entry! cache-root-path mode (car compiled))))
     (set! compiled-unchecked '()))
-  ;; Read and declare the file's entry. Returns the replay log, or #f for plain code.
-  (define (declare-entry! resolved selected? contents)
+  ;; Read and declare the file's entry. Returns its replay log and compiled module.
+  (define (declare-entry! resolved selected? contents #:rebuild? [rebuild? #t])
     (define mode (if selected? cache-mode plain-mode))
     (define stored (or (read-entry-bytes cache-root-path mode resolved)
                        (error 'debug-cache "damaged entry for ~a" resolved)))
@@ -466,10 +566,38 @@
           (values #f code)))
     (when (and log (not (equal? (replay-source-hash log) (sha1 (open-input-bytes contents)))))
       (error 'debug-cache "entry for ~a does not match the source" resolved))
-    (parameterize ([current-load-relative-directory directory])
-      (ordinary-eval program))
-    (mark-entry-used! cache-root-path mode resolved)
-    log)
+    (define adapter-matches?
+      (or (not log)
+       (let ()
+        (for ([entry (in-list (or (replay-adapter log) '()))])
+          (hash-set! adapter-identities (car entry) (cdr entry)))
+        (define basis (adapter-basis resolved (hash-ref original-forms resolved
+                                                       (lambda () (datum->syntax #f program)))))
+        (unless (for/and ([descriptor (in-hash-values adapters)])
+                  (language-adapter-current? descriptor))
+          (define failure
+            (exn:fail (format "language adapter changed during load: ~a" resolved)
+                      (current-continuation-marks)))
+          (set! surfaced-failure failure)
+          (raise failure))
+        (equal? basis (replay-adapter log)))))
+    (cond
+      [adapter-matches?
+       (parameterize ([current-load-relative-directory directory])
+         (ordinary-eval program))
+       (mark-entry-used! cache-root-path mode resolved)
+       (values log program)]
+      [else
+       (unless rebuild? (error 'debug-cache "language adapter changed for ~a" resolved))
+       (remove-entry! cache-root-path mode resolved)
+       (for ([identity (in-list (hash-keys adapters))]
+             #:when (or (equal? identity resolved)
+                        (and (pair? identity) (equal? (cadr identity) resolved))))
+         (hash-remove! adapters identity)
+         (hash-remove! adapter-identities identity))
+       (set! build-manager #f)
+       (build-entry! resolved)
+       (declare-entry! resolved selected? contents #:rebuild? #f)]))
   ;; Tell the session what expansion would have, in the order expansion did.
   (define (replay! resolved log)
     (define unit (hold-unit! (replay-unit log)))
@@ -517,7 +645,12 @@
            [exn:fail?
             (lambda (raised) (lambda () (from-source (exn-message raised))))])
         (build-entry! resolved)
-        (define log (declare-entry! resolved selected? (or contents #"")))
+        (define-values (log program) (declare-entry! resolved selected? (or contents #"")))
+        (when selected?
+          (define pre (hash-ref original-forms resolved (lambda () (datum->syntax #f program))))
+          (select-adapter! resolved pre)
+          (select-launch-child! resolved pre))
+        (hash-remove! original-forms resolved)
         (hash-remove! captured-sources resolved)
         (define delivered? (hash-ref delivered-units resolved #f))
         (hash-remove! delivered-units resolved)
@@ -588,6 +721,7 @@
   (define (capture-source! resolved)
     (define contents (call-with-input-file resolved port->bytes))
     (define text (string->immutable-string (source-text contents)))
+    (hash-set! adapter-source-texts resolved text)
     (on-source resolved)
     (on-source-snapshot resolved text)
     contents)
@@ -626,9 +760,12 @@
                              (ordinary-open path)))])
          (get-module-code resolved #:sub-path '() #:rkt-try-ss? #f
                           #:compile (lambda (form)
-                                      (evaluate-loaded-form
-                                       (if (and test? (equal? resolved source) (pair? discovered-tests))
-                                           (wrap-discovered-tests form discovered-tests (and test-selection #t)) form)))))]
+                                      (select-adapter! resolved form)
+                                      (begin0
+                                        (evaluate-loaded-form
+                                         (if (and test? (equal? resolved source) (pair? discovered-tests))
+                                             (wrap-discovered-tests form discovered-tests (and test-selection #t)) form))
+                                        (select-launch-child! resolved form)))))]
       [else
        (define input (open-source-snapshot resolved))
        (port-count-lines! input)
@@ -692,6 +829,9 @@
                     #:images? [images? #f]
                     #:coverage? [coverage? #f]
                     #:language [language #f]
+                    #:language-adapter [language-adapter #f]
+                    #:workspace [workspace #f]
+                    #:on-language-adapter [on-language-adapter void]
                     #:on-sites [on-sites void]
                     #:on-event [on-event #f]
                     #:on-entry [on-entry #f]
@@ -726,6 +866,10 @@
   (define selected-sources (map canonical additional-sources))
   (define roots (map canonical source-roots))
   (define target (if (null? submodule) source `(submod ,source ,@submodule)))
+  (define launch-adapter-selected? #f)
+  (define (selected-adapter path descriptor)
+    (when (equal? path target) (set! launch-adapter-selected? #t))
+    (on-language-adapter path descriptor))
   (define namespace (make-base-namespace))
   ;; Image values and the debugger must share the conversion property identity.
   (when (or instrument? images?)
@@ -736,6 +880,9 @@
   (define-values (load-selected load-plain-source select-entry! finish-entry!)
     (make-debug-loader namespace source
                        #:instrument? instrument? #:coverage? coverage? #:language language
+                       #:language-adapter language-adapter #:workspace workspace
+                       #:submodule submodule
+                       #:on-language-adapter selected-adapter
                        #:on-sites on-sites #:on-event on-event #:on-entry on-entry
                        #:on-thread on-thread #:gate gate
                        #:on-source on-source #:on-source-snapshot on-source-snapshot
@@ -743,6 +890,10 @@
                        #:source-roots roots #:test? test? #:test-selection test-selection
                        #:cache-directory cache-directory))
   (define program-custodian (make-custodian))
+  (define ordinary-load (current-load/use-compiled))
+  (define ordinary-source-load (current-load))
+  (define ordinary-eval (current-eval))
+  (define ordinary-compile (current-compile))
   (define ordinary-uncaught (uncaught-exception-handler))
   (define exception-handler-tag (make-continuation-prompt-tag 'module-exception-handler))
   (define report-test-error void)
@@ -772,6 +923,19 @@
             exception-handler
             (lambda ()
               (define (execute)
+                (define legacy-info
+                  (and (not language) (module-declared? target #t)
+                       (module->language-info target #t)))
+                (unless launch-adapter-selected?
+                  (selected-adapter target
+                    (parameterize ([current-load/use-compiled ordinary-load]
+                                   [current-load ordinary-source-load]
+                                   [current-eval ordinary-eval]
+                                   [current-compile ordinary-compile])
+                      (resolve-language-adapter source #:language language
+                        #:submodules submodule
+                        #:legacy-info legacy-info
+                        #:workspace workspace #:explicit language-adapter #:cwd (current-directory)))))
                 (define test-submodule?
                   (and test? (module-declared? `(submod ,source test) #t)))
                 ;; Discover main before instantiation, so parent initialization

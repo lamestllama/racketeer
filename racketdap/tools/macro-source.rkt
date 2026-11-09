@@ -2,7 +2,7 @@
 ;; Copyright (c) 2026 Eric Parsonage
 ;; SPDX-License-Identifier: Apache-2.0 OR MIT
 
-(require racket/path syntax/modread)
+(require racket/path syntax/modread "../language-adapters.rkt")
 (provide read-macro-source call-with-macro-source)
 
 ;; Read the captured buffer, not the on-disk file. Counting the actual prefix
@@ -31,7 +31,10 @@
                   (let ([parts (syntax->list (car forms))])
                     (and parts (>= (length parts) 4) (eq? (syntax-e (car parts)) 'module))))
        (error 'macro-stepper "Stepping through a file requires a single #lang or module declaration."))
-     (car forms)]
+     (define adapter
+       (resolve-language-adapter name #:text (string-append prefix (hash-ref request 'text))
+         #:pre (car forms) #:workspace (hash-ref request 'workspace #f)))
+     (syntax-property (car forms) 'racketeer:language-profile adapter)]
     [(null? (cdr forms)) (car forms)]
     [else (datum->syntax #f (cons 'begin forms) (car forms))]))
 

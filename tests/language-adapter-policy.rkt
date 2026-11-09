@@ -1,0 +1,123 @@
+#lang racket/base
+;; Copyright (c) 2026 Eric Parsonage
+;; SPDX-License-Identifier: Apache-2.0 OR MIT
+(require rackunit racket/class racket/list racket/runtime-path racket/set
+         "../racketdap/language-adapters.rkt")
+(define-runtime-path bundled "../vendor/collects")
+(current-library-collection-paths (cons bundled (current-library-collection-paths)))
+(define (api file name) (dynamic-require (build-path bundled "racket-langserver" file) name))
+(define make-doc (api "doclib/doc.rkt" 'make-doc))
+(define doc-expand! (api "doclib/doc.rkt" 'doc-expand!))
+(define doc-policy (api "doclib/doc.rkt" 'doc-language-policy))
+(define containing (api "doclib/doc.rkt" 'doc-find-containing-paren))
+(define ranges (api "doclib/doc.rkt" 'doc-definition-ranges))
+(define format-edits (api "doclib/doc.rkt" 'doc-format-edits))
+(define on-type-edits (api "doclib/doc.rkt" 'doc-on-type-format-edits))
+(define resolver (api "doclib/language-adapter.rkt" 'current-language-adapter-resolver))
+(define Doc-trace
+  (parameterize ([current-namespace (module->namespace (build-path bundled "racket-langserver/doclib/doc.rkt"))])
+    (eval 'Doc-trace)))
+(define (Pos line character)
+  ((api "common/interfaces.rkt" 'jsexpr->Pos) (hasheq 'line line 'character character)))
+(define (Range start end)
+  ((api "common/interfaces.rkt" 'jsexpr->Range)
+   (hasheq 'start ((api "common/json-util.rkt" '->jsexpr) start)
+           'end ((api "common/json-util.rkt" '->jsexpr) end))))
+(define options ((api "common/interfaces.rkt" 'jsexpr->FormattingOptions) (hasheq 'tabSize 2 'insertSpaces #t)))
+(define text "#lang racket/base\n(provide answer)\n(define (answer x)\n(+ x 1))\n(answer 3)\n")
+(define (document fields [source text])
+  (define profile (validate-language-profile `(profile (editor ,@fields))))
+  (parameterize ([resolver (lambda (_source _text _pre _roots) profile)])
+    (define doc (make-doc "file:///tmp/adapter-policy.rkt" source))
+    (check-equal? (doc-expand! doc) (not (eq? (hash-ref (hash-ref profile 'editor) 'expand?) #f)))
+    doc))
+(define (policy-ref name doc) ((api "doclib/doc-lang.rkt" name) (doc-policy doc)))
+(define (detail doc position)
+  (call-with-values (lambda () (send (send (Doc-trace doc) get-hover) source-detail-at position)) list))
+
+(module+ test
+  (test-case "body mode overrides structural services and preserves other policy fields"
+    (for ([mode '(sexp non-sexp unknown)])
+      (define doc (document `((body-mode ,mode))))
+      (check-equal? (policy-ref 'Language-Policy-body-mode doc) mode)
+      (define open (caar (regexp-match-positions #rx"\\(\\+ x" text)))
+      (check-equal? (containing doc (+ open 3)) (and (not (eq? mode 'non-sexp)) open))
+      (check-true (policy-ref 'Language-Policy-expand? doc))
+      (check-true (policy-ref 'Language-Policy-format? doc))))
+  (test-case "expand overrides control both full analysis and index contributions"
+    (define enabled (document '((expand? #t))))
+    (define disabled (document '((expand? #f))))
+    (check-true (positive? (hash-count (ranges enabled))))
+    (check-equal? (hash-count (ranges disabled)) 0)
+    (check-true (policy-ref 'Language-Policy-expand? disabled))
+    (parameterize ([resolver (lambda args (validate-language-profile '(profile (editor (expand? #f)))))])
+      (define result ((api "doclib/doc.rkt" 'doc-check-syntax) disabled))
+      (define trace ((api "doclib/check-syntax.rkt" 'CSResult-trace) result))
+      (check-false ((api "doclib/doc-lang.rkt" 'Language-Policy-expand?)
+                    ((api "doclib/lexer.rkt" 'LexerState-language-policy) (send trace get-lexer-state)))))
+    (for ([expand? '(#t #f)])
+      (parameterize ([resolver (lambda args (validate-language-profile `(profile (editor (expand? ,expand?)))))])
+        (define invalid (make-doc "file:///tmp/adapter-policy.rkt"
+                                  "#lang racket/base\n(define answer unavailable-name)\n"))
+        (define result ((api "doclib/doc.rkt" 'doc-check-syntax) invalid))
+        (define trace ((api "doclib/check-syntax.rkt" 'CSResult-trace) result))
+        (check-equal? (and (for/or ([diag (in-set (send trace get-warn-diags))])
+                             (regexp-match? #rx"unbound identifier"
+                                            ((api "common/interfaces.rkt" 'Diagnostic-message) diag))) #t)
+                      expand?)))
+    (parameterize ([resolver (lambda args (validate-language-profile '(profile (editor (expand? #f)))))])
+      (define indexed (make-doc "file:///tmp/adapter-policy.rkt" text))
+      (check-false (doc-expand! indexed #:contribution-only? #t))
+      (check-equal? (hash-count (ranges indexed)) 0)))
+  (test-case "header override changes diagnostics while missing and incomplete remain distinct"
+    (for ([source '("42\n" "#lang\n")]
+          [message '("Missing language header" "Incomplete language header")])
+      (for ([required? '(#t #f)])
+        (parameterize ([resolver (lambda args (validate-language-profile `(profile (editor (require-header? ,required?)))))])
+          (define doc (make-doc "file:///tmp/header.rkt" source))
+          (define result ((api "doclib/doc.rkt" 'doc-check-syntax) doc))
+          (define trace ((api "doclib/check-syntax.rkt" 'CSResult-trace) result))
+          (define messages (map (api "common/interfaces.rkt" 'Diagnostic-message) (set->list (send trace get-warn-diags))))
+          (check-equal? (and (ormap (lambda (s) (regexp-match? (regexp message) s)) messages) #t) required?)))))
+  (test-case "source detail overrides choose the existing walkers"
+    (define start (caar (regexp-match-positions #rx"answer x" text)))
+    (for ([mode '(auto sexp none shrubbery)])
+      (define doc (document `((source-details ,mode))))
+      (define found (caddr (detail doc start)))
+      (case mode
+        [(none) (check-false found)]
+        [(shrubbery)
+         (check-not-false found)
+         (check-equal? ((api "doclib/service/hover/types.rkt" 'Hover-Detail-fence-language) found) "rhombus")]
+        [else (check-not-false found)]))
+    (check-false (caddr (detail (document '((body-mode non-sexp))) start)))
+    (check-not-false (caddr (detail (document '((body-mode non-sexp) (source-details sexp))) start))))
+  (test-case "formatting off removes document range and on-type edits"
+    (for ([mode '(policy off)])
+      (define doc (document `((formatting ,mode))))
+      (for ([edits (list (format-edits doc (Range (Pos 0 0) (Pos 5 0)) #:formatting-options options)
+                         (format-edits doc (Range (Pos 2 0) (Pos 3 8)) #:formatting-options options)
+                         (on-type-edits doc (Pos 3 7) ")" #:formatting-options options))])
+        (if (eq? mode 'off) (check-equal? edits '()) (check-not-equal? edits '())))))
+  (test-case "omitted fields preserve the existing policy and service results"
+    (define plain (make-doc "file:///tmp/adapter-policy.rkt" text))
+    (check-true (doc-expand! plain))
+    (define empty (document '()))
+    (check-equal? (doc-policy empty) (doc-policy plain))
+    (check-equal? (ranges empty) (ranges plain))
+    (check-equal? (containing empty 65) (containing plain 65))
+    (check-equal? (format-edits empty (Range (Pos 0 0) (Pos 5 0)) #:formatting-options options)
+                  (format-edits plain (Range (Pos 0 0) (Pos 5 0)) #:formatting-options options))
+    (check-exn exn:fail?
+               (lambda () (format-edits plain (Range (Pos 0 0) (Pos 5 0))
+                                         #:formatting-options options #:backend 'off)))))
+
+(module+ test
+  (test-case "removing an expansion override restores the base policy on the next analysis"
+    (define selected (validate-language-profile '(profile (editor (expand? #f)))))
+    (parameterize ([resolver (lambda args selected)])
+      (define doc (make-doc "file:///tmp/adapter-policy.rkt" text))
+      (check-false (doc-expand! doc))
+      (set! selected (validate-language-profile '(profile)))
+      (check-true (doc-expand! doc))
+      (check-true (positive? (hash-count (ranges doc)))))))

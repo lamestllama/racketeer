@@ -324,6 +324,11 @@
         "title": "Racket: Show Language Server Output"
       },
       {
+        "command": "racketdap.editLogpointSegments",
+        "title": "Racket: Edit Logpoint Segments",
+        "enablement": "racketdap.nativeExpressions"
+      },
+      {
         "command": "racketdap.skipExpression",
         "title": "Racket: Skip Current Expression",
         "enablement": "racketdap.skipExpression.enabled"
@@ -852,6 +857,10 @@
                 "type": "string",
                 "description": "Optional exported zero-argument procedure to call after loading."
               },
+              "languageAdapter": {
+                "type": "string",
+                "description": "Language profile data file for the launch module. Relative paths use cwd, or the workspace folder when cwd is absent."
+              },
               "language": {
                 "type": "string",
                 "description": "Language module for a plain file without #lang, for example racket/base or r5rs. Omit for #lang/module programs."
@@ -1212,6 +1221,10 @@
       ],
       "commandPalette": [
         {
+          "command": "racketdap.editLogpointSegments",
+          "when": "racketdap.nativeExpressions"
+        },
+        {
           "command": "racketdap.macroSteps.first",
           "when": "activeWebviewPanelId == 'racketeer.macroSteps' && racketdap.macroSteps.ready && !racketdap.macroSteps.busy"
         },
@@ -1367,6 +1380,11 @@
           "command": "racketdap.stepMacrosInFile",
           "when": "resourceLangId == racket",
           "group": "racket@7"
+        },
+        {
+          "command": "racketdap.editLogpointSegments",
+          "when": "resourceLangId == racket && racketdap.nativeExpressions",
+          "group": "debug@0"
         },
         {
           "command": "racketdap.continueToCursor",

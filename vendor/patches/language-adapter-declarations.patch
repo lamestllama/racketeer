@@ -1,0 +1,492 @@
+diff --git a/common/interfaces.rkt b/common/interfaces.rkt
+--- a/common/interfaces.rkt
++++ b/common/interfaces.rkt
+@@ -31,6 +31,7 @@
+          (json-type-out DocumentSymbol)
+          (json-type-out Hover)
+          (json-type-out SignatureInformation)
++         (json-type-out ParameterInformation)
+          (json-type-out SignatureHelp)
+          (json-type-out CompletionItem)
+          (json-type-out CompletionList)
+@@ -192,12 +193,19 @@
+   [contents string?]
+   [range Range])
+ 
++(define-json-struct ParameterInformation
++  [label string?]
++  [documentation (optional string?)])
++
+ (define-json-struct SignatureInformation
+   [label string?]
+-  [documentation string?])
++  [documentation string?]
++  [parameters (optional (listof ParameterInformation))])
+ 
+ (define-json-struct SignatureHelp
+-  [signatures (listof SignatureInformation)])
++  [signatures (listof SignatureInformation)]
++  [activeSignature (optional exact-nonnegative-integer?)]
++  [activeParameter (optional exact-nonnegative-integer?)])
+ 
+ (define-json-struct CompletionItem
+   [label string?])
+@@ -351,7 +359,13 @@
+   [string "string"]
+   [number "number"]
+   [regexp "regexp"]
+-  [comment "comment"])
++  [comment "comment"]
++  [class "class"]
++  [property "property"]
++  [method "method"]
++  [namespace "namespace"]
++  [operator "operator"]
++  [macro "macro"])
+ 
+ (define-json-enum SemanticTokenModifier
+   [definition "definition"])
+@@ -372,7 +386,13 @@
+         SemanticTokenType-string
+         SemanticTokenType-number
+         SemanticTokenType-regexp
+-        SemanticTokenType-comment))
++        SemanticTokenType-comment
++        SemanticTokenType-class
++        SemanticTokenType-property
++        SemanticTokenType-method
++        SemanticTokenType-namespace
++        SemanticTokenType-operator
++        SemanticTokenType-macro))
+ 
+ ;; The order of this list is irrelevant, similar to *semantic-token-types*.
+ (define *semantic-token-modifiers*
+diff --git a/doclib/check-syntax.rkt b/doclib/check-syntax.rkt
+--- a/doclib/check-syntax.rkt
++++ b/doclib/check-syntax.rkt
+@@ -169,7 +169,7 @@
+   (define text (send doc-text get-text))
+   (define active-policy (LexerState-base-policy existing-state))
+   (define lexer-state
+-    (LexerState (LexerState-snapshot existing-state) active-policy active-policy #f (make-lazy-cache)))
++    (LexerState (LexerState-snapshot existing-state) active-policy active-policy #f #f (make-lazy-cache)))
+   (define expand? (Language-Policy-expand? active-policy))
+   (define new-trace
+     (new build-trace%
+diff --git a/doclib/doc-trace.rkt b/doclib/doc-trace.rkt
+--- a/doclib/doc-trace.rkt
++++ b/doclib/doc-trace.rkt
+@@ -22,7 +22,7 @@
+          "../common/source.rkt"
+          "internal-types.rkt"
+          "language-adapter.rkt"
+-         (only-in "lexer/state.rkt" LexerState-adapter))
++         (only-in "lexer/state.rkt" LexerState-adapter set-LexerState-editor-facts!))
+ 
+ (define build-trace%
+   (class (check-syntax-annotations-mixin object%)
+@@ -75,18 +75,22 @@
+             tails)))
+ 
+     (define/public (reset)
++      (set-LexerState-editor-facts! lexer-state #f)
+       (for ([s services])
+         (send s reset)))
+ 
+     (define/public (text-replaced start end)
++      (set-LexerState-editor-facts! lexer-state #f)
+       (for ([s services])
+         (send s text-replaced start end)))
+ 
+     (define/public (expand start end)
++      (set-LexerState-editor-facts! lexer-state #f)
+       (for ([s services])
+         (send s expand start end)))
+ 
+     (define/public (contract start end)
++      (set-LexerState-editor-facts! lexer-state #f)
+       (for ([s services])
+         (send s contract start end)))
+ 
+@@ -97,7 +101,25 @@
+       ;; Later analyses can reuse the lexer state without replacing this descriptor.
+       (set! adapter (LexerState-adapter lexer-state))
+       (for ([s services])
+-        (send s walk-stx expand-result)))
++        (send s walk-stx expand-result))
++      (set-LexerState-editor-facts! lexer-state #f)
++      (unless contribution-only?
++        (define providers
++          (if adapter
++              (filter values
++                      (list (let ([p ((current-language-adapter-declarations) adapter)]) (and p (cons 'declarations p)))
++                            (let ([p ((current-language-adapter-calls) adapter)]) (and p (cons 'calls p))))) '()))
++        (when (pair? providers)
++          (define request
++            (hasheq 'uri (source-uri source) 'text (send doc-text get-text)
++                    'pre (ExpandResult-pre-syntax expand-result) 'expanded #f
++                    'reader #f 'language #f 'submodules '() 'phase #f 'space #f
++                    'position #f 'selection #f 'cancelled? (lambda () #f)
++                    'facts (hash-set (or (send decls get-binding-facts) (hasheq)) 'bindings (send decls get-source-bindings))
++                    'hooks (hasheq)))
++          (set-LexerState-editor-facts! lexer-state
++            (for/hasheq ([entry (in-list providers)])
++              (values (car entry) ((cdr entry) (hash-set request 'operation (car entry)))))))))
+ 
+     (define/public (walk-log text)
+       (for ([s services])
+diff --git a/doclib/doc.rkt b/doclib/doc.rkt
+--- a/doclib/doc.rkt
++++ b/doclib/doc.rkt
+@@ -6,6 +6,7 @@
+ ;; by a structure that provides thread safety, such as `SafeDoc`.
+ 
+ (require "../common/interfaces.rkt"
++         (only-in "../common/json-util.rkt" Nothing)
+          "editor.rkt"
+          "../common/source.rkt"
+          "lazy-cache.rkt"
+@@ -28,6 +29,8 @@
+                   non-skippable-node?
+                   token-leaf-type?)
+          "doc-lang.rkt"
++         "language-adapter.rkt"
++         (only-in "lexer/state.rkt" LexerState-editor-facts)
+          "inlay-hint-source.rkt"
+          racket/match
+          racket/contract
+@@ -297,7 +300,11 @@
+                             new-contribution
+                             (Doc-version doc))
+          #t]
+-        [else #f]))
++        [else
++         (define adapter (send new-trace get-language-adapter))
++         (when (and adapter ((current-language-adapter-declarations) adapter))
++           (doc-update-language-policy! doc new-trace))
++         #f]))
+ 
+ (define/contract (doc-check-syntax doc #:contribution-only? [contribution-only? #f])
+   (->* (Doc?) (#:contribution-only? boolean?) CSResult?)
+@@ -502,13 +509,74 @@
+   (for/list ([span (in-list (lexer-state-sexp-comment-spans (doc-lexer-state doc)))])
+     (SemanticToken (CharRange-start span) (CharRange-end span) SemanticTokenType-comment '())))
+ 
++(define (doc-declaration-provider doc)
++  (define adapter (LexerState-adapter (doc-lexer-state doc)))
++  (and adapter ((current-language-adapter-declarations) adapter)))
++
++(define (doc-native-declarations doc)
++  (define state (doc-lexer-state doc))
++  (define adapter (LexerState-adapter state))
++  (and adapter ((current-language-adapter-validator) adapter)
++       (hash-ref (or (LexerState-editor-facts state) (hasheq)) 'declarations #f)))
++
++(define (declaration-tree-list declarations)
++  (append-map (lambda (d) (cons d (declaration-tree-list (hash-ref d 'children '())))) declarations))
++
++(define (doc-native-declaration-at doc pos declarations)
++  (define entries (declaration-tree-list declarations))
++  (define definitions
++    (if (doc-trace-latest? doc)
++        (send (send (Doc-trace doc) get-declaration) definition-ranges-at pos) '()))
++  (define candidates
++    (filter (lambda (d)
++              (define selection (hash-ref d 'selection))
++              (or (<= (car selection) pos (sub1 (cdr selection)))
++                  (for/or ([range (in-list definitions)])
++                    (<= (CharRange-start range) (car selection) (cdr selection) (CharRange-end range))))) entries))
++  (and (= (length candidates) 1) (car candidates)))
++
++(define (native-symbol-kind kind)
++  (case kind
++    [(function macro) SymbolKind-Function] [(class) SymbolKind-Class]
++    [(struct) SymbolKind-Struct] [(field) SymbolKind-Field] [(method) SymbolKind-Method]
++    [(namespace) SymbolKind-Namespace] [(module) SymbolKind-Module]
++    [(operator) SymbolKind-Operator] [else SymbolKind-Variable]))
++
++(define (native-semantic-kind kind)
++  (case kind
++    [(function) SemanticTokenType-function] [(macro) SemanticTokenType-macro]
++    [(class struct) SemanticTokenType-class] [(field) SemanticTokenType-property]
++    [(method) SemanticTokenType-method] [(namespace module) SemanticTokenType-namespace]
++    [(operator) SemanticTokenType-operator] [else SemanticTokenType-variable]))
++
++(define (doc-native-kind-tokens doc)
++  (define declarations (doc-native-declarations doc))
++  (define service (send (Doc-trace doc) get-declaration))
++  (define kinds (make-hash))
++  (define definitions (make-hash))
++  (for ([d (in-list (declaration-tree-list (or declarations '())))])
++    (define range (hash-ref d 'selection))
++    (hash-set! definitions range #t)
++    (define uses (if (doc-trace-latest? doc) (send service uses-at (car range)) '()))
++    (for ([r (in-list (cons (CharRange (car range) (cdr range)) uses))])
++      (define key (cons (CharRange-start r) (CharRange-end r)))
++      (hash-update! kinds key (lambda (xs) (cons (hash-ref d 'kind) xs)) '())))
++  (sort
++   (for/list ([(r ks) (in-hash kinds)])
++     (SemanticToken (car r) (cdr r)
++                    (native-semantic-kind (if (andmap (lambda (k) (eq? k (car ks))) ks) (car ks) 'variable))
++                    (if (hash-ref definitions r #f) (list SemanticTokenModifier-definition) '())))
++   < #:key SemanticToken-start))
++
+ (define (doc-semantic-tokens doc)
+   (define trace-tokens
+     (sort (send (Doc-trace doc) get-semantic-tokens) < #:key SemanticToken-start))
+   (define sexp-comment-tokens
+     (sort (doc-sexp-comment-semantic-tokens doc) < #:key SemanticToken-start))
+   (define binding-tokens (sort (doc-binding-kind-tokens doc trace-tokens) < #:key SemanticToken-start))
+-  (merge-semantic-tokens (merge-semantic-tokens trace-tokens binding-tokens) sexp-comment-tokens))
++  (merge-semantic-tokens
++   (merge-semantic-tokens (merge-semantic-tokens trace-tokens binding-tokens) (doc-native-kind-tokens doc))
++   sexp-comment-tokens))
+ 
+ (define (merge-semantic-tokens tokens high-priority-tokens [merged '()])
+   (define (continue-merge tokens merged)
+@@ -833,11 +901,24 @@
+         (hover-detail-via-declaration hover-service declaration-service pos*)))
+   (match-define (list link tag)
+     (interval-map-ref (send doc-trace get-docs) pos* (list #f #f)))
++  (define native
++    (doc-native-declaration-at doc pos* (or (doc-native-declarations doc) '())))
+   (define source-summary
+-    (and (not link) resolved-detail (hover-detail->summary doc resolved-detail)))
++    (and (not link)
++         (or (and native
++                  (let* ([signatures (hash-ref native 'signatures '())]
++                         [range (hash-ref native 'range)]
++                         [text (if (pair? signatures) (hash-ref (car signatures) 'label)
++                                   (substring (doc-get-text doc) (car range) (cdr range)))])
++                    (define-values (bounded _) (bound-hover-source text))
++                    (Hover-Code-Summary bounded
++                      (if (eq? (Language-Policy-policy-language (doc-language-policy doc)) 'rhombus)
++                          "rhombus" "racket"))))
++             (and resolved-detail (hover-detail->summary doc resolved-detail)))))
++  (define declared-annotations (and native (hash-ref native 'annotations '())))
+   (define signature (hover-tag->signature tag))
+   (define card
+-    (build-hover-card #:type-text type-text
++    (build-hover-card #:type-text (or type-text (and (pair? declared-annotations) (string-join declared-annotations "\n")))
+                       #:type-stale? (not (doc-trace-latest? doc))
+                       #:annotation annotation
+                       #:link (and link (make-proper-url-for-online-documentation link))
+@@ -845,9 +926,12 @@
+                       #:source-summary source-summary
+                       #:documentation-text (hover-documentation-text link signature)))
+   (define occurrence (send declaration-service occurrence-at pos*))
+-  (define range-start (or type-start start use-start
++  (define native-range
++    (and native (or (send declaration-service occurrence-at pos*)
++                    (let ([r (hash-ref native 'selection)]) (CharRange (car r) (cdr r))))))
++  (define range-start (or (and native-range (CharRange-start native-range)) type-start start use-start
+                           (and occurrence (CharRange-start occurrence))))
+-  (define range-end (or type-end end use-end
++  (define range-end (or (and native-range (CharRange-end native-range)) type-end end use-end
+                         (and occurrence (CharRange-end occurrence))))
+   (values card (and range-start (abs-range->range doc range-start range-end))))
+ 
+@@ -945,21 +1029,51 @@
+   (match-define (list signatures docs) (get-docs-for-tag tag))
+   (and signatures
+        (SignatureHelp
++         #:activeSignature (Nothing)
++         #:activeParameter (Nothing)
+          #:signatures
+          (for/list ([signature (in-list signatures)])
+            (SignatureInformation
+              #:label signature
++             #:parameters (Nothing)
+              #:documentation (or docs ""))))))
+ 
++(define (doc-native-signature-help doc pos)
++  (define adapter (LexerState-adapter (doc-lexer-state doc)))
++  (define provider (and adapter ((current-language-adapter-validator) adapter)
++                        ((current-language-adapter-calls) adapter)))
++  (define call
++    (and provider
++         (provider
++          (hasheq 'operation 'call 'uri (Doc-uri doc) 'text (doc-get-text doc) 'position pos
++                  'pre #f 'expanded #f 'reader #f 'language #f 'submodules '()
++                  'phase #f 'space #f 'selection #f 'cancelled? (lambda () #f)
++                  'facts (or (LexerState-editor-facts (doc-lexer-state doc)) (hasheq))
++                  'hooks (hasheq 'declaration-at
++                                 (lambda (p) (doc-native-declaration-at doc p (or (doc-native-declarations doc) '()))))))))
++  (and call (pair? (hash-ref call 'signatures '()))
++       (SignatureHelp
++        #:signatures
++        (for/list ([signature (in-list (hash-ref call 'signatures))])
++          (SignatureInformation
++           #:label (hash-ref signature 'label)
++           #:documentation (or (hash-ref signature 'documentation #f) "")
++           #:parameters
++           (for/list ([parameter (in-list (hash-ref signature 'parameters '()))])
++             (ParameterInformation #:label (hash-ref parameter 'label)
++                                   #:documentation (or (hash-ref parameter 'documentation #f) "")))))
++        #:activeSignature (hash-ref call 'active-signature 0)
++        #:activeParameter (hash-ref call 'active-parameter (hash-ref call 'argument)))))
++
+ (define/contract (doc-signature-help doc pos)
+   (-> Doc? Pos? (or/c SignatureHelp? #f))
+-  (define doc-trace (Doc-trace doc))
+   (define pos* (doc-pos->abs-pos doc pos))
+-  (define callee-pos (doc-signature-form-head-pos doc pos*))
+-  (define tag
+-    (and callee-pos
+-         (doc-signature-tag doc-trace (doc-lexer-snapshot doc) callee-pos)))
+-  (and tag (tag->signature-help tag)))
++  (or (doc-native-signature-help doc pos*)
++      (let* ([doc-trace (Doc-trace doc)]
++             [callee-pos (doc-signature-form-head-pos doc pos*)]
++             [tag (and callee-pos
++                       (doc-signature-tag doc-trace (doc-lexer-snapshot doc) callee-pos))])
++        (and tag (tag->signature-help tag)))))
+ 
+ ;; Position queries convert service-owned absolute CharRanges at the document
+ ;; boundary. Private declaration ids never leave declaration%.
+@@ -1250,11 +1364,19 @@
+   ;; Paren tracking means nothing in non-sexp languages (e.g. Rhombus,
+   ;; Scribble): form extents are set by blocks or markup rather than parens,
+   ;; so any symbol the walker produced would have a bogus range. Report no
+-  ;; symbols instead. Unknown languages keep the sexp treatment, matching the
+-  ;; lexer fallback used elsewhere.
+-  (if (eq? (doc-language-body-mode doc) 'non-sexp)
+-      '()
+-      (doc-symbols-hierarchical/sexp doc)))
++  ;; symbols without native declaration facts. Unknown languages keep the sexp
++  ;; treatment, matching the lexer fallback used elsewhere.
++  (define native (doc-native-declarations doc))
++  (define (symbol d)
++    (define extent (hash-ref d 'range))
++    (define selection (hash-ref d 'selection))
++    (DocumentSymbol #:name (hash-ref d 'name) #:kind (native-symbol-kind (hash-ref d 'kind))
++                    #:range (abs-range->range doc (car extent) (cdr extent))
++                    #:selectionRange (abs-range->range doc (car selection) (cdr selection))
++                    #:children (map symbol (hash-ref d 'children '()))))
++  (cond [native (map symbol native)]
++        [(eq? (doc-language-body-mode doc) 'non-sexp) '()]
++        [else (doc-symbols-hierarchical/sexp doc)]))
+ 
+ ;; Walk the lexer's token forest. Each `(...)` form is a Token-List whose head
+ ;; is its first meaningful child. A definition form becomes a symbol named after
+@@ -1506,4 +1628,5 @@
+          doc-rename
+          doc-prepare-rename
+          doc-symbols
++         doc-declaration-provider
+          doc-symbols-hierarchical)
+diff --git a/doclib/language-adapter.rkt b/doclib/language-adapter.rkt
+--- a/doclib/language-adapter.rkt
++++ b/doclib/language-adapter.rkt
+@@ -6,7 +6,8 @@
+          "../workspace/current.rkt"
+          "../workspace/state.rkt")
+ (provide current-language-adapter-resolver current-language-adapter-validator
+-         current-language-adapter-bindings source-language-adapter)
++         current-language-adapter-bindings current-language-adapter-declarations
++         current-language-adapter-calls source-language-adapter)
+ 
+ ;; The embedding launcher supplies optional language tooling. Standalone
+ ;; callers retain ordinary analysis without depending on an extension package.
+@@ -14,6 +15,8 @@
+ (define current-language-adapter-validator (make-parameter (lambda (_) #t)))
+ ;; Maps a selected adapter to its bindings procedure, or #f for generic facts alone.
+ (define current-language-adapter-bindings (make-parameter (lambda (_) #f)))
++(define current-language-adapter-declarations (make-parameter (lambda (_) #f)))
++(define current-language-adapter-calls (make-parameter (lambda (_) #f)))
+ (define (source-language-adapter source text pre)
+   (define resolver (current-language-adapter-resolver))
+   (and resolver
+diff --git a/doclib/lexer/state.rkt b/doclib/lexer/state.rkt
+--- a/doclib/lexer/state.rkt
++++ b/doclib/lexer/state.rkt
+@@ -17,6 +17,7 @@
+    [base-policy Language-Policy?]
+    [(language-policy #:mutable) Language-Policy?]
+    [(adapter #:mutable) (or/c hash? #f)]
++   [(editor-facts #:mutable) (or/c hash? #f)]
+    [body-forest-cache (lazy-cache-of Token-Forest?)])
+   #:transparent)
+ 
+@@ -58,7 +59,7 @@
+   (define policy (lexer-language-policy (LexerSnapshot-text snapshot)
+                                         (LexerSnapshot-tokens snapshot)
+                                         uri))
+-  (LexerState snapshot policy policy #f (make-lazy-cache)))
++  (LexerState snapshot policy policy #f #f (make-lazy-cache)))
+ 
+ (define (lexer-state-apply-adapter! state adapter)
+   (set-LexerState-adapter! state adapter)
+diff --git a/doclib/service/hover/detail.rkt b/doclib/service/hover/detail.rkt
+--- a/doclib/service/hover/detail.rkt
++++ b/doclib/service/hover/detail.rkt
+@@ -28,6 +28,8 @@
+ 
+ (provide leading-comment-lines
+          source-candidates
++         collect-rhombus-candidates
++         bounding-range
+          ranges-for-identifier
+          display-range-for-identifier
+          expand-detail
+diff --git a/lsp/methods.rkt b/lsp/methods.rkt
+--- a/lsp/methods.rkt
++++ b/lsp/methods.rkt
+@@ -7,6 +7,7 @@
+          racket/contract/base
+          racket/exn
+          racket/match
++         racket/list
+          "../common/debug.rkt"
+          "../common/interfaces.rkt"
+          "../common/json-util.rkt"
+@@ -295,7 +296,8 @@
+           'definitionProvider #t
+           'referencesProvider #t
+           'completionProvider (hasheq 'triggerCharacters (list "("))
+-          'signatureHelpProvider (hasheq 'triggerCharacters (list " " ")" "]"))
++          'signatureHelpProvider
++          (hasheq 'triggerCharacters (list " " ")" "]"))
+           'inlayHintProvider #t
+           'renameProvider rename-provider
+           'semanticTokensProvider semantic-provider
+diff --git a/lsp/text-document.rkt b/lsp/text-document.rkt
+--- a/lsp/text-document.rkt
++++ b/lsp/text-document.rkt
+@@ -166,14 +166,25 @@
+     [(hash-table ['textDocument (DocIdentifier-js #:uri uri)])
+      (success-from-doc
+        id uri
+-       (λ (doc)
+-         (cond
+-           [(client-capability-hierarchical-document-symbol?)
+-            (doc-symbols-hierarchical doc)]
+-           [else (doc-symbols doc uri)])))]
++       (λ (doc) (document-symbol-result doc uri (client-capability-hierarchical-document-symbol?))))]
+     [_
+      (error-response id ErrorCode-InvalidParams "textDocument/documentSymbol failed")]))
+ 
++;; Native outlines are flattened here so both clients consume the same tree.
++(define (document-symbol-result doc uri hierarchical?)
++  (cond
++    [hierarchical? (doc-symbols-hierarchical doc)]
++    [(doc-declaration-provider doc)
++     (define (flatten symbols)
++       (append-map
++        (lambda (symbol)
++          (cons (SymbolInformation #:name (DocumentSymbol-name symbol)
++                                   #:kind (DocumentSymbol-kind symbol)
++                                   #:location (Location uri (DocumentSymbol-selectionRange symbol)))
++                (flatten (DocumentSymbol-children symbol)))) symbols))
++     (flatten (doc-symbols-hierarchical doc))]
++    [else (doc-symbols doc uri)]))
++
+ ;; Inlay Hint
+ ;;
+ ;; Types only exist after expansion, so answering during the first
+@@ -305,4 +316,4 @@
+     [full-semantic-tokens (exact-nonnegative-integer? jsexpr? . -> . (or/c jsexpr? (-> jsexpr?)))]
+     [range-semantic-tokens (exact-nonnegative-integer? jsexpr? . -> . (or/c jsexpr? (-> jsexpr?)))])
+ 
+-  client-capability-hierarchical-document-symbol?)
++  client-capability-hierarchical-document-symbol? document-symbol-result)

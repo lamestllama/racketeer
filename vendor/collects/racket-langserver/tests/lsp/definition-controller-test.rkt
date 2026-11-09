@@ -187,6 +187,8 @@
                 (define start (doc-pos->abs-pos (SafeDoc-doc sd) (Pos 3 6)))
                 (define trace
                   (Analysis-Product-trace (Available-Analysis-product (SafeDoc-available sd))))
+                ;; Replace the fixture's graph before supplying one synthetic identity.
+                (send (send trace get-declaration) reset)
                 (send trace syncheck:add-jump-to-definition/phase-level+space
                       a start (+ start 6) 'shared b target-submods phase+space))))
           (supply-jump! submods)

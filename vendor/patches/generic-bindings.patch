@@ -1,0 +1,1366 @@
+diff --git a/doclib/expanded-core.rkt b/doclib/expanded-core.rkt
+new file mode 100644
+--- /dev/null
++++ b/doclib/expanded-core.rkt
+@@ -0,0 +1,48 @@
++#lang racket/base
++;; Copyright (c) 2026 Eric Parsonage
++;; SPDX-License-Identifier: Apache-2.0 OR MIT
++
++(provide core-form code-parts provide-parts)
++
++;; The core form a fully expanded form is: what its head is bound to at this phase.
++;; Its spelling alone would misread quoted data, a variable in a list of formals, and
++;; a core form imported under another name.
++(define (core-form value phase)
++  (define parts (syntax->list value))
++  (define head (and (pair? parts) (car parts)))
++  (define binding (and (identifier? head) (identifier-binding head phase)))
++  (and (list? binding)
++       (eq? '#%core (resolved-module-path-name (module-path-index-resolve (car binding))))
++       (cadr binding)))
++
++;; What in a fully expanded form is code, each part with its phase. A submodule
++;; that names no language shares the phase numbering of the module around it.
++(define (code-parts value phase)
++  (define parts (syntax->list value))
++  (case (core-form value phase)
++    [(quote quote-syntax) '()]
++    [(module module*)
++     (define inner (if (syntax-e (caddr parts)) 0 phase))
++     (for/list ([part (in-list (cdddr parts))]) (cons part inner))]
++    [(begin-for-syntax) (for/list ([part (in-list (cdr parts))]) (cons part (add1 phase)))]
++    [(define-syntaxes) (list (cons (cadr parts) phase) (cons (caddr parts) (add1 phase)))]
++    [else (list (cons (syntax-e value) phase))]))
++
++;; Select binding identifiers in expanded provide specs, retaining their phases
++;; and structural anchors. Exported spellings are data.
++(define (provide-parts spec phase [anchor '()])
++  (cond
++    [(identifier? spec) (list (list spec phase anchor))]
++    [else
++     (define parts (syntax->list spec))
++     (if (not (pair? parts)) '()
++         (case (syntax-e (car parts))
++           [(rename) (list (list (cadr parts) phase anchor))]
++           [(for-meta protect for-space)
++            (define kind (syntax-e (car parts)))
++            (define shift (if (eq? kind 'for-meta) (syntax-e (cadr parts)) 0))
++            (apply append
++                   (for/list ([part (in-list (if (eq? kind 'protect) (cdr parts) (cddr parts)))]
++                              [i (in-naturals)])
++                     (provide-parts part (and phase shift (+ phase shift)) (cons i anchor))))]
++           [else '()]))]))
+diff --git a/doclib/binding-facts.rkt b/doclib/binding-facts.rkt
+new file mode 100644
+--- /dev/null
++++ b/doclib/binding-facts.rkt
+@@ -0,0 +1,185 @@
++#lang racket/base
++;; Copyright (c) 2026 Eric Parsonage
++;; SPDX-License-Identifier: Apache-2.0 OR MIT
++
++(require racket/list
++         racket/match
++         syntax/modresolve
++         "expanded-core.rkt"
++         "internal-types.rkt"
++         "../common/source.rkt"
++         "../common/path-util.rkt")
++
++(provide collect-binding-facts identifier-module-binding)
++
++;; Resolve in the namespace that expanded the identifier. Printed names and
++;; source ranges are never binding keys.
++(define (identifier-module-binding id phase file [space #f])
++  (define binding (identifier-binding id phase))
++  (and file (list? binding) (= (length binding) 7)
++       (let ()
++         (define module (resolve-module-path-index (car binding) file))
++         (define-values (path submods)
++           (match module
++             [(? path? path) (values path '())]
++             [`(submod ,(? path? path) ,submods ...) (values path submods)]
++             [_ (values #f '())]))
++         (and path
++              (Module-Binding (normalize-source-path path) submods
++                              (list-ref binding 4)
++                              (cadr binding))))))
++
++;; Keep scoped identifiers and structural binder anchors until declaration%
++;; has consumed them. Metadata can retain evidence, but cannot create a binding.
++(define (collect-binding-facts source expanded text)
++  (define file (source-file-path source))
++  (define src (source-syntax-source source))
++  (define names '())
++  (define core-binders '())
++  (define components '())
++  (define origin-links (make-hash))
++  (define seen (make-hash))
++  (define (record! id phase role anchor)
++    (when (and (identifier? id) (equal? src (syntax-source id))
++               (syntax-position id) (syntax-span id) (positive? (syntax-span id))
++               (identifier-binding id phase))
++      (define start (sub1 (syntax-position id)))
++      (define binding (identifier-module-binding id phase file))
++      (when (and (<= 0 start (+ start (syntax-span id)) (string-length text))
++                 (or (eq? role 'definition)
++                     (syntax-original? id)
++                     (syntax-property id 'original-for-check-syntax)
++                     (with-handlers ([exn:fail:read? (lambda (_) #f)])
++                       (define read-id
++                         (read-syntax #f (open-input-string
++                                          (substring text start (+ start (syntax-span id))))))
++                       (and (identifier? read-id)
++                            (equal? (syntax-e read-id) (syntax-e id))
++                            (= (syntax-position read-id) 1)
++                            (= (syntax-span read-id) (syntax-span id)))))
++                 (or (not (eq? role 'definition))
++                     (not binding) (equal? file (Module-Binding-filepath binding))))
++        (set! names
++              (cons (hasheq 'range (cons start (+ start (syntax-span id)))
++                            'identifier id 'phase phase
++                            'space (let ([info (identifier-binding id phase)])
++                                     (and (list? info) (pair? (list-ref info 6))
++                                          (cdr (list-ref info 6))))
++                            'role role
++                            'certainty 'confirmed 'anchor anchor 'binding binding)
++                    names)))))
++  ;; A directive names a scoped generated binding and an authored component.
++  ;; Keep its offsets; the generated identifier's own location may be coarse.
++  (define (component-directives value phase)
++    (cond
++      [(pair? value)
++       (component-directives (car value) phase)
++       (component-directives (cdr value) phase)]
++      [(and (vector? value) (memv (vector-length value) '(6 10)))
++       (define target-index (if (= (vector-length value) 6) 3 5))
++       (define id (vector-ref value 0))
++       (define target (vector-ref value target-index))
++       (define offset (vector-ref value 1))
++       (define width (vector-ref value 2))
++       (define target-offset (vector-ref value (add1 target-index)))
++       (define target-width (vector-ref value (+ target-index 2)))
++       (when (and (identifier? id) (identifier? target)
++                  (identifier-binding id phase)
++                  (equal? src (syntax-source target)) (syntax-position target)
++                  (exact-nonnegative-integer? offset) (exact-positive-integer? width)
++                  (exact-nonnegative-integer? target-offset) (= width target-width))
++         (define start (+ (sub1 (syntax-position target)) target-offset))
++         (when (<= 0 start (+ start width) (string-length text))
++           (set! components
++                 (cons (hasheq 'identifier id 'phase phase 'target target 'offset offset 'width width
++                               'range (cons start (+ start width))) components))))]))
++  (define (metadata value phase role anchor)
++    (cond [(identifier? value) (record! value phase role anchor)]
++          [(syntax? value) (metadata (syntax-e value) phase role anchor)]
++          [(pair? value)
++           (metadata (car value) phase role anchor)
++           (metadata (cdr value) phase role anchor)]))
++  (define (binders value phase anchor role)
++    (cond
++      [(identifier? value)
++       ;; A generated storage identifier need not have an authored range.
++       ;; Retain its anchor without manufacturing a source-name record.
++       (define binding (identifier-module-binding value phase file))
++       (set! core-binders
++             (cons (hasheq 'identifier value 'phase phase 'role role 'anchor anchor
++                           'space (let ([info (identifier-binding value phase)])
++                                    (and (list? info) (pair? (list-ref info 6))
++                                         (cdr (list-ref info 6))))
++                           'binding binding)
++                   core-binders))
++       (record! value phase 'definition anchor)]
++      [(syntax? value) (binders (syntax-e value) phase anchor role)]
++      [(pair? value)
++       (binders (car value) phase (cons 0 anchor) role)
++       (binders (cdr value) phase (cons 1 anchor) role)]))
++  (define (walk value phase anchor)
++    (cond
++      [(syntax? value)
++       (unless (hash-ref seen (cons value phase) #f)
++         (hash-set! seen (cons value phase) #t)
++         (component-directives (syntax-property value 'sub-range-binders) phase)
++         (metadata (syntax-property value 'disappeared-binding) phase 'definition anchor)
++         (metadata (syntax-property value 'disappeared-use) phase 'use anchor)
++         (metadata (syntax-property value 'origin) phase 'use anchor)
++         (when (identifier? value) (record! value phase 'use anchor))
++         (define parts (syntax->list value))
++         (define core (core-form value phase))
++         ;; An application can retain the scoped transformer it came from.
++         ;; This is occurrence evidence, never a binding-family inference.
++         (when (and (memq core '(#%app #%plain-app)) (pair? (cdr parts)) (identifier? (cadr parts)))
++           (define callee (cadr parts))
++           (let origins ([origin (syntax-property value 'origin)])
++             (cond
++               [(identifier? origin)
++                (when (and (identifier-binding origin phase)
++                           (equal? (syntax-source origin) (syntax-source callee))
++                           (equal? (syntax-position origin) (syntax-position callee))
++                           (equal? (syntax-span origin) (syntax-span callee))
++                           (equal? (symbol->string (syntax-e origin)) (symbol->string (syntax-e callee))))
++                  (hash-update! origin-links (list phase (syntax-position callee) (syntax-span callee))
++                                (lambda (ids) (cons (cons callee origin) ids)) '()))]
++               [(pair? origin) (origins (car origin)) (origins (cdr origin))])))
++         (case core
++           [(define-values define-syntaxes)
++            (binders (cadr parts) phase (cons 'definition anchor) core)]
++           [(#%plain-lambda lambda)
++            (binders (cadr parts) phase (cons 'argument anchor) core)]
++           [(case-lambda)
++            (for ([clause (in-list (cdr parts))] [i (in-naturals)])
++              (binders (car (syntax->list clause)) phase (cons i (cons 'argument anchor)) core))]
++           [(let-values letrec-values letrec-syntaxes+values)
++            (for ([group (in-list (if (eq? core 'letrec-syntaxes+values)
++                                     (list (cadr parts) (caddr parts))
++                                     (list (cadr parts))))]
++                  [group-index (in-naturals)])
++              (for ([clause (in-list (syntax->list group))] [i (in-naturals)])
++                (binders (car (syntax->list clause)) phase
++                         (list* 'local group-index i anchor) core)))])
++         (case core
++           [(#%require) (void)]
++           [(#%provide)
++            (for ([spec (in-list (cdr parts))] [i (in-naturals)])
++              (for ([part (in-list (provide-parts spec phase (cons i anchor)))])
++                (walk (car part) (cadr part) (caddr part))))]
++           [else
++            (for ([part (in-list (code-parts value phase))] [i (in-naturals)])
++              (walk (car part) (cdr part) (cons i anchor)))]))]
++      [(pair? value)
++       (walk (car value) phase (cons 0 anchor))
++       (walk (cdr value) phase (cons 1 anchor))]))
++  (when expanded (walk expanded 0 '()))
++  (hasheq 'components (remove-duplicates components) 'binders (reverse core-binders)  'names
++          (for/list ([name (in-list (reverse names))])
++            (define id (hash-ref name 'identifier))
++            (define phase (hash-ref name 'phase))
++            (hash-set name 'origins
++                      (for/list ([entry (in-list (hash-ref origin-links
++                                                          (list phase (syntax-position id) (syntax-span id)) '()))]
++                                 #:when (free-identifier=? id (car entry) phase))
++                        (cdr entry)))) 'families '() 'runtime '()
++          'sites '() 'declarations '() 'snapshot #f))
+diff --git a/doclib/check-syntax.rkt b/doclib/check-syntax.rkt
+--- a/doclib/check-syntax.rkt
++++ b/doclib/check-syntax.rkt
+@@ -16,7 +16,8 @@
+                   Language-Policy-expand?)
+          "../common/source.rkt"
+          "../common/path-util.rkt"
+-         "internal-types.rkt")
++         "internal-types.rkt"
++         "binding-facts.rkt")
+ 
+ ;; Virtual URI paths are a best-effort local dependency context, not file
+ ;; identities. Relative parents are allowed; the document need not exist.
+@@ -85,6 +86,7 @@
+ ;; TODO: cache the namespace with some strategy
+ (define (expand-source source in collector #:expand? [expand? #t]
+                        #:contribution-only? [contribution-only? #f])
++  (define text (port->string (peeking-input-port in)))
+   (define src-dir (source-analysis-directory source))
+   (define ns (make-base-namespace))
+   (define-values (add-syntax done)
+@@ -121,7 +123,10 @@
+ 
+     (when (syntax? expanded-stx)
+       (add-syntax expanded-stx)
+-      (done))
++      (done)
++      (define facts (collect-binding-facts source expanded-stx text))
++      (when (object-method-arity-includes? collector 'add-binding-facts 1)
++        (send collector add-binding-facts facts)))
+ 
+     ;; Interceptor conses in O(1); reverse restores emission order so overlapping
+     ;; Typed Racket provider records apply as sent.
+diff --git a/doclib/doc-trace.rkt b/doclib/doc-trace.rkt
+--- a/doclib/doc-trace.rkt
++++ b/doclib/doc-trace.rkt
+@@ -55,7 +55,7 @@
+     (define tails (new tail% [src src] [lexer-state lexer-state]))
+ 
+     ;; Contributions and binding queries read only declaration%. It consumes
+-    ;; Check Syntax callbacks and walk-stx, independently of the other services.
++    ;; Check Syntax callbacks, scoped facts and walk-stx, independently of the other services.
+     (define services
+       (if contribution-only?
+           (list decls)
+@@ -85,6 +85,9 @@
+     (define/public (contract start end)
+       (for ([s services])
+         (send s contract start end)))
++
++    (define/public (add-binding-facts facts)
++      (send decls add-binding-facts facts))
+ 
+     (define/public (walk-stx expand-result)
+       (for ([s services])
+diff --git a/doclib/doc.rkt b/doclib/doc.rkt
+--- a/doclib/doc.rkt
++++ b/doclib/doc.rkt
+@@ -1056,6 +1056,8 @@
+   (-> Doc? string? Pos? (or/c Location? Module-Binding? (listof (or/c Location? Module-Binding?)) #f))
+   (define definition-range (doc-definition-at doc pos))
+   (cond
++    [(send (send (Doc-trace doc) get-declaration) component-definition-at (doc-pos->abs-pos doc pos))
++     (Location #:uri uri #:range definition-range)]
+     [(> (send (send (Doc-trace doc) get-declaration) binding-count-at (doc-pos->abs-pos doc pos)) 1)
+      (append (for/list ([range (in-list (doc-definition-ranges-at doc pos))])
+                (Location #:uri uri #:range range))
+@@ -1077,17 +1079,18 @@
+   (define occurrence-range (doc-occurrence-at doc pos))
+   (cond
+     [occurrence-range
++     (define absolute (doc-pos->abs-pos doc pos))
++     (define decls (send (Doc-trace doc) get-declaration))
+      (define ranges
+-       (cond
+-         [include-decl? (doc-binding-ranges-at doc pos)]
+-         [else (doc-uses-at doc pos)]))
++       (for/list ([range (in-list (send decls reference-ranges-at absolute include-decl?))])
++         (abs-range->range doc (CharRange-start range) (CharRange-end range))))
+      (define local-locations
+        (for/list ([range (in-list ranges)])
+          (Location #:uri uri #:range range)))
+      (Document-Reference-Result
+        (Reference-Source (source-id (Doc-source doc)) local-locations)
+        (and (source-file-path (Doc-source doc))
+-            (let ([bindings (doc-module-bindings-at doc pos)])
++            (let ([bindings (send decls reference-module-bindings-at absolute)])
+               (cond [(null? bindings) #f]
+                     [(null? (cdr bindings)) (car bindings)]
+                     [else bindings]))))]
+@@ -1111,7 +1114,17 @@
+     (or (> (send (send (Doc-trace doc) get-declaration) binding-count-at (doc-pos->abs-pos doc pos)) 1)
+         (and definition-range
+              (> (length (doc-module-bindings-at doc (Range-start definition-range))) 1))))
++  (define components
++    (send (send (Doc-trace doc) get-declaration) component-edit-ranges-at (doc-pos->abs-pos doc pos)))
+   (cond
++    [components
++     (WorkspaceEdit #:changes
++                    (hasheq (string->symbol uri)
++                            (for/list ([range (in-list components)])
++                              (TextEdit #:range (abs-range->range doc (CharRange-start range) (CharRange-end range))
++                                        #:newText new-name))))]
++    [(send (send (Doc-trace doc) get-declaration) component-definition-at (doc-pos->abs-pos doc pos)) #f]
++    [(send (send (Doc-trace doc) get-declaration) coarse-definition-at? (doc-pos->abs-pos doc pos)) #f]
+     [shared-definition? #f]
+     [definition-range
+      (define ranges (doc-binding-ranges-at doc pos))
+@@ -1127,10 +1140,15 @@
+   (-> Doc? Pos? (or/c Range? #f))
+   (define occurrence-range (doc-occurrence-at doc pos))
+   (define definition-range (doc-definition-at doc pos))
+-  (and definition-range occurrence-range
++  (define components
++    (send (send (Doc-trace doc) get-declaration) component-edit-ranges-at (doc-pos->abs-pos doc pos)))
++  (or (and components occurrence-range)
++      (and (not (send (send (Doc-trace doc) get-declaration) component-definition-at (doc-pos->abs-pos doc pos)))
++           (not (send (send (Doc-trace doc) get-declaration) coarse-definition-at? (doc-pos->abs-pos doc pos)))
++           definition-range occurrence-range
+        (<= (send (send (Doc-trace doc) get-declaration) binding-count-at (doc-pos->abs-pos doc pos)) 1)
+        (<= (length (doc-module-bindings-at doc (Range-start definition-range))) 1)
+-       occurrence-range))
++       occurrence-range)))
+ 
+ ;; Document Symbols: returns a list of SymbolInformation.
+ (define/contract (doc-symbols doc uri)
+diff --git a/doclib/internal-types.rkt b/doclib/internal-types.rkt
+--- a/doclib/internal-types.rkt
++++ b/doclib/internal-types.rkt
+@@ -92,7 +92,7 @@
+   #:transparent)
+ 
+ ;; Live references plus one exact cross-document identity, several at a shared
+-;; occurrence, or #f for local-only names.
++;; occurrence or a confirmed family, or #f for local-only names.
+ (struct/contract Document-Reference-Result
+   ([source Reference-Source?]
+    [module-binding (or/c Module-Binding? (listof Module-Binding?) #f)])
+diff --git a/doclib/service/declaration.rkt b/doclib/service/declaration.rkt
+--- a/doclib/service/declaration.rkt
++++ b/doclib/service/declaration.rkt
+@@ -5,7 +5,7 @@
+ ;; Module-Binding when the name can leave this document.
+ ;;
+ ;; Check Syntax can report several identities at one range. This service stores
+-;; the Check Syntax report as a graph. Each occurrence has a private integer
++;; Check Syntax and scoped expansion facts as a graph. Each occurrence has a private integer
+ ;; id. Callers never hold those ids. Uses share a graph owner: a local
+ ;; def-id for an unlabelled lexical arrow, an exact Module-Binding for
+ ;; module-backed uses, or a Module-Lang-Use-Key for a leftover `#lang`
+@@ -32,12 +32,14 @@
+          "../../common/path-util.rkt"
+          (only-in "../../common/source.rkt" source-file-path source-syntax-source)
+          "../internal-types.rkt"
++         "../binding-facts.rkt"
+          data/interval-map
+          drracket/check-syntax
+          racket/class
+          racket/dict
+          racket/list
+          racket/match
++         syntax/id-table
+          syntax/modresolve)
+ 
+ (provide declaration%)
+@@ -77,6 +79,16 @@
+     (define module-binding->def-id (make-hash))
+     (define def-id->module-bindings (make-hash))
+     (define import-alias-def-ids (make-hash))
++    (define binding-families (make-hash))
++    (define accepted-binding-facts #f)
++    ;; Scoped lexical binders may also share one physical definition range.
++    (define lexical-owners (make-hash))
++    (define lexical-definitions (make-hash))
++    (define coarse-definitions (make-hash))
++    (define component-at-position (make-interval-map))
++    (define component-ranges (make-hash))
++    (define incomplete-components (make-hash))
++    (define confirmed-use-ids (make-hasheqv))
+     (define range-journal (make-position-journal))
+     ;; `'module-lang` uses held until walk-stx.
+     (define pending-module-lang-uses '())
+@@ -136,6 +148,23 @@
+       (hash-update! def->use-ids def
+                     (lambda (use-ids) (if (member use-id use-ids) use-ids (cons use-id use-ids)))
+                     '()))
++
++    (define/private (remove-shared-lexical-uses! start)
++      (for ([use-id (in-list (interval-map-ref use-at-position start '()))])
++        (define def (hash-ref use->def use-id))
++        (when (and (exact-nonnegative-integer? def)
++                   (not (hash-ref confirmed-use-ids use-id #f))
++                   (or (> (length (hash-ref def-id->module-bindings def '())) 1)
++                       (> (length (hash-ref lexical-owners def '())) 1)))
++          (define old-range (hash-ref id->range use-id))
++          (define old-start (CharRange-start old-range))
++          (define old-end (CharRange-end old-range))
++          (define remaining (remove use-id (use-at-exact-range old-start old-end)))
++          (if (null? remaining)
++              (interval-map-remove! use-at-position old-start old-end)
++              (interval-map-set! use-at-position old-start old-end remaining))
++          (hash-update! def->use-ids def (lambda (ids) (remove use-id ids)))
++          (hash-remove! use->def use-id))))
+ 
+     ;; Replay the snapshot CharRange in id->range through range-journal.
+     ;; Returns #f if an edit removed the range: a CharRange a deletion
+@@ -186,7 +215,11 @@
+                     defs))
+                 defs))
+           (let ([def (interval-map-ref def-at-position pos #f)])
+-            (if def (list def) '()))))
++            (cond [(not def) '()]
++                  [(hash-has-key? lexical-owners def)
++                   (append (hash-ref lexical-owners def)
++                           (if (null? (def->module-bindings def)) '() (list def)))]
++                  [else (list def)]))))
+ 
+     (define/private (def->module-bindings def)
+       (cond
+@@ -195,12 +228,28 @@
+          (hash-ref def-id->module-bindings def '())]
+         [else '()]))
+ 
++    ;; Component maps keep precise navigation independent of whole binding keys.
++    ;; Like all other ranges, they are replayed through the position journal.
++    (define/public (component-definition-at pos)
++      (define target (interval-map-ref component-at-position pos #f))
++      (and target (live-range-for-id target)))
++
++    (define/public (component-edit-ranges-at pos)
++      (define target (interval-map-ref component-at-position pos #f))
++      (and accepted-binding-facts target
++           (not (hash-ref incomplete-components target #f))
++           (sort-ranges (filter values (map (lambda (id) (live-range-for-id id))
++                                           (hash-ref component-ranges target))))))
++
+     (define/public (occurrence-at pos)
+       (define-values (use-start use-end use-id)
+         (interval-map-ref/bounds use-at-position pos #f))
+       (define-values (def-start def-end def-id)
+         (interval-map-ref/bounds def-at-position pos #f))
++      (define-values (component-start component-end component)
++        (interval-map-ref/bounds component-at-position pos #f))
+       (cond
++        [component (CharRange component-start component-end)]
+         [use-id (CharRange use-start use-end)]
+         [def-id (CharRange def-start def-end)]
+         [else #f]))
+@@ -208,6 +257,8 @@
+     ;; Same-document definition range, including exact same-file jumps.
+     ;; Imported and module-language owners have no local definition range.
+     (define/public (definition-ranges-at pos)
++      (define component (send this component-definition-at pos))
++      (if component (list component)
+       (sort-ranges
+         (remove-duplicates
+           (for*/list ([def (in-list (defs-at pos))]
+@@ -216,7 +267,7 @@
+                       #:when (exact-nonnegative-integer? id)
+                       [range (in-value (live-range-for-id id))]
+                       #:when range)
+-            range))))
++            range)))))
+ 
+     (define/public (definition-at pos)
+       (define ranges (definition-ranges-at pos))
+@@ -230,11 +281,14 @@
+                         (if (null? bindings) (list def) bindings))
+                       (defs-at pos)))))
+ 
++    (define/public (coarse-definition-at? pos)
++      (for/or ([def (in-list (defs-at pos))])
++        (hash-ref coarse-definitions def #f)))
++
+     ;; Union the selected identities, deduplicating physical occurrences.
+     ;; A shared definition range selects its whole family; an exact jump
+     ;; selects only that module binding.
+-    (define/public (uses-at pos)
+-      (define selected (defs-at pos))
++    (define/private (uses-for selected)
+       (define defs
+         (remove-duplicates
+           (append-map (lambda (def)
+@@ -255,6 +309,286 @@
+                       #:when range)
+             range))))
+ 
++    (define/public (uses-at pos) (uses-for (defs-at pos)))
++
++    ;; Family membership is explicit scoped evidence. Sharing a range alone
++    ;; continues to select exact identities, never their other family members.
++    (define/private (reference-owners-at pos)
++      (remove-duplicates
++        (append-map
++          (lambda (owner) (hash-ref binding-families owner (list owner)))
++          (append-map (lambda (def)
++                        (define bindings (def->module-bindings def))
++                        (if (null? bindings) (list def) bindings))
++                      (defs-at pos)))))
++
++    (define/public (reference-module-bindings-at pos)
++      (remove-duplicates (append-map (lambda (owner) (def->module-bindings owner))
++                                    (reference-owners-at pos))))
++
++    (define/public (reference-ranges-at pos include-declaration?)
++      (define owners (reference-owners-at pos))
++      (remove-duplicates
++        (append (if include-declaration?
++                    (sort-ranges
++                      (remove-duplicates
++                        (append (definition-ranges-at pos)
++                                (for*/list ([owner (in-list owners)]
++                                            [id (in-value (if (Module-Binding? owner)
++                                                              (hash-ref module-binding->def-id owner #f)
++                                                              owner))]
++                                            #:when (exact-nonnegative-integer? id)
++                                            [range (in-value (live-range-for-id id))]
++                                            #:when range)
++                                  range))))
++                    '())
++                (uses-for (append (defs-at pos) owners)))))
++
++    ;; Called in the expansion namespace, in both analysis modes. Core binders
++    ;; supply anchors even when originalness prevented Check Syntax callbacks.
++    (define/public (get-binding-facts) accepted-binding-facts)
++
++    (define/public (add-binding-facts facts)
++      (set! accepted-binding-facts facts)
++      (set! component-at-position (make-interval-map))
++      (set! component-ranges (make-hash))
++      (set! incomplete-components (make-hash))
++      (unless (null? (hash-ref facts 'components '()))
++        (define component-names
++          (filter (lambda (name) (eq? (hash-ref name 'certainty 'confirmed) 'confirmed))
++                  (hash-ref facts 'names '())))
++        ;; Index the scoped directives, then project every authored occurrence.
++        ;; A missing mapping for any identity sharing an edited range refuses rename.
++        (define directives (make-hash))
++        (define targets (make-hash))
++        (define projected (make-hash))
++        (define affected (make-hash))
++        (define (affected-table phase)
++          (hash-ref! affected phase (lambda () (make-free-id-table #:phase phase))))
++        (define (affect! id phase target)
++          (define table (affected-table phase))
++          (free-id-table-set! table id (cons target (free-id-table-ref table id '()))))
++        (define (directive-table phase)
++          (hash-ref! directives phase (lambda () (make-free-id-table #:phase phase))))
++        (define (install-component! binding range offset width)
++          (define phase (hash-ref binding 'phase 0))
++          (define table (directive-table phase))
++          (define id (hash-ref binding 'identifier))
++          (define target
++            (hash-ref! targets range
++                       (lambda ()
++                         (define id (fresh-id!))
++                         (hash-set! id->range id (CharRange (car range) (cdr range)))
++                         (hash-set! component-ranges id (list id))
++                         id)))
++          (affect! id phase target)
++          (free-id-table-set! table id
++                              (remove-duplicates
++                                (cons (list target offset width)
++                                      (free-id-table-ref table id '())))))
++        (for ([component (in-list (hash-ref facts 'components '()))])
++          (install-component! component (hash-ref component 'range)
++                              (hash-ref component 'offset) (hash-ref component 'width)))
++        (define (mappings-for name)
++          (define table (directive-table (hash-ref name 'phase 0)))
++          (remove-duplicates
++            (append-map (lambda (id) (free-id-table-ref table id '()))
++                        (cons (hash-ref name 'identifier) (hash-ref name 'origins '())))))
++        ;; Only the directive's scoped target can be a direct member.
++        (for ([component (in-list (hash-ref facts 'components '()))])
++          (define target (hash-ref component 'target))
++          (define phase (hash-ref component 'phase))
++          (define range (hash-ref component 'range))
++          (when (and (identifier-binding target phase)
++                     (equal? (send doc-text get-text (car range) (cdr range))
++                             (symbol->string (syntax-e target))))
++            (install-component! (hasheq 'identifier target 'phase phase) range 0
++                                (- (cdr range) (car range)))))
++        (for ([name (in-list component-names)]
++              #:when (memq (hash-ref name 'role) '(use export)))
++          (define range (hash-ref name 'range))
++          (define id (hash-ref name 'identifier))
++          (define spelling (symbol->string (syntax-e id)))
++          (define mappings (mappings-for name))
++          (define exact-spelling? (equal? spelling (send doc-text get-text (car range) (cdr range))))
++          (for ([mapping (in-list mappings)])
++              (match-define (list target offset width) mapping)
++              (define start (+ (car range) offset))
++              (define end (+ start width))
++              (define target-range (hash-ref id->range target))
++              (cond
++                [(and exact-spelling? (<= end (cdr range))
++                      (equal? (send doc-text get-text start end)
++                              (send doc-text get-text (CharRange-start target-range)
++                                                     (CharRange-end target-range))))
++                 (define previous (interval-map-ref component-at-position start #f))
++                 (when (and previous (not (= previous target)))
++                   (hash-set! incomplete-components previous #t)
++                   (hash-set! incomplete-components target #t))
++                 (interval-map-set! component-at-position start end target)
++                 (define occurrence (fresh-id!))
++                 (hash-set! id->range occurrence (CharRange start end))
++                 (hash-update! component-ranges target (lambda (ids) (cons occurrence ids)))
++                 (affect! id (hash-ref name 'phase 0) target)
++                 (hash-update! projected range (lambda (ids) (cons id ids)) '())]
++                [else (hash-set! incomplete-components target #t)])))
++        (for ([(range target) (in-hash targets)])
++          (interval-map-set! component-at-position (car range) (cdr range) target)
++          (hash-set! component-ranges target
++                     (remove-duplicates (hash-ref component-ranges target)
++                                        (lambda (a b) (equal? (hash-ref id->range a) (hash-ref id->range b))))))
++        ;; Every authored identity at a projected use must have scoped evidence.
++        (for ([name (in-list component-names)]
++              #:when (memq (hash-ref name 'role) '(use export)))
++          (define range (hash-ref name 'range))
++          (define id (hash-ref name 'identifier))
++          (when (and (hash-has-key? projected range)
++                     (null? (mappings-for name)))
++            (for ([pos (in-range (car range) (cdr range))])
++              (define target (interval-map-ref component-at-position pos #f))
++              (when target (hash-set! incomplete-components target #t)))))
++        ;; Include every scoped binder at the edited anchor in the completeness
++        ;; check, without treating its location as evidence of membership.
++        (for ([name (in-list component-names)]
++              #:when (eq? (hash-ref name 'role) 'definition))
++          (define target (hash-ref targets (hash-ref name 'range) #f))
++          (when target (affect! (hash-ref name 'identifier) (hash-ref name 'phase 0) target)))
++        (for ([name (in-list component-names)]
++              #:when (memq (hash-ref name 'role) '(use export)))
++          (define range (hash-ref name 'range))
++          (define id (hash-ref name 'identifier))
++          (define mapped-targets (map car (mappings-for name)))
++          (for ([target (in-list (free-id-table-ref (affected-table (hash-ref name 'phase 0)) id '()))]
++                #:unless (or (member target mapped-targets)
++                             (equal? (hash-ref id->range target)
++                                     (CharRange (car range) (cdr range)))))
++            (hash-set! incomplete-components target #t))))
++      (define lexical lexical-definitions)
++      (define names (hash-ref facts 'names '()))
++      (define language-ranges
++        (for/hash ([pending (in-list pending-module-lang-uses)])
++          (values (CharRange (Pending-Module-Lang-Use-use-start pending)
++                             (Pending-Module-Lang-Use-use-end pending)) #t)))
++      (define resolved-bindings (make-hasheq))
++      (define (key name)
++        (hash-ref! resolved-bindings name
++                   (lambda ()
++                     (identifier-module-binding (hash-ref name 'identifier) (hash-ref name 'phase 0)
++                                                file-path (hash-ref name 'space #f)))))
++      (define (lexical-table name)
++        (define phase (hash-ref name 'phase 0))
++        (hash-ref! lexical (cons phase (hash-ref name 'space #f))
++                   (lambda () (make-free-id-table #:phase phase))))
++      (define (confirmed? name) (eq? (hash-ref name 'certainty 'confirmed) 'confirmed))
++      (define generated-definitions (make-hash))
++      (define exact-anchors (make-hash))
++      (define (exact-anchor? name)
++        (define range (hash-ref name 'range))
++        (hash-ref! exact-anchors range
++          (lambda ()
++            (define text (send doc-text get-text (car range) (cdr range)))
++            (or (equal? text (format "~s" (syntax-e (hash-ref name 'identifier))))
++                (with-handlers ([exn:fail:read? (lambda (_) #f)])
++                  (parameterize ([read-accept-reader #f] [read-accept-lang #f])
++                    (define token (read-syntax #f (open-input-string text)))
++                    (and (identifier? token) (equal? (syntax-position token) 1)
++                         (equal? (syntax-span token) (- (cdr range) (car range))))))))))
++      (for ([name (in-list names)]
++            #:when (and (confirmed? name) (eq? (hash-ref name 'role) 'definition)))
++        (define range (hash-ref name 'range))
++        (define exact? (exact-anchor? name))
++        ;; Generated coarse locations retain identities without replacing an
++        ;; authored definition anchor or becoming editable definition ranges.
++        (define def
++          (if exact?
++              (get-or-create-def (car range) (cdr range))
++              (hash-ref! generated-definitions range
++                (lambda ()
++                  (define id (fresh-id!))
++                  (hash-set! id->range id (CharRange (car range) (cdr range)))
++                  (hash-set! def->use-ids id '())
++                  id))))
++        (define binding (key name))
++        (unless exact? (hash-set! coarse-definitions (or binding def) #t))
++        (cond [binding
++               (when (equal? file-path (Module-Binding-filepath binding))
++                 (attach-module-binding! def binding))]
++              [else
++               (unless (free-id-table-ref (lexical-table name) (hash-ref name 'identifier) #f)
++                 (define owners (hash-ref lexical-owners def '()))
++                 (define owner
++                   (if (and (null? owners) (null? (def->module-bindings def)))
++                       def
++                       (let ([id (fresh-id!)])
++                         (hash-set! id->range id (CharRange (car range) (cdr range)))
++                         (hash-set! def->use-ids id '())
++                         id)))
++                 (hash-set! lexical-owners def (cons owner owners))
++                 (unless exact? (hash-set! coarse-definitions owner #t))
++                 (free-id-table-set! (lexical-table name) (hash-ref name 'identifier) owner))]))
++      (set! lexical-definitions lexical)
++      (define (owner-of name)
++        (or (key name)
++            (free-id-table-ref (lexical-table name) (hash-ref name 'identifier) #f)))
++      (define resolved-at (make-hash))
++      (for ([name (in-list names)]
++            #:when (and (confirmed? name) (memq (hash-ref name 'role) '(use export))))
++        (define binding (key name))
++        (when binding
++          (hash-update! resolved-at (hash-ref name 'range) (lambda (keys) (cons binding keys)) '())))
++      (for ([name (in-list names)]
++            #:when (and (confirmed? name) (memq (hash-ref name 'role) '(use export))))
++        (define range (hash-ref name 'range))
++        (define owner (owner-of name))
++        ;; Check Syntax reports the import shift for an imported binding.
++        ;; The scoped identifier supplies its declaration phase. Keep other
++        ;; phased identities independently present at this same source range.
++        (when (Module-Binding? owner)
++          (define binding-info
++            (identifier-binding (hash-ref name 'identifier) (hash-ref name 'phase 0)))
++          (define import-shift (list-ref binding-info 5))
++          (for ([use-id (in-list (or (use-at-exact-range (car range) (cdr range)) '()))])
++            (define previous (hash-ref use->def use-id))
++            (when (and (Module-Binding? previous)
++                       (not (member previous (hash-ref resolved-at range '())))
++                       (equal? (Module-Binding-filepath previous) (Module-Binding-filepath owner))
++                       (equal? (Module-Binding-submods previous) (Module-Binding-submods owner))
++                       (eq? (Module-Binding-id previous) (Module-Binding-id owner))
++                       (or (equal? (Module-Binding-phase+space previous) import-shift)
++                           (equal? (Module-Binding-phase+space previous)
++                                   (cons import-shift (hash-ref name 'space #f)))))
++              (hash-update! def->use-ids previous (lambda (ids) (remove use-id ids)))
++              (link-use! use-id owner))))
++        (define def (def-at-exact-range (car range) (cdr range)))
++        (when (and owner
++                   ;; A language fallback remains local unless a definition or
++                   ;; an exact jump independently established this identity.
++                   (or (not (Module-Binding? owner))
++                       (not (hash-has-key? language-ranges (CharRange (car range) (cdr range))))
++                       (hash-has-key? module-binding->def-id owner)
++                       (for/or ([id (in-list (interval-map-ref use-at-position (car range) '()))])
++                         (equal? owner (hash-ref use->def id))))
++                   (not (and (exact-nonnegative-integer? owner)
++                             (equal? (hash-ref id->range owner) (CharRange (car range) (cdr range)))))
++                   (not (and def (member owner (def->module-bindings def)))))
++          (remove-shared-lexical-uses! (car range))
++          (define use-id (alloc-use (car range) (cdr range) owner))
++          (link-use! use-id owner)
++          (hash-set! confirmed-use-ids use-id #t)))
++      (for ([family (in-list (hash-ref facts 'families '()))])
++        (define members
++          (remove-duplicates
++            (filter values
++                    (for/list ([member (in-list (hash-ref family 'members))])
++                      (owner-of member)))))
++        (for ([owner (in-list members)])
++          (define previous (hash-ref binding-families owner #f))
++          (when (and previous
++                     (not (and (= (length previous) (length members))
++                               (andmap (lambda (key) (member key previous)) members))))
++            (error 'bindings "conflicting binding families"))
++          (hash-set! binding-families owner members))))
++
+     (define/public (module-bindings-at pos)
+       (remove-duplicates (append-map (lambda (def) (def->module-bindings def)) (defs-at pos))))
+ 
+@@ -297,6 +631,15 @@
+       (set! module-binding->def-id (make-hash))
+       (set! def-id->module-bindings (make-hash))
+       (set! import-alias-def-ids (make-hash))
++      (set! binding-families (make-hash))
++      (set! accepted-binding-facts #f)
++      (set! lexical-owners (make-hash))
++      (set! lexical-definitions (make-hash))
++      (set! coarse-definitions (make-hash))
++      (set! component-at-position (make-interval-map))
++      (set! component-ranges (make-hash))
++      (set! incomplete-components (make-hash))
++      (set! confirmed-use-ids (make-hasheqv))
+       (set! pending-module-lang-uses '())
+       (position-journal-reset! range-journal))
+ 
+@@ -331,12 +674,9 @@
+                        [`(submod ,(? path? path) ,submods ...) (values path submods)]
+                        [_ (values #f '())]))
+                    (when path
+-                     (define export-phase (list-ref binding 6))
+                      (define key
+                        (Module-Binding (normalize-source-path path) submods
+-                                       (if (pair? export-phase)
+-                                           (cons (list-ref binding 4) (cdr export-phase))
+-                                           (list-ref binding 4))
++                                       (list-ref binding 4)
+                                        (cadr binding)))
+                      (define def (hash-ref module-binding->def-id key #f))
+                      (when (and def (> (length (hash-ref def-id->module-bindings def)) 1))
+@@ -385,33 +725,25 @@
+         (define end (CharRange-end range))
+         ;; Expanded identifiers also cover shared bindings whose generated
+         ;; Check Syntax arrows were absent or used the binder's shorter span.
+-        (for ([use-id (in-list (interval-map-ref use-at-position start '()))])
+-          (define def (hash-ref use->def use-id))
+-          (when (and (exact-nonnegative-integer? def)
+-                     (> (length (hash-ref def-id->module-bindings def '())) 1))
+-            (define old-range (hash-ref id->range use-id))
+-            (define old-start (CharRange-start old-range))
+-            (define old-end (CharRange-end old-range))
+-            (define remaining (remove use-id (use-at-exact-range old-start old-end)))
+-            (if (null? remaining)
+-                (interval-map-remove! use-at-position old-start old-end)
+-                (interval-map-set! use-at-position old-start old-end remaining))
+-            (hash-update! def->use-ids def (lambda (ids) (remove use-id ids)))
+-            (hash-remove! use->def use-id)))
++        (remove-shared-lexical-uses! start)
+         (for ([binding (in-list bindings)])
+           (link-use! (alloc-use start end binding) binding)))
+       (apply-pending-module-lang-uses!))
+ 
+     (define/override (expand start end)
++      (set! accepted-binding-facts #f)
+       ;; Typing inside a name must stay one occurrence. Do not use the
+       ;; interval-map default, which splits the range.
++      (interval-map-expand/policy! component-at-position start end #:interior 'extend)
+       (interval-map-expand/policy! def-at-position start end #:interior 'extend)
+       (interval-map-expand/policy! use-at-position start end #:interior 'extend)
+       (position-journal-record-expand! range-journal start end))
+ 
+     (define/override (contract start end)
++      (set! accepted-binding-facts #f)
+       ;; Do not rewrite id->range here. Position maps shrink or drop ranges now.
+       ;; Queries replay range-journal to move snapshot CharRanges.
++      (interval-map-contract! component-at-position start end)
+       (interval-map-contract! def-at-position start end)
+       (interval-map-contract! use-at-position start end)
+       (position-journal-record-contract! range-journal start end))
+@@ -438,8 +770,8 @@
+         (attach-module-binding! def-id module-binding)))
+ 
+     (define/override (syncheck:unused-binder _src-obj start end)
+-      ;; An unused lexical binder has no arrow, so this callback is its only
+-      ;; entry into the graph. Module definitions reuse the same range.
++      ;; This callback can still supply the only usable range for an unused
++      ;; binder. Scoped facts and module definitions reuse the same range.
+       (get-or-create-def start (normalize-end start end))
+       (void))
+ 
+diff --git a/lsp/compose/references.rkt b/lsp/compose/references.rkt
+--- a/lsp/compose/references.rkt
++++ b/lsp/compose/references.rkt
+@@ -45,6 +45,6 @@
+                         #:unless (equal? (Reference-Source-id source) live-id)
+                         [location (in-list (Reference-Source-locations source))])
+               location)))
+-  ;; Several identities can select the same physical occurrence. Preserve
++  ;; A confirmed family or several selected identities can share a location. Preserve
+   ;; the established ordering and duplicate behaviour for a single binding.
+   (if (list? module-binding) (remove-duplicates locations) locations))
+diff --git a/tests/lib/generic-bindings-test.rkt b/tests/lib/generic-bindings-test.rkt
+new file mode 100644
+--- /dev/null
++++ b/tests/lib/generic-bindings-test.rkt
+@@ -0,0 +1,440 @@
++#lang racket/base
++;; Copyright (c) 2026 Eric Parsonage
++;; SPDX-License-Identifier: Apache-2.0 OR MIT
++
++(require rackunit racket/class racket/list racket/file racket/string drracket/check-syntax
++         "../../common/source.rkt"
++         "../../doclib/internal-types.rkt"
++         "../../doclib/doc.rkt"
++         "../../common/interfaces.rkt"
++         "../../doclib/check-syntax.rkt"
++         "../../doclib/doc-trace.rkt"
++         "../../doclib/editor.rkt"
++         "../../doclib/lexer.rkt"
++         "../../workspace/api.rkt"
++         "../../lsp/compose/references.rkt")
++
++(define source (path->source (build-path (current-directory) "generic.rkt")))
++(define prefix
++  (string-append
++    "#lang racket/base\n(require (for-syntax racket/base racket/syntax))\n"
++    "(define-syntax (define-thing stx)\n"
++    "  (syntax-case stx () [(_ name)\n"
++    "    (with-syntax ([helper (format-id #'name \"~a-helper\" #'name #:source #'name)])\n"
++    "      #'(begin (define name 1) (define helper 2)))]))\n"))
++
++(define (analyse text only? [source source])
++  (define editor (new lsp-editor%))
++  (send editor insert text 0)
++  (define trace (new build-trace% [source source] [doc-text editor]
++                     [lexer-state (build-lexer-state text (source-uri source))]
++                     [contribution-only? only?]))
++  (define expanded (expand-source source (open-input-string text) trace #:contribution-only? only?))
++  (check-true (ExpandResult-all-succeed? expanded))
++  (send trace walk-stx expanded)
++  trace)
++
++(define (check-identities text expected)
++  (define full (analyse text #f))
++  (define only (analyse text #t))
++  (check-equal? (send full get-contribution) (send only get-contribution))
++  (define definitions (Doc-Contribution-definitions (send full get-contribution)))
++  (for ([id (in-list expected)])
++    (check-true (for/or ([binding (in-hash-keys definitions)])
++                  (eq? id (Module-Binding-id binding))) (symbol->string id))))
++
++(module+ rename-safety
++  (define local-text
++    "#lang htdp/isl+\n(define (f n)\n (local [(define-struct point (x))]\n  (point-x (make-point n))))\n(f 1)\n")
++  (define cases
++    (list
++      (list "local teaching structure" local-text (Pos 3 3))
++      (list "escaped constructor"
++            "#lang racket/base\n(struct point (x))\n(define p (|point| 1))\n(point-x p)\n"
++            (Pos 1 8))
++      (list "macro-rebuilt escaped accessor"
++            (string-append
++              "#lang racket/base\n(require (for-syntax racket/base))\n"
++              "(define-syntax (call stx)\n (syntax-case stx ()\n  [(_ fn arg)\n"
++              "   (with-syntax ([fn (datum->syntax #'fn (syntax-e #'fn) #'fn)])\n"
++              "    #'(fn arg))]))\n(struct point (x))\n"
++              "(define p (point 1))\n(call |point-x| p)\n")
++            (Pos 7 15))
++      (list "escaped accessor"
++            "#lang racket/base\n(struct point (x))\n(define p (point 1))\n(|point-x| p)\n"
++            (Pos 1 15))))
++  (for* ([example (in-list cases)] [only? '(#f #t)])
++    (define text (cadr example))
++    (define trace (analyse text only?))
++    (define doc (make-doc (source-uri source) text))
++    (doc-update-trace! doc trace (send trace get-contribution) 0)
++    (test-case (format "~a refuses prepare rename in mode ~a" (car example) only?)
++      (check-false (doc-prepare-rename doc (caddr example))))
++    (test-case (format "~a refuses rename in mode ~a" (car example) only?)
++      (check-false (doc-rename doc (source-uri source) (caddr example) "changed"))))
++  (for ([only? '(#f #t)])
++    (test-case (format "local teaching structure preserves its precise anchor in mode ~a" only?)
++      (define declarations (send (analyse local-text only?) get-declaration))
++      (define start (caar (regexp-match-positions #rx"point \\(x" local-text)))
++      (check-equal? (send declarations occurrence-at start) (CharRange start (+ start 5))))))
++
++(module+ test (require (submod ".." rename-safety)))
++
++(module+ test
++  (test-case "macro-created unused binders retain core anchors in both modes"
++    (define text (string-append prefix "(define-thing thing)\n"))
++    (check-identities text '(thing thing-helper))
++    (for ([only? '(#f #t)])
++      (define declarations (send (analyse text only?) get-declaration))
++      (define facts (send declarations get-binding-facts))
++      (for ([id '(thing thing-helper)])
++        (check-true
++          (for/or ([name (in-list (hash-ref facts 'names))])
++            (and (eq? (hash-ref name 'role) 'definition)
++                 (eq? (syntax-e (hash-ref name 'identifier)) id)
++                 (pair? (hash-ref name 'anchor))))))))
++
++  (test-case "locationless generated storage retains identity and a core binder anchor"
++    (define text
++      (string-append
++        "#lang racket/base\n(require (for-syntax racket/base racket/syntax))\n"
++        "(define-syntax (define-thing stx)\n"
++        " (syntax-case stx () [(_ name)\n"
++        "  (with-syntax ([helper (format-id #'name \"~a-helper\" #'name)])\n"
++        "   #'(begin (define name 1) (define helper 2)))]))\n"
++        "(define-thing thing)\n(provide thing thing-helper)\n"))
++    (define full (analyse text #f))
++    (define only (analyse text #t))
++    (check-equal? (send full get-contribution) (send only get-contribution))
++    (for ([trace (in-list (list full only))])
++      (define facts (send (send trace get-declaration) get-binding-facts))
++      (check-true
++        (for/or ([binder (in-list (hash-ref facts 'binders))])
++          (and (eq? 'thing-helper (syntax-e (hash-ref binder 'identifier)))
++               (not (syntax-position (hash-ref binder 'identifier)))
++               (eq? (hash-ref binder 'role) 'define-values)
++               (Module-Binding? (hash-ref binder 'binding))
++               (member (hash-ref binder 'binding)
++                       (append (hash-keys (Doc-Contribution-definitions (send trace get-contribution)))
++                               (hash-keys (Doc-Contribution-references (send trace get-contribution)))))
++               (pair? (hash-ref binder 'anchor)))))))
++
++  (test-case "a struct forwarded through a macro exports every identity"
++    (check-identities
++      "#lang racket/base\n(define-syntax-rule (define-record name) (struct name ()))\n(define-record item)\n(provide (struct-out item))\nitem\nitem?\nstruct:item\n"
++      '(item item? struct:item)))
++
++  (test-case "define-values through a macro keeps identities without using nominal export names"
++    (define text
++      (string-append prefix
++        "(define-syntax (define-many stx)\n"
++        " (syntax-case stx () [(_ name)\n"
++        "  (with-syntax ([helper (format-id #'name \"~a-helper\" #'name #:source #'name)])\n"
++        "   #'(define-values (name helper) (values 1 2)))]))\n"
++        "(define-many many)\n(provide many (rename-out [many-helper many-public]))\n"
++        "(define many-public 5)\nmany\nmany-helper\nmany-public\n"))
++    (check-identities text '(many many-helper many-public))
++    (define pos (add1 (caar (regexp-match-positions #rx"\nmany-public\n" text))))
++    (for ([only? '(#f #t)])
++      (define declarations (send (analyse text only?) get-declaration))
++      (check-equal? (send declarations uses-at pos) (list (CharRange pos (+ pos 11))))))
++
++  (test-case "core binder anchors retain phases and submodule identities"
++    (check-identities
++      (string-append prefix "(begin-for-syntax (define phase-name 1))\n"
++        "(module inner racket/base (define inside 2) (provide inside))\n")
++      '(phase-name inside))
++    (define text
++      (string-append
++        "#lang racket/base\n(require (for-syntax racket/base))\n"
++        "(define-syntax-rule (define-at-both name)\n"
++        " (begin (define name 1) (begin-for-syntax (define name 2))))\n"
++        "(define-at-both shared)\nshared\n(begin-for-syntax shared)\n"))
++    (define runtime-pos (add1 (caar (regexp-match-positions #rx"\nshared\n" text))))
++    (define syntax-pos (+ (caar (regexp-match-positions #rx"begin-for-syntax shared" text))
++                          (string-length "begin-for-syntax ")))
++    (for ([only? '(#f #t)])
++      (define declarations (send (analyse text only?) get-declaration))
++      (for ([pos (in-list (list runtime-pos syntax-pos))] [phase '(0 1)])
++        (check-equal? (send declarations module-binding-at pos)
++                      (Module-Binding (source-file-path source) '() phase 'shared))
++        (check-equal? (send declarations uses-at pos) (list (CharRange pos (+ pos 6))))))
++    ;; A plain require imports phase-1 exports with an import shift of zero.
++    (define lib (make-temporary-file "phase-export~a.rkt"))
++    (dynamic-wind
++      void
++      (lambda ()
++        (display-to-file
++          "#lang racket/base\n(require (for-syntax racket/base))\n(define shared 1)\n(begin-for-syntax (define shared 2))\n(provide (for-syntax shared))\n"
++          lib #:exists 'truncate)
++        (define imported
++          (format "#lang racket/base\n(require (for-syntax racket/base))\n(require (file ~s))\n(begin-for-syntax shared)\n" (path->string lib)))
++        (define pos (+ (caar (regexp-match-positions #rx"begin-for-syntax shared" imported))
++                       (string-length "begin-for-syntax ")))
++        (for ([only? '(#f #t)])
++          (define declarations (send (analyse imported only?) get-declaration))
++          (check-equal? (send declarations module-binding-at pos)
++                        (Module-Binding (source-file-path (path->source lib)) '() 1 'shared))))
++      (lambda () (delete-file lib))))
++
++  (for ([body (in-list '("(define name 1) (define helper 2)"
++                         "(struct name ())"
++                         "(define-values (name helper) (values 1 2))"))]
++        [kind '("definitions" "struct binders" "value binders")])
++    (test-case (format "unused generated local ~a retain their authored anchor" kind)
++      (define text
++        (string-append
++          "#lang racket/base\n(require (for-syntax racket/base racket/syntax))\n"
++          "(define-syntax (with-created stx)\n"
++          " (syntax-case stx () [(_ source)\n"
++          "  (with-syntax ([name (format-id #'source \"~a\" #'source #:source #'source)]\n"
++          "                [helper (format-id #'source \"~a-helper\" #'source #:source #'source)])\n"
++          "   #'(let () " body " 0))]))\n"
++          "(with-created local)\n"))
++      (define start (+ (caar (regexp-match-positions #rx"with-created local" text)) 13))
++      (for ([only? '(#f #t)])
++        (define declarations (send (analyse text only?) get-declaration))
++        (check-equal? (send declarations occurrence-at start) (CharRange start (+ start 5)))
++        (check-true (> (send declarations binding-count-at start) 1)))))
++
++  (test-case "scoped lexical owners at one range keep separate uses"
++    (define text
++      (string-append
++        "#lang racket/base\n(require (for-syntax racket/base racket/syntax))\n"
++        "(define-syntax (two-locals stx)\n"
++        " (syntax-case stx () [(_ origin left right)\n"
++        "  (let* ([a (format-id #'origin \"~a\" #'origin #:source #'origin)]\n"
++        "         [b ((make-syntax-introducer) a)]\n"
++        "         [a-use (datum->syntax a (syntax-e a) #'left)]\n"
++        "         [b-use (datum->syntax b (syntax-e b) #'right)])\n"
++        "    (with-syntax ([a a] [b b] [a-use a-use] [b-use b-use])\n"
++        "      #'(let ([a 1] [b 2]) (list a-use b-use))))]))\n"
++        "(two-locals local local local)\n"))
++    (define start (+ (caar (regexp-match-positions #rx"two-locals local" text)) 11))
++    (for ([only? '(#f #t)])
++      (define declarations (send (analyse text only?) get-declaration))
++      (check-equal? (send declarations binding-count-at start) 2)
++      (for ([offset '(6 12)])
++        (check-equal? (send declarations uses-at (+ start offset))
++                      (list (CharRange (+ start offset) (+ start offset 5)))))))
++
++  (test-case "reference lookup keys expand an explicit family without joining a shared-range outsider"
++    (define text (string-append prefix "(define-thing thing)\nthing\nthing-helper\n; other\n"))
++    (for ([only? '(#f #t)])
++      (define trace (analyse text only?))
++      (define declarations (send trace get-declaration))
++      (define facts (send declarations get-binding-facts))
++      (define members
++        (for/list ([id '(thing thing-helper)])
++          (for/first ([name (in-list (hash-ref facts 'names))]
++                      #:when (and (eq? (hash-ref name 'role) 'definition)
++                                  (eq? (syntax-e (hash-ref name 'identifier)) id)))
++            name)))
++      (send declarations add-binding-facts
++            (hash-set facts 'families
++                      (list (hasheq 'key 'thing 'canonical (hash-ref (car members) 'identifier)
++                                    'members members))))
++      (define shared (hash-ref (car members) 'range))
++      (send declarations syncheck:add-definition-target/phase-level+space
++            (source-syntax-source source) (car shared) (cdr shared) 'outsider '() 0)
++      (define outside (caar (regexp-match-positions #rx"other" text)))
++      (send declarations syncheck:add-jump-to-definition/phase-level+space
++            (source-syntax-source source) outside (+ outside 5) 'outsider
++            (source-file-path source) '() 0)
++      (define doc (make-doc (source-uri source) text))
++      (doc-update-trace! doc trace (send trace get-contribution) 0)
++      (for ([line '(7 8)])
++        (define result (doc-references doc (source-uri source) (Pos line 0) #t))
++        (check-equal? (sort (map Module-Binding-id (Document-Reference-Result-module-binding result)) symbol<?)
++                      '(thing thing-helper))
++        (check-equal? (length (filter (lambda (location)
++                                       (equal? (Location-range location) (Range (Pos 6 14) (Pos 6 19))))
++                                     (Reference-Source-locations (Document-Reference-Result-source result)))) 1))
++      (check-equal? (send declarations reference-module-bindings-at outside)
++                    (list (Module-Binding (source-file-path source) '() 0 'outsider)))))
++
++  (test-case "quoted data and binding metadata require scoped evidence"
++    (define quoted (analyse "#lang racket/base\n'(define-values (imaginary) 1)\n" #t))
++    (check-equal? (hash-count (Doc-Contribution-definitions (send quoted get-contribution))) 0)
++    (define text
++      (string-append
++        "#lang racket/base\n(require (for-syntax racket/base))\n"
++        "(define-syntax (with-retained stx)\n"
++        " (syntax-case stx () [(_ name use)\n"
++        "  (let* ([storage (datum->syntax #'name (syntax-e #'name) #f)]\n"
++        "         [expanded (with-syntax ([id storage])\n"
++        "                     (local-expand #'(let ([id 1]) id) 'expression null))]\n"
++        "         [bound (syntax-case expanded () [(_ ([(id) rhs]) body) #'id])]\n"
++        "         [located (datum->syntax bound (syntax-e bound) #'name)]\n"
++        "         [used (datum->syntax bound (syntax-e bound) #'use)]\n"
++        "         [bad (syntax-property (datum->syntax #f 'unbound #'name) 'original-for-check-syntax #t)])\n"
++        "    (syntax-property\n"
++        "     (syntax-property\n"
++        "      (syntax-property expanded 'disappeared-binding (list located bad))\n"
++        "      'disappeared-use (list used bad))\n"
++        "     'origin (list bad)))]))\n"
++        "(with-retained local local)\n"))
++    (define start (+ (caar (regexp-match-positions #rx"with-retained local" text))
++                     (string-length "with-retained ")))
++    (for ([only? '(#f #t)])
++      (define declarations (send (analyse text only?) get-declaration))
++      (check-equal? (send declarations definition-at (+ start 6)) (CharRange start (+ start 5)))
++      (check-equal? (send declarations uses-at start) (list (CharRange (+ start 6) (+ start 11))))
++      (check-false
++        (for/or ([name (in-list (hash-ref (send declarations get-binding-facts) 'names))])
++          (eq? 'unbound (syntax-e (hash-ref name 'identifier))))))))
++
++(module+ test
++  (for* ([language '("racket/base" "htdp/bsl" "htdp/isl+" "htdp/asl")]
++         [custom? (if (equal? language "racket/base") '(#f #t) '(#f))]
++         [only? '(#f #t)])
++    (test-case (format "field-bearing structures preserve component queries in ~a, constructor ~a, mode ~a" language custom? only?)
++      (define teaching? (not (equal? language "racket/base")))
++      (define form (if teaching? "define-struct" "struct"))
++      (define text
++        (format "#lang ~a\n(~a point (x y)~a)\n(define sample (~apoint 3 4))\n(define (point-sum p)\n  (if (point? p) (+ (point-x p) (point-y p)) 0))\n(point-sum sample)\n"
++                language form (if custom? " #:constructor-name make-point" "")
++                (if (or teaching? custom?) "make-" "")))
++      (define trace (analyse text only?))
++      (define doc (make-doc (source-uri source) text))
++      (doc-update-trace! doc trace (send trace get-contribution) 0)
++      (define (at needle offset)
++        (+ offset (caar (regexp-match-positions (regexp (regexp-quote needle)) text))))
++      (define stem (at "point (x" 0))
++      (define field (at "point (x" 7))
++      (define stems (sort (append (list stem (at "point? p" 0) (at "point-x p" 0) (at "point-y p" 0))
++                                  (if custom? '() (list (at "point 3" 0)))) <))
++      (define fields (list field (at "point-x p" 6)))
++      (define groups
++        (append (list (cons 5 stems) (cons 1 fields))
++                (if custom? (list (cons 10 (list (at "#:constructor-name make-point" 19)
++                                                (at "make-point 3" 0)))) '())))
++      (for ([group (in-list groups)])
++        (define width (car group))
++        (define positions (cdr group))
++        (for ([absolute (in-list positions)])
++          (define pos (doc-abs-pos->pos doc absolute))
++          (define expected (doc-abs-pos->pos doc (car positions)))
++          (check-equal? (doc-definition doc (source-uri source) pos)
++                        (Location (source-uri source)
++                                  (Range expected (doc-abs-pos->pos doc (+ (car positions) width)))))
++          (check-equal? (doc-prepare-rename doc pos)
++                        (Range pos (doc-abs-pos->pos doc (+ absolute width))))
++          (define edits (doc-rename doc (source-uri source) pos "changed"))
++          (check-not-false edits)
++          (when edits
++            (check-equal?
++              (map TextEdit-range (hash-ref (WorkspaceEdit-changes edits) (string->symbol (source-uri source))))
++              (for/list ([start (in-list positions)])
++                (Range (doc-abs-pos->pos doc start) (doc-abs-pos->pos doc (+ start width))))))
++          (unless only?
++            (define hover (doc-hover doc pos))
++            (check-not-false hover)
++            (when hover
++              (check-true (string-contains? (Hover-contents hover)
++                                           (format "(~a point (x y)~a)" form (if custom? " #:constructor-name make-point" "")))))))))))
++
++(module+ test
++  (test-case "named-space exports retain their originating declaration in both modes"
++    (define directory (make-temporary-file "space-exports~a" 'directory))
++    (define lib (build-path directory "space-lib.rkt"))
++    (define use (build-path directory "space-use.rkt"))
++    (define lib-text
++      (string-append "#lang racket/base\n(require (for-syntax racket/base))\n"
++        "(define-syntax (def stx)\n  (syntax-case stx ()\n    [(_ id)\n"
++        "     (with-syntax ([sid ((make-interned-syntax-introducer 'names) #'id 'add)])\n"
++        "       #'(begin (define sid 10) (provide (for-space names sid))))]))\n(def value)\n"))
++    (define use-text
++      (string-append "#lang racket/base\n(require (for-syntax racket/base))\n(require \"space-lib.rkt\")\n"
++        "(define-syntax (use-name stx)\n  (syntax-case stx ()\n"
++        "    [(_ id) ((make-interned-syntax-introducer 'names) #'id 'add)]))\n(use-name value)\n"))
++    (dynamic-wind void
++      (lambda ()
++        (display-to-file lib-text lib)
++        (display-to-file use-text use)
++        (for* ([only? '(#f #t)] [shifted? '(#f #t)])
++          (define imported-text
++            (if shifted?
++                (string-append
++                  "#lang racket/base\n(require (for-syntax racket/base) (for-meta 2 racket/base))\n"
++                  "(require (for-syntax \"space-lib.rkt\"))\n(begin-for-syntax\n"
++                  "  (define-syntax (use-name stx)\n    (syntax-case stx ()\n"
++                  "      [(_ id) ((make-interned-syntax-introducer 'names) #'id 'add)]))\n"
++                  "  (use-name value))\n")
++                use-text))
++          (display-to-file imported-text use #:exists 'truncate)
++          (define pos (if shifted? (Pos 7 12) (Pos 6 10)))
++          (define (load-doc file text)
++            (define doc (make-doc (source-uri (path->source file)) text))
++            (check-true (doc-expand! doc #:contribution-only? only?))
++            doc)
++          (define dl (load-doc lib lib-text))
++          (define du (load-doc use imported-text))
++          (define ws (make-workspace))
++          (workspace-add-folder! ws directory)
++          (workspace-set-contribution! ws (Doc-contribution dl))
++          (define keys (doc-module-bindings-at du pos))
++          (check-equal? (length keys) 1)
++          (check-equal? (Module-Binding-phase+space (car keys)) 0)
++          (define facts
++            (send (send (analyse imported-text only? (path->source use)) get-declaration) get-binding-facts))
++          (check-true
++            (for/or ([name (in-list (hash-ref facts 'names))])
++              (and (= (car (hash-ref name 'range)) (doc-pos->abs-pos du pos))
++                   (eq? (hash-ref name 'space) 'names))))
++          (check-true (hash-has-key? (Doc-Contribution-definitions (Doc-contribution dl)) (car keys)))
++          (define locations (reference-locations ws (doc-references du (Doc-uri du) pos #t) #t))
++          (check-not-false
++            (member (Location (Doc-uri dl) (Range (Pos 7 5) (Pos 7 10))) locations))))
++      (lambda () (delete-directory/files directory)))))
++
++(module+ test
++  (test-case "an unmapped authored member prevents component rename"
++    (define text "#lang racket/base\n(struct point (x))\npoint-x\nstruct:point\n")
++    (for ([only? '(#f #t)])
++      (define trace (analyse text only?))
++      (define doc (make-doc (source-uri source) text))
++      (doc-update-trace! doc trace (send trace get-contribution) 0)
++      (check-false (doc-prepare-rename doc (Pos 1 8)))
++      (check-false (doc-rename doc (source-uri source) (Pos 2 0) "changed"))))
++
++  (test-case "an unrelated generated binding at the component anchor prevents rename"
++    (define text
++      (string-append "#lang racket/base\n(require (for-syntax racket/base racket/syntax))\n"
++        "(define-syntax (define-record stx)\n (syntax-case stx () [(_ name)\n"
++        "  (with-syntax ([other (format-id #'name \"other\" #:source #'name)])\n"
++        "   #'(begin (struct name (x)) (define other 1)))]))\n"
++        "(define-record point)\npoint-x\nother\n"))
++    (for ([only? '(#f #t)])
++      (define trace (analyse text only?))
++      (define doc (make-doc (source-uri source) text))
++      (doc-update-trace! doc trace (send trace get-contribution) 0)
++      (check-false (doc-prepare-rename doc (Pos 6 15)))
++      (check-false (doc-rename doc (source-uri source) (Pos 7 0) "changed")))))
++
++(module+ test
++  (test-case "four thousand lexical functions retain indexed analysis cost"
++    (define text
++      (string-append "#lang racket/base\n"
++        (string-join (for/list ([i (in-range 4000)]) (format "(define (f~a x) x)" i)) "\n") "\n"))
++    (collect-garbage)
++    (define-values (traces cpu real gc) (time-apply (lambda () (analyse text #t)) '()))
++    (check-equal? (hash-count (Doc-Contribution-definitions (send (car traces) get-contribution))) 4000)
++    (check-true (< cpu 5000) (format "lexical analysis used ~a ms CPU" cpu))))
++
++(module+ test
++  (test-case "same-spelling scoped outsiders do not become direct component members"
++    (define text
++      (string-append "#lang racket/base\n(require (for-syntax racket/base))\n"
++        "(define-syntax (define-record stx)\n (syntax-case stx () [(_ name use)\n"
++        "  (let* ([other ((make-syntax-introducer) #'name)]\n"
++        "         [used (datum->syntax other (syntax-e other) #'use)])\n"
++        "   (with-syntax ([other other] [used used])\n"
++        "    #'(begin (struct name (x)) (define other 1) used)))]))\n"
++        "(define-record point point)\npoint-x\n"))
++    (for ([only? '(#f #t)])
++      (define trace (analyse text only?))
++      (define doc (make-doc (source-uri source) text))
++      (doc-update-trace! doc trace (send trace get-contribution) 0)
++      (check-false (doc-prepare-rename doc (Pos 8 15)))
++      (check-false (doc-rename doc (source-uri source) (Pos 9 0) "changed")))))
+diff --git a/tests/lib/doc-test.rkt b/tests/lib/doc-test.rkt
+--- a/tests/lib/doc-test.rkt
++++ b/tests/lib/doc-test.rkt
+@@ -764,10 +764,10 @@
+         (define use-uri (path->uri use-path))
+         (define d (make-doc use-uri use-text))
+         (check-true (doc-expand! d))
+-        ;; Legacy Check Syntax omits phase information; the compatibility
+-        ;; layer supplies phase 0. New callbacks preserve the import shift.
++        ;; Scoped expansion facts recover the defining phase from the imported
++        ;; identifier, independently of the callback's import shift.
+         (check-equal? (doc-definition d use-uri (Pos 3 12))
+-                      (Module-Binding lib-path '() (if phase+space-callbacks? 1 0) 'foo)))
++                      (Module-Binding lib-path '() 0 'foo)))
+       (lambda ()
+         (delete-directory/files temp-dir))))
+ 

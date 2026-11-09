@@ -764,10 +764,10 @@
         (define use-uri (path->uri use-path))
         (define d (make-doc use-uri use-text))
         (check-true (doc-expand! d))
-        ;; Legacy Check Syntax omits phase information; the compatibility
-        ;; layer supplies phase 0. New callbacks preserve the import shift.
+        ;; Scoped expansion facts recover the defining phase from the imported
+        ;; identifier, independently of the callback's import shift.
         (check-equal? (doc-definition d use-uri (Pos 3 12))
-                      (Module-Binding lib-path '() (if phase+space-callbacks? 1 0) 'foo)))
+                      (Module-Binding lib-path '() 0 'foo)))
       (lambda ()
         (delete-directory/files temp-dir))))
 

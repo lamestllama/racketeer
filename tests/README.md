@@ -11,6 +11,15 @@ subdirectories and are not separate tests. `node scripts/test-headless.js --list
 shows the current native and Node suite inventory. Editor dogfooding also checks
 each native suite's expected case count in `tests/vscode-dogfood.js`.
 
+`tests/rhombus-bindings.rkt` checks static member navigation in full and
+contribution-only analysis. It skips with a message unless
+`RACKETDAP_TEST_RHOMBUS=1` and Rhombus is installed in the selected runtime.
+
+`tests/rename-binders.rkt` checks generated binding families, capture refusal,
+import aliases, structure field/type rename and document-local validation,
+including untitled documents.
+Its three Rhombus rename cases use the same optional runtime setting.
+
 A test must not depend on how fast the machine is:
 
 - Wait for a condition with `until` from `tests/support/wait.js`, which ends as soon as the

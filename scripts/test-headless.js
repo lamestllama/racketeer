@@ -22,17 +22,19 @@ function run() {
   const scratch = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'racketeer-')));
   const env = { ...process.env, TMPDIR: scratch, TEMP: scratch, TMP: scratch };
   try {
-    for (const [command, args] of [
+    for (const [command, args, extra] of [
       [process.execPath, ['scripts/stage-extension.js']],
       // Racket itself, not the raco launcher: on Windows the launcher refuses a
-      // command line over 1024 characters.
-      ['racket', ['-l-', 'raco', 'test', '--timeout', '600', ...suites.racket]],
+      // command line over 1024 characters. Only these suites see the bundled
+      // language server as a collection; the debugger must run without it.
+      ['racket', ['-l-', 'raco', 'test', '--timeout', '600', ...suites.racket],
+        { PLTCOLLECTS: `${path.join(root, 'vendor', 'collects')}${path.delimiter}${process.env.PLTCOLLECTS || ''}` }],
       // Each test has its own deadline (tests/support/node-test.js), so a file
       // takes the sum of its tests' times. The runner's limit is only a ceiling
       // for a file whose process never exits.
       [process.execPath, ['--test', '--test-concurrency=1', '--test-timeout=1800000', ...suites.node]]
     ]) {
-      const result = spawnSync(command, args, { cwd: root, stdio: 'inherit', env });
+      const result = spawnSync(command, args, { cwd: root, stdio: 'inherit', env: { ...env, ...extra } });
       if (result.error) throw result.error;
       if (result.status !== 0) { process.exitCode = result.status || 1; return; }
     }

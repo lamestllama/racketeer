@@ -28,6 +28,8 @@
 
 (provide leading-comment-lines
          source-candidates
+         collect-rhombus-candidates
+         bounding-range
          ranges-for-identifier
          display-range-for-identifier
          expand-detail

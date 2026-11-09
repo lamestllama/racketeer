@@ -11,6 +11,8 @@
          "safedoc.rkt"
          "../common/settings.rkt"
          "../doclib/doc.rkt"
+         "../doclib/language-adapter.rkt"
+         (only-in "../doclib/lexer/state.rkt" LexerState-adapter LexerState-editor-facts)
          (only-in "../doclib/formatting.rkt" exn:fail:fmt?)
          "../workspace/current.rkt"
          "compose/references.rkt"
@@ -100,7 +102,28 @@
   (match params
     [(hash-table ['textDocument (DocIdentifier-js #:uri uri)]
                  ['position (as-Pos pos)])
-     (success-from-doc id uri (λ (doc) (doc-completion doc pos)))]
+     (define safe-doc (lsp-get-doc uri))
+     (define position
+       (with-read-doc safe-doc
+         (lambda (doc)
+           (define adapter (LexerState-adapter (doc-lexer-state doc)))
+           (and adapter ((current-language-adapter-validator) adapter)
+                ((current-language-adapter-completion) adapter) (doc-pos->abs-pos doc pos)))))
+     (cond
+       [position
+        (define (matching-position? doc)
+          (equal? position (hash-ref (or (LexerState-editor-facts (doc-lexer-state doc)) (hasheq))
+                                    'completion-position #f)))
+        (define empty-result (CompletionList #:isIncomplete #t #:items '()))
+        (unless (with-read-doc safe-doc matching-position?)
+          (source-controller-ensure-analysis! (current-source-controller)
+            (source-controller-snapshot (current-source-controller) (uri->source uri))
+            #:completion-position position))
+        (analysis-query safe-doc id
+                        (λ (doc)
+                          (if (matching-position? doc) (doc-completion doc pos) empty-result))
+                        empty-result #:read-errors? #t)]
+       [else (success-from-doc id uri (λ (doc) (doc-completion doc pos)))])]
     [_
      (error-response id ErrorCode-InvalidParams "textDocument/completion failed")]))
 
@@ -166,13 +189,24 @@
     [(hash-table ['textDocument (DocIdentifier-js #:uri uri)])
      (success-from-doc
        id uri
-       (λ (doc)
-         (cond
-           [(client-capability-hierarchical-document-symbol?)
-            (doc-symbols-hierarchical doc)]
-           [else (doc-symbols doc uri)])))]
+       (λ (doc) (document-symbol-result doc uri (client-capability-hierarchical-document-symbol?))))]
     [_
      (error-response id ErrorCode-InvalidParams "textDocument/documentSymbol failed")]))
+
+;; Native outlines are flattened here so both clients consume the same tree.
+(define (document-symbol-result doc uri hierarchical?)
+  (cond
+    [hierarchical? (doc-symbols-hierarchical doc)]
+    [(doc-declaration-provider doc)
+     (define (flatten symbols)
+       (append-map
+        (lambda (symbol)
+          (cons (SymbolInformation #:name (DocumentSymbol-name symbol)
+                                   #:kind (DocumentSymbol-kind symbol)
+                                   #:location (Location uri (DocumentSymbol-selectionRange symbol)))
+                (flatten (DocumentSymbol-children symbol)))) symbols))
+     (flatten (doc-symbols-hierarchical doc))]
+    [else (doc-symbols doc uri)]))
 
 ;; Inlay Hint
 ;;
@@ -290,7 +324,7 @@
     [did-close! (jsexpr? . -> . void?)]
     [hover (exact-nonnegative-integer? jsexpr? . -> . (or/c jsexpr? (-> jsexpr?)))]
     [code-action (exact-nonnegative-integer? jsexpr? . -> . jsexpr?)]
-    [completion (exact-nonnegative-integer? jsexpr? . -> . jsexpr?)]
+    [completion (exact-nonnegative-integer? jsexpr? . -> . (or/c jsexpr? (-> jsexpr?)))]
     [signatureHelp (exact-nonnegative-integer? jsexpr? . -> . jsexpr?)]
     [definition (exact-nonnegative-integer? jsexpr? . -> . (or/c jsexpr? (-> jsexpr?)))]
     [document-highlight (exact-nonnegative-integer? jsexpr? . -> . jsexpr?)]
@@ -305,4 +339,4 @@
     [full-semantic-tokens (exact-nonnegative-integer? jsexpr? . -> . (or/c jsexpr? (-> jsexpr?)))]
     [range-semantic-tokens (exact-nonnegative-integer? jsexpr? . -> . (or/c jsexpr? (-> jsexpr?)))])
 
-  client-capability-hierarchical-document-symbol?)
+  client-capability-hierarchical-document-symbol? document-symbol-result)

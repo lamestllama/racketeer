@@ -33,7 +33,7 @@ test('workspace rename follows imports and previews edits without changing files
   assert.equal(fs.readFileSync(p.filename('unrelated.rkt'), 'utf8'), untouched);
 });
 
-test('one source identifier with several bindings blocks only its own rename', async t => {
+test('one source identifier with several corresponding binders renames its whole family', async t => {
   // A macro can bind one written name more than once, as Rhombus's fun binds
   // the function and a generated helper at its name.
   const p = await project(t), consumer = p.open('uses.rkt', uses);
@@ -46,7 +46,9 @@ test('one source identifier with several bindings blocks only its own rename', a
   await p.update();
   const { changes } = await p.rename(consumer, 'squared', { line: 2, character: 2 });
   assert.deepEqual(Object.keys(changes).sort(), [p.origin, consumer].sort());
-  await assert.rejects(p.rename(bound, 'squared', { line: 7, character: 15 }), /more than one binding/);
+  const family = await p.rename(bound, 'squared', { line: 7, character: 15 });
+  assert.deepEqual(Object.keys(family.changes), [bound]);
+  assert.equal(edited(twice, family.changes[bound]), twice.replaceAll('square', 'squared'));
   assert.equal(fs.readFileSync(p.filename('twice.rkt'), 'utf8'), twice);
 });
 

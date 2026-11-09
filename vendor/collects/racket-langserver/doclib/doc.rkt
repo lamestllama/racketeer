@@ -6,13 +6,18 @@
 ;; by a structure that provides thread safety, such as `SafeDoc`.
 
 (require "../common/interfaces.rkt"
+         (only-in "../common/json-util.rkt" Nothing)
          "editor.rkt"
          "../common/source.rkt"
+         "../common/source-snapshot.rkt"
          "lazy-cache.rkt"
          "doc-trace.rkt"
+         (only-in "autocomplete.rkt" binding-completions)
          "formatting.rkt"
          (only-in "formatter/fmt.rkt" empty-fmt-settings)
          "internal-types.rkt"
+         "rename-validation.rkt"
+         (only-in "service/declaration.rkt" current-retain-binding-facts?)
          "lexer.rkt"
          (only-in "lexer/state.rkt"
                   lexer-state-body-forest)
@@ -27,6 +32,8 @@
                   non-skippable-node?
                   token-leaf-type?)
          "doc-lang.rkt"
+         "language-adapter.rkt"
+         (only-in "lexer/state.rkt" LexerState-editor-facts)
          "inlay-hint-source.rkt"
          racket/match
          racket/contract
@@ -243,12 +250,17 @@
   (->* (Source? (is-a?/c lsp-editor%) LexerState?) (#:contribution-only? boolean?) CSResult?)
   (check-syntax source doc-text lexer-state #:contribution-only? contribution-only?))
 
+(define (doc-update-language-policy! doc new-trace)
+  (set-Doc-lexer-state! doc (make-lazy-cache))
+  (call-with-lazy-cache! (Doc-lexer-state doc) (lambda () (send new-trace get-lexer-state))))
+
 (define/contract (doc-update-trace! doc new-trace new-contribution new-version)
   (-> Doc?
       (is-a?/c build-trace%)
       (or/c #f Doc-Contribution?)
       exact-nonnegative-integer?
       void?)
+  (doc-update-language-policy! doc new-trace)
   (set-Doc-trace! doc new-trace)
   (set-Doc-contribution! doc new-contribution)
   (set-Doc-trace-version! doc new-version))
@@ -268,7 +280,8 @@
 
 (define/contract (doc-trace-latest? doc)
   (-> Doc? boolean?)
-  (equal? (Doc-version doc) (Doc-trace-version doc)))
+  (and (equal? (Doc-version doc) (Doc-trace-version doc))
+       (send (Doc-trace doc) adapter-current?)))
 
 ;; Extract while the worker exclusively owns an unedited, completed Doc.
 ;; Shared queries retain ranges, never the mutable declaration service.
@@ -283,14 +296,18 @@
   (->* (Doc?) (#:contribution-only? boolean?) boolean?)
   (define result (doc-check-syntax doc #:contribution-only? contribution-only?))
   (define new-trace (CSResult-trace result))
-  (cond [(CSResult-succeed? result)
+  (cond [(and (CSResult-succeed? result) (send new-trace adapter-current?))
          (define new-contribution (send new-trace get-contribution))
          (doc-update-trace! doc
                             new-trace
                             new-contribution
                             (Doc-version doc))
          #t]
-        [else #f]))
+        [else
+         (define adapter (send new-trace get-language-adapter))
+         (when (and adapter ((current-language-adapter-declarations) adapter))
+           (doc-update-language-policy! doc new-trace))
+         #f]))
 
 (define/contract (doc-check-syntax doc #:contribution-only? [contribution-only? #f])
   (->* (Doc?) (#:contribution-only? boolean?) CSResult?)
@@ -495,12 +512,74 @@
   (for/list ([span (in-list (lexer-state-sexp-comment-spans (doc-lexer-state doc)))])
     (SemanticToken (CharRange-start span) (CharRange-end span) SemanticTokenType-comment '())))
 
+(define (doc-declaration-provider doc)
+  (define adapter (LexerState-adapter (doc-lexer-state doc)))
+  (and adapter ((current-language-adapter-declarations) adapter)))
+
+(define (doc-native-declarations doc)
+  (define state (doc-lexer-state doc))
+  (define adapter (LexerState-adapter state))
+  (and adapter ((current-language-adapter-validator) adapter)
+       (hash-ref (or (LexerState-editor-facts state) (hasheq)) 'declarations #f)))
+
+(define (declaration-tree-list declarations)
+  (append-map (lambda (d) (cons d (declaration-tree-list (hash-ref d 'children '())))) declarations))
+
+(define (doc-native-declaration-at doc pos declarations)
+  (define entries (declaration-tree-list declarations))
+  (define definitions
+    (if (doc-trace-latest? doc)
+        (send (send (Doc-trace doc) get-declaration) definition-ranges-at pos) '()))
+  (define candidates
+    (filter (lambda (d)
+              (define selection (hash-ref d 'selection))
+              (or (<= (car selection) pos (sub1 (cdr selection)))
+                  (for/or ([range (in-list definitions)])
+                    (<= (CharRange-start range) (car selection) (cdr selection) (CharRange-end range))))) entries))
+  (and (= (length candidates) 1) (car candidates)))
+
+(define (native-symbol-kind kind)
+  (case kind
+    [(function macro) SymbolKind-Function] [(class) SymbolKind-Class]
+    [(struct) SymbolKind-Struct] [(field) SymbolKind-Field] [(method) SymbolKind-Method]
+    [(namespace) SymbolKind-Namespace] [(module) SymbolKind-Module]
+    [(operator) SymbolKind-Operator] [else SymbolKind-Variable]))
+
+(define (native-semantic-kind kind)
+  (case kind
+    [(function) SemanticTokenType-function] [(macro) SemanticTokenType-macro]
+    [(class struct) SemanticTokenType-class] [(field) SemanticTokenType-property]
+    [(method) SemanticTokenType-method] [(namespace module) SemanticTokenType-namespace]
+    [(operator) SemanticTokenType-operator] [else SemanticTokenType-variable]))
+
+(define (doc-native-kind-tokens doc)
+  (define declarations (doc-native-declarations doc))
+  (define service (send (Doc-trace doc) get-declaration))
+  (define kinds (make-hash))
+  (define definitions (make-hash))
+  (for ([d (in-list (declaration-tree-list (or declarations '())))])
+    (define range (hash-ref d 'selection))
+    (hash-set! definitions range #t)
+    (define uses (if (doc-trace-latest? doc) (send service uses-at (car range)) '()))
+    (for ([r (in-list (cons (CharRange (car range) (cdr range)) uses))])
+      (define key (cons (CharRange-start r) (CharRange-end r)))
+      (hash-update! kinds key (lambda (xs) (cons (hash-ref d 'kind) xs)) '())))
+  (sort
+   (for/list ([(r ks) (in-hash kinds)])
+     (SemanticToken (car r) (cdr r)
+                    (native-semantic-kind (if (andmap (lambda (k) (eq? k (car ks))) ks) (car ks) 'variable))
+                    (if (hash-ref definitions r #f) (list SemanticTokenModifier-definition) '())))
+   < #:key SemanticToken-start))
+
 (define (doc-semantic-tokens doc)
   (define trace-tokens
     (sort (send (Doc-trace doc) get-semantic-tokens) < #:key SemanticToken-start))
   (define sexp-comment-tokens
     (sort (doc-sexp-comment-semantic-tokens doc) < #:key SemanticToken-start))
-  (merge-semantic-tokens trace-tokens sexp-comment-tokens))
+  (define binding-tokens (sort (doc-binding-kind-tokens doc trace-tokens) < #:key SemanticToken-start))
+  (merge-semantic-tokens
+   (merge-semantic-tokens (merge-semantic-tokens trace-tokens binding-tokens) (doc-native-kind-tokens doc))
+   sexp-comment-tokens))
 
 (define (merge-semantic-tokens tokens high-priority-tokens [merged '()])
   (define (continue-merge tokens merged)
@@ -825,11 +904,24 @@
         (hover-detail-via-declaration hover-service declaration-service pos*)))
   (match-define (list link tag)
     (interval-map-ref (send doc-trace get-docs) pos* (list #f #f)))
+  (define native
+    (doc-native-declaration-at doc pos* (or (doc-native-declarations doc) '())))
   (define source-summary
-    (and (not link) resolved-detail (hover-detail->summary doc resolved-detail)))
+    (and (not link)
+         (or (and native
+                  (let* ([signatures (hash-ref native 'signatures '())]
+                         [range (hash-ref native 'range)]
+                         [text (if (pair? signatures) (hash-ref (car signatures) 'label)
+                                   (substring (doc-get-text doc) (car range) (cdr range)))])
+                    (define-values (bounded _) (bound-hover-source text))
+                    (Hover-Code-Summary bounded
+                      (if (eq? (Language-Policy-policy-language (doc-language-policy doc)) 'rhombus)
+                          "rhombus" "racket"))))
+             (and resolved-detail (hover-detail->summary doc resolved-detail)))))
+  (define declared-annotations (and native (hash-ref native 'annotations '())))
   (define signature (hover-tag->signature tag))
   (define card
-    (build-hover-card #:type-text type-text
+    (build-hover-card #:type-text (or type-text (and (pair? declared-annotations) (string-join declared-annotations "\n")))
                       #:type-stale? (not (doc-trace-latest? doc))
                       #:annotation annotation
                       #:link (and link (make-proper-url-for-online-documentation link))
@@ -837,9 +929,12 @@
                       #:source-summary source-summary
                       #:documentation-text (hover-documentation-text link signature)))
   (define occurrence (send declaration-service occurrence-at pos*))
-  (define range-start (or type-start start use-start
+  (define native-range
+    (and native (or (send declaration-service occurrence-at pos*)
+                    (let ([r (hash-ref native 'selection)]) (CharRange (car r) (cdr r))))))
+  (define range-start (or (and native-range (CharRange-start native-range)) type-start start use-start
                           (and occurrence (CharRange-start occurrence))))
-  (define range-end (or type-end end use-end
+  (define range-end (or (and native-range (CharRange-end native-range)) type-end end use-end
                         (and occurrence (CharRange-end occurrence))))
   (values card (and range-start (abs-range->range doc range-start range-end))))
 
@@ -937,21 +1032,51 @@
   (match-define (list signatures docs) (get-docs-for-tag tag))
   (and signatures
        (SignatureHelp
+         #:activeSignature (Nothing)
+         #:activeParameter (Nothing)
          #:signatures
          (for/list ([signature (in-list signatures)])
            (SignatureInformation
              #:label signature
+             #:parameters (Nothing)
              #:documentation (or docs ""))))))
+
+(define (doc-native-signature-help doc pos)
+  (define adapter (LexerState-adapter (doc-lexer-state doc)))
+  (define provider (and adapter ((current-language-adapter-validator) adapter)
+                        ((current-language-adapter-calls) adapter)))
+  (define call
+    (and provider
+         (provider
+          (hasheq 'operation 'call 'uri (Doc-uri doc) 'text (doc-get-text doc) 'position pos
+                  'pre #f 'expanded #f 'reader #f 'language #f 'submodules '()
+                  'phase #f 'space #f 'selection #f 'cancelled? (lambda () #f)
+                  'facts (or (LexerState-editor-facts (doc-lexer-state doc)) (hasheq))
+                  'hooks (hasheq 'declaration-at
+                                 (lambda (p) (doc-native-declaration-at doc p (or (doc-native-declarations doc) '()))))))))
+  (and call (pair? (hash-ref call 'signatures '()))
+       (SignatureHelp
+        #:signatures
+        (for/list ([signature (in-list (hash-ref call 'signatures))])
+          (SignatureInformation
+           #:label (hash-ref signature 'label)
+           #:documentation (or (hash-ref signature 'documentation #f) "")
+           #:parameters
+           (for/list ([parameter (in-list (hash-ref signature 'parameters '()))])
+             (ParameterInformation #:label (hash-ref parameter 'label)
+                                   #:documentation (or (hash-ref parameter 'documentation #f) "")))))
+        #:activeSignature (hash-ref call 'active-signature 0)
+        #:activeParameter (hash-ref call 'active-parameter (hash-ref call 'argument)))))
 
 (define/contract (doc-signature-help doc pos)
   (-> Doc? Pos? (or/c SignatureHelp? #f))
-  (define doc-trace (Doc-trace doc))
   (define pos* (doc-pos->abs-pos doc pos))
-  (define callee-pos (doc-signature-form-head-pos doc pos*))
-  (define tag
-    (and callee-pos
-         (doc-signature-tag doc-trace (doc-lexer-snapshot doc) callee-pos)))
-  (and tag (tag->signature-help tag)))
+  (or (doc-native-signature-help doc pos*)
+      (let* ([doc-trace (Doc-trace doc)]
+             [callee-pos (doc-signature-form-head-pos doc pos*)]
+             [tag (and callee-pos
+                       (doc-signature-tag doc-trace (doc-lexer-snapshot doc) callee-pos))])
+        (and tag (tag->signature-help tag)))))
 
 ;; Position queries convert service-owned absolute CharRanges at the document
 ;; boundary. Private declaration ids never leave declaration%.
@@ -965,11 +1090,14 @@
 
 (define/contract (doc-definition-at doc pos)
   (-> Doc? Pos? (or/c Range? #f))
+  (define ranges (doc-definition-ranges-at doc pos))
+  (and (= (length ranges) 1) (car ranges)))
+
+(define/contract (doc-definition-ranges-at doc pos)
+  (-> Doc? Pos? (listof Range?))
   (define pos* (doc-pos->abs-pos doc pos))
-  (define range
-    (send (send (Doc-trace doc) get-declaration) definition-at pos*))
-  (and range
-       (abs-range->range doc (CharRange-start range) (CharRange-end range))))
+  (for/list ([range (in-list (send (send (Doc-trace doc) get-declaration) definition-ranges-at pos*))])
+    (abs-range->range doc (CharRange-start range) (CharRange-end range))))
 
 (define/contract (doc-uses-at doc pos)
   (-> Doc? Pos? (listof Range?))
@@ -981,17 +1109,18 @@
 ;; exists, then uses. Imported bindings have no definition range here.
 (define/contract (doc-binding-ranges-at doc pos)
   (-> Doc? Pos? (listof Range?))
-  (define definition-range (doc-definition-at doc pos))
-  (define use-ranges (doc-uses-at doc pos))
-  (cond
-    [definition-range
-     (cons definition-range use-ranges)]
-    [else use-ranges]))
+  (remove-duplicates
+    (append (doc-definition-ranges-at doc pos) (doc-uses-at doc pos))))
+
+(define/contract (doc-module-bindings-at doc pos)
+  (-> Doc? Pos? (listof Module-Binding?))
+  (define pos* (doc-pos->abs-pos doc pos))
+  (send (send (Doc-trace doc) get-declaration) module-bindings-at pos*))
 
 (define/contract (doc-module-binding-at doc pos)
   (-> Doc? Pos? (or/c Module-Binding? #f))
-  (define pos* (doc-pos->abs-pos doc pos))
-  (send (send (Doc-trace doc) get-declaration) module-binding-at pos*))
+  (define bindings (doc-module-bindings-at doc pos))
+  (and (= (length bindings) 1) (car bindings)))
 
 (define (doc-completion-online-prefix token left-fragment cursor-pos)
   ;; Only two token classes currently produce a useful module-path prefix in
@@ -1023,59 +1152,94 @@
 ;; Completion: returns a CompletionList.
 (define/contract (doc-completion doc pos)
   (-> Doc? Pos? CompletionList?)
-  (define doc-trace (Doc-trace doc))
-  (define cursor-pos (doc-pos->abs-pos doc pos))
-  (define lexer-snapshot (doc-lexer-snapshot doc))
-  (define token
-    (and (positive? cursor-pos)
-         (lexer-snapshot-token-at lexer-snapshot (sub1 cursor-pos))))
-  (define left-fragment
-    (if (zero? cursor-pos)
-        ""
-        (doc-token-prefix-at doc (sub1 cursor-pos))))
+  (let/ec return
+    (define doc-trace (Doc-trace doc))
+    (define cursor-pos (doc-pos->abs-pos doc pos))
+    (define state (doc-lexer-state doc))
+    (define adapter (LexerState-adapter state))
+    (define provider (and adapter ((current-language-adapter-validator) adapter)
+                          ((current-language-adapter-completion) adapter)))
+    (define native
+      (and provider (hash-has-key? (or (LexerState-editor-facts state) (hasheq)) 'completion)
+           (provider
+            (hasheq 'operation 'completion 'uri (Doc-uri doc) 'text (doc-get-text doc) 'position cursor-pos
+                    'pre #f 'expanded #f 'reader #f 'language #f 'submodules '()
+                    'phase #f 'space #f 'selection #f 'cancelled? (lambda () #f)
+                    'facts (or (LexerState-editor-facts state) (hasheq)) 'hooks (hasheq)))))
+    (when native
+      (define r (hash-ref native 'range))
+      (define range (Range (doc-abs-pos->pos doc (car r)) (doc-abs-pos->pos doc (cdr r))))
+      (return
+       (CompletionList #:isIncomplete (hash-ref native 'incomplete?)
+                       #:items (for/list ([item (in-list (hash-ref native 'items))])
+                                 (CompletionItem #:label (hash-ref item 'label)
+                                                 #:textEdit (TextEdit #:range range
+                                                                      #:newText (hash-ref item 'insert-text (hash-ref item 'label))))))))
+    (define lexer-snapshot (doc-lexer-snapshot doc))
+    (define token
+      (and (positive? cursor-pos)
+           (lexer-snapshot-token-at lexer-snapshot (sub1 cursor-pos))))
+    (define left-fragment
+      (if (zero? cursor-pos)
+          ""
+          (doc-token-prefix-at doc (sub1 cursor-pos))))
 
-  (define online-prefix
-    (doc-completion-online-prefix token left-fragment cursor-pos))
-  (define completions
-    (append (send doc-trace get-completions)
-            (send doc-trace get-online-completions online-prefix)))
-  (define result
-    (for/list ([completion (in-list completions)])
-      (CompletionItem #:label (symbol->string completion))))
-  (CompletionList #:isIncomplete #t
-                  #:items result))
+    (define online-prefix
+      (doc-completion-online-prefix token left-fragment cursor-pos))
+    (define completions
+      (append (doc-binding-completions doc cursor-pos (send doc-trace get-completions))
+              (send doc-trace get-online-completions online-prefix)))
+    (define result
+      (for/list ([completion (in-list completions)])
+        (CompletionItem #:label (symbol->string completion) #:textEdit (Nothing))))
+    (CompletionList #:isIncomplete #t
+                    #:items result)))
 
-;; Document-local capture only. A cross-file import is returned as a
-;; `Module-Binding`. LSP composition turns that binding into a location only
-;; on the shared analysis route, after this document's lock is released.
+;; Document-local capture returns a local location or a module binding, and
+;; combines both kinds for shared occurrences. LSP composition resolves module
+;; bindings on the shared analysis route, after this document's lock is released.
 (define/contract (doc-definition doc uri pos)
-  (-> Doc? string? Pos? (or/c Location? Module-Binding? #f))
+  (-> Doc? string? Pos? (or/c Location? Module-Binding? (listof (or/c Location? Module-Binding?)) #f))
   (define definition-range (doc-definition-at doc pos))
   (cond
+    [(send (send (Doc-trace doc) get-declaration) component-definition-at (doc-pos->abs-pos doc pos))
+     (Location #:uri uri #:range definition-range)]
+    [(> (send (send (Doc-trace doc) get-declaration) binding-count-at (doc-pos->abs-pos doc pos)) 1)
+     (append (for/list ([range (in-list (doc-definition-ranges-at doc pos))])
+               (Location #:uri uri #:range range))
+             (if (source-file-path (Doc-source doc)) (doc-module-bindings-at doc pos) '()))]
     [definition-range
      (Location #:uri uri
                #:range definition-range)]
     [(not (source-file-path (Doc-source doc))) #f]
-    [else (doc-module-binding-at doc pos)]))
+    [else
+     (define bindings (doc-module-bindings-at doc pos))
+     (cond [(null? bindings) #f]
+           [(null? (cdr bindings)) (car bindings)]
+           [else bindings])]))
 
-;; References: live locations for this document, plus an optional Module-Binding
-;; for workspace lookup when the identifier is module-backed.
+;; References: live locations and every module identity at this occurrence.
+;; A single identity retains the scalar representation used by existing callers.
 (define/contract (doc-references doc uri pos include-decl?)
   (-> Doc? string? Pos? boolean? (or/c Document-Reference-Result? #f))
   (define occurrence-range (doc-occurrence-at doc pos))
   (cond
     [occurrence-range
+     (define absolute (doc-pos->abs-pos doc pos))
+     (define decls (send (Doc-trace doc) get-declaration))
      (define ranges
-       (cond
-         [include-decl? (doc-binding-ranges-at doc pos)]
-         [else (doc-uses-at doc pos)]))
+       (for/list ([range (in-list (send decls reference-ranges-at absolute include-decl?))])
+         (abs-range->range doc (CharRange-start range) (CharRange-end range))))
      (define local-locations
        (for/list ([range (in-list ranges)])
          (Location #:uri uri #:range range)))
      (Document-Reference-Result
        (Reference-Source (source-id (Doc-source doc)) local-locations)
        (and (source-file-path (Doc-source doc))
-            (doc-module-binding-at doc pos)))]
+            (let ([bindings (send decls reference-module-bindings-at absolute)])
+              (cond [(null? bindings) #f]
+                    [(null? (cdr bindings)) (car bindings)]
+                    [else bindings]))))]
     [else #f]))
 
 ;; Document Highlight: returns binding highlights or an empty list.
@@ -1088,26 +1252,83 @@
        (DocumentHighlight #:range range))]
     [else '()]))
 
-;; Rename: returns a WorkspaceEdit or #f.
+(define (doc-rename-ranges doc pos)
+  (define decls (send (Doc-trace doc) get-declaration))
+  (define absolute (doc-pos->abs-pos doc pos))
+  (define occurrence (doc-occurrence-at doc pos))
+  (define definition (doc-definition-at doc pos))
+  (define components (send decls component-edit-ranges-at absolute))
+  (and (doc-trace-latest? doc) occurrence
+       (or components (and definition
+                           (not (send decls coarse-definition-at? absolute))
+                           (not (send decls component-definition-at absolute))))
+       (let* ([text (doc-get-text doc)]
+              [start (doc-pos->abs-pos doc (Range-start occurrence))]
+              [end (doc-pos->abs-pos doc (Range-end occurrence))]
+              [spelling (substring text start end)]
+              [ranges (if components
+                          (map (lambda (range) (cons (CharRange-start range) (CharRange-end range))) components)
+                          (map (lambda (range) (cons (doc-pos->abs-pos doc (Range-start range))
+                                                    (doc-pos->abs-pos doc (Range-end range))))
+                               (remove-duplicates
+                                (append (doc-binding-ranges-at doc pos)
+                                        (doc-binding-ranges-at doc (Range-start definition))))))])
+         (and (identifier-name spelling)
+              (pair? ranges)
+              (andmap (lambda (range) (equal? (substring text (car range) (cdr range)) spelling)) ranges)
+              (sort (remove-duplicates ranges) < #:key car)))))
+
+(define (doc-rename-relations doc ranges name correspondence shift)
+  (rename-token-relations
+   (doc-get-text doc) (Doc-uri doc) ranges name correspondence
+   (lambda (offset)
+     (define pos (doc-abs-pos->pos doc offset))
+     (define bindings (doc-module-bindings-at doc pos))
+     (define definition (and (null? bindings) (doc-definition-at doc pos)))
+     (cond [(pair? bindings) (list->set bindings)]
+           [definition (cons (doc-pos->abs-pos doc (Range-start definition))
+                             (doc-pos->abs-pos doc (Range-end definition)))]
+           [else #f])) shift))
+
+;; The live document supplies edit ranges; immutable expansions validate them.
+;; A failed proposal returns no edits, including for virtual source URIs.
 (define/contract (doc-rename doc uri pos new-name)
   (-> Doc? string? Pos? string? (or/c WorkspaceEdit? #f))
-  (define definition-range (doc-definition-at doc pos))
-  (cond
-    [definition-range
-     (define ranges (doc-binding-ranges-at doc pos))
-     (WorkspaceEdit
-       #:changes
-       (hasheq (string->symbol uri)
-               (for/list ([range (in-list ranges)])
-                 (TextEdit #:range range #:newText new-name))))]
-    [else #f]))
+  (with-handlers ([exn:fail? (lambda (_) #f)])
+    (define ranges (and (identifier-name new-name) (doc-rename-ranges doc pos)))
+    (and ranges
+         (if (equal? (substring (doc-get-text doc) (caar ranges) (cdar ranges)) new-name)
+             (WorkspaceEdit #:changes (hasheq))
+         (let* ([text (doc-get-text doc)]
+                [shift (rename-offset ranges new-name)]
+                [before (make-doc (Doc-uri doc) text)]
+                [after (make-doc (Doc-uri doc) (renamed-text text ranges new-name))])
+           (define (expand-snapshot document)
+             (define file (source-file-path (Doc-source document)))
+             (call-with-source-snapshot (if file (hash file (doc-get-text document)) (hash))
+               (lambda ()
+                 (parameterize ([current-retain-binding-facts? #t])
+                   (doc-expand! document #:contribution-only? #t)))))
+           (and (expand-snapshot before)
+                (expand-snapshot after)
+                (let* ([paths (make-hash)]
+                       [old (rename-snapshot (send (send (Doc-trace before) get-declaration) get-binding-facts)
+                                             (Doc-source before) (doc-get-text before) paths)]
+                       [new (rename-snapshot (send (send (Doc-trace after) get-declaration) get-binding-facts)
+                                             (Doc-source after) (doc-get-text after) paths)]
+                       [correspondence (rename-correspondence old new ranges new-name shift)])
+                  (validate-rename-proposal old new ranges new-name correspondence
+                                            (doc-rename-relations before ranges new-name correspondence shift)
+                                            (doc-rename-relations after '() new-name (hash) values) shift)
+                  (WorkspaceEdit
+                   #:changes (hasheq (string->symbol uri)
+                                     (for/list ([range (in-list ranges)])
+                                       (TextEdit #:range (abs-range->range doc (car range) (cdr range))
+                                                 #:newText new-name)))))))))))
 
-;; Prepare Rename: returns a Range or #f.
 (define/contract (doc-prepare-rename doc pos)
   (-> Doc? Pos? (or/c Range? #f))
-  (define occurrence-range (doc-occurrence-at doc pos))
-  (define definition-range (doc-definition-at doc pos))
-  (and definition-range occurrence-range))
+  (and (doc-rename-ranges doc pos) (doc-occurrence-at doc pos)))
 
 ;; Document Symbols: returns a list of SymbolInformation.
 (define/contract (doc-symbols doc uri)
@@ -1201,11 +1422,19 @@
   ;; Paren tracking means nothing in non-sexp languages (e.g. Rhombus,
   ;; Scribble): form extents are set by blocks or markup rather than parens,
   ;; so any symbol the walker produced would have a bogus range. Report no
-  ;; symbols instead. Unknown languages keep the sexp treatment, matching the
-  ;; lexer fallback used elsewhere.
-  (if (eq? (doc-language-body-mode doc) 'non-sexp)
-      '()
-      (doc-symbols-hierarchical/sexp doc)))
+  ;; symbols without native declaration facts. Unknown languages keep the sexp
+  ;; treatment, matching the lexer fallback used elsewhere.
+  (define native (doc-native-declarations doc))
+  (define (symbol d)
+    (define extent (hash-ref d 'range))
+    (define selection (hash-ref d 'selection))
+    (DocumentSymbol #:name (hash-ref d 'name) #:kind (native-symbol-kind (hash-ref d 'kind))
+                    #:range (abs-range->range doc (car extent) (cdr extent))
+                    #:selectionRange (abs-range->range doc (car selection) (cdr selection))
+                    #:children (map symbol (hash-ref d 'children '()))))
+  (cond [native (map symbol native)]
+        [(eq? (doc-language-body-mode doc) 'non-sexp) '()]
+        [else (doc-symbols-hierarchical/sexp doc)]))
 
 ;; Walk the lexer's token forest. Each `(...)` form is a Token-List whose head
 ;; is its first meaningful child. A definition form becomes a symbol named after
@@ -1214,8 +1443,18 @@
 ;; it contributes its nested definitions to the enclosing scope. The forest
 ;; already tracks paren nesting and tolerates unclosed mid-edit forms, so this
 ;; reuses that structure instead of re-deriving it from the flat token stream.
-(define (doc-symbols-hierarchical/sexp doc)
+(define (doc-symbols-hierarchical/sexp doc [on-binding void])
   (define text (LexerSnapshot-text (doc-lexer-snapshot doc)))
+  (define service (send (Doc-trace doc) get-declaration))
+  (define confirmed-ranges
+    (for/hash ([binding (in-list (send service get-source-bindings))])
+      (values (hash-ref binding 'range) #t)))
+  (define in-transformer? (make-parameter #f))
+  (define bindings-by-extent (make-hash))
+  (for ([binding (in-list (send service get-source-bindings))]
+        #:when (and (hash-ref binding 'declaration? #f) (hash-ref binding 'extent #f)))
+    (hash-update! bindings-by-extent (hash-ref binding 'extent)
+                  (lambda (bindings) (cons binding bindings)) '()))
   (define (span-text span)
     (substring text (LexerTokenSpan-start span) (LexerTokenSpan-end span)))
 
@@ -1294,6 +1533,10 @@
       [(and head (hash-has-key? *definition-form-kinds* head))
        (define name-span (first-symbol-span args))
        (cond
+         [(and name-span (in-transformer?)
+               (not (hash-has-key? confirmed-ranges
+                                   (cons (LexerTokenSpan-start name-span) (LexerTokenSpan-end name-span)))))
+          (collect-symbols args)]
          [name-span
           ;; The function shorthand `(define (f x) ...)` puts the name inside a
           ;; nested list, so the first argument is a list rather than a symbol.
@@ -1303,12 +1546,76 @@
                                        (definition-symbol-kind head function?)
                                        ;; The first argument is the name header;
                                        ;; nested definitions live in the body.
-                                       (collect-symbols (cdr args))))]
+                                       (parameterize ([in-transformer?
+                                                       (or (in-transformer?)
+                                                           (member head '("define-syntax" "define-syntaxes" "define-syntax-rule")))])
+                                         (collect-symbols (cdr args)))))]
          ;; A definition head with no name yet (mid-edit) is transparent.
          [else (collect-symbols args)])]
-      [else (collect-symbols args)]))
+      [else
+       (define bindings
+         (hash-ref bindings-by-extent (cons (token-node-start node) (token-node-end node)) '()))
+       (define children (collect-symbols args))
+       (if (null? bindings) children
+           (for/list ([group (in-list (group-by (lambda (binding) (hash-ref binding 'range))
+                                                 (sort bindings < #:key (lambda (binding) (car (hash-ref binding 'range))))))])
+             (for-each on-binding group)
+             (define range (hash-ref (car group) 'range))
+             (DocumentSymbol
+              #:name (substring text (car range) (cdr range))
+              #:kind (if (andmap (lambda (binding) (eq? (hash-ref binding 'kind) 'function)) group)
+                         SymbolKind-Function SymbolKind-Variable)
+              #:range (abs-range->range doc (token-node-start node) (token-node-end node))
+              #:selectionRange (abs-range->range doc (car range) (cdr range))
+              #:children children)))]))
 
   (collect-symbols (Token-Forest-nodes (doc-body-forest doc))))
+
+;; The structural walker selects only additional declarations. Its existing
+;; entries remain authoritative for structures, fields and incomplete forms.
+(define (doc-binding-declarations doc)
+  (define bindings '())
+  (unless (eq? (doc-language-body-mode doc) 'non-sexp)
+    (doc-symbols-hierarchical/sexp doc (lambda (binding) (set! bindings (cons binding bindings)))))
+  bindings)
+
+(define (doc-binding-completions doc pos legacy)
+  (define service (send (Doc-trace doc) get-declaration))
+  (binding-completions (send service get-binding-facts) (doc-binding-declarations doc)
+                       (send service get-source-bindings) pos legacy))
+
+(define (doc-binding-kind-tokens doc legacy)
+  (define declarations (doc-binding-declarations doc))
+  (cond
+    [(null? declarations) '()]
+    [else
+     (define identities
+       (for/hasheqv ([binding (in-list declarations)])
+         (values (hash-ref binding 'identity) #t)))
+     (define facts (send (send (Doc-trace doc) get-declaration) get-binding-facts))
+     (define tokens (make-hash))
+     (define definitions (make-hash))
+     (for ([name (in-list (hash-ref facts 'names '()))]
+           #:when (eq? (hash-ref name 'certainty 'confirmed) 'confirmed))
+       (define kind (and (hash-has-key? identities (hash-ref name 'identity))
+                         (hash-ref name 'kind #f)))
+       (when kind
+         (define range (hash-ref name 'range))
+         (define previous (hash-ref tokens range #f))
+         (when (eq? (hash-ref name 'role) 'definition) (hash-set! definitions range #t))
+         ;; Several identities can share a spelling; only agreement proves a kind.
+         (hash-set! tokens range (if (and previous (not (eq? previous kind))) 'variable kind))))
+     (define old-tokens
+       (for/hash ([token (in-list legacy)])
+         (values (cons (SemanticToken-start token) (SemanticToken-end token)) token)))
+     (for/list ([(range kind) (in-hash tokens)])
+       (define old (hash-ref old-tokens range #f))
+       (define modifiers (if old (SemanticToken-modifiers old) '()))
+       (SemanticToken (car range) (cdr range)
+                      (if (eq? kind 'function) SemanticTokenType-function SemanticTokenType-variable)
+                      (if (and (hash-ref definitions range #f)
+                               (not (memq SemanticTokenModifier-definition modifiers)))
+                          (cons SemanticTokenModifier-definition modifiers) modifiers)))]))
 
 (provide Doc?
          Doc-version
@@ -1338,10 +1645,12 @@
          doc-token-at
          doc-token-prefix-at
          doc-language-policy
+         doc-lexer-state
          doc-body-forest
          doc-expand
          doc-detach-analysis!
          doc-update-trace!
+         doc-update-language-policy!
          doc-trace-latest?
          doc-expand!
          doc-check-syntax
@@ -1363,8 +1672,10 @@
          doc-signature-help
          doc-occurrence-at
          doc-definition-at
+         doc-definition-ranges-at
          doc-uses-at
          doc-binding-ranges-at
+         doc-module-bindings-at
          doc-module-binding-at
          (struct-out Module-Binding)
          (struct-out Reference-Source)
@@ -1376,4 +1687,5 @@
          doc-rename
          doc-prepare-rename
          doc-symbols
+         doc-declaration-provider
          doc-symbols-hierarchical)

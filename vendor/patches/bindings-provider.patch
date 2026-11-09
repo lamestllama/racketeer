@@ -1,0 +1,304 @@
+diff --git a/doclib/check-syntax.rkt b/doclib/check-syntax.rkt
+--- a/doclib/check-syntax.rkt
++++ b/doclib/check-syntax.rkt
+@@ -17,7 +17,8 @@
+          "../common/source.rkt"
+          "../common/path-util.rkt"
+          "internal-types.rkt"
+-         "binding-facts.rkt")
++         "binding-facts.rkt"
++         "bindings-provider.rkt")
+ 
+ ;; Virtual URI paths are a best-effort local dependency context, not file
+ ;; identities. Relative parents are allowed; the document need not exist.
+@@ -85,7 +86,8 @@
+ 
+ ;; TODO: cache the namespace with some strategy
+ (define (expand-source source in collector #:expand? [expand? #t]
+-                       #:contribution-only? [contribution-only? #f])
++                       #:contribution-only? [contribution-only? #f]
++                       #:bindings-provider [bindings-provider #f])
+   (define text (port->string (peeking-input-port in)))
+   (define src-dir (source-analysis-directory source))
+   (define ns (make-base-namespace))
+@@ -125,8 +127,12 @@
+       (add-syntax expanded-stx)
+       (done)
+       (define facts (collect-binding-facts source expanded-stx text))
++      (define accepted-facts
++        (if bindings-provider
++            (augment-binding-facts bindings-provider source text stx expanded-stx facts)
++            facts))
+       (when (object-method-arity-includes? collector 'add-binding-facts 1)
+-        (send collector add-binding-facts facts)))
++        (send collector add-binding-facts accepted-facts)))
+ 
+     ;; Interceptor conses in O(1); reverse restores emission order so overlapping
+     ;; Typed Racket provider records apply as sent.
+@@ -172,7 +178,8 @@
+   (struct-out CSResult)
+   (contract-out
+     [expand-source (->* (Source? input-port? (is-a?/c syncheck-annotations<%>))
+-                        (#:expand? boolean? #:contribution-only? boolean?)
++                        (#:expand? boolean? #:contribution-only? boolean?
++                         #:bindings-provider (or/c #f (-> hash? hash?)))
+                         ExpandResult?)]
+     [check-syntax (->* (Source? (is-a?/c lsp-editor%) LexerState?)
+                        (#:contribution-only? boolean?) CSResult?)]))
+diff --git a/doclib/bindings-provider.rkt b/doclib/bindings-provider.rkt
+new file mode 100644
+--- /dev/null
++++ b/doclib/bindings-provider.rkt
+@@ -0,0 +1,80 @@
++#lang racket/base
++;; Copyright (c) 2026 Eric Parsonage
++;; SPDX-License-Identifier: Apache-2.0 OR MIT
++
++(require racket/list
++         "../common/source.rkt"
++         "binding-facts.rkt"
++         "internal-types.rkt")
++
++(provide augment-binding-facts)
++
++;; The caller supplies a procedure with its provider data already captured.
++;; Discovery and provider loading belong to the embedding application.
++(define (augment-binding-facts provider source text pre expanded facts)
++  (define uri (source-uri source))
++  (define (fail message value)
++    (raise-arguments-error 'bindings message "value" value))
++  (define (phase? value) (or (not value) (exact-integer? value)))
++  (define (space? value) (or (not value) (and (symbol? value) (symbol-interned? value))))
++  (define (identifier-record? record)
++    (and (hash? record) (identifier? (hash-ref record 'identifier #f))
++         (phase? (hash-ref record 'phase 0)) (space? (hash-ref record 'space #f))))
++  (define (range? range)
++    (and (pair? range) (exact-nonnegative-integer? (car range))
++         (exact-nonnegative-integer? (cdr range))
++         (< (car range) (cdr range)) (<= (cdr range) (string-length text))))
++  (define result
++    (parameterize ([current-output-port (current-error-port)])
++      (provider (hasheq 'operation 'bindings 'uri uri 'text text
++                      'reader #f 'language #f 'submodules '()
++                      'pre pre 'expanded expanded 'phase 0 'space #f
++                      'position #f 'facts facts 'cancelled? (lambda () #f) 'hooks (hasheq)))))
++  (unless (hash? result) (fail "expected a hash of bindings facts" result))
++  (for ([field '(names families runtime)])
++    (unless (list? (hash-ref result field '())) (fail "expected a list of bindings facts" field)))
++  (define names (hash-ref result 'names '()))
++  (for ([name (in-list names)])
++    (unless (and (identifier-record? name) (range? (hash-ref name 'range #f))
++                 (equal? uri (hash-ref name 'uri uri))
++                 (memq (hash-ref name 'role #f) '(definition use export))
++                 (memq (hash-ref name 'certainty 'confirmed) '(confirmed predicted))
++                 (or (eq? (hash-ref name 'certainty 'confirmed) 'predicted)
++                     (identifier-binding (hash-ref name 'identifier) (hash-ref name 'phase 0))))
++      (fail "expected an in-source name with a scoped binding" name))
++    (when (eq? (hash-ref name 'role) 'definition)
++      (define binding
++        (identifier-module-binding (hash-ref name 'identifier) (hash-ref name 'phase 0)
++                                   (source-file-path source) (hash-ref name 'space #f)))
++      (when (and binding (not (equal? (Module-Binding-filepath binding) (source-file-path source))))
++        (fail "expected a definition owned by this source" name))))
++  (define families (hash-ref result 'families '()))
++  (define family-members (make-hash))
++  (for ([family (in-list families)])
++    (unless (and (hash? family) (hash-has-key? family 'key)
++                 (identifier? (hash-ref family 'canonical #f))
++                 (list? (hash-ref family 'members #f))
++                 (pair? (hash-ref family 'members)))
++      (fail "expected a family with a canonical identifier and members" family))
++    (define members (hash-ref family 'members))
++    (for ([member (in-list members)])
++      (unless (and (identifier-record? member) (hash-has-key? member 'anchor)
++                   (memq (hash-ref member 'role #f) '(definition use export))
++                   (identifier-binding (hash-ref member 'identifier) (hash-ref member 'phase 0)))
++        (fail "expected a bound family member with a structural anchor" member)))
++    (define anchors
++      (for/list ([member (in-list members)])
++        (list (hash-ref member 'phase 0) (hash-ref member 'space #f)
++              (hash-ref member 'role) (hash-ref member 'anchor))))
++    (unless (= (length anchors) (length (remove-duplicates anchors)))
++      (fail "family anchors must be distinct" family))
++    (unless (for/or ([member (in-list members)])
++              (free-identifier=? (hash-ref family 'canonical) (hash-ref member 'identifier)
++                                 (hash-ref member 'phase 0)))
++      (fail "canonical identifier must belong to the family" family))
++    (when (hash-has-key? family-members (hash-ref family 'key))
++      (fail "duplicate family key" family))
++    (hash-set! family-members (hash-ref family 'key) members))
++  (hash-set (hash-set (hash-set facts 'names (append (hash-ref facts 'names) names))
++                      'families (append (hash-ref facts 'families) families))
++            'runtime (append (hash-ref facts 'runtime) (hash-ref result 'runtime '()))))
+diff --git a/doclib/service/declaration.rkt b/doclib/service/declaration.rkt
+--- a/doclib/service/declaration.rkt
++++ b/doclib/service/declaration.rkt
+@@ -81,6 +81,7 @@
+     (define import-alias-def-ids (make-hash))
+     (define binding-families (make-hash))
+     (define accepted-binding-facts #f)
++    (define precise-uses (make-hash))
+     ;; Scoped lexical binders may also share one physical definition range.
+     (define lexical-owners (make-hash))
+     (define lexical-definitions (make-hash))
+@@ -132,12 +133,19 @@
+            use-id))
+ 
+     (define/private (alloc-use start end def)
+-      (or (for/first ([use-id (in-list (or (use-at-exact-range start end) '()))]
++      (define narrowed? (positive? (hash-count precise-uses)))
++      (define existing
++        (if narrowed?
++            (filter (lambda (id) (equal? (hash-ref id->range id) (CharRange start end)))
++                    (interval-map-ref use-at-position start '()))
++            (or (use-at-exact-range start end) '())))
++      (or (for/first ([use-id (in-list existing)]
+                       #:when (equal? (hash-ref use->def use-id #f) def))
+             use-id)
+           (let ([use-id (fresh-id!)])
+-            (interval-map-set! use-at-position start end
+-                               (cons use-id (or (use-at-exact-range start end) '())))
++            (if narrowed?
++                (interval-map-update*! use-at-position start end (lambda (ids) (cons use-id ids)) '())
++                (interval-map-set! use-at-position start end (cons use-id existing)))
+             (hash-set! id->range use-id (CharRange start end))
+             use-id)))
+ 
+@@ -159,10 +167,16 @@
+           (define old-range (hash-ref id->range use-id))
+           (define old-start (CharRange-start old-range))
+           (define old-end (CharRange-end old-range))
+-          (define remaining (remove use-id (use-at-exact-range old-start old-end)))
+-          (if (null? remaining)
+-              (interval-map-remove! use-at-position old-start old-end)
+-              (interval-map-set! use-at-position old-start old-end remaining))
++          (if (positive? (hash-count precise-uses))
++              (begin
++                (interval-map-update*! use-at-position old-start old-end
++                                      (lambda (ids) (remove use-id ids)) '())
++                (for ([entry (in-list (dict->list use-at-position))] #:when (null? (cdr entry)))
++                  (interval-map-remove! use-at-position (caar entry) (cdar entry))))
++              (let ([remaining (remove use-id (use-at-exact-range old-start old-end))])
++                (if (null? remaining)
++                    (interval-map-remove! use-at-position old-start old-end)
++                    (interval-map-set! use-at-position old-start old-end remaining))))
+           (hash-update! def->use-ids def (lambda (ids) (remove use-id ids)))
+           (hash-remove! use->def use-id))))
+ 
+@@ -465,6 +479,22 @@
+             (hash-set! incomplete-components target #t))))
+       (define lexical lexical-definitions)
+       (define names (hash-ref facts 'names '()))
++      ;; Preserve a provider's smaller written component for the same scoped
++      ;; occurrence, both here and during shared-binder disambiguation.
++      (set! precise-uses (make-hash))
++      (for ([name (in-list names)]
++            #:when (and (eq? (hash-ref name 'role) 'use)
++                        (eq? (hash-ref name 'certainty 'confirmed) 'confirmed)))
++        (define id (hash-ref name 'identifier))
++        (define range (hash-ref name 'range))
++        (when (and (equal? (syntax-source id) (source-syntax-source source))
++                   (syntax-position id) (syntax-span id)
++                   (<= (sub1 (syntax-position id)) (car range) (cdr range)
++                       (+ (sub1 (syntax-position id)) (syntax-span id)))
++                   (< (- (cdr range) (car range)) (syntax-span id)))
++          (hash-update! precise-uses
++                        (list (hash-ref name 'phase 0) (syntax-position id) (syntax-span id))
++                        (lambda (ids) (cons id ids)) '())))
+       (define language-ranges
+         (for/hash ([pending (in-list pending-module-lang-uses)])
+           (values (CharRange (Pending-Module-Lang-Use-use-start pending)
+@@ -536,10 +566,7 @@
+         (define binding (key name))
+         (when binding
+           (hash-update! resolved-at (hash-ref name 'range) (lambda (keys) (cons binding keys)) '())))
+-      (for ([name (in-list names)]
+-            #:when (and (confirmed? name) (memq (hash-ref name 'role) '(use export))))
+-        (define range (hash-ref name 'range))
+-        (define owner (owner-of name))
++      (define (reconcile-import-shift! name owner range)
+         ;; Check Syntax reports the import shift for an imported binding.
+         ;; The scoped identifier supplies its declaration phase. Keep other
+         ;; phased identities independently present at this same source range.
+@@ -558,7 +585,47 @@
+                            (equal? (Module-Binding-phase+space previous)
+                                    (cons import-shift (hash-ref name 'space #f)))))
+               (hash-update! def->use-ids previous (lambda (ids) (remove use-id ids)))
+-              (link-use! use-id owner))))
++              (link-use! use-id owner)))))
++      ;; Replace only an existing occurrence of the narrowed scoped identity.
++      ;; Other owners at the whole span retain their own occurrence ranges.
++      (for ([name (in-list names)]
++            #:when (and (positive? (hash-count precise-uses))
++                        (confirmed? name) (eq? (hash-ref name 'role) 'use)))
++        (define id (hash-ref name 'identifier))
++        (define owner (owner-of name))
++        (when (and owner (syntax-position id) (syntax-span id)
++                   (member id (hash-ref precise-uses
++                                        (list (hash-ref name 'phase 0)
++                                              (syntax-position id) (syntax-span id)) '())))
++          (define start (sub1 (syntax-position id)))
++          (define end (+ start (syntax-span id)))
++          (reconcile-import-shift! name owner (cons start end))
++          (for ([use-id (in-list (interval-map-ref use-at-position start '()))]
++                #:when (equal? (hash-ref id->range use-id) (CharRange start end)))
++            (define previous (hash-ref use->def use-id))
++            (when (or (equal? previous owner)
++                      (equal? (def->module-bindings previous) (list owner)))
++              (interval-map-update*! use-at-position start end (lambda (ids) (remove use-id ids)) '())
++              (hash-update! def->use-ids previous (lambda (ids) (remove use-id ids)))
++              (hash-remove! use->def use-id)
++              (hash-remove! id->range use-id)
++              (hash-remove! confirmed-use-ids use-id)))))
++      (when (positive? (hash-count precise-uses))
++        (for ([entry (in-list (dict->list use-at-position))] #:when (null? (cdr entry)))
++          (interval-map-remove! use-at-position (caar entry) (cdar entry))))
++      (for ([name (in-list names)]
++            #:when (and (confirmed? name) (memq (hash-ref name 'role) '(use export)))
++            #:unless
++            (let ([id (hash-ref name 'identifier)] [range (hash-ref name 'range)])
++              (and (syntax-position id) (syntax-span id)
++                   (= (- (cdr range) (car range)) (syntax-span id))
++                   (for/or ([precise (in-list (hash-ref precise-uses
++                                                      (list (hash-ref name 'phase 0)
++                                                            (syntax-position id) (syntax-span id)) '()))])
++                     (free-identifier=? precise id (hash-ref name 'phase 0))))))
++        (define range (hash-ref name 'range))
++        (define owner (owner-of name))
++        (reconcile-import-shift! name owner range)
+         (define def (def-at-exact-range (car range) (cdr range)))
+         (when (and owner
+                    ;; A language fallback remains local unless a definition or
+@@ -603,7 +670,10 @@
+         (for*/list ([(range use-ids) (in-dict use-at-position)]
+                     [use-id (in-list use-ids)]
+                     [module-binding (in-list (def->module-bindings (hash-ref use->def use-id)))])
+-          (cons (CharRange (car range) (cdr range)) module-binding))))
++          (cons (if (positive? (hash-count precise-uses))
++                    (live-range-for-id use-id)
++                    (CharRange (car range) (cdr range)))
++                module-binding))))
+ 
+     ;; Each result is (cons live-definition-range Module-Binding). Local-only
+     ;; definitions are omitted; those names must not leave this document.
+@@ -633,6 +703,7 @@
+       (set! import-alias-def-ids (make-hash))
+       (set! binding-families (make-hash))
+       (set! accepted-binding-facts #f)
++      (set! precise-uses (make-hash))
+       (set! lexical-owners (make-hash))
+       (set! lexical-definitions (make-hash))
+       (set! coarse-definitions (make-hash))
+@@ -679,7 +750,11 @@
+                                        (list-ref binding 4)
+                                        (cadr binding)))
+                      (define def (hash-ref module-binding->def-id key #f))
+-                     (when (and def (> (length (hash-ref def-id->module-bindings def)) 1))
++                     (when (and def (> (length (hash-ref def-id->module-bindings def)) 1)
++                                (not (for/or ([id (in-list (hash-ref precise-uses
++                                                                    (list phase (syntax-position value)
++                                                                          (syntax-span value)) '()))])
++                                       (free-identifier=? id value phase))))
+                        (hash-update! identified (CharRange start end)
+                                      (lambda (keys) (if (member key keys) keys (cons key keys)))
+                                      '())))))

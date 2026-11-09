@@ -7,6 +7,7 @@
          racket/contract/base
          racket/exn
          racket/match
+         racket/list
          "../common/debug.rkt"
          "../common/interfaces.rkt"
          "../common/json-util.rkt"
@@ -295,7 +296,8 @@
           'definitionProvider #t
           'referencesProvider #t
           'completionProvider (hasheq 'triggerCharacters (list "("))
-          'signatureHelpProvider (hasheq 'triggerCharacters (list " " ")" "]"))
+          'signatureHelpProvider
+          (hasheq 'triggerCharacters (list " " ")" "]"))
           'inlayHintProvider #t
           'renameProvider rename-provider
           'semanticTokensProvider semantic-provider

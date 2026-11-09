@@ -1,0 +1,80 @@
+diff --git a/doclib/check-syntax.rkt b/doclib/check-syntax.rkt
+--- a/doclib/check-syntax.rkt
++++ b/doclib/check-syntax.rkt
+@@ -10,6 +10,7 @@
+          "editor.rkt"
+          "textbuffer/text-port.rkt"
+          "doc-trace.rkt"
++         "language-adapter.rkt"
+          (only-in "lexer.rkt"
+                   LexerState?
+                   LexerState-language-policy
+@@ -86,11 +87,13 @@
+ 
+ ;; TODO: cache the namespace with some strategy
+ (define (expand-source source in collector #:expand? [expand? #t]
++                       #:text [document-text #f]
+                        #:contribution-only? [contribution-only? #f]
+                        #:bindings-provider [bindings-provider #f])
+-  (define text (port->string (peeking-input-port in)))
+   (define src-dir (source-analysis-directory source))
+   (define ns (make-base-namespace))
++  (define text (and (or expand? (current-language-adapter-resolver))
++                    (or document-text (port->string (peeking-input-port in)))))
+   (define-values (add-syntax done)
+     (make-traversal ns src-dir))
+   (port-count-lines! in)
+@@ -105,8 +108,12 @@
+                  [current-annotations collector])
+     (define stx
+       (with-handlers ([exn:fail? (λ (exn) exn)])
+-        (with-module-reading-parameterization
+-          (λ () (read-syntax (source-syntax-source source) in)))))
++        (define pre
++          (with-module-reading-parameterization
++            (λ () (read-syntax (source-syntax-source source) in))))
++        (define adapter (and (current-language-adapter-resolver) (syntax? pre)
++                             (source-language-adapter source text pre)))
++        (if adapter (syntax-property pre 'racketeer:language-profile adapter) pre)))
+ 
+     (define expand-logs '())
+     (define (expand-input)
+@@ -158,6 +165,7 @@
+ 
+   (define in (open-input-text text))
+   (define er (expand-source source in new-trace #:expand? expand?
++                            #:text text
+                             #:contribution-only? contribution-only?))
+ 
+   ;; Resource failures must reach the indexer's worker controller even when
+@@ -178,7 +186,7 @@
+   (struct-out CSResult)
+   (contract-out
+     [expand-source (->* (Source? input-port? (is-a?/c syncheck-annotations<%>))
+-                        (#:expand? boolean? #:contribution-only? boolean?
++                        (#:expand? boolean? #:text (or/c string? #f) #:contribution-only? boolean?
+                          #:bindings-provider (or/c #f (-> hash? hash?)))
+                         ExpandResult?)]
+     [check-syntax (->* (Source? (is-a?/c lsp-editor%) LexerState?)
+diff --git a/doclib/language-adapter.rkt b/doclib/language-adapter.rkt
+new file mode 100644
+--- /dev/null
++++ b/doclib/language-adapter.rkt
+@@ -0,0 +1,17 @@
++#lang racket/base
++;; Copyright (c) 2026 Eric Parsonage
++;; SPDX-License-Identifier: Apache-2.0 OR MIT
++
++(require "../common/source.rkt"
++         "../workspace/current.rkt"
++         "../workspace/state.rkt")
++(provide current-language-adapter-resolver source-language-adapter)
++
++;; The embedding launcher supplies optional language tooling. Standalone
++;; callers retain ordinary analysis without depending on an extension package.
++(define current-language-adapter-resolver (make-parameter #f))
++(define (source-language-adapter source text pre)
++  (define resolver (current-language-adapter-resolver))
++  (and resolver
++       (resolver (or (source-file-path source) (source-uri source)) text pre
++                 (workspace-folders current-workspace))))

@@ -5,9 +5,9 @@
          (only-in '#%unsafe unsafe-root-continuation-prompt-tag)
          (for-syntax racket/base))
 (provide (struct-out site) site-phases site-boundary-position arm-site! (struct-out unavailable)
-         debug-stop? stop-site stop-kind stop-frame-count stop-frame-site
+         debug-stop? stop-site stop-kind stop-frame-count stop-frame-site stop-frame-namespace
          stop-locals stop-evaluate stop-results stop-value-shown?
-         stop-binding-value stop-set-binding!
+         stop-binding-value stop-binding-assignable? stop-set-binding! stop-lexical-identifier call-with-debugging-disabled
          stop-skip! stop-replace-results! stop-approximate?
          stop-token stop-contexts stop-enclosing-evaluation stop-within? stop-return-token
          call-with-exception-stop call-with-pause-stop
@@ -54,7 +54,8 @@
 ;; says whether anything can stop at the site, and value-shown? whether its value is that
 ;; of the text it is located at. armed is where a registered site's flag lives, as
 ;; (vector . index).
-(struct site (id source line column position span tail? expression parent visible? value-shown? [armed #:auto #:mutable])
+(struct site (id source line column position span tail? expression parent visible? value-shown? [armed #:auto #:mutable]
+                 [replaceable? #:auto #:mutable])
   #:auto-value #f #:transparent)
 (define (arm-site! descriptor on?)
   (define armed (site-armed descriptor))
@@ -74,7 +75,7 @@
            (and (exact-positive-integer? span) (+ position span -1)))))
 (struct unavailable (reason) #:transparent)
 ;; object is the object a field's row reads, or #f.
-(struct live-binding (name number access object template?) #:transparent)
+(struct live-binding (name number access object template? [extent #:auto #:mutable]) #:auto-value #f #:transparent)
 ;; A frame is one function call, or the run of one module-level form. It is a vector
 ;; that generated code makes with `vector` and writes with unsafe-vector*-set!, so
 ;; these are the only costs a site has: slot 1 is the site running now, as a frame
@@ -107,6 +108,8 @@
 (define context-key (make-continuation-mark-key 'racket-debug-expression))
 (define debugger-active-key (make-continuation-mark-key 'racket-debugger-active))
 (define debugging-enabled? (make-parameter #t))
+(define (call-with-debugging-disabled thunk)
+  (parameterize ([debugging-enabled? #f]) (thunk)))
 ;; A helper instance imported at transformer phase must not invoke callbacks.
 (define runtime-phase-zero?
   (zero? (variable-reference->module-base-phase (#%variable-reference))))
@@ -212,7 +215,10 @@
     (error 'stop-evaluate "module binding context has not been registered"))
   owner-namespace)
 
-(define (make-live-binding name number access) (live-binding name number access #f #f))
+(define (make-live-binding name number access [extent #f])
+  (define binding (live-binding name number access #f #f))
+  (when extent (set-live-binding-extent! binding extent))
+  binding)
 (define (make-field-binding name access object) (live-binding name #f access object #f))
 (define (make-template-binding name access) (live-binding name #f access #f #t))
 ;; An impersonator that might run program code. A class whose object may be seen before its
@@ -252,6 +258,8 @@
 (define (stop-approximate? s) (check-stop s 'stop-approximate?) (eq? (debug-stop-kind s) 'pause))
 (define (stop-frame-count s) (check-stop s 'stop-frame-count) (length (stop-frames s)))
 (define (stop-frame-site s [i 0]) (frame-site (car (selected-frame s i 'stop-frame-site))))
+(define (stop-frame-namespace s [i 0])
+  ((form-namespace (frame-form (car (selected-frame s i 'stop-frame-namespace))))))
 (define (stop-value-shown? s)
   (check-stop s 'stop-value-shown?)
   (site-value-shown? (debug-stop-site s)))
@@ -270,10 +278,14 @@
   (set-box! (debug-stop-action s) supplied)
   (void))
 (define (stop-skip! s supplied)
+  (when (eq? (site-replaceable? (stop-site s)) 'disabled)
+    (error 'stop-skip! "this statement has no proven replaceable result"))
   (request-values! s supplied 'before 'stop-skip!))
 (define (stop-replace-results! s supplied)
   (unless (stop-value-shown? s)
     (error 'stop-replace-results! "this stop shows no value to replace"))
+  (when (eq? (site-replaceable? (stop-site s)) 'disabled)
+    (error 'stop-replace-results! "this statement has no proven replaceable result"))
   (request-values! s supplied 'after 'stop-replace-results!))
 (define (stop-token s)
   (check-stop s 'stop-token)
@@ -354,9 +366,16 @@
 (define (visible-bindings scoped)
   (define seen (make-hasheq))
   (define f (car scoped))
+  (define where (frame-site f))
   (define in-template? (memv (frame-slot f) (cadr (form-written (frame-form f)))))
   (for/list ([b (in-list (scoped-bindings scoped))]
              #:unless (or (and (live-binding-template? b) (not in-template?))
+                          (let ([extent (live-binding-extent b)])
+                            (and extent
+                                 (not (and (equal? (car extent) (site-source where))
+                                           (site-position where)
+                                           (<= (cadr extent) (site-position where))
+                                           (< (site-position where) (caddr extent))))))
                           (hash-ref seen (live-binding-name b) #f)))
     (hash-set! seen (live-binding-name b) #t)
     b))
@@ -371,6 +390,12 @@
 (define (stop-locals s [i 0])
   (for/list ([b (in-list (visible-bindings (selected-frame s i 'stop-locals)))])
     (cons (live-binding-name b) (read-binding b))))
+;; These identifiers name the live-cell aliases introduced by frame evaluation.
+(define (stop-lexical-identifier s name [i 0])
+  (define symbol (binding-name name 'stop-lexical-identifier))
+  (and (for/or ([b (in-list (visible-bindings (selected-frame s i 'stop-lexical-identifier)))])
+         (eq? symbol (live-binding-name b)))
+       (datum->syntax #f symbol)))
 
 (define (frame-module-entries f)
   (define context (form-context (frame-form f)))
@@ -462,6 +487,11 @@
                             (written-binding s i symbol (car at) (cdr at))
                             (find-source-binding scoped symbol 'stop-binding-value))
                         symbol 'stop-binding-value))
+(define (stop-binding-assignable? s name [i 0])
+  (define binding (find-source-binding (selected-frame s i 'stop-binding-assignable?)
+                                      (binding-name name 'stop-binding-assignable?)
+                                      'stop-binding-assignable? 'lexical))
+  (assignable? binding))
 (define (stop-set-binding! s name datum [i 0] #:scope [scope 'visible])
   (define scoped (selected-frame s i 'stop-set-binding!))
   (define symbol (binding-name name 'stop-set-binding!))

@@ -20,12 +20,15 @@
          "service/typed-racket/service.rkt"
          "../common/interfaces.rkt"
          "../common/source.rkt"
-         "internal-types.rkt")
+         "internal-types.rkt"
+         "language-adapter.rkt"
+         (only-in "lexer/state.rkt" LexerState-adapter set-LexerState-editor-facts!))
 
 (define build-trace%
   (class (check-syntax-annotations-mixin object%)
     (init-field source doc-text lexer-state [contribution-only? #f])
     (define src (source-syntax-source source))
+    (define adapter (LexerState-adapter lexer-state))
     (define docs (new docs%))
     (define completions (new completion%))
     (define requires (new require%))
@@ -36,7 +39,8 @@
     (define decls
       (new declaration%
         [source source]
-        [doc-text doc-text]))
+        [doc-text doc-text]
+        [contribution-only? contribution-only?]))
     (define hovers
       (new hover%
         [src src]
@@ -55,7 +59,7 @@
     (define tails (new tail% [src src] [lexer-state lexer-state]))
 
     ;; Contributions and binding queries read only declaration%. It consumes
-    ;; Check Syntax callbacks and walk-stx, independently of the other services.
+    ;; Check Syntax callbacks, scoped facts and walk-stx, independently of the other services.
     (define services
       (if contribution-only?
           (list decls)
@@ -71,24 +75,58 @@
             tails)))
 
     (define/public (reset)
+      (set-LexerState-editor-facts! lexer-state #f)
       (for ([s services])
         (send s reset)))
 
     (define/public (text-replaced start end)
+      (set-LexerState-editor-facts! lexer-state #f)
       (for ([s services])
         (send s text-replaced start end)))
 
     (define/public (expand start end)
+      (set-LexerState-editor-facts! lexer-state #f)
       (for ([s services])
         (send s expand start end)))
 
     (define/public (contract start end)
+      (set-LexerState-editor-facts! lexer-state #f)
       (for ([s services])
         (send s contract start end)))
 
+    (define/public (add-binding-facts facts)
+      (send decls add-binding-facts facts))
+
     (define/public (walk-stx expand-result)
+      ;; Later analyses can reuse the lexer state without replacing this descriptor.
+      (set! adapter (LexerState-adapter lexer-state))
       (for ([s services])
-        (send s walk-stx expand-result)))
+        (send s walk-stx expand-result))
+      (set-LexerState-editor-facts! lexer-state #f)
+      (unless contribution-only?
+        (define providers
+          (if adapter
+              (filter values
+                      (list (let ([p ((current-language-adapter-declarations) adapter)]) (and p (cons 'declarations p)))
+                            (let ([p ((current-language-adapter-calls) adapter)]) (and p (cons 'calls p)))
+                            (let ([p (and (current-completion-position) ((current-language-adapter-completion) adapter))])
+                              (and p (cons 'completion p))))) '()))
+        (when (pair? providers)
+          (define request
+            (hasheq 'uri (source-uri source) 'text (send doc-text get-text)
+                    'pre (ExpandResult-pre-syntax expand-result) 'expanded #f
+                    'reader #f 'language #f 'submodules '() 'phase #f 'space #f
+                    'position #f 'selection #f 'cancelled? (lambda () #f)
+                    'facts (hash-set (or (send decls get-binding-facts) (hasheq)) 'bindings (send decls get-source-bindings))
+                    'hooks (hasheq)))
+          (set-LexerState-editor-facts! lexer-state
+            (hash-set
+             (for/hasheq ([entry (in-list providers)])
+               (define result
+                 ((cdr entry) (hash-set* request 'operation (car entry)
+                                        'position (and (eq? (car entry) 'completion) (current-completion-position)))))
+               (values (car entry) (if (eq? (car entry) 'completion) (filter values (list result)) result)))
+             'completion-position (current-completion-position))))))
 
     (define/public (walk-log text)
       (for ([s services])
@@ -116,6 +154,10 @@
       (unless contribution-only? (send inlay-hints build!)))
 
     ;; Named reads for services. Do not add getters that expose interval-maps.
+    (define/public (adapter-current?)
+      ((current-language-adapter-validator) adapter))
+    (define/public (get-language-adapter) adapter)
+    (define/public (get-lexer-state) lexer-state)
     (define/public (get-hover) hovers)
     (define/public (get-declaration) decls)
     (define/public (get-typed-racket) typed-racket)

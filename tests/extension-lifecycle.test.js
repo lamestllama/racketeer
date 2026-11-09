@@ -604,6 +604,22 @@ test('a relative program in a launch is relative to its working directory, or el
   assert.equal(errors.length, 1);
 });
 
+test('languageAdapter resolves against cwd or its owning workspace and remains absent by default', async () => {
+  const { provider } = configurationProvider();
+  const workspace = path.resolve(__dirname, '..');
+  const folder = { uri: { fsPath: workspace } };
+  const program = path.join(workspace, 'examples/demo.rkt');
+  const resolve = extra => provider.resolveDebugConfigurationWithSubstitutedVariables(folder,
+    { request: 'launch', program, ...extra });
+  const inherited = await resolve({ languageAdapter: '.racketeer/chosen.rktd' });
+  assert.equal(inherited.languageAdapter, path.join(workspace, '.racketeer/chosen.rktd'));
+  assert.equal(inherited.workspaceFolder, workspace);
+  const explicit = await resolve({ cwd: __dirname, languageAdapter: 'chosen.rktd' });
+  assert.equal(explicit.languageAdapter, path.join(__dirname, 'chosen.rktd'));
+  assert.equal((await resolve({ languageAdapter: program })).languageAdapter, program);
+  assert.equal((await resolve({})).languageAdapter, undefined);
+});
+
 test('launch keeps compiled code in the extension storage, as the setting and attribute say', async () => {
   const storage = path.join(path.sep, 'storage');
   const { provider, vscode } = configurationProvider(undefined, { globalStorageUri: { fsPath: storage } });
