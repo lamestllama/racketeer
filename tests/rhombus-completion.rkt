@@ -313,7 +313,9 @@
     (parameterize ([current-language-adapter-resolver #f])
       (define plain (make-doc "file:///tmp/plain-completion.rkt" (doc-get-text doc)))
       (doc-expand! plain)
-      (check-equal? (doc-completion plain (doc-abs-pos->pos plain (string-length (doc-get-text plain)))) before)))
+      ;; Separate analyses offer the same names in no promised order.
+      (check-equal? (sort (labels (doc-completion plain (doc-abs-pos->pos plain (string-length (doc-get-text plain))))) string<?)
+                    (sort (labels before) string<?))))
   (test-case "completion without a provider responds while analysis is held"
     (dynamic-require launcher #f)
     (define entered (make-async-channel))
