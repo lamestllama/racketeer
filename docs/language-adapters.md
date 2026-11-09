@@ -5,8 +5,8 @@ This guide specifies the language-adapter interface. Descriptor discovery,
 editor policy, source-detail and formatting switches are supported, with adapter
 dependencies included in cache validation. Rhombus has a built-in descriptor and
 `bindings` provider. Scheme+/SRFI-105 has a reader descriptor and isolated
-debugger interaction provider. Starter commands and the later capabilities
-identified in the design remain specifications. The [maintainer design](language-adapters-design.md)
+debugger interaction provider. The later capabilities identified in the design
+remain specifications. The [maintainer design](language-adapters-design.md)
 records implementation paths, acceptance tests and support order.
 
 An adapter is one small profile shared by three Racketeer tools: the debugger,
@@ -54,22 +54,8 @@ binding macro. Include source expressions, expected values and intended binding
 relationships. Also include a deliberately incomplete call or member access.
 The tests should distinguish source names from implementation helpers.
 
-Use the proposed starter command from a Racketeer source checkout:
-
-```sh
-racket racketdap/tools/language-adapter.rkt discover --source /path/to/sample.rkt --output /tmp/adapter-start.rktd
-```
-
-`discover` reads the source in a fresh namespace, resolves its reader and
-language identities, checks known info keys, captures configured runtime hooks
-in a separate execution context, and examines locations and expanded bindings.
-It writes a starter descriptor with diagnostics. It does not install packages,
-edit the language, run the module's ordinary body or guess all possible binding
-forms. Optional hooks that require a graphical display are reported unavailable.
-There is no protocol for enumerating every reader info key.
-
-The output separates observed facts from capabilities still requiring an
-author's expectations. Keep defaults for facts already handled correctly.
+Try these under the defaults first, with no profile, and note what already works.
+Keep defaults for facts already handled correctly.
 Preserve reader/expander identity metadata where possible. A source provider can
 supply explicit source evidence, but cannot invent missing binding identities.
 
@@ -136,13 +122,13 @@ For example:
 ```
 
 An empty project list means no override. It does not disable language support.
-For an override based on a built-in adapter, copy the effective descriptor from
-starter output before changing fields. Package-provider module paths resolve
+For an override based on a built-in adapter, start from a copy of its entry in
+`racketdap/language-adapters.rktd`. Package-provider module paths resolve
 in the selected Racket installation. `(file "relative.rkt")` resolves relative
 to the data file, or the supplying reader/info module for inline descriptors.
 Use collection module paths for portable language packages.
 
-The proposed `languageAdapter` launch option is a descriptor-file path, absent
+The `languageAdapter` launch option is a descriptor-file path, absent
 by default. Absolute paths are used directly; relative paths resolve against
 `cwd`, or the owning workspace folder when `cwd` is absent. The file contains
 one profile datum or profile-provider reference, selected directly without
@@ -597,8 +583,7 @@ language rule; it does not grant assignment rights.
 The following package uses Racket syntax and adds `define-answer`. Its adapter
 needs only sexp policy and language-macro hiding. Binding, runtime reading,
 printing and macro term layout all use defaults. The source language itself is
-ordinary executable Racket; the adapter key takes effect once the proposed
-loader exists.
+ordinary executable Racket.
 
 Create a collection named `mylang` with these two files. `mylang/main.rkt`
 provides the language and its definition macro:
@@ -656,60 +641,10 @@ file's `twice` reduction visible. Disable reveals both. Both before/after terms
 use Racket notation with source links and binding arrows. The adapter does not
 replace or reimplement any of those services.
 
-## Generate and run conformance tests
+## Test an adapter
 
-Keep the sample and an expectation manifest beside the language's own tests.
-The proposed manifest is a `(samples ...)` datum containing `(sample ...)`
-records. `file` is relative to the manifest; `adapter` is optional; `checks` is
-a list of check records. Source markers use literal `text` plus a one-based
-`occurrence` number when repeated; an omitted number means `1`. Their ranges
-are resolved against the captured source before running a test.
-
-For the minimal package, use these independent expectations:
-
-```racket
-(samples
- (sample
-  (file "sample.rkt")
-  (checks
-   (output "84\n")
-   (binding (definition (text "answer" 2))
-            (uses (text "answer" 3)))
-   (completion (at (text "answer" 3)) (contains "answer"))
-   (declaration (name "answer") (kind variable)
-                (selection (text "answer" 2))
-                (extent (text "(define-answer answer (+ 40 2))")))
-   (rename (at (text "answer" 3)) (to "result")
-           (edits (text "answer" 2) (text "answer" 3)))
-   (watch (stop (text "(twice answer)"))
-          (expression "answer") (printed "42"))
-   (macro (hiding standard) (shown "twice") (hidden "define-answer")))))
-```
-
-`output` compares ordinary and instrumented execution. `binding` checks the
-definition and deduplicated source uses. `completion` checks inclusion, not an
-implementation-dependent total list. `declaration` checks source extent/kind.
-`rename` checks a complete edit set and validates the proposal. `watch` arms an
-authored stop and evaluates in its selected frame. `macro` checks actual
-reduction identities as well as labels. These are the minimum check forms;
-generated extended fixtures can additionally state expected provider records,
-breakpoint/step/caller/error destinations and native layout facts.
-
-Generate and execute the proposed tests from a Racketeer checkout:
-
-```sh
-racket racketdap/tools/language-adapter.rkt generate --samples /path/to/samples.rktd --output /tmp/mylang-adapter-tests
-racket racketdap/tools/language-adapter.rkt verify --tests /tmp/mylang-adapter-tests
-```
-
-`generate` writes test fixtures and unresolved expectation entries to the output
-directory; it never derives expected bindings from the same result under test.
-`verify` runs fixtures sequentially with time/memory bounds, reports unsupported
-capabilities distinctly, and exits unsuccessfully for failed or required
-unresolved checks. An optional `adapter` entry names a descriptor file relative
-to the manifest and selects it for that sample only; it does not install a
-project override. Output files stay outside source trees unless explicitly
-chosen as language test fixtures.
+Keep the sample and its expected results beside the language's own tests, and write
+the expected results independently of the behaviour under test.
 
 Expand the suite as language features are added:
 
@@ -743,7 +678,7 @@ verify cache invalidation across all three tools.
 Existing project harnesses are identified in the
 [maintainer test plan](language-adapters-design.md#samples-generated-tests-and-acceptance).
 An external language package needs the profile, its provider module if any, its
-normal installation metadata and its sample expectations. No Racketeer fork or
+normal installation metadata and its tests. No Racketeer fork or
 second indexing implementation is required.
 
 ### Debugger host call points

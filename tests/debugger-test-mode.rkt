@@ -2,7 +2,7 @@
 ;; Copyright (c) 2026 Eric Parsonage
 ;; SPDX-License-Identifier: Apache-2.0 OR MIT
 
-(require rackunit racket/file racket/runtime-path
+(require rackunit racket/file racket/port racket/runtime-path
          "../racketdap/worker/load.rkt")
 
 (define-runtime-path checkpoint-suite "macro-stepper-checkpoint.rkt")
@@ -54,4 +54,23 @@
         (define summary (debug-tests program))
         (check-equal? (hash-ref summary 'status) "passed")
         (check-equal? (hash-ref summary 'total) 1))
+      (lambda () (delete-file program))))
+
+  (test-case "an error in a child thread leaves the rest of the suite running"
+    (define program (make-temporary-file "debug-test-thread-~a.rkt"))
+    (dynamic-wind
+      void
+      (lambda ()
+        (display-to-file
+         (string-append
+          "#lang racket/base\n(require rackunit)\n"
+          "(module+ test\n"
+          "  (test-case \"child fails\" (sync (thread (lambda () (error 'child \"boom\")))) (check-true #t))\n"
+          "  (test-case \"later\" (check-true #t)))\n")
+         program #:exists 'truncate)
+        (define summary
+          (parameterize ([current-error-port (open-output-nowhere)])
+            (debug-tests program)))
+        (check-equal? (hash-ref summary 'status) "passed")
+        (check-equal? (hash-ref summary 'total) 2))
       (lambda () (delete-file program)))))

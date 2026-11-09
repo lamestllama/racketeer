@@ -2,8 +2,8 @@
 # Language adapters: design
 
 This document describes the adapter interface and its implementation. The loader,
-registry and debugger interaction services are implemented; starter commands
-and the later capabilities identified below remain specifications. The companion
+registry and debugger interaction services are implemented; the later
+capabilities identified below remain specifications. The companion
 [language author guide](language-adapters.md) defines the complete author-facing
 contract, including provider records and a minimal language package.
 
@@ -719,9 +719,9 @@ are required for acceptance.
 
 ## Implementation sequence
 
-F1–F10, F13 and R1–R6/R8 form the first release's required set. F11, F12 and R7
-are later work, gated on Rhombus transformation events; S and T rows follow the
-first release. Each row is intended as one small commit with its own acceptance
+F1–F10, R1–R6/R8 and the S and T rows form the first release's required set.
+F11, F12 and R7 are later work, gated on Rhombus transformation events, and F13
+is later work too. Each row is intended as one small commit with its own acceptance
 test. Adjacent rows may require several similarly bounded commits when a provider is large.
 Each commit must preserve the generic regression suites; none requires switching
 off validation to make a later feature usable.
@@ -742,7 +742,7 @@ off validation to make a later feature usable.
 | F10 | Default bounded native value rendering, shared configured error display and optional binding/site facts. | Capture the whole print context, including port print handlers and conversion parameters as well as `current-print`; Variables previews, watches and hovers use native notation without implying evaluability. Printer effects are accepted; errors and output/time limits fall back structurally. Configured error wording is used, with raw `exn-message` fallback on failure/limits; locations stay intact. Local functions/captured state, mutation, results and instrumented behaviour remain correct. |
 | F11 (later) | Macro adapter discovery, context gate, language hiding and event recording/reduction integration. | Requires the Rhombus `expr-macro.rkt` user-procedure event capability; retain provenance, enclosing phase/context and event-derived local histories independently of language hiding. Generic module context, preferences and identity hiding pass. |
 | F12 (later) | Optional term layout delegate and codec metadata. | Rhombus user-step layout requires F11 and its Rhombus event capability; validate raw text against structure or use core fallback. Generic output remains equivalent; native layout retains occurrence/source/UTF-16 invariants. |
-| F13 | Starter discovery, sample generation and guide examples. | Minimal package runs with generic defaults and generates tests from independently stated expectations; unresolved capabilities remain visible. First-release foundation complete; F11/F12 remain later work. |
+| F13 (later) | Starter discovery, sample generation and guide examples. | Minimal package runs with generic defaults and generates tests from independently stated expectations; unresolved capabilities remain visible. |
 | R1 | Rhombus descriptor, shared source components and family metadata. | Use whole-path bound non-original identifiers and prefix `origin` spans to map namespace/import components; static fields/generated methods use exact member spans. Both servers agree; dynamic receivers link to nothing, literal receivers yield no member identifier. No Rhombus change is needed. |
 | R2 | Rhombus rename token/import/export policy on the generic validator. | Function/constant/family rename and supported aliases succeed; spaces/operators/capture regressions pass. |
 | R3 | Rhombus declaration trees, source signatures, annotations and semantic kinds. | Hierarchical and flat outlines agree; source hover and signatures resolve direct/dotted declarations. |
@@ -750,7 +750,7 @@ off validation to make a later feature usable.
 | R5 | Rhombus hints and installed documentation lookup. | Constructor labels/declared annotations and installed tags work; no fabricated inferred types. |
 | R6 | Rhombus debugger conformance; expression bridge only if needed. | Native local expressions, values, bindings, stepping, errors and imports pass source/compiled tests. |
 | R7 (later) | Rhombus user-transformation histories, native macro layout and implementation hiding. | Requires the Rhombus user-procedure `local-artificial-step` capability and F11/F12; separate event histories survive language hiding, preserve phase/context, expansion order, suffixes and errors, and show native syntax or core fallback with valid arrows/source links. No continuous whole-module sequence is promised. |
-| R8 | Debugger, language-server/index regression, packaged paths and guide conformance. | F1–F10/F13 and R1–R6 pass stdio/editor-host tests; both Rhombus variants work and all first-release promises have tests. First release gate: Rhombus debugging, language server and index, without Rhombus macro stepping; F11/F12/R7 remain later work. |
+| R8 | Debugger, language-server/index regression, packaged paths and guide conformance. | F1–F10 and R1–R6 pass stdio/editor-host tests; both Rhombus variants work and all first-release promises have tests. First release gate: Rhombus debugging, language server and index, without Rhombus macro stepping; F11/F12/R7 remain later work. |
 | S1 | SRFI-105 reader descriptor using generic source, binding and site services. | Scheme+ 20.1 and SRFI-105 17.1 retain exact source locations; absent packages leave other languages unchanged. |
 | S2 | Isolated native interaction provider through the existing bootstrap field. | Infix and neoteric watches and console expressions work with selected locals; empty-profile controls fail those expressions. |
 | S3 | Feature tests and document-service conformance. | In/Over/Out, locals, runtime errors, definitions, references, hover, outlines, tokens and diagnostics retain their observed full/contribution-only behaviour. |

@@ -898,10 +898,10 @@
   (define exception-handler-tag (make-continuation-prompt-tag 'module-exception-handler))
   (define report-test-error void)
   (define debug-exception-handler (make-debug-exception-handler on-exception on-pause))
-  (define (exception-handler value)
+  (define (exception-handler value #:ends-run? [ends-run? #t])
     (begin0 (debug-exception-handler value)
       (on-error value)
-      (report-test-error value)))
+      (when ends-run? (report-test-error value))))
   (dynamic-wind
     void
     (lambda ()
@@ -913,9 +913,10 @@
                       (lambda (value)
                         ;; The enclosing handler already observed this raise.
                         ;; Child threads inherit parameters, but not this prompt,
-                        ;; so their uncaught errors still need observation.
+                        ;; so their uncaught errors still need observation. Such
+                        ;; an error ends only its own thread, as it does in Racket.
                         (unless (continuation-prompt-available? exception-handler-tag)
-                          (exception-handler value))
+                          (exception-handler value #:ends-run? #f))
                         (ordinary-uncaught value))])
         (call-with-continuation-prompt
          (lambda ()

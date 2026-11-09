@@ -23,7 +23,7 @@ exports.run = async function () {
     ['tests/application-log.rkt', 1],
     ['tests/adapter-debugger.rkt', 17],
     ['tests/adapter-debugger-facts.rkt', 7],
-    ['tests/adapter-debugger-context.rkt', 9],
+    ['tests/adapter-debugger-context.rkt', 14],
     ['tests/attach.rkt', 30],
     ['tests/breakpoint-rearming.rkt', 2],
     // Its second case needs a link, which can take a privilege on Windows.
@@ -41,7 +41,7 @@ exports.run = async function () {
     ['tests/continuation-reentry.rkt', 5],
     ['tests/contribution-only.rkt', 3],
     ['tests/debug-cache-links.rkt', 3],
-    ['tests/debugger-test-mode.rkt', 2],
+    ['tests/debugger-test-mode.rkt', 3],
     ['tests/definition-allocation.rkt', 14],
     ['tests/deferred-imports.rkt', 3],
     ['tests/generated-code.rkt', 7],
