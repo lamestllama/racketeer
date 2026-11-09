@@ -8,6 +8,7 @@
          (reader (submod rhombus/and_meta reader)))
   (bindings (expanded+ #((file "adapters/rhombus-debugger.rkt") bindings #f)))
   (editor
+   (rename (expanded-graph #((file "adapters/rhombus-rename.rkt") rename #f)))
    (declarations #((file "adapters/rhombus.rkt") declarations #f))
    (calls #((file "adapters/rhombus.rkt") calls #f) (triggers "(" ","))
    (completion (expanded+ #((file "adapters/rhombus-completion.rkt") completion #f))))

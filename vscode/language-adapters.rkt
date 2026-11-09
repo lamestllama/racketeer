@@ -37,6 +37,12 @@
         (lambda (request)
           (with-handlers ([exn:fail? (lambda (_) #f)])
             (call-language-provider (cadr choice) request #:source 'adapter #:field 'editor.completion))))))
+(current-language-adapter-rename
+ (lambda (adapter)
+   (define choice (hash-ref (hash-ref adapter 'editor) 'rename))
+   (and (pair? choice)
+        (lambda (request)
+          (call-language-provider (cadr choice) request #:source 'adapter #:field 'editor.rename)))))
 (current-language-adapter-resolver
  (lambda (source text pre roots)
    (and (syntax? pre)

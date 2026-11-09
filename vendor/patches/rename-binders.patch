@@ -188,11 +188,21 @@ diff --git a/doclib/doc.rkt b/doclib/doc.rkt
           "lexer.rkt"
           (only-in "lexer/state.rkt"
                    lexer-state-body-forest)
-@@ -1249,49 +1252,83 @@
+@@ -1249,49 +1252,95 @@
         (DocumentHighlight #:range range))]
      [else '()]))
  
 -;; Rename: returns a WorkspaceEdit or #f.
++(define (doc-rename-provider doc)
++  (define adapter (send (Doc-trace doc) get-language-adapter))
++  (and adapter (pair? (hash-ref (hash-ref adapter 'editor (hasheq)) 'rename #f))
++       (or ((current-language-adapter-rename) adapter)
++           (error 'rename "Save the file in the workspace first; its rename provider is unavailable."))))
++
++(define (check-workspace-rename doc)
++  (when (doc-rename-provider doc)
++    (error 'rename "Save the file in the workspace first before renaming.")))
++
 +(define (doc-rename-ranges doc pos)
 +  (define decls (send (Doc-trace doc) get-declaration))
 +  (define absolute (doc-pos->abs-pos doc pos))
@@ -260,6 +270,7 @@ diff --git a/doclib/doc.rkt b/doclib/doc.rkt
 -               (for/list ([range (in-list ranges)])
 -                 (TextEdit #:range range #:newText new-name))))]
 -    [else #f]))
++  (check-workspace-rename doc)
 +  (with-handlers ([exn:fail? (lambda (_) #f)])
 +    (define ranges (and (identifier-name new-name) (doc-rename-ranges doc pos)))
 +    (and ranges
@@ -306,10 +317,38 @@ diff --git a/doclib/doc.rkt b/doclib/doc.rkt
 -       (<= (send (send (Doc-trace doc) get-declaration) binding-count-at (doc-pos->abs-pos doc pos)) 1)
 -       (<= (length (doc-module-bindings-at doc (Range-start definition-range))) 1)
 -       occurrence-range)))
++  (check-workspace-rename doc)
 +  (and (doc-rename-ranges doc pos) (doc-occurrence-at doc pos)))
  
  ;; Document Symbols: returns a list of SymbolInformation.
  (define/contract (doc-symbols doc uri)
+@@ -1648,6 +1697,7 @@
+          doc-references
+          doc-highlights
+          doc-rename
++         doc-rename-provider
+          doc-prepare-rename
+          doc-symbols
+          doc-declaration-provider
+diff --git a/doclib/language-adapter.rkt b/doclib/language-adapter.rkt
+--- a/doclib/language-adapter.rkt
++++ b/doclib/language-adapter.rkt
+@@ -8,6 +8,7 @@
+ (provide current-language-adapter-resolver current-language-adapter-validator
+          current-language-adapter-bindings current-language-adapter-declarations
+          current-language-adapter-calls current-language-adapter-completion
++         current-language-adapter-rename
+          current-completion-position source-language-adapter)
+ 
+ ;; The embedding launcher supplies optional language tooling. Standalone
+@@ -19,6 +20,7 @@
+ (define current-language-adapter-declarations (make-parameter (lambda (_) #f)))
+ (define current-language-adapter-calls (make-parameter (lambda (_) #f)))
+ (define current-language-adapter-completion (make-parameter (lambda (_) #f)))
++(define current-language-adapter-rename (make-parameter (lambda (_) #f)))
+ (define current-completion-position (make-parameter #f))
+ (define (source-language-adapter source text pre)
+   (define resolver (current-language-adapter-resolver))
 diff --git a/doclib/rename-validation.rkt b/doclib/rename-validation.rkt
 new file mode 100644
 --- /dev/null

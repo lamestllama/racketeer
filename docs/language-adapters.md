@@ -4,7 +4,7 @@
 This guide specifies the language-adapter interface. Descriptor discovery,
 editor policy, source-detail and formatting switches are supported, with adapter
 dependencies included in cache validation. Rhombus has a built-in descriptor and
-`bindings` provider. Scheme+/SRFI-105 has a reader descriptor and isolated
+`bindings` and native rename providers. Scheme+/SRFI-105 has a reader descriptor and isolated
 debugger interaction provider. The later capabilities identified in the design
 remain specifications. The [maintainer design](language-adapters-design.md)
 records implementation paths, acceptance tests and support order.
@@ -301,7 +301,7 @@ unless an existing reader hook permits it, and hint sources to empty.
 | `declarations` | `generic` or `P` | Existing outline plus confirmed generic binders. A provider adds declaration trees, native signatures, kinds and declared annotations. |
 | `calls` | `generic` or `P`, optionally followed by `(triggers string ...)` | Generic list-head/documentation-tag signature lookup; triggers space, `)` and `]`. A provider identifies native callees and arguments and can return signatures or documentation tags. Native trigger declarations do not extend the global capability. |
 | `completion` | `expanded` or `(expanded+ P)`, optionally followed by `(triggers string ...)` | Expanded source-facing names and module paths; trigger `(`. A provider adds contextual members and incomplete-syntax recovery. |
-| `rename` | `expanded-graph` or `(expanded-graph P)` | Generic validated binding rename with proven Racket token/import rules. A provider supplies native name, component/family and import/export rules. Capture validation is mandatory in both local-server and workspace routes, including reserved-name rejection. |
+| `rename` | `expanded-graph` or `(expanded-graph P)` | Generic validated binding rename with proven Racket token/import rules. A provider supplies native name, component/family and import/export rules. The workspace route validates capture and interfaces. The document route requires saving in the workspace when a provider is present. |
 | `inlay-hints` | `policy` or a list of `P` | Existing policy sources. A provider list adds hints; `()` adds none. |
 | `formatting` | `policy` or `off` | Existing eligibility, indentation hooks and client restrictions; `off` disables document, range and on-type formatting. |
 
@@ -404,7 +404,7 @@ Additional operation inputs and outputs are as follows:
 | `calls` / `calls` | Reader syntax during analysis; no cursor | Immutable native call records, retained for this text and adapter snapshot. Contribution-only analysis omits these and declaration records. |
 | `calls` / `call` | Source cursor, cached `facts.calls` and `hooks.declaration-at` for binding-backed declaration lookup; no reader syntax | Call record with signatures or a documentation tag. |
 | `completion` / `completion` | Current source cursor, including incomplete syntax; last accepted semantic facts with their snapshot identity | Hash with `items`, `range`, `prefix` and `incomplete?` keys. An empty item list means known empty members; `#f` means use ordinary completion. |
-| `rename` / `rename` | `stage`: `prepare` or `plan`; `target`: name/family facts; `new-name`: string or `#f`; `sources`: immutable URI-to-text hash | Rename policy record. The host, not the provider, applies edits to an in-memory proposal and validates bindings. |
+| `rename` / `rename` | `stage`: `prepare`, `plan` or `scan`; `target`: name/family facts for preparation/planning; `new-name`: string or `#f`; `sources`: immutable URI-to-text hash | Preparation/planning returns a rename policy. Scanning receives each source’s fully expanded `expanded` syntax and returns one immutable scan record. The host applies and validates the in-memory proposal. |
 | `inlay-hints` / `hints` | Declaration/call facts and `range`: requested source range | List of hint records. |
 | `terms` / `term` | `term`: exact retained syntax; `hooks.layout`: generic subtree renderer; `hooks.group`: scope-group lookup; `columns`: positive width; `suffix-option`: `over-limit` or `always`; `grouping`: `macro` or `all` | Native layout record or `#f` to use generic layout. |
 
@@ -471,8 +471,25 @@ Predicted template bindings can appear in hover but cannot authorise edits.
 | Signature | `label`: native signature string; `parameters`: list of hashes with `label` strings. Optional parameter/signature `documentation`: string or `#f`, default `#f`. Parameter order is source order, including explicit keyword labels. |
 | Call | `callee`: source range; `argument`: zero-based active argument; optional `identifier`: `#f`; `signatures`: default `()`; `active-signature`: `0`; `active-parameter`: defaults to `argument`; `documentation-tag`: existing documentation tag or `#f`. Resolve overloads or keyword ordering from language facts, without executing a receiver. |
 | Completion item | `label`: string. Optional `kind`: declaration kind, default `unknown`; `detail`: string or `#f`; `insert-text`: defaults to label; `identifier`: scoped identifier or `#f`. The enclosing result requires a replacement `range`, `prefix` string, `items` list and `incomplete?` Boolean. Current syntax must validate any use of retained facts from an older snapshot. |
-| Rename policy | `valid?`: Boolean; `complete?`: Boolean. Optional `reason`: refusal string or `#f`; `canonical`: identifier or `#f`; `family`: key or `#f`; `edits`: list, default `()`. Each extra edit has `uri`, `range`, `old-text` and `new-text` strings. Edits must be justified selectors/components of the target, not arbitrary source rewrites. Generic occurrence edits remain the host's responsibility. |
+| Rename policy | `valid?`: Boolean; `complete?`: Boolean. Optional `by-name?`: Boolean, default `#f`, for a member reachable by run-time name lookup; `reason`: refusal string or `#f`; `canonical`: identifier or `#f`; `family`: an immutable key from the target families or `#f`; `edits`: list, default `()`. Each extra edit is an immutable record with `uri`, `old-text` and `new-text` strings and a positive character `range`. Duplicate or overlapping provider edits refuse before merging with ordinary edits. Edits must be justified selectors/components of the target, not arbitrary source rewrites. Generic occurrence edits remain the host's responsibility. |
 | Hint | `position`: zero-based source character offset; `label`: string; `kind`: `parameter` or `type`. Optional `padding-left?`, `padding-right?`: default `#f`; `tooltip`: string or `#f`. Type hints must have a declared or otherwise justified producer. |
+
+A rename scan has `names` (a list of symbols reached by literal run-time name
+lookup), `computed?` (Boolean: a lookup name is not literal), and `exports` (a
+list of immutable public-interface records). Each export has a symbol `name`,
+a scoped `public` identifier carrying any source range, an `interface` owner,
+and a non-empty list of scoped `owners`. An owner record has `identifier`,
+optional `phase` (default `0`) and `space` (default `#f`). Include the source’s
+own interfaces at every phase, including unused namespace exports. Malformed
+answers refuse. Without a rename provider, the host does not scan. Otherwise,
+the selected provider scans every captured source, including importing code
+from other languages.
+
+When `by-name?` is true, any computed lookup, or any source reaching the old or
+new name dynamically in either snapshot, refuses the entire operation. Exports
+are compared before and after: a public name may change only when its scoped
+owner belongs to the selected family, or its original source identifier spells
+the public name inside an edited range. Quoted data grants no permission.
 
 At rename preparation, check the target's native token class, space and family
 without requiring a replacement. At planning, validate the complete new token
@@ -480,8 +497,7 @@ against reserved words/operators and supply only proven extra import/export
 edits. Refuse unknown aliases or dynamic families with `complete? #f`. The host
 re-expands before/after snapshots, maps binders by source/structural anchors and
 checks every occurrence, including unchanged names and unused binders. A provider
-cannot switch that validation off. Local and workspace rename obey the same
-rule.
+cannot switch that validation off.
 
 ### Native term layout records
 
@@ -536,19 +552,30 @@ Dynamic dispatch with no static identity must remain unresolved. Missing static
 coverage can permit partial navigation results, but must refuse a rename that
 would omit occurrences.
 
-For Rhombus namespace/import paths, a non-original expanded identifier carries
-the real binding over the whole written path, while `origin` identifiers carry
-each prefix and its span. Map a part to the matching component of the written
-text, keeping the scoped identifier as its identity. Static members and
-generated method names already have exact member ranges: for example, `Point.x`
-and `norm2`, respectively. Dynamic receivers have no member binding and link to
-nothing; literal receivers yield no member identifier. No Rhombus change is needed for R1.
+Rhombus records scoped components and generated families; separately authored
+members keep their own owners. Unmatched components, including parenthesised
+operators, stay unresolved. Its reader checks token classes; reserved forms refuse.
 
-The built-in provider in `racketdap/adapters/rhombus.rkt` adds these component
-uses through the existing phase-aware core walk. It accepts only exact written
-name ranges and leaves unmatched components, including parenthesised operators,
-unresolved. The provider adds no family metadata; families are left to rename
-support.
+Targets set `by-name?` unless the provider can prove they are not members;
+public namespace members receive the same conservative check. The scan walks
+expanded code at every phase, including macro expansions and evaluated template
+escapes. Literal by-name access to
+either name, computed access and unavailable Rhombus dot bindings refuse member
+renames. Any reference to the bindings of `eval`, `eval-syntax`, `load`,
+`dynamic-require`, `namespace-require` or `namespace-variable-value` in a
+captured source also refuses member renames, since reflection cannot be followed.
+Quoted data supplies neither edit permission nor a reason to refuse.
+
+Two macro shapes are outside what these checks can prove. When a macro uses one
+argument as both a class name and a field name, renaming that argument counts
+as renaming the class, so a by-name use of the field does not refuse. A macro
+that chooses a public name by inspecting the spelling of its argument is not
+followed either: the rename is judged only by what the two expansions produce.
+
+Untitled Rhombus buffers refuse prepare and rename with a request to save in
+the workspace first. Namespace extensions, unsupported interfaces, import
+renaming, unresolved members and workspace value/annotation combinations can
+still refuse. Reserved-name checks remain broad, including `String`.
 
 Teaching-language descriptors match exact readers `htdp/bsl/lang/reader`,
 `htdp/isl+/lang/reader` and `htdp/asl/lang/reader` with module identities

@@ -26,10 +26,12 @@
       (dynamic-require launcher #f)
       (set! launcher-hooks (list (current-language-adapter-resolver)
                                  (current-language-adapter-validator)
-                                 (current-language-adapter-bindings))))
+                                 (current-language-adapter-bindings)
+                                 (current-language-adapter-rename))))
     (parameterize ([current-language-adapter-resolver (car launcher-hooks)]
                    [current-language-adapter-validator (cadr launcher-hooks)]
-                   [current-language-adapter-bindings (caddr launcher-hooks)])
+                   [current-language-adapter-bindings (caddr launcher-hooks)]
+                   [current-language-adapter-rename (cadddr launcher-hooks)])
       (proc))))
 
 (define (macro-source suffix)
@@ -69,12 +71,12 @@
     (check-equal? (apply-edits doc (hash-ref (WorkspaceEdit-changes edit) (string->symbol (Doc-uri doc))))
                   (string-replace text "square" "area")))
   doc)
-(define (with-workspace proc [text model] [use consumer])
+(define (with-workspace proc [text model] [use consumer] #:suffix [suffix ".rkt"])
   (define root (make-temporary-file "rename-binders~a" 'directory))
   (dynamic-wind void
     (lambda ()
-      (define file (build-path root "model.rkt"))
-      (define client (build-path root "client.rkt"))
+      (define file (build-path root (string-append "model" suffix)))
+      (define client (build-path root (string-append "client" suffix)))
       (display-to-file text file)
       (display-to-file use client)
       (proc file client (hash file text client use)))
@@ -139,6 +141,65 @@
                       (Range (Pos 1 (- field-column 2)) (Pos 1 (+ field-column 6))))
         (when file-backed? (check-equal? (file->string file) text))))
     (lambda () (delete-directory/files root))))
+
+(define (with-native-rename proc)
+  (with-rhombus
+   (lambda ()
+     (define stages '())
+     (define select (current-language-adapter-rename))
+     (parameterize ([current-language-adapter-rename
+                     (lambda (adapter)
+                       (define provider (select adapter))
+                       (and provider
+                            (lambda (request)
+                              (set! stages (cons (hash-ref request 'stage) stages))
+                              (check-true (immutable? (hash-ref request 'sources)))
+                              (define answer (provider request))
+                              (when (and (not (eq? (hash-ref request 'stage) 'scan)) answer
+                                         (not (and (hash-ref answer 'valid?) (hash-ref answer 'complete?))))
+                                (check-true (and (string? (hash-ref answer 'reason #f))
+                                                 (positive? (string-length (hash-ref answer 'reason))))))
+                              answer)))])
+       (proc))
+     (check-not-false (memq 'prepare stages))
+     (check-not-false (memq 'plan stages)))))
+
+(define rhombus-function
+  "#lang rhombus\nexport: square\nfun square(x): x * x\nsquare(2)\n")
+(define rhombus-open "#lang rhombus\nimport: \"model.rhm\" open\nsquare(3)\n")
+(define (rhombus-document-refusal text needle old name [uri "untitled:rhombus-rename"])
+  (define doc (document text uri))
+  (define pos (position doc text needle old))
+  (check-exn #rx"Save the file in the workspace first" (lambda () (doc-prepare-rename doc pos)))
+  (check-exn #rx"Save the file in the workspace first" (lambda () (doc-rename doc uri pos name)))
+  (check-equal? (doc-get-text doc) text))
+(define (rhombus-workspace text use needle old name [client? #f] [expected #f])
+  (with-workspace
+   (lambda (file client sources)
+     (define selected (if client? client file))
+     (define original (hash-ref sources selected))
+     (define doc (make-doc (path->uri selected) original))
+     (define pos (json-pos (position doc original needle old)))
+     (check-not-false (workspace-rename sources selected pos #f))
+     (define result (workspace-rename sources selected pos name))
+     (for ([(path source) (in-hash sources)])
+       (define edits (hash-ref (hash-ref result 'changes) (string->symbol (path->uri path)) '()))
+       (check-equal? (apply-edits (make-doc (path->uri path) source) (map jsexpr->TextEdit edits))
+                     (if expected (if (equal? path file) (car expected) (cadr expected))
+                         (string-replace source old name)))
+       (check-equal? (file->string path) source)))
+   text use #:suffix ".rhm"))
+
+(define (rhombus-refusal text use needle old name)
+  (with-workspace
+   (lambda (file client sources)
+     (define doc (make-doc (path->uri file) text))
+     (check-true (parameterize ([current-retain-binding-facts? #t])
+                   (doc-expand! doc #:contribution-only? #t)))
+     (check-exn exn:fail?
+                (lambda () (workspace-rename sources file (json-pos (position doc text needle old)) name)))
+     (for ([(path original) (in-hash sources)]) (check-equal? (file->string path) original)))
+   text use #:suffix ".rhm"))
 
 (module+ test
   (test-case "export permutations preserve scoped leaves on both routes"
@@ -679,4 +740,624 @@ SOURCE
       (with-workspace
        (lambda (file client sources) (workspace-success client sources "\nsquare" "square"))
        "#lang rhombus\nexport: square\nfun square(x): x * x\nsquare(2)\n"
-       "#lang rhombus\nimport: \"model.rkt\" open\nsquare(3)\n")))))
+       "#lang rhombus\nimport: \"model.rkt\" open\nsquare(3)\n"))))
+  (test-case "Rhombus constants use native policy from declaration and use"
+    (with-native-rename
+     (lambda ()
+       (define text "#lang rhombus\nexport: square\ndef square = 9\nsquare\n")
+       (for ([needle '("def square" "\nsquare")])
+         (rhombus-workspace text rhombus-open needle "square" "area")))))
+  (test-case "Rhombus functions use native policy on both routes"
+    (with-native-rename
+     (lambda ()
+       (rhombus-workspace rhombus-function rhombus-open "fun square" "square" "area")
+       (rhombus-document-refusal rhombus-function "\nsquare" "square" "area")
+       (rhombus-workspace rhombus-function "#lang rhombus\n" "\nsquare" "square" "area" #f
+                            (list (string-replace rhombus-function "square" "area") "#lang rhombus\n")))))
+  (test-case "Rhombus class families preserve fields and all binding spaces"
+    (with-native-rename
+     (lambda ()
+       (define text "#lang rhombus\nclass Point(x, y)\ndef p :: Point = Point(1, 2)\np.x + Point.y(p)\n")
+       (for ([needle '("class Point" "= Point")])
+         (rhombus-document-refusal text needle "Point" "Position")
+         (rhombus-workspace text "#lang rhombus\n" needle "Point" "Position" #f
+                            (list (string-replace text "Point" "Position") "#lang rhombus\n")))
+       (define model "#lang rhombus\nexport: Point\nclass Point(x, y)\n")
+       (define use "#lang rhombus\nimport: \"model.rhm\" open\ndef p :: Point = Point(1, 2)\np.x + Point.y(p)\n")
+       (rhombus-workspace model use "class Point" "Point" "Position")
+       (rhombus-workspace model use "= Point" "Point" "Position" #t)
+       (rhombus-document-refusal text "Point(x" "x" "ordinate")
+       (rhombus-workspace text "#lang rhombus\n" "Point(x" "x" "ordinate" #f
+                            (list (string-replace text "x" "ordinate") "#lang rhombus\n")))))
+  (test-case "Rhombus operators retain their native token class"
+    (with-native-rename
+     (lambda ()
+       (define text "#lang rhombus\noperator (a <+> b): a + b\n1 <+> 2\n")
+       (define doc (document text))
+       (define pos (position doc text "a <+>" "<+>"))
+       (define provider (doc-rename-provider doc))
+       (define seen #f)
+       (parameterize ([current-language-adapter-rename
+                       (lambda (_)
+                         (lambda (request)
+                           (define answer (provider request))
+                           (when (eq? (hash-ref request 'stage) 'plan)
+                             (set! seen answer))
+                           answer))])
+         (rhombus-refusal text "#lang rhombus\n" "a <+>" "<+>" "combine"))
+       (check-not-false seen)
+       (check-false (hash-ref seen 'valid?))
+       (check-regexp-match #rx"same token class" (hash-ref seen 'reason))
+       (rhombus-document-refusal text "a <+>" "<+>" "<*>")
+       (rhombus-workspace text "#lang rhombus\n" "a <+>" "<+>" "<*>" #f
+                            (list (string-replace text "<+>" "<*>") "#lang rhombus\n"))
+       (rhombus-document-refusal text "a <+>" "<+>" "combine")
+       (rhombus-document-refusal rhombus-function "fun square" "square" "<+>")
+       (rhombus-refusal rhombus-function rhombus-open "fun square" "square" "<+>"))))
+  (test-case "Rhombus reserved and malformed names refuse without edits"
+    (with-native-rename
+     (lambda ()
+       (rhombus-document-refusal rhombus-function "fun square" "square" "area")
+       (rhombus-workspace rhombus-function "#lang rhombus\n" "fun square" "square" "area" #f
+                            (list (string-replace rhombus-function "square" "area") "#lang rhombus\n"))
+       (for ([name '("if" "fun" "class" "~key" "new name" "x; y" "" "42")])
+         (rhombus-document-refusal rhombus-function "fun square" "square" name)
+         (rhombus-refusal rhombus-function rhombus-open "fun square" "square" name))
+       (define select (current-language-adapter-rename))
+       (for ([stage '(prepare plan)])
+         (parameterize ([current-language-adapter-rename
+                         (lambda (adapter)
+                           (define provider (select adapter))
+                           (and provider
+                                (lambda (request)
+                                  (if (eq? (hash-ref request 'stage) stage)
+                                      (hasheq 'valid? #t 'complete? #f 'reason "Incomplete family.")
+                                      (provider request)))))])
+           (rhombus-refusal rhombus-function rhombus-open "fun square" "square" "area")))
+       (define quoted (string-append rhombus-function "'square'\n"))
+       (parameterize ([current-language-adapter-rename
+                       (lambda (adapter)
+                         (define provider (select adapter))
+                         (and provider
+                              (lambda (request)
+                                (define answer (provider request))
+                                (if (eq? (hash-ref request 'stage) 'plan)
+                                    (hash-set answer 'edits
+                                              (list (hasheq 'uri (hash-ref request 'uri)
+                                                            'range (cons (- (string-length quoted) 8) (- (string-length quoted) 2))
+                                                            'old-text "square" 'new-text "area"))) answer))))])
+         (rhombus-refusal quoted rhombus-open "fun square" "square" "area")))))
+  (test-case "Rhombus dotted members rename their exact last component across files"
+    (with-native-rename
+     (lambda ()
+       (rhombus-workspace rhombus-function
+                          "#lang rhombus\nimport: \"model.rhm\" as m\nm.square(3)\n"
+                          "m.square" "square" "area" #t))))
+  (test-case "Rhombus import alias rename leaves the exported member alone"
+    (with-native-rename
+     (lambda ()
+       (define use "#lang rhombus\nimport: \"model.rhm\" as m\nm.square(3)\n")
+       (define changed "#lang rhombus\nimport: \"model.rhm\" as shapes\nshapes.square(3)\n")
+       (for ([needle '("as m" "\nm")])
+         (rhombus-workspace rhombus-function use needle "m" "shapes" #t
+                            (list rhombus-function changed))))))
+  (test-case "Rhombus capture in either direction refuses without edits"
+    (with-native-rename
+     (lambda ()
+       (rhombus-document-refusal rhombus-function "fun square" "square" "area")
+       (rhombus-workspace rhombus-function "#lang rhombus\n" "fun square" "square" "area" #f
+                            (list (string-replace rhombus-function "square" "area") "#lang rhombus\n"))
+       (for ([text '("#lang rhombus\nfun square(x): x * x\nfun f(area): square(area)\n"
+                     "#lang rhombus\ndef area = 4\nfun f(square): square + area\n")]
+             [needle '("fun square" "f(square")])
+         (rhombus-document-refusal text needle "square" "area")
+         (rhombus-refusal text "#lang rhombus\n" needle "square" "area")))))
+  (test-case "Rhombus unrelated local spellings and quoted data stay unchanged"
+    (with-native-rename
+     (lambda ()
+       (define text "#lang rhombus\ndef square = 9\nfun f(square): square + 1\nsquare\n'square'\n")
+       (define changed "#lang rhombus\ndef area = 9\nfun f(square): square + 1\narea\n'square'\n")
+       (rhombus-document-refusal text "def square" "square" "area")
+       (rhombus-workspace text "#lang rhombus\n" "def square" "square" "area" #f
+                            (list changed "#lang rhombus\n")))))
+  (test-case "Rhombus unsaved buffers and dynamic members obey native policy"
+    (with-native-rename
+     (lambda ()
+       (rhombus-document-refusal rhombus-function "fun square" "square" "area" "file:///tmp/rename-unsaved.rhm")
+       (rhombus-workspace rhombus-function "#lang rhombus\n" "fun square" "square" "area" #f
+                            (list (string-replace rhombus-function "square" "area") "#lang rhombus\n"))
+       (define text "#lang rhombus\nclass Point(x)\nfun dyn(v): v.x\n")
+       (define doc (document text))
+       (define pos (position doc text "v.x" "x"))
+       (check-exn #rx"Save the file in the workspace first" (lambda () (doc-prepare-rename doc pos)))
+       (check-exn #rx"Save the file in the workspace first" (lambda () (doc-rename doc (Doc-uri doc) pos "ordinate")))
+       (check-equal? (doc-get-text doc) text))))
+  (test-case "Racket rename retains its rules after native Rhombus rename"
+    (with-native-rename
+     (lambda ()
+       (rhombus-document-refusal rhombus-function "fun square" "square" "area")
+       (rhombus-workspace rhombus-function "#lang rhombus\n" "fun square" "square" "area" #f
+                            (list (string-replace rhombus-function "square" "area") "#lang rhombus\n"))
+       (local-success model)
+       (with-workspace (lambda (file client sources) (workspace-success file sources "define-pair square)" "square)"))))))
+  (test-case "Rhombus dynamic field declaration refuses on both routes"
+    (with-rhombus
+     (lambda ()
+       (define text "#lang rhombus\nclass Point(x)\nfun dyn(v): v.x\ndyn(Point(1))\n")
+       (define doc (document text))
+       (check-exn #rx"Save the file in the workspace first" (lambda () (doc-rename doc (Doc-uri doc) (position doc text "Point(x" "x") "ordinate")))
+       (rhombus-refusal text "#lang rhombus\n" "Point(x" "x" "ordinate"))))
+  (test-case "Rhombus dynamic method declaration refuses on both routes"
+    (with-rhombus
+     (lambda ()
+       (define text "#lang rhombus\nclass Point():\n  method norm(): 1\nfun dyn(v): v.norm()\ndyn(Point())\n")
+       (define doc (document text))
+       (check-exn #rx"Save the file in the workspace first" (lambda () (doc-rename doc (Doc-uri doc) (position doc text "method norm" "norm") "lengthy")))
+       (define use (position doc text "v.norm" "norm"))
+       (check-exn #rx"Save the file in the workspace first" (lambda () (doc-prepare-rename doc use)))
+       (check-exn #rx"Save the file in the workspace first" (lambda () (doc-rename doc (Doc-uri doc) use "lengthy")))
+       (rhombus-refusal text "#lang rhombus\n" "method norm" "norm" "lengthy"))))
+  (test-case "Rhombus class and separately written field keep separate names"
+    (with-rhombus
+     (lambda ()
+       (define text "#lang rhombus\nclass Point(Point)\nfun dyn(v): v.Point\ndyn(Point(1))\n")
+       (define changed "#lang rhombus\nclass Position(Point)\nfun dyn(v): v.Point\ndyn(Position(1))\n")
+       (for ([needle '("class Point" "dyn(Point")])
+         (rhombus-document-refusal text needle "Point" "Position")
+         (rhombus-workspace text "#lang rhombus\n" needle "Point" "Position" #f
+                            (list changed "#lang rhombus\n"))))))
+  (test-case "Rhombus use retains Racket import selector planning"
+    (with-rhombus
+     (lambda ()
+       (with-workspace
+        (lambda (file client sources)
+          (define other (build-path (path-only file) "other.rkt"))
+          (define rkt "#lang racket/base\n(require (rename-in \"model.rkt\" [square sq]))\n(sq 2)\n")
+          (display-to-file rkt other)
+          (workspace-success client (hash-set sources other rkt) "\nsquare" "square"))
+        "#lang racket/base\n(provide square)\n(define (square x) (* x x))\n"
+        "#lang rhombus\nimport: \"model.rkt\" open\nsquare(2)\n"))))
+  (test-case "Rhombus workspace CRLF preserves source coordinates"
+    (with-rhombus
+     (lambda ()
+       (rhombus-workspace (string-replace rhombus-function "\n" "\r\n")
+                          (string-replace rhombus-open "\n" "\r\n")
+                          "fun square" "square" "area"))))
+  (test-case "Rhombus default module alias renames from declaration and use"
+    (with-rhombus
+     (lambda ()
+       (define use "#lang rhombus\nimport: \"model.rhm\"\nmodel.square(3)\n")
+       (rhombus-workspace rhombus-function use "fun square" "square" "area")
+       (rhombus-workspace rhombus-function use "model.square" "square" "area" #t))))
+  (test-case "Rhombus unrelated export clause permits local rename"
+    (with-rhombus
+     (lambda ()
+       (define text "#lang rhombus\nexport:\n  rename: spare as public\ndef spare = 1\ndef square = 9\nsquare\n")
+       (rhombus-document-refusal text "def square" "square" "area")
+       (rhombus-workspace text "#lang rhombus\n" "def square" "square" "area")
+       (define aliased "#lang rhombus\nexport:\n  rename: square as sq\ndef square = 9\nsquare\n")
+       (rhombus-document-refusal aliased "def square" "square" "area")
+       (rhombus-workspace aliased "#lang rhombus\n" "def square" "square" "area" #f
+                            (list (string-replace aliased "square" "area") "#lang rhombus\n")))))
+  (test-case "Rhombus default alias uses differing unsaved sources"
+    (with-rhombus
+     (lambda ()
+       (define use "#lang rhombus\nimport: \"model.rhm\"\nmodel.square(3)\n")
+       (with-workspace
+        (lambda (file client sources)
+          (define disk "#lang rhombus\ndef old = 0\n")
+          (display-to-file disk file #:exists 'truncate)
+          (display-to-file disk client #:exists 'truncate)
+          (define doc (document rhombus-function (path->uri file)))
+          (check-exn #rx"Save the file in the workspace first" (lambda () (doc-rename doc (Doc-uri doc) (position doc rhombus-function "fun square" "square") "area")))
+          (check-exn #rx"Save the file in the workspace first" (lambda () (doc-prepare-rename doc (position doc rhombus-function "fun square" "square"))))
+          (define result (workspace-rename sources client (hasheq 'line 2 'character 7) "area"))
+          (for ([(path text) (in-hash sources)])
+            (check-equal? (apply-edits (make-doc (path->uri path) text)
+                                      (map jsexpr->TextEdit (hash-ref (hash-ref result 'changes) (string->symbol (path->uri path)))))
+                          (string-replace text "square" "area"))
+            (check-equal? (file->string path) disk)))
+        rhombus-function use #:suffix ".rhm"))))
+  (test-case "Rhombus namespace members preserve unrelated names"
+    (with-rhombus
+     (lambda ()
+       (define text "#lang rhombus\nnamespace Tools:\n  export: scale\n  fun scale(x):\n    fun scale(y): y\n    scale(x) * 2\nnamespace Other:\n  export: scale\n  fun scale(x): x + 1\nfun local(scale): scale\nTools.scale(2) + Other.scale(3)\nTools.scale(4)\n'scale'\n'v.scale'\n'namespace ~extend Tools'\n")
+       (define changed (string-replace (string-replace text "export: scale\n  fun scale(x):\n    fun scale(y): y\n    scale(x) * 2" "export: resize\n  fun resize(x):\n    fun scale(y): y\n    scale(x) * 2") "Tools.scale" "Tools.resize"))
+       (for ([needle '("fun scale" "Tools.scale")])
+         (rhombus-document-refusal text needle "scale" "resize")
+         (with-workspace
+          (lambda (file client sources)
+            (rhombus-document-refusal text needle "scale" "resize" (path->uri file))
+            (for ([(path original) (in-hash sources)]) (check-equal? (file->string path) original)))
+          text "#lang rhombus\n" #:suffix ".rhm")
+         (rhombus-workspace text "#lang rhombus\n" needle "scale" "resize" #f
+                            (list changed "#lang rhombus\n"))))))
+  (test-case "Rhombus nested namespace rename edits its own component"
+    (with-rhombus
+     (lambda ()
+       (define text "#lang rhombus\nnamespace Outer:\n  export: Inner\n  namespace Inner:\n    export: deep\n    fun deep(x): x + 1\nOuter.Inner.deep(4)\n")
+       (for ([needle '("namespace Inner" "Outer.Inner")])
+         (rhombus-document-refusal text needle "Inner" "Inside")
+         (rhombus-workspace text "#lang rhombus\n" needle "Inner" "Inside")))))
+  (test-case "Rhombus nested namespace member rename edits its own component"
+    (with-rhombus
+     (lambda ()
+       (define text "#lang rhombus\nnamespace Outer:\n  export: Inner\n  namespace Inner:\n    export: deep\n    fun deep(x): x + 1\nOuter.Inner.deep(4)\n")
+       (for ([needle '("fun deep" "Outer.Inner.deep")])
+         (rhombus-document-refusal text needle "deep" "deeper")
+         (rhombus-workspace text "#lang rhombus\n" needle "deep" "deeper")))))
+  (test-case "Rhombus namespace classes retain class family rules"
+    (with-rhombus
+     (lambda ()
+       (define text "#lang rhombus\nnamespace Tools:\n  export: Point\n  class Point(Point)\ndef p :: Tools.Point = Tools.Point(1)\np.Point\n")
+       (define changed "#lang rhombus\nnamespace Tools:\n  export: Position\n  class Position(Point)\ndef p :: Tools.Position = Tools.Position(1)\np.Point\n")
+       (for ([needle '("class Point" "= Tools.Point")])
+         (rhombus-document-refusal text needle "Point" "Position")
+         (rhombus-workspace text "#lang rhombus\n" needle "Point" "Position" #f
+                            (list changed "#lang rhombus\n"))))))
+  (test-case "Rhombus namespace fields require resolved access"
+    (with-rhombus
+     (lambda ()
+       (define text "#lang rhombus\nnamespace Tools:\n  export: Point\n  class Point(x)\ndef p = Tools.Point(1)\np.x\n")
+       (rhombus-document-refusal text "class Point" "Point" "Position")
+       (rhombus-workspace text "#lang rhombus\n" "class Point" "Point" "Position" #f
+                            (list (string-replace text "Point" "Position") "#lang rhombus\n"))
+       (for ([needle '("Point(x" "p.x")])
+         (rhombus-document-refusal text needle "x" "ordinate")
+         (rhombus-workspace text "#lang rhombus\n" needle "x" "ordinate" #f
+                            (list (regexp-replace* #px"\\bx\\b" text "ordinate") "#lang rhombus\n")))
+       (define dynamic (string-append text "fun dyn(v): v.x\n"))
+       (for ([needle '("Point(x" "p.x")])
+         (define doc (document dynamic))
+         (check-exn #rx"Save the file in the workspace first" (lambda () (doc-rename doc (Doc-uri doc) (position doc dynamic needle "x") "ordinate")))
+         (check-equal? (doc-get-text doc) dynamic)
+         (rhombus-refusal dynamic "#lang rhombus\n" needle "x" "ordinate"))
+       (with-workspace
+        (lambda (file client sources)
+          (for ([selected (in-list (list file client))] [needle '("Point(x" "p.x")])
+            (define source (hash-ref sources selected))
+            (define doc (make-doc (path->uri selected) source))
+            (check-exn exn:fail?
+                       (lambda () (workspace-rename sources selected
+                                    (json-pos (position doc source needle "x")) "ordinate"))))
+          (for ([(path source) (in-hash sources)]) (check-equal? (file->string path) source)))
+        (string-replace text "#lang rhombus" "#lang rhombus\nexport: Tools")
+        "#lang rhombus\nimport: \"model.rhm\" open\ndef p = Tools.Point(2)\np.x\nfun dyn(v): v.x\n"
+        #:suffix ".rhm"))))
+  (test-case "Rhombus imported namespace components rename across files"
+    (with-rhombus
+     (lambda ()
+       (for ([entry
+              (in-list
+               (list
+                (list "#lang rhombus\nexport: Tools\nnamespace Tools:\n  export: scale\n  fun scale(x): x * 2\nTools.scale(2)\n" "Tools.scale(3)\n" "fun scale" "Tools.scale" "scale" "resize")
+                (list "#lang rhombus\nexport: Outer\nnamespace Outer:\n  export: Inner\n  namespace Inner:\n    export: deep\n    fun deep(x): x + 1\nOuter.Inner.deep(4)\n" "Outer.Inner.deep(3)\n" "namespace Inner" "Outer.Inner" "Inner" "Inside")
+                (list "#lang rhombus\nexport: Outer\nnamespace Outer:\n  export: Inner\n  namespace Inner:\n    export: deep\n    fun deep(x): x + 1\nOuter.Inner.deep(4)\n" "Outer.Inner.deep(3)\n" "fun deep" "Outer.Inner.deep" "deep" "deeper")
+                (list "#lang rhombus\nexport: Tools\nnamespace Tools:\n  export: Point\n  class Point(x)\nTools.Point(1)\n" "def p = Tools.Point(2)\np.x\n" "class Point" "Tools.Point" "Point" "Position")
+                (list "#lang rhombus\nexport: Tools\nnamespace Tools:\n  export: Point\n  class Point(x)\ndef p = Tools.Point(1)\np.x\n" "def p = Tools.Point(2)\np.x\n" "Point(x" "p.x" "x" "ordinate")))])
+         (define text (car entry))
+         (define use (string-append "#lang rhombus\nimport: \"model.rhm\" open\n" (cadr entry)))
+         (for ([client? '(#f #t)])
+           (rhombus-workspace text use (list-ref entry (if client? 3 2))
+                              (list-ref entry 4) (list-ref entry 5) client?
+                              (for/list ([source (in-list (list text use))])
+                                (regexp-replace* (pregexp (string-append "\\b" (list-ref entry 4) "\\b"))
+                                                 source (list-ref entry 5)))))))))
+  (test-case "Rhombus namespace collisions and unsupported forms refuse without edits"
+    (with-rhombus
+     (lambda ()
+       (define plain "#lang rhombus\nnamespace Tools:\n  export: scale\n  fun scale(x): x * 2\nTools.scale(2)\n")
+       (rhombus-document-refusal plain "fun scale" "scale" "resize")
+       (rhombus-workspace plain "#lang rhombus\n" "fun scale" "scale" "resize" #f
+                            (list (string-replace plain "scale" "resize") "#lang rhombus\n"))
+       (for ([text (in-list
+                    (list
+                     (string-replace plain "  export: scale" "  export: scale\n  export: resize\n  fun resize(x): x")
+                     (string-replace plain "  export: scale" "  export:\n    rename: scale as public")
+                     (string-append plain "namespace ~extend Tools:\n  export: spare\n  def spare = 1\n")
+                     (string-append plain "fun dyn(v): v.scale(2)\n")
+                     (string-append plain "export: all_from(.Tools)\n")))])
+         (define name (if (string-contains? text "resize") "resize" "resized"))
+         (define valid (if (string-contains? text "as public") (string-replace text "Tools.scale(2)" "Tools.public(2)") text))
+         (for ([needle (list "fun scale" (if (string-contains? text "as public") "fun scale" "Tools.scale"))])
+           (with-check-info (['source valid] ['needle needle])
+             (rhombus-refusal valid "#lang rhombus\n" needle "scale" name)))))))
+  (test-case "Rhombus malformed provider matrix refuses in the workspace"
+    (with-rhombus
+     (lambda ()
+       (define text "#lang rhombus\ndef square = 9\nsquare\n")
+       (define good (hasheq 'valid? #t 'complete? #t))
+       (define select (current-language-adapter-rename))
+       (define (edit req)
+         (hasheq 'uri (hash-ref req 'uri) 'range '(18 . 24) 'old-text "square" 'new-text "area"))
+       (define cases
+         (list (cons 'false (lambda (_) #f))
+               (cons 'non-hash (lambda (_) 'yes))
+               (cons 'mutable (lambda (_) (hash-copy good)))
+               (cons 'missing (lambda (_) (hasheq 'valid? #t)))
+               (cons 'nonboolean (lambda (_) (hash-set good 'valid? 1)))
+               (cons 'by-name (lambda (_) (hash-set good 'by-name? 1)))
+               (cons 'refusal (lambda (_) (hash-set good 'valid? #f)))
+               (cons 'incomplete (lambda (_) (hash-set good 'complete? #f)))
+               (cons 'reason (lambda (_) (hash-set good 'reason 17)))
+               (cons 'canonical (lambda (_) (hash-set good 'canonical 17)))
+               (cons 'unknown-family (lambda (_) (hash-set good 'family 17)))
+               (cons 'family (lambda (_) (hash-set good 'family (box 'bad))))
+               (cons 'family-procedure (lambda (_) (hash-set good 'family void)))
+               (cons 'family-cycle (lambda (_) (hash-set good 'family (read (open-input-string "#0=(x . #0#)")))))
+               (cons 'edits (lambda (_) (hash-set good 'edits 17)))
+               (cons 'outside-uri (lambda (r) (hash-set good 'edits (list (hash-set (edit r) 'uri "untitled:outside")))))
+               (cons 'outside-range (lambda (r) (hash-set good 'edits (list (hash-set (edit r) 'range '(999 . 1005))))))
+               (cons 'old-text (lambda (r) (hash-set good 'edits (list (hash-set (edit r) 'old-text "wrong!")))))
+               (cons 'replacement (lambda (r) (hash-set good 'edits (list (hash-set (edit r) 'new-text "other")))))
+               (cons 'overlap (lambda (r) (hash-set good 'edits (list (edit r) (hash-set (edit r) 'range '(19 . 25))))))
+               (cons 'duplicate (lambda (r) (hash-set good 'edits (list (edit r) (edit r)))))
+               (cons 'mutable-edit (lambda (r) (hash-set good 'edits (list (hash-copy (edit r))))))))
+       (for* ([entry (in-list cases)] [stage '(prepare plan)])
+         (with-check-info (['answer (car entry)] ['stage stage])
+           (parameterize ([current-language-adapter-rename
+                           (lambda (adapter)
+                             (and (select adapter)
+                                  (lambda (request)
+                                    (case (hash-ref request 'stage)
+                                      [(scan) (hasheq 'names '() 'computed? #f 'exports '())]
+                                      [else (if (eq? (hash-ref request 'stage) stage) ((cdr entry) request) good)]))))])
+             (rhombus-refusal text "#lang rhombus\n" "def square" "square" "area")))))))
+
+  (for ([fixture (in-list
+                 (list
+                  (list "providerless origin retains importing namespace interfaces" "#lang racket/base\n(provide square)\n(define square 1)\n" "#lang rhombus/and_meta\nimport: \"model.rhm\" open\ndecl.macro 'make $name':\n  let public = Syntax.make_id(if name.unwrap() == #'square | \"first\" | \"second\")\n  'namespace Tools:\n     export:\n       rename: field as $public\n     def field = $name\n   export: Tools'\nmake square\nsquare\n" "define square" "square" "area")
+                  (list "Rhombus expanded macro field refuses member rename" "#lang rhombus/and_meta\nclass Point(x)\nexpr.macro 'read($v)': '$(v).x'\nfun dyn(v): read(v)\ndyn(Point(1))\n" "#lang rhombus\n" "Point(x" "x" "ordinate")
+                  (list "Rhombus expanded macro method refuses member rename" "#lang rhombus/and_meta\nclass Point():\n  method norm(): 1\nexpr.macro 'read($v)': '$(v).norm()'\nfun dyn(v): read(v)\ndyn(Point())\n" "#lang rhombus\n" "method norm" "norm" "lengthy")
+                  (list "Rhombus template escape refuses member rename" "#lang rhombus/and_meta\nclass Point(x)\nfun dyn(v): '$(v.x)'\ndyn(Point(1))\n" "#lang rhombus\n" "Point(x" "x" "ordinate")
+                  (list "Rhombus mixed static and dynamic access refuses member rename" "#lang rhombus/and_meta\nclass Point(x)\nclass Other(x)\nexpr.macro 'both $v . $field':\n  '($v . $field) + Other . $field(Other(1))'\nfun dyn(v): both v.x\ndyn(Point(2))\n" "#lang rhombus\n" "Point(x" "x" "ordinate")
+                  (list "Rhombus imported macro access refuses member rename" "#lang rhombus\nexport: Tools\nnamespace Tools:\n  export: Point\n  class Point(x)\n" "#lang rhombus/and_meta\nimport: \"model.rhm\" open\nexpr.macro 'read($v)': '$(v).x'\nfun dyn(v): read(v)\ndyn(Tools.Point(1))\n" "Point(x" "x" "ordinate")
+                  (list "Rhombus dynamically reached replacement refuses member rename" "#lang rhombus\nclass Point(x)\nclass Other(ordinate)\nfun dyn(v): v.ordinate\ndyn(Other(1))\n" "#lang rhombus\n" "Point(x" "x" "ordinate")
+                  (list "Rhombus unrelated namespace public export change refuses" "#lang rhombus/and_meta\ndecl.macro 'make $name':\n  let public = Syntax.make_id(if name.unwrap() == #'square | \"first\" | \"second\")\n  'def $name = 1\n   namespace Tools:\n     export:\n       rename: field as $public\n     def field = 2\n   export: Tools'\nmake square\nsquare\n" "#lang rhombus\n" "make square" "square" "area")))])
+    (test-case (car fixture)
+      (with-rhombus (lambda () (apply rhombus-refusal (cdr fixture))))))
+  (test-case "Rhombus member scans include importing Racket code"
+    (with-rhombus
+     (lambda ()
+       (define text "#lang rhombus\nexport: make_point\nclass Point(x)\nfun make_point(): Point(1)\n")
+       (define use "#lang racket/base\n(require \"model.rhm\" rhombus/dot)\n(dynamic-dot-ref (make_point) 'x)\n")
+       (with-workspace
+        (lambda (file client sources)
+          (document use (path->uri client))
+          (define doc (make-doc (path->uri file) text))
+          (check-exn #rx"run-time member lookup"
+                     (lambda () (workspace-rename sources file (json-pos (position doc text "Point(x" "x")) "ordinate")))
+          (for ([(path original) (in-hash sources)]) (check-equal? (file->string path) original)))
+        text use #:suffix ".rhm"))))
+  (test-case "Rhombus computed access refuses member rename"
+    (with-rhombus
+     (lambda ()
+       (define select (current-language-adapter-rename))
+       (define computed? #f)
+       (parameterize ([current-language-adapter-rename
+                       (lambda (adapter)
+                         (define provider (select adapter))
+                         (and provider
+                              (lambda (request)
+                                (define answer (provider request))
+                                (when (eq? (hash-ref request 'stage) 'scan)
+                                  (set! computed? (or computed? (hash-ref answer 'computed?))))
+                                answer)))])
+         (rhombus-refusal "#lang rhombus\nimport: lib(\"rhombus/dot.rkt\") open\nclass Point(x)\ndef name = #'x\n#{dynamic-dot-ref}(Point(1), name)\n"
+                          "#lang rhombus\n" "Point(x" "x" "ordinate"))
+       (check-true computed?))))
+  (test-case "Rhombus same-spelled class and field select separate owners"
+    (with-rhombus
+     (lambda ()
+       (for ([prefix '("" "namespace Tools:\n  export: Point\n  ")])
+         (define ns? (not (equal? prefix "")))
+         (define ctor (if ns? "Tools.Point" "Point"))
+         (define text (string-append "#lang rhombus\n" prefix "class Point(Point)\ndef p :: " ctor " = " ctor "(1)\np.Point\n"))
+         (define field (string-replace (string-replace text "Point(Point)" "Point(ordinate)") "p.Point" "p.ordinate"))
+         (rhombus-workspace text "#lang rhombus\n" "Point(Point" "Point" "ordinate" #f (list field "#lang rhombus\n"))
+         (define renamed (string-replace (string-replace (string-replace text "class Point" "class Position") "export: Point" "export: Position") ctor (if ns? "Tools.Position" "Position")))
+         (define expected (string-replace (string-replace renamed "Position(Position)" "Position(Point)") "p.Position" "p.Point"))
+         (rhombus-workspace text "#lang rhombus\n" "class Point" "Point" "Position" #f (list expected "#lang rhombus\n"))))))
+  (test-case "providerless portal content retains interface validation"
+    (define text #<<SRC
+#lang racket/base
+(require (for-syntax racket/base))
+(define-syntax (make stx)
+  (syntax-case stx ()
+    [(_ name)
+     (with-syntax ([public (datum->syntax #f (if (eq? (syntax-e #'name) 'square) 'first 'second))]
+                   [Tools ((make-interned-syntax-introducer 'rhombus/namespace) #'Tools)])
+       #'(begin (define name 1)
+                (define field 2)
+                (#%require (portal Tools (nspace Tools #f (public field))))
+                (#%provide (for-space rhombus/namespace Tools))))]))
+(make square)
+square
+SRC
+)
+    (define doc (document text))
+    (check-false (doc-rename-provider doc))
+    (define pos (position doc text "make square" "square"))
+    (check-false (doc-rename doc (Doc-uri doc) pos "area"))
+    (with-workspace
+     (lambda (file client sources)
+       (check-exn exn:fail? (lambda () (workspace-rename sources file (json-pos pos) "area"))))
+     text "#lang racket/base\n"))
+  (test-case "providerless exported macro retains scoped template reference"
+    (with-workspace
+     (lambda (file client sources) (workspace-success file sources "define square" "square"))
+     "#lang racket/base\n(provide get)\n(define square 1)\n(define-syntax-rule (get) square)\nsquare\n"
+     "#lang racket/base\n(require \"model.rkt\")\n(get)\n"))
+  (test-case "Rhombus untitled buffers require saving before rename"
+    (with-rhombus
+     (lambda ()
+       (define doc (document rhombus-function))
+       (define pos (position doc rhombus-function "fun square" "square"))
+       (parameterize ([current-language-adapter-rename (lambda (_) #f)])
+         (check-exn #rx"Save the file in the workspace first" (lambda () (doc-prepare-rename doc pos)))
+       (check-exn #rx"Save the file in the workspace first" (lambda () (doc-rename doc (Doc-uri doc) pos "area")))))))
+
+  (test-case "Rhombus static field and method renames succeed"
+    (with-rhombus
+     (lambda ()
+       (define text "#lang rhombus\nclass Point(x):\n  method norm(): 1\ndef p :: Point = Point(1)\np.x + p.norm()\n")
+       (rhombus-workspace text "#lang rhombus\n" "Point(x" "x" "ordinate")
+       (rhombus-workspace text "#lang rhombus\n" "method norm" "norm" "lengthy"))))
+  (test-case "Rhombus unavailable dot bindings fail safely"
+    (with-rhombus
+     (lambda ()
+       (define select (current-language-adapter-rename))
+       (define seen #f)
+       (define scans 0)
+       (parameterize ([current-language-adapter-rename
+                       (lambda (adapter)
+                         (define provider (select adapter))
+                         (and provider
+                              (lambda (request)
+                                (if (and (eq? (hash-ref request 'stage) 'scan)
+                                         (begin (set! scans (add1 scans)) (> scans 2)))
+                                    (let ([resolve (current-module-name-resolver)])
+                                      (parameterize ([current-module-name-resolver
+                                                      (lambda args
+                                                        (when (equal? (car args) '(submod rhombus/private/amalgam dot))
+                                                          (error 'rename "Dot bindings unavailable."))
+                                                        (apply resolve args))])
+                                        (define answer (provider request))
+                                        (set! seen (hash-ref answer 'computed?))
+                                        answer))
+                                    (provider request)))))])
+         (rhombus-refusal "#lang rhombus\nclass Point(x)\ndef p :: Point = Point(1)\np.x\n"
+                          "#lang rhombus\n" "Point(x" "x" "ordinate"))
+       (check-true seen))))
+  (test-case "Rhombus unrelated namespace tokens grant no veto"
+    (with-rhombus
+     (lambda ()
+       (define text "#lang rhombus\nnamespace Tools:\n  export: scale\n  fun scale(x): x*2\nTools.scale(2)\ndef rename = 1\ndef all_from = 2\n")
+       (rhombus-workspace text "#lang rhombus\n" "fun scale" "scale" "resize"))))
+  (test-case "Rhombus malformed scan records refuse without edits"
+    (with-rhombus
+     (lambda ()
+       (define select (current-language-adapter-rename))
+       (define good (hasheq 'names '() 'computed? #f 'exports '()))
+       (for ([bad (in-list (list #f (hash-copy good) (hash-remove good 'names)
+                                 (hash-set good 'names '(17)) (hash-set good 'computed? 1)
+                                 (hash-remove good 'computed?) (hash-set good 'exports '(17))))])
+         (parameterize ([current-language-adapter-rename
+                         (lambda (adapter)
+                           (define provider (select adapter))
+                           (and provider (lambda (request)
+                                           (if (eq? (hash-ref request 'stage) 'scan) bad (provider request)))))])
+           (rhombus-refusal rhombus-function "#lang rhombus\n" "fun square" "square" "area"))))))
+
+  (test-case "Rhombus macro-created fields require member classification"
+    (with-rhombus
+     (lambda ()
+       (define text "#lang rhombus/and_meta\ndefn.macro 'make $name($field)': 'class $name($field)'\nmake Point(x)\nfun dyn(v): v.x\ndyn(Point(1))\n")
+       (define select (current-language-adapter-rename))
+       (define by-name? #f)
+       (parameterize ([current-language-adapter-rename
+                       (lambda (adapter)
+                         (define provider (select adapter))
+                         (and provider
+                              (lambda (request)
+                                (define answer (provider request))
+                                (when (eq? (hash-ref request 'stage) 'plan)
+                                  (set! by-name? (hash-ref answer 'by-name?)))
+                                answer)))])
+         (rhombus-refusal text "#lang rhombus\n" "Point(x" "x" "ordinate"))
+       (check-true by-name?)
+       ;; Proven ordinary definitions remain editable alongside reflection.
+       (for ([declaration '("def square = 9" "fun square(): 9" "class square()")])
+         (define ordinary (string-append "#lang rhombus\n" declaration "\nsquare\n"))
+         (rhombus-workspace ordinary "#lang racket/base\n(define reflect eval)\n"
+                            declaration "square" "area" #f
+                            (list (string-replace ordinary "square" "area")
+                                  "#lang racket/base\n(define reflect eval)\n"))))))
+  (for ([reflection '(dynamic-require eval eval-syntax)])
+    (test-case (format "Rhombus member scans refuse reflection through ~a" reflection)
+      (with-rhombus
+       (lambda ()
+         (define text "#lang rhombus\nexport: make_point\nclass Point(x)\nfun make_point(): Point(1)\n")
+         (define use
+           (case reflection
+             [(dynamic-require)
+              "#lang racket/base\n(require \"model.rhm\")\n(define read-field (dynamic-require 'rhombus/dot 'dynamic-dot-ref))\n(read-field (make_point) 'x)\n"]
+             [(eval)
+              "#lang racket/base\n(require \"model.rhm\" (rename-in racket/base [eval reflect]))\n(define read-field (reflect '(dynamic-require 'rhombus/dot 'dynamic-dot-ref) (make-base-namespace)))\n(read-field (make_point) 'x)\n"]
+             [else
+              "#lang racket/base\n(require \"model.rhm\")\n(define load (eval-syntax #'dynamic-require (make-base-namespace)))\n(define read-field (load 'rhombus/dot 'dynamic-dot-ref))\n(read-field (make_point) 'x)\n"]))
+         (with-workspace
+          (lambda (file client sources)
+            (document use (path->uri client))
+            (define doc (make-doc (path->uri file) text))
+            (check-exn #rx"run-time member lookup"
+                       (lambda () (workspace-rename sources file
+                                    (json-pos (position doc text "Point(x" "x")) "ordinate")))
+            (for ([(path original) (in-hash sources)]) (check-equal? (file->string path) original)))
+          text use #:suffix ".rhm")
+         ;; Local names with the same spelling do not denote reflection.
+         (rhombus-workspace "#lang rhombus\nclass Point(x)\ndef p :: Point = Point(1)\np.x\n"
+                            "#lang racket/base\n(define eval 1)\n(define dynamic-require 2)\n"
+                            "Point(x" "x" "ordinate" #f
+                            (list "#lang rhombus\nclass Point(ordinate)\ndef p :: Point = Point(1)\np.ordinate\n"
+                                  "#lang racket/base\n(define eval 1)\n(define dynamic-require 2)\n"))))))
+  (test-case "Rhombus namespace owners cannot authorise other member exports"
+    (with-rhombus
+     (lambda ()
+       (rhombus-refusal
+        "#lang rhombus/and_meta\ndecl.macro 'make $name':\n  let public = Syntax.make_id(if name.unwrap() == #'Tools | \"first\" | \"second\")\n  'namespace $name:\n     export:\n       rename: field as $public\n     def field = 2\n   export: $name'\nmake Tools\n"
+        "#lang rhombus\n" "make Tools" "Tools" "Kit"))))
+  (test-case "Rhombus relocated public names grant no edit permission"
+    (with-rhombus
+     (lambda ()
+       (rhombus-refusal
+        "#lang rhombus/and_meta\ndecl.macro 'make $name':\n  let public = Syntax.make_id(if name.unwrap() == #'square | \"first\" | \"second\").relocate(name.srcloc())\n  'def $name = 1\n   namespace Tools:\n     export:\n       rename: field as $public\n     def field = 2\n   export: Tools'\nmake square\nsquare\n"
+        "#lang rhombus\n" "make square" "square" "area"))))
+  (for ([level '(scan export interface owner)])
+    (test-case (format "Rhombus scan rejects non-symbol keys in ~a records" level)
+      (with-rhombus
+       (lambda ()
+         (define select (current-language-adapter-rename))
+         (define (bad record) (hash-set record 17 'bad))
+         (parameterize ([current-language-adapter-rename
+                         (lambda (adapter)
+                           (define provider (select adapter))
+                           (and provider
+                                (lambda (request)
+                                  (define answer (provider request))
+                                  (if (eq? (hash-ref request 'stage) 'scan)
+                                      (case level
+                                        [(scan) (bad answer)]
+                                        [else
+                                         (hash-update answer 'exports
+                                           (lambda (exports)
+                                             (for/list ([entry (in-list exports)])
+                                               (case level
+                                                 [(export) (bad entry)]
+                                                 [(interface) (hash-update entry 'interface bad)]
+                                                 [(owner) (hash-update entry 'owners (lambda (owners) (map bad owners)))]))))])
+                                      answer))))])
+           (rhombus-refusal "#lang rhombus\nexport: square\ndef square = 9\nsquare\n"
+                            "#lang rhombus\n" "def square" "square" "area"))))))
+  (test-case "Rhombus imported target family keys remain valid"
+    (with-rhombus
+     (lambda ()
+       (define select (current-language-adapter-rename))
+       (define seen #f)
+       (parameterize ([current-language-adapter-rename
+                       (lambda (adapter)
+                         (define provider (select adapter))
+                         (and provider
+                              (lambda (request)
+                                (define answer (provider request))
+                                (if (eq? (hash-ref request 'stage) 'plan)
+                                    (let ([family (findf (lambda (family)
+                                                          (eq? (syntax-e (hash-ref family 'canonical)) 'square))
+                                                        (hash-ref (hash-ref request 'target) 'families))])
+                                      (check-not-false family)
+                                      (set! seen #t)
+                                      (hash-set answer 'family (hash-ref family 'key)))
+                                    answer))))])
+         (rhombus-workspace rhombus-function rhombus-open "\nsquare" "square" "area" #t))
+       (check-true seen))))
+)

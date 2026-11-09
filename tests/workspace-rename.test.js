@@ -153,3 +153,24 @@ test('a rename pending while source files change answers from the new sources', 
   p.write('uses.rkt', uses + '(square 4)\n'); await p.diskChange('uses.rkt');
   assert.equal((await pending).changes[consumer].length, 2);
 });
+
+test('successive renames use unsaved edits in every changed buffer', async t => {
+  const p = await project(t), consumer = p.open('uses.rkt', uses);
+  await p.update();
+  const first = await p.rename(p.origin, 'squared');
+  const buffers = new Map([[p.origin, definition], [consumer, uses]]);
+  assert.deepEqual(Object.keys(first.changes).sort(), [...buffers.keys()].sort());
+  for (const [key, edits] of Object.entries(first.changes)) {
+    const text = edited(buffers.get(key), edits);
+    buffers.set(key, text);
+    p.open(key, text, 2);
+  }
+  await p.update(true);
+  const second = await p.rename(consumer, 'area', { line: 2, character: 2 });
+  assert.deepEqual(Object.keys(second.changes).sort(), [...buffers.keys()].sort());
+  for (const [key, text] of buffers) {
+    assert.equal(edited(text, second.changes[key]), text.replaceAll('squared', 'area'));
+  }
+  assert.equal(fs.readFileSync(p.filename('definition.rkt'), 'utf8'), definition);
+  assert.equal(fs.readFileSync(p.filename('uses.rkt'), 'utf8'), uses);
+});

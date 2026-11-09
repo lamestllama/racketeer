@@ -31,7 +31,7 @@ exports.run = async function () {
     ['tests/binding-contributions.rkt', 2],
     ['tests/binding-facts.rkt', 9],
     ['tests/binding-facts-services.rkt', 47],
-    ['tests/rename-binders.rkt', 29],
+    ['tests/rename-binders.rkt', 85],
     ['tests/rhombus-bindings.rkt', 13],
     ['tests/rhombus-outline.rkt', 24],
     ['tests/rhombus-completion.rkt', 23],

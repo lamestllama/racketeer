@@ -276,13 +276,17 @@
          (define completion-ref (cadar (hash-ref (hash-ref selected 'editor) 'completion)))
          (check-eq? (dynamic-require (vector-ref completion-ref 0) (vector-ref completion-ref 1))
                     completion)
+         (define rename (hash-ref (hash-ref selected 'editor) 'rename))
+         (check-equal? (car rename) 'expanded-graph)
+         (check-equal? (vector-ref (cadr rename) 1) 'rename)
          (define (shared adapter)
            (define editor (hash-ref adapter 'editor))
            (for/fold ([adapter (hash-set adapter 'editor
                                 (hash-set* editor
                                   'declarations (hash-ref (hash-ref defaults 'editor) 'declarations)
                                   'calls (hash-ref (hash-ref defaults 'editor) 'calls)
-                                  'completion (hash-ref (hash-ref defaults 'editor) 'completion)))])
+                                  'completion (hash-ref (hash-ref defaults 'editor) 'completion)
+                                  'rename (hash-ref (hash-ref defaults 'editor) 'rename)))])
                      ([key '(match bindings debugger fingerprint)])
              (hash-remove adapter key)))
          (check-equal? (shared selected) (shared defaults))

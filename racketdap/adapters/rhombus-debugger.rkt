@@ -13,6 +13,57 @@
   (define src (and pre (syntax-source pre)))
   (define cancelled? (hash-ref request 'cancelled?))
   (define names '())
+  (define definition-members (make-hash))
+  (define core-binders (hash-ref (hash-ref request 'facts) 'binders '()))
+  (define portal-count 0)
+  (define interface-positions (make-hasheqv))
+  (define unsupported-interface? #f)
+  (define (extensions value)
+    (cond [(syntax? value)
+           (define parts (syntax->list value))
+           (when (and parts (>= (length parts) 3)
+                      (eq? (syntax-e (car parts)) 'group) (identifier? (cadr parts))
+                      (or (eq? (syntax-e (caddr parts)) '#:extend)
+                          (and (eq? (syntax-e (cadr parts)) 'export)
+                               (let ([block (syntax->list (caddr parts))])
+                                 (and block (eq? (syntax-e (car block)) 'block)
+                                      (for/or ([group (in-list (cdr block))])
+                                        (define terms (syntax->list group))
+                                        (and terms (pair? (cdr terms))
+                                             (eq? (syntax-e (cadr terms)) 'all_from))))))))
+             (hash-set! interface-positions (syntax-position (cadr parts)) #t))
+           (extensions (syntax-e value))]
+          [(pair? value) (extensions (car value)) (extensions (cdr value))]))
+  (extensions pre)
+  ;; Compare defining bindings, so re-exporting a native transformer keeps its
+  ;; ownership facts. Nominal import paths do not establish declaration identity.
+  (define (binding-key id phase)
+    (define info (identifier-binding id phase))
+    (and (list? info)
+         (cons (resolved-module-path-name (module-path-index-resolve (car info))) (cadr info))))
+  (dynamic-require 'rhombus #f)
+  (define definitions
+    (parameterize ([current-namespace (make-base-namespace)])
+      (namespace-require 'rhombus)
+      (for/list ([name '(class fun def namespace export)])
+        (define id ((make-interned-syntax-introducer (if (eq? name 'export) 'rhombus/decl 'rhombus/defn)) (namespace-symbol->identifier name) 'add))
+        (define key (binding-key id (namespace-base-phase (current-namespace))))
+        (unless key (error 'bindings "Cannot resolve native declaration transformer."))
+        (cons key name))))
+  (define (definition-origin value phase)
+    (cond
+      [(identifier? value)
+       (define definition (assoc (binding-key value phase) definitions))
+       (when (and definition (memq (cdr definition) '(namespace export))
+                  (equal? (syntax-source value) src)
+                  (hash-ref interface-positions (syntax-position value) #f))
+         (set! unsupported-interface? #t))
+       (and definition (syntax-original? value)
+            (equal? (syntax-source value) src) (syntax-position value)
+            (list* (cdr definition) (syntax-position value) (syntax-span value)))]
+      [(pair? value) (or (definition-origin (cdr value) phase) (definition-origin (car value) phase))]
+      [else #f]))
+
   (define mutable-targets (make-free-id-table))
   (define initialiser-names (make-free-id-table))
   (define copies '())
@@ -28,8 +79,8 @@
            (if (char-whitespace? (string-ref text i))
                (loop (sub1 i))
                (hash-ref dots (add1 i) #f)))))
-  (define (record! id phase)
-    (when (and (not (syntax-original? id))
+  (define (record! id phase [selector? #f] [public #f])
+    (when (and (or selector? (not (syntax-original? id)))
                (equal? src (syntax-source id))
                (syntax-position id) (syntax-span id)
                (positive? (syntax-span id))
@@ -45,7 +96,7 @@
           (define dotted? (string-contains? written "."))
           (define component (car (regexp-match #px"(?:\\p{L}|_)(?:\\p{L}|\\p{M}|\\p{Nd}|_)*$" written)))
           (define symbol-name (symbol->string (syntax-e id)))
-          (when (and (or dotted? (after-dot? start))
+          (when (and (or selector? dotted? (after-dot? start))
                      (or (equal? (car (regexp-match #rx"[^.]*$" symbol-name)) component)
                          (regexp-match? (pregexp (string-append "^" (regexp-quote component)
                                                                "[0-9]+$"))
@@ -53,7 +104,8 @@
             (define info (identifier-binding id phase))
             (set! names
                   (cons (hasheq 'range (cons (- end (string-length component)) end)
-                                'identifier id 'role 'use 'phase phase
+                                'identifier id 'role (if selector? 'export 'use) 'phase phase
+                                'rename-complete? (or (not public) (eq? (syntax-e public) (string->symbol component)))
                                 'space (and (list? info) (pair? (list-ref info 6))
                                             (cdr (list-ref info 6))))
                         names)))))))
@@ -94,9 +146,66 @@
         [(syntax? value)
          (unless (hash-ref seen (cons value phase) #f)
            (hash-set! seen (cons value phase) #t)
+           (define origin (definition-origin (syntax-property value 'origin) phase))
+           (define owner (and origin (memq (car origin) '(class fun def)) origin))
+           (when (or owner
+                     (kernel-syntax-case/phase value phase [(#%require . _) #t] [_ #f]))
+             (kernel-syntax-case/phase value phase
+               [(define-values (id ...) rhs)
+                (when owner
+                  (hash-update! definition-members owner
+                    (lambda (prior) (append (map (lambda (id) (cons id phase)) (syntax->list #'(id ...))) prior)) '()))]
+               [(define-syntaxes (id ...) rhs)
+                (when owner
+                  (hash-update! definition-members owner
+                    (lambda (prior) (append (map (lambda (id) (cons id phase)) (syntax->list #'(id ...))) prior)) '()))]
+               [(#%require spec ...)
+                (let ()
+                  (define (portals spec phase)
+                    (define parts (syntax->list spec))
+                    (when (pair? parts)
+                      (case (syntax-e (car parts))
+                        [(portal)
+                         (define id (cadr parts))
+                         (define info (identifier-binding id phase))
+                         (define binder
+                           (hasheq 'identifier id 'phase phase
+                                   'space (and (list? info) (pair? (list-ref info 6)) (cdr (list-ref info 6)))
+                                   'role 'definition 'anchor (list 'portal portal-count)))
+                         (set! portal-count (add1 portal-count))
+                         (set! core-binders (append core-binders (list binder)))
+                         (when (and (equal? src (syntax-source id)) (syntax-position id) (syntax-span id)
+                                    (positive? (syntax-span id)))
+                           (set! names (cons (hash-set binder 'range
+                                                       (cons (sub1 (syntax-position id))
+                                                             (+ (sub1 (syntax-position id)) (syntax-span id)))) names)))
+                         (cond
+                           [owner
+                            (hash-update! definition-members owner
+                              (lambda (prior) (cons (cons (cadr parts) phase) prior)) '())]
+                           [else
+                            ;; A namespace portal retains scoped export selectors.
+                            ;; Class portals keep their generated member rules.
+                            (define content (syntax->list (caddr parts)))
+                            (when (and content (eq? (syntax-e (car content)) 'nspace))
+                              (for ([field (in-list (cdddr content))])
+                                (define pair (syntax->list field))
+                                (when (and pair (= (length pair) 2)
+                                           (identifier? (car pair)) (identifier? (cadr pair)))
+                                  (for ([space (in-list (remove-duplicates
+                                                        (append '(#f rhombus/namespace rhombus/annot rhombus/bind)
+                                                                (map (lambda (binder) (hash-ref binder 'space)) core-binders))))])
+                                    (define id (if space ((make-interned-syntax-introducer space) (cadr pair) 'add) (cadr pair)))
+                                    (when (identifier-binding id phase) (record! id phase #t (car pair)))))))])]
+                        [(for-meta)
+                         (define shift (syntax-e (cadr parts)))
+                         (for ([part (in-list (cddr parts))]) (portals part (and phase shift (+ phase shift))))])))
+                  (for ([spec (in-list (syntax->list #'(spec ...)))]) (portals spec phase)))]
+               [_ (void)]))
            (when (identifier? value) (set! identifiers (cons (cons value phase) identifiers)))
-           (for ([property '(origin disappeared-use disappeared-binding)])
-             (metadata (syntax-property value property) phase (eq? property 'origin)))
+           (unless (kernel-syntax-case/phase value phase [(quote . _) #t] [(quote-syntax . _) #t] [_ #f])
+             (for ([property '(origin disappeared-use disappeared-binding)])
+               (metadata (syntax-property value property) phase (eq? property 'origin))))
            (when (and (equal? phase 0) (kernel-syntax-case/phase value phase [(let-values . _) #t] [_ #f]))
              (define parts (syntax->list value))
              (for ([clause (in-list (syntax->list (cadr parts)))])
@@ -151,6 +260,11 @@
   (when (and text src (hash-ref request 'expanded))
     (walk (hash-ref request 'expanded) 0)
     (for ([entry (in-list (reverse identifiers))]) (record! (car entry) (cdr entry))))
+  (when unsupported-interface?
+    (set! names
+          (for/list ([name (in-list names)])
+            (if (eq? (hash-ref name 'role) 'export)
+                (hash-set name 'rename-complete? #f) name))))
   ;; Mutable bindings retain their actual storage on references, separately
   ;; from the written transformer name. The self-assignment marks that storage;
   ;; dotted-access temporaries can have the same rename property but lack it.
@@ -189,7 +303,29 @@
       (set! runtime (cons (hasheq 'name name 'identifier (car copy)
                                   'scope (cons 0 (string-length text))
                                   'mutable? (not (free-id-table-ref converted-targets (car copy) #f))) runtime))))
+  (define families
+    (append-map
+     (lambda (entry)
+      (define owner (car entry))
+      (define ids (cdr entry))
+      (define members
+        (for/list ([binder (in-list core-binders)]
+                   #:when (for/or ([entry (in-list ids)])
+                            (and (equal? (cdr entry) (hash-ref binder 'phase))
+                                 (free-identifier=? (car entry) (hash-ref binder 'identifier) (cdr entry)))))
+          (hash-set binder 'role 'definition)))
+      (define canonicals
+        (filter (lambda (member) (syntax-original? (hash-ref member 'identifier))) members))
+      (for/list ([canonical (in-list (if (pair? canonicals) canonicals (take members (min 1 (length members)))))]
+                 [i (in-naturals)])
+        (hasheq 'key (list 'declaration (hash-ref (car members) 'anchor) i)
+                'canonical (hash-ref canonical 'identifier)
+                'members (for/list ([member (in-list members)])
+                           (hash-set member 'by-name? (eq? (car owner) 'class)))
+                'complete? #t)))
+     (hash->list definition-members)))
   (hasheq 'names (remove-duplicates (reverse names))
+          'families families
           'runtime (remove-duplicates runtime
                      (lambda (a b)
                        (and (equal? (hash-ref a 'name) (hash-ref b 'name))

@@ -1252,6 +1252,16 @@
        (DocumentHighlight #:range range))]
     [else '()]))
 
+(define (doc-rename-provider doc)
+  (define adapter (send (Doc-trace doc) get-language-adapter))
+  (and adapter (pair? (hash-ref (hash-ref adapter 'editor (hasheq)) 'rename #f))
+       (or ((current-language-adapter-rename) adapter)
+           (error 'rename "Save the file in the workspace first; its rename provider is unavailable."))))
+
+(define (check-workspace-rename doc)
+  (when (doc-rename-provider doc)
+    (error 'rename "Save the file in the workspace first before renaming.")))
+
 (define (doc-rename-ranges doc pos)
   (define decls (send (Doc-trace doc) get-declaration))
   (define absolute (doc-pos->abs-pos doc pos))
@@ -1294,6 +1304,7 @@
 ;; A failed proposal returns no edits, including for virtual source URIs.
 (define/contract (doc-rename doc uri pos new-name)
   (-> Doc? string? Pos? string? (or/c WorkspaceEdit? #f))
+  (check-workspace-rename doc)
   (with-handlers ([exn:fail? (lambda (_) #f)])
     (define ranges (and (identifier-name new-name) (doc-rename-ranges doc pos)))
     (and ranges
@@ -1328,6 +1339,7 @@
 
 (define/contract (doc-prepare-rename doc pos)
   (-> Doc? Pos? (or/c Range? #f))
+  (check-workspace-rename doc)
   (and (doc-rename-ranges doc pos) (doc-occurrence-at doc pos)))
 
 ;; Document Symbols: returns a list of SymbolInformation.
@@ -1685,6 +1697,7 @@
          doc-references
          doc-highlights
          doc-rename
+         doc-rename-provider
          doc-prepare-rename
          doc-symbols
          doc-declaration-provider
