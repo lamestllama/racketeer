@@ -54,7 +54,7 @@ exports.run = async function () {
     ['tests/language-adapter-discovery.rkt', 14],
     ['tests/language-adapter-regressions.rkt', 32],
     ['tests/language-adapter-policy.rkt', 7],
-    ['tests/language-adapter-cache.rkt', 33],
+    ['tests/language-adapter-cache.rkt', 34],
     ['tests/language-adapter-index.rkt', 3],
     ['tests/language-adapter-lifetime.rkt', 10],
     ['tests/macro-stepper-answer.rkt', 8],
@@ -81,9 +81,9 @@ exports.run = async function () {
     ['tests/stepping.rkt', 12],
     ['tests/source-loading.rkt', 12],
     ['tests/thread-pause.rkt', 10],
-    ['tests/workspace-incremental.rkt', 1],
+    ['tests/workspace-incremental.rkt', 2],
     ['tests/workspace-memory.rkt', 3],
-    ['tests/workspace-worker.rkt', 6],
+    ['tests/workspace-worker.rkt', 9],
     ['tests/wxme-source.rkt', 9],
     ['tests/wxme-lazy.rkt', 1]
   ]);
