@@ -1,7 +1,7 @@
 diff --git a/doclib/check-syntax.rkt b/doclib/check-syntax.rkt
 --- a/doclib/check-syntax.rkt
 +++ b/doclib/check-syntax.rkt
-@@ -120,7 +120,9 @@
+@@ -121,7 +121,9 @@
          (on-adapter adapter)
          (when adapter
            (define override (hash-ref (hash-ref adapter 'editor) 'expand? 'policy))

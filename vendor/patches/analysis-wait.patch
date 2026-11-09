@@ -1,5 +1,4 @@
 diff --git a/common/interfaces.rkt b/common/interfaces.rkt
-index d1900ff..4a718d3 100644
 --- a/common/interfaces.rkt
 +++ b/common/interfaces.rkt
 @@ -274,9 +274,12 @@
@@ -17,7 +16,6 @@ index d1900ff..4a718d3 100644
  (define-json-union Langserver-Settings-Update
    Langserver-Settings
 diff --git a/common/settings.rkt b/common/settings.rkt
-index 7ea72de..f043530 100644
 --- a/common/settings.rkt
 +++ b/common/settings.rkt
 @@ -6,6 +6,9 @@
@@ -56,7 +54,6 @@ index 7ea72de..f043530 100644
  ;; formatting must remain safe for ranges and on-type requests. Keep the two
  ;; selections distinct instead of silently substituting one for the other.
 diff --git a/lsp/analysis-lifecycle.md b/lsp/analysis-lifecycle.md
-index 0b3cba3..36d4b6c 100644
 --- a/lsp/analysis-lifecycle.md
 +++ b/lsp/analysis-lifecycle.md
 @@ -61,7 +61,8 @@ The `owner` submodule exports operations for the session consumer only. Open
@@ -178,7 +175,6 @@ index 0b3cba3..36d4b6c 100644
  `closed-analysis-cache-test.rkt`, `disk-reader-test.rkt`,
  `analysis-scheduler-test.rkt`, and `supervised-worker-test.rkt` exercise subsystem
 diff --git a/lsp/methods.rkt b/lsp/methods.rkt
-index c9a2d73..b2ede0a 100644
 --- a/lsp/methods.rkt
 +++ b/lsp/methods.rkt
 @@ -44,7 +44,24 @@
@@ -217,7 +213,6 @@ index c9a2d73..b2ede0a 100644
               ["initialize"
                (initialize id params)]
 diff --git a/lsp/source-controller.rkt b/lsp/source-controller.rkt
-index 91b1a53..966bfe9 100644
 --- a/lsp/source-controller.rkt
 +++ b/lsp/source-controller.rkt
 @@ -15,6 +15,7 @@
@@ -239,7 +234,6 @@ index 91b1a53..966bfe9 100644
  ;; Commands on `events`, beside worker completions. Request threads never
  ;; construct these records; the functions below submit them.
 diff --git a/lsp/source-controller/analysis-scheduler.rkt b/lsp/source-controller/analysis-scheduler.rkt
-index 92b2f57..3442536 100644
 --- a/lsp/source-controller/analysis-scheduler.rkt
 +++ b/lsp/source-controller/analysis-scheduler.rkt
 @@ -4,7 +4,9 @@
@@ -424,7 +418,6 @@ index 92b2f57..3442536 100644
    (define snapshot (Analysis-Attempt-snapshot attempt))
    (set-Analysis-Attempt-state! attempt 'running)
 diff --git a/lsp/source-controller/source-owner.rkt b/lsp/source-controller/source-owner.rkt
-index 2906872..c2124e9 100644
 --- a/lsp/source-controller/source-owner.rkt
 +++ b/lsp/source-controller/source-owner.rkt
 @@ -30,6 +30,7 @@
@@ -463,7 +456,7 @@ index 2906872..c2124e9 100644
                                  #:analysis-timeout [analysis-timeout 90]
 +                                #:analysis-wait [analysis-wait #f]
                                  #:closed-analysis-limit [closed-analysis-limit 64]
-                                 #:resyntax [resyntax (and (resyntax-available?) run-resyntax/in-place)])
+                                 #:resyntax [resyntax (and (resyntax-collection-present?) run-resyntax/in-place)])
    (define events (make-async-channel))
    (Source-Controller workspace (make-hash) (make-source-store) events (make-semaphore 0)
                       (make-disk-reader events #:read read #:timeout read-timeout)
@@ -590,7 +583,6 @@ index 2906872..c2124e9 100644
  ;; Drop buffer authority without a read. File content becomes unknown; virtual
  ;; sources are removed because they have no disk fallback. Retain a completed
 diff --git a/lsp/workspace.rkt b/lsp/workspace.rkt
-index 78e51a8..414e8b7 100644
 --- a/lsp/workspace.rkt
 +++ b/lsp/workspace.rkt
 @@ -68,8 +68,10 @@
@@ -606,7 +598,6 @@ index 78e51a8..414e8b7 100644
      (match resyntax
        [(Resyntax-Settings #:enable (and enable (not (? Nothing?)))) enable]
 diff --git a/main.rkt b/main.rkt
-index 0caf732..49f3242 100644
 --- a/main.rkt
 +++ b/main.rkt
 @@ -28,7 +28,8 @@
@@ -620,10 +611,9 @@ index 0caf732..49f3242 100644
    (define message-evt
      (wrap-evt client-evt (λ (msg) (cons 'client msg))))
 diff --git a/tests/lsp/analysis-controller-test.rkt b/tests/lsp/analysis-controller-test.rkt
-index 22c54de..33b7846 100644
 --- a/tests/lsp/analysis-controller-test.rkt
 +++ b/tests/lsp/analysis-controller-test.rkt
-@@ -902,6 +902,7 @@
+@@ -909,6 +909,7 @@
      (define release (make-async-channel))
      (define controller
        (make-source-controller
@@ -632,7 +622,6 @@ index 22c54de..33b7846 100644
          #:resyntax (lambda (_text _uri)
                       (async-channel-put started #t)
 diff --git a/tests/lsp/analysis-scheduler-test.rkt b/tests/lsp/analysis-scheduler-test.rkt
-index 210afeb..4f1f1a0 100644
 --- a/tests/lsp/analysis-scheduler-test.rkt
 +++ b/tests/lsp/analysis-scheduler-test.rkt
 @@ -46,6 +46,56 @@
@@ -694,7 +683,6 @@ index 210afeb..4f1f1a0 100644
        (lambda (scheduler events started release)
 diff --git a/tests/lsp/analysis-wait-test.rkt b/tests/lsp/analysis-wait-test.rkt
 new file mode 100644
-index 0000000..adf50c0
 --- /dev/null
 +++ b/tests/lsp/analysis-wait-test.rkt
 @@ -0,0 +1,523 @@

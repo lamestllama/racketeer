@@ -346,6 +346,17 @@ diff --git a/doclib/language-adapter.rkt b/doclib/language-adapter.rkt
  (define (source-language-adapter source text pre)
    (define resolver (current-language-adapter-resolver))
    (and resolver
+diff --git a/doclib/lexer.rkt b/doclib/lexer.rkt
+--- a/doclib/lexer.rkt
++++ b/doclib/lexer.rkt
+@@ -14,6 +14,7 @@
+          LexerState?
+          LexerState-snapshot
+          LexerState-language-policy
++         LexerState-adapter
+          lexer-state-body-mode
+          lexer-state-token-at
+          lexer-state-symbol-at
 diff --git a/doclib/lexer/state.rkt b/doclib/lexer/state.rkt
 --- a/doclib/lexer/state.rkt
 +++ b/doclib/lexer/state.rkt
@@ -383,17 +394,6 @@ diff --git a/doclib/lexer/state.rkt b/doclib/lexer/state.rkt
           build-lexer-snapshot
           build-lexer-state
           build-snapshot-token-forest
-diff --git a/doclib/lexer.rkt b/doclib/lexer.rkt
---- a/doclib/lexer.rkt
-+++ b/doclib/lexer.rkt
-@@ -14,6 +14,7 @@
-          LexerState?
-          LexerState-snapshot
-          LexerState-language-policy
-+         LexerState-adapter
-          lexer-state-body-mode
-          lexer-state-token-at
-          lexer-state-symbol-at
 diff --git a/doclib/service/hover/service.rkt b/doclib/service/hover/service.rkt
 --- a/doclib/service/hover/service.rkt
 +++ b/doclib/service/hover/service.rkt

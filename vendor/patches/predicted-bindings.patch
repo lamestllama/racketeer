@@ -1,8 +1,7 @@
 diff --git a/doclib/doc.rkt b/doclib/doc.rkt
-index ab3608d..f4a2165 100644
 --- a/doclib/doc.rkt
 +++ b/doclib/doc.rkt
-@@ -739,11 +739,24 @@
+@@ -741,11 +741,24 @@
       (values #f #f #f)]))
  
  ;; Notes from analysis facts that are not part of a binding's hover card:
@@ -28,7 +27,7 @@ index ab3608d..f4a2165 100644
    (define-values (tail-start tail-end tail-parents tail-children)
      (if (doc-trace-latest? doc)
          (send (send doc-trace get-tails) at pos*)
-@@ -769,8 +782,10 @@
+@@ -771,8 +784,10 @@
                               (string-append "Expressions in tail position relative to this one: "
                                              (tail-locations tail-children) "."))))
            "\n\n")))
@@ -42,7 +41,6 @@ index ab3608d..f4a2165 100644
  
  ;; Join analysis notes with a hover card. Notes open a hover on their own.
 diff --git a/doclib/service/hover/service.rkt b/doclib/service/hover/service.rkt
-index acd9a34..f332fee 100644
 --- a/doclib/service/hover/service.rkt
 +++ b/doclib/service/hover/service.rkt
 @@ -45,6 +45,10 @@

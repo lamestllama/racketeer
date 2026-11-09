@@ -105,7 +105,7 @@
                                 #:analysis-timeout [analysis-timeout 90]
                                 #:analysis-wait [analysis-wait #f]
                                 #:closed-analysis-limit [closed-analysis-limit 64]
-                                #:resyntax [resyntax (and (resyntax-available?) run-resyntax/in-place)])
+                                #:resyntax [resyntax (and (resyntax-collection-present?) run-resyntax/in-place)])
   (define events (make-async-channel))
   (Source-Controller workspace (make-hash) (make-source-store) events (make-semaphore 0)
                      (make-disk-reader events #:read read #:timeout read-timeout)

@@ -71,15 +71,14 @@ diff --git a/doclib/doc.rkt b/doclib/doc.rkt
                 #:range definition-range)]
      [(not (source-file-path (Doc-source doc))) #f]
 -    [else (doc-module-binding-at doc pos)]))
--
--;; References: live locations for this document, plus an optional Module-Binding
--;; for workspace lookup when the identifier is module-backed.
 +    [else
 +     (define bindings (doc-module-bindings-at doc pos))
 +     (cond [(null? bindings) #f]
 +           [(null? (cdr bindings)) (car bindings)]
 +           [else bindings])]))
-+
+ 
+-;; References: live locations for this document, plus an optional Module-Binding
+-;; for workspace lookup when the identifier is module-backed.
 +;; References: live locations and every module identity at this occurrence.
 +;; A single identity retains the scalar representation used by existing callers.
  (define/contract (doc-references doc uri pos include-decl?)
@@ -290,6 +289,10 @@ diff --git a/doclib/service/declaration.rkt b/doclib/service/declaration.rkt
  
 -    ;; Same-document definition range, or #f. Only a local def-id has one.
 -    ;; An import or a Module-Lang-Use-Key has no definition in this document.
+-    (define/public (definition-at pos)
+-      (define def (def-at pos))
+-      (and (exact-nonnegative-integer? def)
+-           (live-range-for-id def)))
 +    ;; Same-document definition range, including exact same-file jumps.
 +    ;; Imported and module-language owners have no local definition range.
 +    (define/public (definition-ranges-at pos)
@@ -302,15 +305,11 @@ diff --git a/doclib/service/declaration.rkt b/doclib/service/declaration.rkt
 +                      [range (in-value (live-range-for-id id))]
 +                      #:when range)
 +            range))))
-+
-     (define/public (definition-at pos)
--      (define def (def-at pos))
--      (and (exact-nonnegative-integer? def)
--           (live-range-for-id def)))
--
+ 
 -    ;; Live use ranges for the graph owner at pos, including leftover
 -    ;; `#lang` uses. Do not skip imported owners or leftover `#lang` owners.
 -    ;; Do not include the owner's definition range.
++    (define/public (definition-at pos)
 +      (define ranges (definition-ranges-at pos))
 +      (and (= (length ranges) 1) (car ranges)))
 +
@@ -366,13 +365,12 @@ diff --git a/doclib/service/declaration.rkt b/doclib/service/declaration.rkt
      (define/public (module-binding-at pos)
 -      (define def (def-at pos))
 -      (and def (def->module-binding def)))
--
++      (define bindings (module-bindings-at pos))
++      (and (= (length bindings) 1) (car bindings)))
+ 
 -    ;; Each result is (cons live-use-range Module-Binding). Local-only uses and
 -    ;; leftover `#lang` uses are omitted; those names must not leave this
 -    ;; document.
-+      (define bindings (module-bindings-at pos))
-+      (and (= (length bindings) 1) (car bindings)))
-+
 +    ;; Export every identity at every live use range.
      (define/public (module-binding-uses)
 -      (for*/list ([(range use-id) (in-dict use-at-position)]
@@ -388,7 +386,7 @@ diff --git a/doclib/service/declaration.rkt b/doclib/service/declaration.rkt
  
      ;; Each result is (cons live-definition-range Module-Binding). Local-only
      ;; definitions are omitted; those names must not leave this document.
-@@ -227,30 +279,14 @@
+@@ -227,28 +279,14 @@
                    #:when range)
          (cons range module-binding)))
  
@@ -397,10 +395,8 @@ diff --git a/doclib/service/declaration.rkt b/doclib/service/declaration.rkt
 +    ;; Retain every identity for a definition range. Jumps keep their exact
 +    ;; Module-Binding owner, independently of target callback order.
      (define/private (attach-module-binding! def-id module-binding)
--      (define old-module-binding
--        (hash-ref def-id->module-binding def-id #f))
--      (when old-module-binding
--        (hash-remove! module-binding->def-id old-module-binding))
+-      ;; Several module bindings can share one written definition range.
+-      ;; Keep each identity so module-binding-definitions emits all of them.
 -      (hash-set! def-id->module-binding def-id module-binding)
 -      (hash-set! module-binding->def-id module-binding def-id)
 -
@@ -426,7 +422,7 @@ diff --git a/doclib/service/declaration.rkt b/doclib/service/declaration.rkt
  
      (define/override (reset)
        (set! def-at-position (make-interval-map))
-@@ -259,14 +295,111 @@
+@@ -257,14 +295,111 @@
        (set! def->use-ids (make-hash))
        (set! use->def (make-hash))
        (set! module-binding->def-id (make-hash))
@@ -543,7 +539,7 @@ diff --git a/doclib/service/declaration.rkt b/doclib/service/declaration.rkt
        (apply-pending-module-lang-uses!))
  
      (define/override (expand start end)
-@@ -286,17 +419,14 @@
+@@ -284,17 +419,14 @@
      (define/override (syncheck:add-jump-to-definition/phase-level+space
                         _src-obj start end id filename submods phase+space)
        (define normalized-end (normalize-end start end))
@@ -563,7 +559,7 @@ diff --git a/doclib/service/declaration.rkt b/doclib/service/declaration.rkt
  
      (define/override (syncheck:add-definition-target/phase-level+space
                         _src-obj start end id submods phase+space)
-@@ -320,7 +450,7 @@
+@@ -318,7 +450,7 @@
        (match require-arrow?
          [#f
           (define def-id (get-or-create-def start-left (normalize-end start-left start-right)))
@@ -669,19 +665,21 @@ diff --git a/lsp/compose/references.rkt b/lsp/compose/references.rkt
 +  ;; the established ordering and duplicate behaviour for a single binding.
 +  (if (list? module-binding) (remove-duplicates locations) locations))
 diff --git a/tests/lib/declaration-multiple-targets-test.rkt b/tests/lib/declaration-multiple-targets-test.rkt
-new file mode 100644
---- /dev/null
+--- a/tests/lib/declaration-multiple-targets-test.rkt
 +++ b/tests/lib/declaration-multiple-targets-test.rkt
-@@ -0,0 +1,167 @@
-+#lang racket/base
-+
-+(require drracket/check-syntax
-+         rackunit
-+         racket/class
+@@ -3,15 +3,180 @@
+ (require drracket/check-syntax
+          rackunit
+          racket/class
+-         "../../common/interfaces.rkt"
+-         "../../common/path-util.rkt"
 +         racket/list
-+         "../../common/source.rkt"
+          "../../common/source.rkt"
+-         "../../doclib/doc-trace.rkt"
 +         "../../common/interfaces.rkt"
-+         "../../doclib/internal-types.rkt"
+          "../../doclib/internal-types.rkt"
+-         "../../doclib/lexer.rkt"
+-         "../../doclib/editor.rkt")
 +         "../../doclib/service/declaration.rkt"
 +         "../../doclib/doc-trace.rkt"
 +         "../../doclib/doc.rkt"
@@ -840,6 +838,21 @@ new file mode 100644
 +        (check-false (for/or ([range (in-list (doc-uses-at doc pos))])
 +                       (= other (Pos-line (Range-start range))))))
 +      (check-false (doc-rename doc (source-uri source) pos "changed")))))
+ 
+ (module+ test
++  (require drracket/check-syntax
++           rackunit
++           racket/class
++           "../../common/interfaces.rkt"
++           "../../common/path-util.rkt"
++           "../../common/source.rkt"
++           "../../doclib/doc-trace.rkt"
++           "../../doclib/internal-types.rkt"
++           "../../doclib/lexer.rkt"
++           "../../doclib/editor.rkt")
+   (for ([names '((a) (struct:a a? a))])
+     (test-case
+       (format "definition targets ~s retain their shared range" names)
 diff --git a/tests/lsp/definition-controller-test.rkt b/tests/lsp/definition-controller-test.rkt
 --- a/tests/lsp/definition-controller-test.rkt
 +++ b/tests/lsp/definition-controller-test.rkt

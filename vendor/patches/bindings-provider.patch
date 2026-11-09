@@ -1,50 +1,3 @@
-diff --git a/doclib/check-syntax.rkt b/doclib/check-syntax.rkt
---- a/doclib/check-syntax.rkt
-+++ b/doclib/check-syntax.rkt
-@@ -17,7 +17,8 @@
-          "../common/source.rkt"
-          "../common/path-util.rkt"
-          "internal-types.rkt"
--         "binding-facts.rkt")
-+         "binding-facts.rkt"
-+         "bindings-provider.rkt")
- 
- ;; Virtual URI paths are a best-effort local dependency context, not file
- ;; identities. Relative parents are allowed; the document need not exist.
-@@ -85,7 +86,8 @@
- 
- ;; TODO: cache the namespace with some strategy
- (define (expand-source source in collector #:expand? [expand? #t]
--                       #:contribution-only? [contribution-only? #f])
-+                       #:contribution-only? [contribution-only? #f]
-+                       #:bindings-provider [bindings-provider #f])
-   (define text (port->string (peeking-input-port in)))
-   (define src-dir (source-analysis-directory source))
-   (define ns (make-base-namespace))
-@@ -125,8 +127,12 @@
-       (add-syntax expanded-stx)
-       (done)
-       (define facts (collect-binding-facts source expanded-stx text))
-+      (define accepted-facts
-+        (if bindings-provider
-+            (augment-binding-facts bindings-provider source text stx expanded-stx facts)
-+            facts))
-       (when (object-method-arity-includes? collector 'add-binding-facts 1)
--        (send collector add-binding-facts facts)))
-+        (send collector add-binding-facts accepted-facts)))
- 
-     ;; Interceptor conses in O(1); reverse restores emission order so overlapping
-     ;; Typed Racket provider records apply as sent.
-@@ -172,7 +178,8 @@
-   (struct-out CSResult)
-   (contract-out
-     [expand-source (->* (Source? input-port? (is-a?/c syncheck-annotations<%>))
--                        (#:expand? boolean? #:contribution-only? boolean?)
-+                        (#:expand? boolean? #:contribution-only? boolean?
-+                         #:bindings-provider (or/c #f (-> hash? hash?)))
-                         ExpandResult?)]
-     [check-syntax (->* (Source? (is-a?/c lsp-editor%) LexerState?)
-                        (#:contribution-only? boolean?) CSResult?)]))
 diff --git a/doclib/bindings-provider.rkt b/doclib/bindings-provider.rkt
 new file mode 100644
 --- /dev/null
@@ -130,6 +83,53 @@ new file mode 100644
 +  (hash-set (hash-set (hash-set facts 'names (append (hash-ref facts 'names) names))
 +                      'families (append (hash-ref facts 'families) families))
 +            'runtime (append (hash-ref facts 'runtime) (hash-ref result 'runtime '()))))
+diff --git a/doclib/check-syntax.rkt b/doclib/check-syntax.rkt
+--- a/doclib/check-syntax.rkt
++++ b/doclib/check-syntax.rkt
+@@ -17,7 +17,8 @@
+          "../common/source.rkt"
+          "../common/path-util.rkt"
+          "internal-types.rkt"
+-         "binding-facts.rkt")
++         "binding-facts.rkt"
++         "bindings-provider.rkt")
+ 
+ ;; Virtual URI paths are a best-effort local dependency context, not file
+ ;; identities. Relative parents are allowed; the document need not exist.
+@@ -85,7 +86,8 @@
+ 
+ ;; TODO: cache the namespace with some strategy
+ (define (expand-source source in collector #:expand? [expand? #t]
+-                       #:contribution-only? [contribution-only? #f])
++                       #:contribution-only? [contribution-only? #f]
++                       #:bindings-provider [bindings-provider #f])
+   (define text (port->string (peeking-input-port in)))
+   (define src-dir (source-analysis-directory source))
+   (define ns (make-base-namespace))
+@@ -125,8 +127,12 @@
+       (add-syntax expanded-stx)
+       (done)
+       (define facts (collect-binding-facts source expanded-stx text))
++      (define accepted-facts
++        (if bindings-provider
++            (augment-binding-facts bindings-provider source text stx expanded-stx facts)
++            facts))
+       (when (object-method-arity-includes? collector 'add-binding-facts 1)
+-        (send collector add-binding-facts facts)))
++        (send collector add-binding-facts accepted-facts)))
+ 
+     ;; Interceptor conses in O(1); reverse restores emission order so overlapping
+     ;; Typed Racket provider records apply as sent.
+@@ -172,7 +178,8 @@
+   (struct-out CSResult)
+   (contract-out
+     [expand-source (->* (Source? input-port? (is-a?/c syncheck-annotations<%>))
+-                        (#:expand? boolean? #:contribution-only? boolean?)
++                        (#:expand? boolean? #:contribution-only? boolean?
++                         #:bindings-provider (or/c #f (-> hash? hash?)))
+                         ExpandResult?)]
+     [check-syntax (->* (Source? (is-a?/c lsp-editor%) LexerState?)
+                        (#:contribution-only? boolean?) CSResult?)]))
 diff --git a/doclib/service/declaration.rkt b/doclib/service/declaration.rkt
 --- a/doclib/service/declaration.rkt
 +++ b/doclib/service/declaration.rkt
