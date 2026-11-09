@@ -97,7 +97,7 @@ jobs:
           python scripts/provision-rhombus.py --output "$RUNNER_TEMP/rhombus-runtime"
           PLTADDONDIR="$(python -c "import json, os; print(json.load(open(os.path.join(os.environ['RUNNER_TEMP'], 'rhombus-runtime', 'rhombus-runtime.json')))['addon'])")" \
           PLTCOLLECTS='${{ github.workspace }}/vendor/collects${{ runner.os == 'Windows' && ';' || ':' }}' \
-            racket -l- raco test --timeout 1500 tests/rhombus-bindings.rkt tests/rhombus-outline.rkt tests/rhombus-completion.rkt tests/rhombus-debugger.rkt tests/rename-binders.rkt tests/adapter-debugger.rkt tests/language-adapter-cache.rkt 2>&1 | tee .test-output/ci/rhombus.log
+            racket -l- raco test --timeout 1500 tests/bindings-service.rkt tests/rhombus-bindings.rkt tests/rhombus-outline.rkt tests/rhombus-completion.rkt tests/rhombus-debugger.rkt tests/rename-binders.rkt tests/adapter-debugger.rkt tests/language-adapter-cache.rkt 2>&1 | tee .test-output/ci/rhombus.log
       - name: Verify the artifact and checkout
         run: |
           node scripts/artifact.js verify "$(node -p "'dist/' + require('./vscode/package.json').name + '-' + require('./vscode/package.json').version + '.vsix'")"

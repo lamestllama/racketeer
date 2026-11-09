@@ -27,9 +27,11 @@ const application = /dr\s*racket/i;
 const wxmeFixture = /^tests\/fixtures\/wxme(?:-debug|-xml)?\/[^/]+\.wxme$/;
 const modulePath = /dr\s*racket\/check-syntax/gi, standInPath = /dr\s*racket\/private\/syncheck\/xref/gi, refusedModule = /#rx"dr\s*racket/gi, serverValue = /'dr\s*racket'/gi;
 const spelled = new Map([
+  ['racketdap/tools/bindings-service.rkt', modulePath],
   ['vscode/workspace-rename.rkt', modulePath],
   ['vscode/workspace-worker.rkt', standInPath],
   ['tests/binding-contributions.rkt', modulePath],
+  ['tests/bindings-service.rkt', modulePath],
   ['tests/predicted-bindings.rkt', modulePath],
   ['tests/source-positions.rkt', modulePath],
   ['vendor/patches/binding-identities.patch', modulePath],
