@@ -17,7 +17,7 @@
          racket/set
          racket-langserver/common/path-util
          racket-langserver/common/source
-         racket-langserver/common/source-snapshot
+         "runtime/racketdap/tools/source-snapshot.rkt"
          racket-langserver/common/interfaces
          racket-langserver/common/json-util
          racket-langserver/doclib/doc

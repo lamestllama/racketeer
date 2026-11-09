@@ -9,19 +9,16 @@
          syntax/modcode
          "path-util.rkt")
 
-(provide call-with-source-snapshot observe-source-snapshot! open-source-snapshot-input-file)
+(provide call-with-source-snapshot observe-source-snapshot!)
 
 ;; Descriptor data participates in the same pass observations as module loads.
 (define current-snapshot-observer (make-parameter void))
 (define (observe-source-snapshot! file) ((current-snapshot-observer) file))
-(define (open-source-snapshot-input-file file) ((moddep-current-open-input-file) file))
 
 ;; sources: complete normalized path -> buffer text, or #f when two buffers
 ;;   claim the same path.
 ;; source?: whether a file outside `sources` loads from source.
 ;; on-load: receives each module file the expansion loads.
-;; cache: optional path -> compiled code and load observations for one pass.
-;; on-reuse: replay an observation returned by on-load when its code is reused.
 ;; Installed collections keep compiled loading even below a project folder,
 ;; for example when a workspace folder contains the Racket installation.
 ;; The setup roots are found when this module is instantiated, outside analysis
@@ -39,24 +36,11 @@
                                        (current-library-collection-paths))))])
     (directory-contains? root file)))
 
-(struct cached-source (code loads))
-
 (define (call-with-source-snapshot sources proc
                                    #:source? [source? (lambda (_) #f)]
-                                   #:on-load [on-load void]
-                                   #:cache [cache #f]
-                                   #:on-reuse [on-reuse (lambda (file _value) (on-load file))])
+                                   #:on-load [on-load void])
   (define ordinary-load (current-load/use-compiled))
   (define ordinary-open (moddep-current-open-input-file))
-  ;; Nested compilation contributes its reads to every enclosing cached module.
-  (define collecting (make-parameter '()))
-  (define (remember! file value)
-    (for ([loads (in-list (collecting))])
-      (set-box! loads (cons (cons file value) (unbox loads)))))
-  (define (observe! file)
-    (define value (on-load file))
-    (remember! file value)
-    value)
   (define (load-snapshot file expected)
     (define requested (simple-form-path file))
     (define legacy (path-replace-extension requested #".ss"))
@@ -65,43 +49,21 @@
                (not (hash-has-key? sources requested)) (not (file-exists? requested))
                (or (hash-has-key? sources legacy) (file-exists? legacy)))
           legacy requested))
+    (when expected (on-load full))
     (cond
       [(and expected (or (hash-has-key? sources full)
                          (and (file-exists? full) (source? full) (not (installed-library? full)))))
        ;; A #f-headed request permits independent compiled loading only. Let
        ;; the resolver request the enclosing source module instead.
-       (when (and (pair? expected) (not (car expected))) (observe! full))
        (unless (and (pair? expected) (not (car expected)))
          (parameterize ([current-load-relative-directory (path-only full)]
                         [current-module-declare-source full])
-           (define (compile-source)
-             (get-module-code full #:rkt-try-ss? #f #:choose (lambda _ 'src)))
-           (define held (and cache (hash-ref cache full #f)))
-           (cond
-             [held
-              (for ([entry (in-list (cached-source-loads held))])
-                (on-reuse (car entry) (cdr entry))
-                (remember! (car entry) (cdr entry)))
-              (eval (cached-source-code held))]
-             [else
-              (define loads (box '()))
-              ;; Registered external reads are reported after compilation. Their
-              ;; contents cannot be reconstructed by replaying module loads, so
-              ;; retain normal compilation for modules that make such reads.
-              (define externals (and cache (make-log-receiver (current-logger) 'info 'cm-accomplice)))
-              (define code
-                (parameterize ([collecting (cons loads (collecting))])
-                  (observe! full)
-                  (compile-source)))
-              (when (and cache (not (sync/timeout 0 externals)))
-                (hash-set! cache full (cached-source code (reverse (unbox loads)))))
-              (eval code)])))]
-      [else
-       (when expected (observe! full))
-       (ordinary-load file expected)]))
+           (eval (get-module-code full #:rkt-try-ss? #f
+                                  #:choose (lambda _ 'src)))))]
+      [else (ordinary-load file expected)]))
   (parameterize ([current-snapshot-observer
                   (lambda (file)
-                    (define value (observe! file))
+                    (define value (on-load file))
                     (if (hash-has-key? sources file) (void) value))]
                  [current-load/use-compiled load-snapshot]
                  [moddep-current-open-input-file

@@ -1,13 +1,15 @@
 #lang racket/base
 ;; Copyright (c) 2026 Eric Parsonage
 ;; SPDX-License-Identifier: Apache-2.0 OR MIT
-(require rackunit racket/class racket/file racket/list racket/path racket/port racket/runtime-path
+(require rackunit racket/async-channel racket/class racket/file racket/list racket/path racket/port racket/runtime-path
          "../racketdap/language-adapters.rkt"
          "../racketdap/worker/load.rkt"
          "../racketdap/worker/debug-cache.rkt"
          "../racketdap/tools/macro-source.rkt"
          "../racketdap/tools/macro-steps/expansion.rkt")
 (define-runtime-path bundled "../vendor/collects")
+(define-runtime-path staged "../vscode/language-server/collects")
+(define-runtime-path bridge "../vscode/language-adapters.rkt")
 (define-runtime-path loader "../racketdap/language-adapters.rkt")
 (current-library-collection-paths (cons bundled (current-library-collection-paths)))
 (define (api file name) (dynamic-require (build-path bundled "racket-langserver" file) name))
@@ -295,3 +297,56 @@
                 (check-false (current? cold))
                 (check-false (current? warm))))))
         (lambda () (delete-directory/files root))))))
+
+(module+ test
+  (test-case "server descriptor buffer edits reanalyse the document that read it"
+    (with-project
+     (lambda (root source files change)
+       ;; Use the packaged bridge and server in one namespace, as the launcher does.
+       (parameterize ([current-namespace (make-base-namespace)]
+                      [current-library-collection-paths (cons staged (current-library-collection-paths))])
+         (dynamic-require bridge #f)
+         (define (server file name)
+           (dynamic-require (build-path staged "racket-langserver" file) name))
+         (define (support name) (server "tests/lsp/controller-support.rkt" name))
+         ((server "workspace/state.rkt" 'workspace-add-folder!)
+          (server "workspace/current.rkt" 'current-workspace) root)
+         (define descriptor (car files))
+         (define enabled "((profile (match (language racket/base)) (editor (expand? #t))))")
+         (define disabled "((profile (match (language racket/base)) (editor (expand? #f))))")
+         (display-to-file enabled descriptor #:exists 'truncate)
+         (define source-text "#lang racket/base\n(define answer missing)\n")
+         (define products (make-async-channel))
+         (define analyse (server "lsp/analysis.rkt" 'analyze-source))
+         (define dependencies (server "lsp/analysis.rkt" 'Analysis-Product-dependencies))
+         (define diagnostics (server "lsp/analysis.rkt" 'Analysis-Product-diagnostics))
+         (define (await-descriptor expected)
+           (let loop ()
+             (define product ((support 'await) products 10))
+             (if (equal? (hash-ref (dependencies product) descriptor 'absent) expected)
+                 product (loop))))
+         (define snapshot-source (server "workspace/source-store.rkt" 'Source-Snapshot-source))
+         (define source-file (server "common/source.rkt" 'source-file-path))
+         (define controller
+           ((server "lsp/source-controller.rkt" 'make-source-controller)
+            #:resyntax #f
+            #:analyze (lambda (snapshot)
+                        (define product (analyse snapshot))
+                        (when (equal? (source-file (snapshot-source snapshot)) source)
+                          (async-channel-put products product))
+                        product)))
+         ((support 'with-session) controller
+          (lambda (session)
+            ((support 'open!) session source source-text)
+            ((support 'await) ((support 'acquire) session source) 60)
+            (define first ((support 'await) products 10))
+            (check-true (hash-has-key? (dependencies first) descriptor))
+            (check-not-equal? (diagnostics first) '())
+            ((support 'open!) session descriptor disabled)
+            (define second (await-descriptor disabled))
+            (check-equal? (hash-ref (dependencies second) descriptor 'absent) disabled)
+            (check-equal? (diagnostics second) '())
+            ((support 'change!) session descriptor enabled 1)
+            (define third (await-descriptor enabled))
+            (check-equal? (hash-ref (dependencies third) descriptor 'absent) enabled)
+            (check-not-equal? (diagnostics third) '()))))))))

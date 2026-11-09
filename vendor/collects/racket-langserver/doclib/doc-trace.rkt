@@ -24,6 +24,10 @@
          "language-adapter.rkt"
          (only-in "lexer/state.rkt" LexerState-adapter set-LexerState-editor-facts!))
 
+;; Maps a key to a factory that builds a service from a new trace's source, text
+;; and lexer state. Each trace builds its own services, read with get-extra-service.
+(define current-extra-service-factories (make-parameter (hasheq)))
+
 (define build-trace%
   (class (check-syntax-annotations-mixin object%)
     (init-field source doc-text lexer-state [contribution-only? #f])
@@ -58,9 +62,14 @@
         [typed-racket typed-racket]))
     (define tails (new tail% [src src] [lexer-state lexer-state]))
 
+    (define extra-services
+      (for/hasheq ([(key factory) (in-hash (current-extra-service-factories))])
+        (values key (factory source doc-text lexer-state))))
+    (define/public (get-extra-service key) (hash-ref extra-services key #f))
+
     ;; Contributions and binding queries read only declaration%. It consumes
     ;; Check Syntax callbacks, scoped facts and walk-stx, independently of the other services.
-    (define services
+    (define built-in-services
       (if contribution-only?
           (list decls)
           (list hovers
@@ -73,6 +82,7 @@
             semantic-tokens
             inlay-hints
             tails)))
+    (define services (append built-in-services (hash-values extra-services)))
 
     (define/public (reset)
       (set-LexerState-editor-facts! lexer-state #f)
@@ -295,4 +305,4 @@
 
     (super-new)))
 
-(provide build-trace%)
+(provide build-trace% current-extra-service-factories)

@@ -340,51 +340,53 @@
            (check-false (assoc (cons start (+ start 5)) names)))))))
 
   (test-case "narrowing removes an existing whole-path use of the same identity"
-    (with-program
-     (lambda (root)
-       (define text
-         (string-append
-          "#lang racket/base\n(require (for-syntax racket/base))\n(define value 1)\n"
-          "(define-syntax (member stx) (syntax-case stx () [(_ spelling)\n"
-          " (syntax-property (datum->syntax #'value 'value #'spelling) 'original-for-check-syntax #t)]))\n"
-          "(member Lib.value)\n"))
-       (for ([only? '(#f #t)])
-         (define-values (doc _) (analyse (build-path root "narrow.rkt") text only?))
-         (define references (doc-references doc (source-uri (Doc-source doc))
-                                            (position text (offset text "Lib.value" "value")) #f))
-         (check-equal? (filter (lambda (location) (= (Pos-line (Range-start (Location-range location))) 5))
-                               (Reference-Source-locations (Document-Reference-Result-source references)))
-                       (list (Location (source-uri (Doc-source doc)) (selection text "Lib.value" "value"))))
-         (define uses (Doc-Contribution-references (Doc-contribution doc)))
-         (define locations (append* (hash-values uses)))
-         (check-not-false (member (Location (source-uri (Doc-source doc)) (selection text "Lib.value" "value")) locations))
-         (check-false (member (Location (source-uri (Doc-source doc)) (selection text "Lib.value")) locations))))))
+    (when available?
+      (with-program
+       (lambda (root)
+         (define text
+           (string-append
+            "#lang racket/base\n(require (for-syntax racket/base))\n(define value 1)\n"
+            "(define-syntax (member stx) (syntax-case stx () [(_ spelling)\n"
+            " (syntax-property (datum->syntax #'value 'value #'spelling) 'original-for-check-syntax #t)]))\n"
+            "(member Lib.value)\n"))
+         (for ([only? '(#f #t)])
+           (define-values (doc _) (analyse (build-path root "narrow.rkt") text only?))
+           (define references (doc-references doc (source-uri (Doc-source doc))
+                                              (position text (offset text "Lib.value" "value")) #f))
+           (check-equal? (filter (lambda (location) (= (Pos-line (Range-start (Location-range location))) 5))
+                                 (Reference-Source-locations (Document-Reference-Result-source references)))
+                         (list (Location (source-uri (Doc-source doc)) (selection text "Lib.value" "value"))))
+           (define uses (Doc-Contribution-references (Doc-contribution doc)))
+           (define locations (append* (hash-values uses)))
+           (check-not-false (member (Location (source-uri (Doc-source doc)) (selection text "Lib.value" "value")) locations))
+           (check-false (member (Location (source-uri (Doc-source doc)) (selection text "Lib.value")) locations)))))))
 
   (test-case "narrowing retains overlapping sibling identities and their complete ranges"
-    (with-program
-     (lambda (root)
-       (define text
-         (string-append
-          "#lang racket/base\n(require (for-syntax racket/base))\n(define value 1)\n(define sibling 2)\n"
-          "(define-syntax (member stx) (syntax-case stx () [(_ spelling)\n"
-          " (with-syntax ([a (syntax-property (datum->syntax #'value 'value #'spelling) 'original-for-check-syntax #t)]\n"
-          "               [b (syntax-property (datum->syntax #'sibling 'sibling #'spelling) 'original-for-check-syntax #t)])\n"
-          " #'(list a b))]))\n(member Lib.value)\n"))
-       (for ([only? '(#f #t)])
-         (define-values (generic _) (analyse (build-path root "siblings.rkt") text only? #f))
-         (define-values (doc names) (analyse (build-path root "siblings.rkt") text only?))
-         (check-equal? (sort (map Module-Binding-id (binding-keys doc text "Lib.value" "value")) symbol<?)
-                       '(sibling value))
-         (for ([id '(value sibling)])
-           (define uses (Doc-Contribution-references (Doc-contribution doc)))
-           (define key (for/first ([key (in-hash-keys uses)] #:when (eq? id (Module-Binding-id key))) key))
-           (check-equal? (filter (lambda (location) (= (Pos-line (Range-start (Location-range location)))
-                                                    (Pos-line (Range-start (selection text "Lib.value")))))
-                               (hash-ref uses key))
-                         (list (Location (source-uri (Doc-source doc))
-                                         (selection text "Lib.value" (if (eq? id 'value) "value" "Lib.value"))))))
-         (define-values (empty other) (analyse (build-path root "siblings.rkt") text only? 'empty))
-         (check-equal? (Doc-contribution generic) (Doc-contribution empty))))))
+    (when available?
+      (with-program
+       (lambda (root)
+         (define text
+           (string-append
+            "#lang racket/base\n(require (for-syntax racket/base))\n(define value 1)\n(define sibling 2)\n"
+            "(define-syntax (member stx) (syntax-case stx () [(_ spelling)\n"
+            " (with-syntax ([a (syntax-property (datum->syntax #'value 'value #'spelling) 'original-for-check-syntax #t)]\n"
+            "               [b (syntax-property (datum->syntax #'sibling 'sibling #'spelling) 'original-for-check-syntax #t)])\n"
+            " #'(list a b))]))\n(member Lib.value)\n"))
+         (for ([only? '(#f #t)])
+           (define-values (generic _) (analyse (build-path root "siblings.rkt") text only? #f))
+           (define-values (doc names) (analyse (build-path root "siblings.rkt") text only?))
+           (check-equal? (sort (map Module-Binding-id (binding-keys doc text "Lib.value" "value")) symbol<?)
+                         '(sibling value))
+           (for ([id '(value sibling)])
+             (define uses (Doc-Contribution-references (Doc-contribution doc)))
+             (define key (for/first ([key (in-hash-keys uses)] #:when (eq? id (Module-Binding-id key))) key))
+             (check-equal? (filter (lambda (location) (= (Pos-line (Range-start (Location-range location)))
+                                                      (Pos-line (Range-start (selection text "Lib.value")))))
+                                 (hash-ref uses key))
+                           (list (Location (source-uri (Doc-source doc))
+                                           (selection text "Lib.value" (if (eq? id 'value) "value" "Lib.value"))))))
+           (define-values (empty other) (analyse (build-path root "siblings.rkt") text only? 'empty))
+           (check-equal? (Doc-contribution generic) (Doc-contribution empty)))))))
 
   (test-case "Unicode and indented line breaks preserve written member ranges"
     (when available?
@@ -460,18 +462,19 @@
               (check-equal? (Doc-contribution doc) (Doc-contribution generic)))))))))
 
   (test-case "provide selectors retain label and numeric phases"
-    (with-program
-     (lambda (root)
-       (display-to-file "#lang racket/base\n(provide value)\n(define value 1)\n" (build-path root "label.rkt"))
-       (for* ([kind '(for-syntax for-label)] [only? '(#f #t)])
-         (define text
-           (string-append
-            "#lang racket/base\n(require (for-syntax racket/base))\n"
-            (if (eq? kind 'for-syntax) "(begin-for-syntax (define value 1))\n" "(require (for-label \"label.rkt\"))\n")
-            "(define-syntax (export stx) (syntax-case stx () [(_ spelling)\n"
-            (format " #`(provide (~a #,(syntax-property (datum->syntax #'value 'value #'spelling) 'original-for-check-syntax #t)))]))\n" kind)
-            "(export Lib.value)\n"))
-         (define-values (doc names) (analyse (build-path root "provide.rkt") text only?))
-         (define name (assoc (cons (offset text "Lib.value" "value") (+ (offset text "Lib.value" "value") 5)) names))
-         (check-not-false name)
-         (when name (check-equal? (caddr name) (if (eq? kind 'for-label) #f 1))))))))
+    (when available?
+      (with-program
+       (lambda (root)
+         (display-to-file "#lang racket/base\n(provide value)\n(define value 1)\n" (build-path root "label.rkt"))
+         (for* ([kind '(for-syntax for-label)] [only? '(#f #t)])
+           (define text
+             (string-append
+              "#lang racket/base\n(require (for-syntax racket/base))\n"
+              (if (eq? kind 'for-syntax) "(begin-for-syntax (define value 1))\n" "(require (for-label \"label.rkt\"))\n")
+              "(define-syntax (export stx) (syntax-case stx () [(_ spelling)\n"
+              (format " #`(provide (~a #,(syntax-property (datum->syntax #'value 'value #'spelling) 'original-for-check-syntax #t)))]))\n" kind)
+              "(export Lib.value)\n"))
+           (define-values (doc names) (analyse (build-path root "provide.rkt") text only?))
+           (define name (assoc (cons (offset text "Lib.value" "value") (+ (offset text "Lib.value" "value") 5)) names))
+           (check-not-false name)
+           (when name (check-equal? (caddr name) (if (eq? kind 'for-label) #f 1)))))))))

@@ -5,7 +5,8 @@
 (require "runtime/racketdap/language-adapters.rkt"
          (only-in file/sha1 bytes->hex-string)
          racket-langserver/doclib/language-adapter
-         racket-langserver/common/source-snapshot)
+         (prefix-in server: (only-in racket-langserver/common/source-snapshot observe-source-snapshot!))
+         "runtime/racketdap/tools/source-snapshot.rkt")
 (provide current-language-adapter-observer current-language-adapter-roots)
 
 ;; Install in each process that embeds the bundled analyser, including workers
@@ -48,6 +49,8 @@
    (and (syntax? pre)
         (parameterize ([current-language-adapter-file-observer
                         (lambda (file fingerprint)
+                          ;; Both analysis routes must retain descriptor dependencies.
+                          (server:observe-source-snapshot! file)
                           (define observed (observe-source-snapshot! file))
                           (define entry (and (list? observed) (assoc file observed)))
                           (when (and entry (bytes? (cdr entry))

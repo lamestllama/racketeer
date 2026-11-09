@@ -7,7 +7,7 @@
 (define-runtime-path worker "../vscode/workspace-worker.rkt")
 (define-runtime-path analysis "../vscode/workspace-analysis.rkt")
 (define-runtime-path collects "../vscode/language-server/collects")
-(define-runtime-path snapshot "../vscode/language-server/collects/racket-langserver/common/source-snapshot.rkt")
+(define-runtime-path snapshot "../vscode/runtime/racketdap/tools/source-snapshot.rkt")
 (define-runtime-path example-path "../examples/multi-file")
 (define example (simplify-path example-path))
 
@@ -296,3 +296,65 @@
                      (car files) (hasheq 'line 5 'character 35) "order-sum")))
         (check-equal? actual expected)
         (check-equal? (hash-count (hash-ref (cadr actual) 'changes)) 2)))))
+
+(module+ test
+  (test-case "descriptor data comes from its buffer and is recorded by the index loader"
+    (define directory (make-temporary-file "workspace-descriptor-buffer~a" 'directory))
+    (define source (build-path directory "program.rkt"))
+    (define descriptor (build-path directory ".racketeer/language-adapters.rktd"))
+    (define buffer "((profile (match (language racket/base)) (editor (expand? #t))))")
+    (dynamic-wind void
+      (lambda ()
+        (make-directory* (path-only descriptor))
+        (display-to-file "#lang racket/base\n(provide value)\n(define value 1)\n" source)
+        (display-to-file "((profile (match (language racket/base)) (editor (expand? #f))))" descriptor)
+        (with-worker analysis
+          (lambda (from to)
+            (write-worker-message
+             (list 'analyse source 1048576 #f #f (hash descriptor buffer) (list directory) (hash)) to)
+            (flush-output to)
+            (define result (reply from))
+            (check-equal? (car result) 'ok (format "~s" result))
+            (define reads (cadr (list-ref result 5)))
+            (define entry (assoc descriptor reads))
+            (check-not-false entry)
+            (check-equal? (and entry (cdr entry)) (sha1-bytes (string->bytes/utf-8 buffer))))))
+      (lambda () (delete-directory/files directory))))
+
+  (test-case "duplicate source buffers refuse loading"
+    (define directory (make-temporary-file "workspace-duplicate-buffer~a" 'directory))
+    (define dependency (build-path directory "dependency.rkt"))
+    (define call-with-snapshot (dynamic-require snapshot 'call-with-source-snapshot))
+    (dynamic-wind void
+      (lambda ()
+        (parameterize ([current-namespace (make-base-namespace)])
+          (check-exn #rx"conflicting buffers"
+            (lambda ()
+              (call-with-snapshot (hash dependency #f)
+                (lambda () (dynamic-require dependency #f)))))))
+      (lambda () (delete-directory/files directory))))
+
+  (test-case "a missing .rkt import reads the .ss buffer and records both paths"
+    (define directory (make-temporary-file "workspace-legacy-buffer~a" 'directory))
+    (define source (build-path directory "program.rkt"))
+    (define legacy (build-path directory "dependency.ss"))
+    (define requested (build-path directory "dependency.rkt"))
+    (dynamic-wind void
+      (lambda ()
+        (display-to-file "#lang racket/base\n(provide value)\n(define value 1)\n" legacy)
+        (display-to-file
+         "#lang racket/base\n(require (for-syntax racket/base \"dependency.rkt\"))\n(begin-for-syntax (unless (= value 2) (error 'legacy \"stale buffer\")))\n"
+         source)
+        (with-worker analysis
+          (lambda (from to)
+            (write-worker-message
+             (list 'analyse source 1048576 #f #f
+                   (hash legacy "#lang racket/base\n(provide value)\n(define value 2)\n")
+                   (list directory) (hash)) to)
+            (flush-output to)
+            (define result (reply from))
+            (check-equal? (car result) 'ok (format "~s" result))
+            (define reads (cadr (list-ref result 5)))
+            (check-not-false (assoc legacy reads))
+            (check-equal? (assoc requested reads) (cons requested #f)))))
+      (lambda () (delete-directory/files directory)))))

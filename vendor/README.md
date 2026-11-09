@@ -7,7 +7,7 @@ these sources, this file, the manifest and the licence texts. No Racket package 
 installed globally.
 
 The server is pinned to upstream commit
-`23e19894f1a11ce38bc56028ee048adb984bca06`, which includes the background analysis
+`1defb5054961276199dfd284f83764ef068c1a2b`, which includes the background analysis
 architecture of [PR #245](https://github.com/jeapostrophe/racket-langserver/pull/245).
 That architecture completes or ends every waiting request when analysis fails,
 times out or is superseded, and never publishes results from a closed or
@@ -52,11 +52,6 @@ applies Racketeer's own patches in order:
   callback service. These use URL parsing, encoding and structures, all re-exported
   unchanged by `net/url`, without its HTTP and TLS implementations.
 
-- `source-snapshot-cache.patch`: accept an optional compiled dependency cache for
-  one fixed source snapshot. The indexer gives each worker a fresh cache for one
-  pass, reusing compiled code in each file's fresh namespace. Module loading still
-  records dependencies. Language-server callers omit the cache and load as before.
-
 - `contribution-only.patch`: add an optional contribution-only expansion mode,
   disabled by default. The indexer uses only the declaration service's binding
   graph for contributions and reference and rename queries. This mode skips
@@ -64,17 +59,6 @@ applies Racketeer's own patches in order:
   menu, diagnostic, Typed Racket, semantic highlighting, inlay hint and tail
   services. Declaration callbacks and syntax processing still run. Language-server
   callers retain all services and expansion logs.
-
-- `source-snapshot-observations.patch`: retain the original load observations with
-  per-pass compiled code, including dependencies used only during compilation.
-  The indexer replays their original fingerprints when it reuses code, so an edit
-  during a pass cannot label an old result with new dependency contents. Callers
-  without a cache keep their existing loading behaviour.
-
-- `source-snapshot-external-reads.patch`: compile normally when a module or a
-  transitive dependency registers an external file during compilation. Those
-  reads must be observed again; compiled code alone cannot replay their contents.
-  This restriction applies only to the optional per-pass cache.
 
 - `contribution-only-resources.patch`: propagate allocation failures from the
   optional contribution-only analysis to the worker controller. Skipping diagnostic
@@ -114,7 +98,7 @@ applies Racketeer's own patches in order:
 
 - `language-adapter-policy-cache.patch`: apply optional editor policy fields at
   analysis, source hover and formatting boundaries. Keep adapter dependency
-  observations in source snapshots and validate fingerprints before retaining,
+  observations in the server source snapshot and validate fingerprints before retaining,
   restoring or publishing editor results. The embedding launcher supplies the
   resolver and freshness check; standalone callers retain existing defaults.
 
@@ -150,19 +134,26 @@ applies Racketeer's own patches in order:
   its existing output and trigger characters when no provider handles the cursor.
   Rhombus recovery and static member knowledge remain in Racketeer's provider.
 
+- `extra-services.patch`: let an embedding program add services to every trace
+  through a parameter of factories, and read one back by key. With no factories
+  a trace is unchanged.
+
 Racketeer provides a language server and a workspace indexing server, both over LSP, and
 a debug adapter over DAP. The sources here supply the language server and the libraries
 used by the index. The index does not start until references or rename asks for it.
 
 Workspace indexing belongs to Racketeer, in `vscode/workspace-analysis.rkt`, its request
 adapter `vscode/workspace-index.rkt` and the VS Code client. The separate process reuses
-the pinned analyser, the source-snapshot loader and the workspace store as libraries,
+the pinned analyser and workspace store as libraries, with Racketeer's
+source-snapshot loader in `racketdap/tools/source-snapshot.rkt`,
 and indexes saved files only. It gives each analysis a fresh namespace, custodians and
 the file's directory. A worker lasts for discovery and one pass and reuses compiled
 dependencies only within that snapshot. Cached code retains its original load
 fingerprints. Registered external reads compile again. Workers are replaced between
 files when they reach their memory threshold; completed contributions remain. No
-indexing hooks or index state are added to the language server.
+indexing hooks or index state are added to the language server. The resolver
+notifies both loaders of descriptor reads because server diagnostics still use
+the server loader. Both loaders use Racket's input interception for buffer reads.
 
 Regression tests exercise these patches. Reproduction fails if any no longer
 applies. It does not change debugger instrumentation.

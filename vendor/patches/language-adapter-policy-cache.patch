@@ -1,38 +1,27 @@
 diff --git a/common/source-snapshot.rkt b/common/source-snapshot.rkt
 --- a/common/source-snapshot.rkt
 +++ b/common/source-snapshot.rkt
-@@ -9,7 +9,12 @@
+@@ -9,7 +9,11 @@
           syntax/modcode
           "path-util.rkt")
  
 -(provide call-with-source-snapshot)
-+(provide call-with-source-snapshot observe-source-snapshot! open-source-snapshot-input-file)
++(provide call-with-source-snapshot observe-source-snapshot!)
 +
 +;; Descriptor data participates in the same pass observations as module loads.
 +(define current-snapshot-observer (make-parameter void))
 +(define (observe-source-snapshot! file) ((current-snapshot-observer) file))
-+(define (open-source-snapshot-input-file file) ((moddep-current-open-input-file) file))
  
  ;; sources: complete normalized path -> buffer text, or #f when two buffers
  ;;   claim the same path.
-@@ -50,7 +55,8 @@
-       (set-box! loads (cons (cons file value) (unbox loads)))))
-   (define (observe! file)
-     (define value (on-load file))
--    (remember! file value))
-+    (remember! file value)
-+    value)
-   (define (load-snapshot file expected)
-     (define requested (simple-form-path file))
-     (define legacy (path-replace-extension requested #".ss"))
-@@ -93,7 +99,11 @@
-       [else
-        (when expected (observe! full))
-        (ordinary-load file expected)]))
+@@ -57,7 +61,11 @@
+            (eval (get-module-code full #:rkt-try-ss? #f
+                                   #:choose (lambda _ 'src)))))]
+       [else (ordinary-load file expected)]))
 -  (parameterize ([current-load/use-compiled load-snapshot]
 +  (parameterize ([current-snapshot-observer
 +                  (lambda (file)
-+                    (define value (observe! file))
++                    (define value (on-load file))
 +                    (if (hash-has-key? sources file) (void) value))]
 +                 [current-load/use-compiled load-snapshot]
                   [moddep-current-open-input-file

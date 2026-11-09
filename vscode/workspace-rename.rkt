@@ -14,7 +14,7 @@
          racket/string
          drracket/check-syntax
          racket-langserver/common/source
-         racket-langserver/common/source-snapshot
+         "runtime/racketdap/tools/source-snapshot.rkt"
          syntax/modread
          syntax/modresolve
          syntax/modcollapse

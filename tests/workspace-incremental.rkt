@@ -53,3 +53,33 @@
       (lambda ()
         ((get 'workspace-analysis-close!) engine)
         (delete-directory/files root)))))
+
+(module+ test
+  (test-case "a descriptor read is recorded and its edit replaces the index result"
+    (define root (make-temporary-file "workspace-descriptor~a" 'directory))
+    (define engine ((get 'make-workspace-analysis)))
+    (define source (build-path root "program.rkt"))
+    (define descriptor (build-path root ".racketeer/language-adapters.rktd"))
+    (define (pass revision)
+      ((get 'workspace-analysis-update!) engine
+       (hasheq 'revision revision 'roots (list ((get 'path->uri) root)) 'documents '()))
+      (define run ((get 'WorkspaceAnalysis-current-run) engine))
+      ((get 'run-index) engine run)
+      (check-equal? ((get 'Run-state) run) "ready")
+      (hash-ref ((get 'WorkspaceAnalysis-results) engine) source))
+    (dynamic-wind void
+      (lambda ()
+        (make-directory* (path-only descriptor))
+        (display-to-file "#lang racket/base\n(provide answer)\n(define answer 42)\n" source)
+        (display-to-file "((profile (match (language racket/base))))" descriptor)
+        (check-not-false (assoc descriptor ((get 'Result-reads) (pass 1))))
+        ;; Registered descriptor reads acquire their disk basis on the next pass.
+        (define first (pass 2))
+        (check-eq? first (pass 3))
+        (call-with-output-file descriptor newline #:exists 'append)
+        (define changed (pass 4))
+        (check-not-eq? first changed)
+        (check-not-false (assoc descriptor ((get 'Result-reads) changed))))
+      (lambda ()
+        ((get 'workspace-analysis-close!) engine)
+        (delete-directory/files root)))))
