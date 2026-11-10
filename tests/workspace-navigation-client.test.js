@@ -22,7 +22,16 @@ function fixture(t) {
     onDidOpenTextDocument: opened.listen, onDidCloseTextDocument: closed.listen,
     onDidChangeTextDocument: changed.listen, onDidChangeWorkspaceFolders: event().listen,
     onDidChangeConfiguration: event().listen };
-  const connection = { listen() {}, dispose() {}, onNotification() {}, onError() {}, onClose(callback) { closedConnection = callback; }, onRequest() {}, onUnhandledProgress() {},
+  const handlers = new Map(), watchers = [];
+  workspace.createFileSystemWatcher = () => {
+    const watcher = { created: event(), changed: event(), deleted: event(), dispose() {} };
+    watcher.onDidCreate = watcher.created.listen;
+    watcher.onDidChange = watcher.changed.listen;
+    watcher.onDidDelete = watcher.deleted.listen;
+    watchers.push(watcher);
+    return watcher;
+  };
+  const connection = { listen() {}, dispose() {}, onNotification() {}, onError() {}, onClose(callback) { closedConnection = callback; }, onRequest(method, handler) { handlers.set(method, handler); }, onUnhandledProgress() {},
     sendNotification: async (method, params) => { sent.push({ method, params }); },
     sendRequest: async (method, params) => { sent.push({ method, params }); return method === 'initialize' ? initialising() : method.startsWith('textDocument/') ? answer(method, params) : {}; } };
   const module = { exports: {} };
@@ -54,7 +63,7 @@ function fixture(t) {
   const call = (method, document, next = () => { throw new Error('Unexpected fallback'); }) =>
     method === 'references' ? index.provideReferences(document, { line: 1, character: 2 }, { includeDeclaration: true }, token, next)
       : index[method === 'definition' ? 'provideDefinition' : 'provideDocumentHighlights'](document, { line: 1, character: 2 }, token, next);
-  return { index, open, call, workspace, statuses, sent, converted, changed,
+  return { index, open, call, workspace, statuses, sent, converted, changed, handlers, watchers,
     crash: () => closedConnection(), initialise: fn => { initialising = fn; },
     answer: fn => { answer = fn; }, conversion: fn => { conversion = fn; },
     close(document) { document.isClosed = true; workspace.textDocuments.splice(workspace.textDocuments.indexOf(document), 1); closed.emit(document); } };
@@ -105,6 +114,36 @@ for (const method of ['definition', 'documentHighlight', 'references']) {
     assert.deepEqual(await p.call(method, document), [{ current: true }]);
     assert.ok(p.sent.some(message => message.method === 'textDocument/didChange' && message.params.textDocument.version === 2));
   });
+  test(`${method} discards a fallback answer when a source changes during it`, async t => {
+    const p = fixture(t), origin = p.open('file:///origin'), dependency = p.open('file:///target');
+    const stale = [{ uri: 'file:///target', range: { start: { line: 2, character: 8 }, end: { line: 2, character: 11 } } }];
+    p.answer(() => null);
+    let deliver, entered;
+    const waiting = new Promise(resolve => { entered = resolve; });
+    const pending = p.call(method, origin, () => { entered(); return new Promise(resolve => { deliver = resolve; }); });
+    await waiting;
+    dependency.version++;
+    p.changed.emit({ document: dependency, contentChanges: [{ text: '\ncurrent source' }] });
+    deliver(stale);
+    assert.equal((await pending).length, 0);
+  });
+
+  test(`${method} asks again when a watched file changes during delivery`, async t => {
+    const p = fixture(t), origin = p.open('file:///origin');
+    const location = line => [{ uri: 'file:///target', range: { start: { line, character: 8 }, end: { line, character: 11 } } }];
+    await p.index.start();
+    await p.handlers.get('client/registerCapability')({ registrations: [{ id: 'disk',
+      method: 'workspace/didChangeWatchedFiles', registerOptions: { watchers: [{ globPattern: '**/*.rkt' }] } }] });
+    let asked = 0;
+    p.answer(() => {
+      asked++;
+      if (asked === 1) p.watchers[0].changed.emit({ toString: () => 'file:///target.rkt', fsPath: '/target.rkt' });
+      return location(asked === 1 ? 2 : 3);
+    });
+    assert.deepEqual(await p.call(method, origin), location(3));
+    assert.equal(asked, 2);
+  });
+
   test(`${method} asks again when another open source changes during delivery`, async t => {
     const p = fixture(t), origin = p.open('file:///origin'), dependency = p.open('file:///target');
     const location = line => [{ uri: 'file:///target', range: { start: { line, character: 8 }, end: { line, character: 11 } } }];

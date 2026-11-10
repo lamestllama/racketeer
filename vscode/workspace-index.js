@@ -78,6 +78,7 @@ function createWorkspaceIndex(context, { executable, timeout, output, onStatus, 
   }
   function watch({ id, registerOptions }) {
     const report = type => uri => {
+      sourceRevision++;
       const change = { uri: uri.toString(), type };
       if (sourceSuffixes.includes(path.extname(uri.fsPath).toLowerCase())) {
         synchronize(() => notify('workspace/didChangeWatchedFiles', { changes: [change] }));
@@ -283,6 +284,11 @@ function createWorkspaceIndex(context, { executable, timeout, output, onStatus, 
     const version = document.version, owned = documentIdentity(document);
     const fresh = () => !disposed && !token.isCancellationRequested && version === document.version &&
       identities.get(document) === owned && !document.isClosed && vscode.workspace.textDocuments.includes(document);
+    // A language server answer is held to the same checks as the index's.
+    const fallback = async revision => {
+      const answer = await next(...args);
+      return fresh() && revision === sourceRevision ? answer : [];
+    };
     // Another source changing voids an answer but not the question, so ask again.
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
@@ -297,8 +303,7 @@ function createWorkspaceIndex(context, { executable, timeout, output, onStatus, 
         const result = await ask(`textDocument/${operation}`, params, token);
         if (!fresh()) return [];
         if (revision !== sourceRevision) continue;
-        if (result === silent) return next(...args);
-        if (result === null) return next(...args);
+        if (result === silent || result === null) return fallback(revision);
         const converted = await (operation === 'documentHighlight' ? protocol2CodeConverter.asDocumentHighlights(result, token)
           : operation === 'definition' ? protocol2CodeConverter.asDefinitionResult(result, token)
           : protocol2CodeConverter.asReferences(result, token));
@@ -312,7 +317,7 @@ function createWorkspaceIndex(context, { executable, timeout, output, onStatus, 
         throw error;
       }
     }
-    return fresh() ? next(...args) : [];
+    return fresh() ? fallback(sourceRevision) : [];
   }
   return {
     start, refresh,
