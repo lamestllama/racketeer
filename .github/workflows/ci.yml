@@ -98,6 +98,18 @@ jobs:
           PLTADDONDIR="$(python -c "import json, os; print(json.load(open(os.path.join(os.environ['RUNNER_TEMP'], 'rhombus-runtime', 'rhombus-runtime.json')))['addon'])")" \
           PLTCOLLECTS='${{ github.workspace }}/vendor/collects${{ runner.os == 'Windows' && ';' || ':' }}' \
             racket -l- raco test --timeout 1500 tests/bindings-service.rkt tests/rhombus-bindings.rkt tests/rhombus-outline.rkt tests/rhombus-completion.rkt tests/rhombus-debugger.rkt tests/rename-binders.rkt tests/adapter-debugger.rkt tests/language-adapter-cache.rkt 2>&1 | tee .test-output/ci/rhombus.log
+      - name: Run the Scheme+ suite against pinned packages
+        if: ${{ !cancelled() && matrix.racket == '9.1' && steps.headless.outcome == 'success' }}
+        timeout-minutes: 30
+        env:
+          RACKETDAP_TEST_SCHEMEPLUS: '1'
+        run: |
+          export PLTADDONDIR="$RUNNER_TEMP/schemeplus-addon"
+          racket -l- raco pkg install --auto --no-docs \
+            "https://github.com/damien-mattei/SRFI-105-for-Racket.git#a5c206075aa74c25387ee3ff3c102c97635b69db" \
+            "https://github.com/damien-mattei/Scheme-PLUS-for-Racket.git#0f876bb8f44b2e670968f86ff4598aed86eb4391"
+          PLTCOLLECTS='${{ github.workspace }}/vendor/collects${{ runner.os == 'Windows' && ';' || ':' }}' \
+            racket -l- raco test --timeout 900 tests/schemeplus-adapter.rkt 2>&1 | tee .test-output/ci/schemeplus.log
       - name: Verify the artifact and checkout
         run: |
           node scripts/artifact.js verify "$(node -p "'dist/' + require('./vscode/package.json').name + '-' + require('./vscode/package.json').version + '.vsix'")"

@@ -38,6 +38,7 @@ exports.run = async function () {
     ['tests/rhombus-completion.rkt', 23],
     ['tests/rhombus-debugger.rkt', 18],
     ['tests/schemeplus-adapter.rkt', 18],
+    ['tests/teaching-adapters.rkt', 90],
     ['tests/cache-identity.rkt', 1],
     ['tests/continuation-reentry.rkt', 5],
     ['tests/contribution-only.rkt', 3],

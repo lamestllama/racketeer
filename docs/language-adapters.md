@@ -439,7 +439,7 @@ in each description; optional keys state their defaults:
 | Record | Keys and rules |
 | --- | --- |
 | Source map | `term`: exact syntax object; `uri`: source URI; `range`: authored source range. Optional `origin`: syntax object, default `#f`; `original?`: Boolean, default `#f`. A map associates real reader/expander evidence with the exact syntax object, never a search for matching text. Repeated generated terms can share an origin without becoming the same binding. |
-| Name | `range`, `identifier`: actual scoped identifier, `role`: `definition`, `use` or `export`. Optional `phase`: `0`; `space`: `#f`; `uri`: request URI; `canonical`: actual defining identifier, default `#f`; `family`: family key, default `#f`; `root`: another name range for a member, default `#f`; `kind`: declaration kind, default `unknown`; `certainty`: `confirmed` or `predicted`, default `confirmed`; `editable?`: default `#f`. Imported identifiers retain their module binding and phase/space. An editable name needs a positive authored range and proven source ownership. |
+| Name | `range`, `identifier`: actual scoped identifier, `role`: `definition`, `use` or `export`. Optional `phase`: `0`; `space`: `#f`; `uri`: request URI; `canonical`: actual defining identifier, default `#f`; `family`: family key, default `#f`; `root`: another name range for a member, default `#f`; `kind`: declaration kind, default `unknown`; `certainty`: `confirmed` or `predicted`, default `confirmed`; `editable?`: default `#f`. Imported identifiers retain their module binding and phase/space. Explicit provider names assert scoped occurrences at their supplied ranges, including ranges shared with a different core binder. In workspace navigation, a confirmed provider definition refines a containing generic anchor for the same scoped owner; predicted definitions do not replace confirmed anchors. Workspace analysis filters stale generic transformer contexts without discarding those assertions. Provider assertions remain subject to ordinary conflict and before/after rename validation. An editable name needs a positive authored range and proven source ownership. |
 | Family | `key`: stable immutable datum local to one declaration; `canonical`: identifier; `members`: list of hashes containing `identifier`, `phase`, `space`, `role` and `anchor`. `anchor` is a stable structural datum within that declaration; a generated spelling is insufficient. Optional `complete?`: default `#f`. Completeness asserts that every affected static identity/component is described; before/after validation must still prove the assertion. |
 | Runtime alias | `name`: source string; `identifier`: actual runtime storage identifier; `scope`: source range of visibility. Optional `phase`: `0`; `space`: `#f`; `mutable?`: `#f`; `family`: `#f`. The instrumenter must find the claimed identifier in expanded storage. Metadata cannot substitute an arbitrary evaluation expression for a cell. |
 | Site | `term`: expanded syntax; `range`: authored source extent. Optional `visible?`: `#t`; `role`: `expression` or `statement`, default `expression`; `result`: result-producing syntax or `#f`, default `#f`; `replaceable?`: default `#f`. Replacement requires a proven result expression; hiding a site does not delete exception/frame information. |
@@ -577,28 +577,81 @@ the workspace first. Namespace extensions, unsupported interfaces, import
 renaming, unresolved members and workspace value/annotation combinations can
 still refuse. Reserved-name checks remain broad, including `String`.
 
-Teaching-language descriptors match exact readers `htdp/bsl/lang/reader`,
-`htdp/isl+/lang/reader` and `htdp/asl/lang/reader` with module identities
-`lang/htdp-beginner`, `lang/htdp-intermediate-lambda` and `lang/htdp-advanced`,
-respectively. Use `source reader` and a shared `expanded+` binding bridge for
-structure families, BSL first-order function identities and ISL+/ASL redirected
-locals. Consume scoped identifiers and retained `sub-range-binders` and
-`stepper-orig-name` metadata rather than spelling. Keep structure hover, exact
-field definition anchors and local rename for `define-struct` and `struct`
-families when adding graph multiplicity. Shared declarations must recover nested
-`local` definitions/signatures/kinds, exclude spurious `cond` children and
-respect local completion scopes. Variables and watches need local functions and
-captured state where storage survives: for example, ISL+ `shift`/`bump` and ASL
-`state`. Native previews use teaching notation: `make-posn`/`make-point`, nested
-`cons` in BSL and `list` in ISL+/ASL, without implementation fields or a promise
-that printed closures are evaluable. Validate safe teaching family renames and
-reject reserved words and capture in both server routes.
+The built-in teaching-language descriptors enable all five levels, with one
+descriptor per level and shared providers taking explicit level data. BSL matches
+`htdp/bsl/lang/reader` and `lang/htdp-beginner`. Each keeps `source reader`, existing
+sexp body/source policy and formatting policy. The reader already preserves
+source ranges, module structure hover and exact module field anchors on the
+language server. Without providers, workspace navigation targets the whole
+structure declaration, including for local fields. Shared providers add scoped
+structure families and first-order function identities through retained
+`sub-range-binders`, transformer targets and returned-binder edges. Declaration
+and call providers retain function kinds and source signatures for both
+`(define (f x y) ...)` and `(define f (lambda (x y) ...))`, without spurious
+`cond` children. These signatures also cover nested `local` definitions at ISL,
+ISL+ and ASL; they do not infer signatures from computed function values.
+Completion keeps parameters in scope and retains phase-zero language and imported
+exports without running dependency bodies.
 
-Teaching-language adapters have no macro-stepper part: programs in these languages
-cannot define macros, so the macro stepper keeps its existing Standard hiding.
-The [teaching-language plan](language-adapters-design.md#teaching-language-outlines)
-specifies T1–T3 acceptance, including interaction isolation before reading,
-unchanged test totals/results, native previews/errors and local-server rename safety.
+Teaching native previews restore the complete level print settings, including
+module procedure-printing flags: structures use `make-posn`/`make-point`, and lists use
+nested `cons` in BSL and `list` in the other levels, without implementation
+fields. The bootstrap reads with installed reader options without entering its stateful REPL wrapper. Isolation begins
+before reading and continues through evaluation, preserving test registrations
+and results on success and errors. Errors use the configured teaching wording.
+Ordinary Run, Debug, Test and Debug Test retain registrations, located failures
+and test-body breakpoints. Compiled debugger replay retains native services;
+Test modes keep the loader's existing source execution policy.
+
+Workspace rename retains explicit provider facts even beside a different core
+binder. A family connects generated procedures but does not establish that two
+written components are the same declaration. The native policy refuses when
+scoped identity and family facts cannot distinguish separately written components
+with the same spelling, including a structure type and field named `point`.
+Matching text cannot authorise an edit. Distinct components retain exact edits
+where their ownership is established. Native policy rejects reserved names
+such as `if`; generic before/after validation rejects capture by a parameter such
+as `n`. Untitled teaching-language buffers request saving in the workspace
+before prepare or rename.
+
+The other descriptors match these installed reader and module identities:
+
+| Level | Reader identity | Module identity |
+| --- | --- | --- |
+| ISL+ | `htdp/isl+/lang/reader` | `lang/htdp-intermediate-lambda` |
+| ASL | `htdp/asl/lang/reader` | `lang/htdp-advanced` |
+| BSL+ | `htdp/bsl+/lang/reader` | `lang/htdp-beginner-abbr` |
+| ISL | `htdp/isl/lang/reader` | `lang/htdp-intermediate` |
+
+For a structure inside `local`, expansion drops its component directives.
+The binding provider maps the written structure grammar to retained scoped
+definitions at that declaration. The workspace binding service retains precise
+provider anchors for Go to Definition, highlights and local references, including
+when an outer structure has the same name. Queries at a shadowing local type
+declaration can still include the outer declaration; exact field anchors do not
+establish exact type-declaration navigation. Workspace rename retains exact local
+structure and field edits where ownership is established, refuses ambiguous
+components and rejects capture.
+
+Outlines, completion and signature help still use the language server. Shared
+providers supply nested local declarations, function kinds, signatures for the
+two definition forms above, lexical completion and unused phase-zero imported
+exports. ISL+, ASL and ISL expose local functions and captured values in Variables and native interactions;
+ASL retains live captured state and assignment through its actual cells. BSL+
+adds the installed list abbreviations and quasiquote grammar. ISL still restricts
+anonymous functions. Printed functions need not be evaluable expressions.
+
+Hover on a local structure field still uses the language server and can cover
+the whole local declaration. This remains a known gap until hover moves to the
+workspace index; it is excluded from exact-field navigation acceptance. A later
+move of outlines, completion and signature help must retain the source signatures,
+nested declarations, function kinds, lexical scopes and imported exports now
+supplied through the editor providers.
+
+Teaching adapters have no macro-stepper part. These languages cannot define
+macros, so the macro stepper keeps its existing Standard hiding. The
+[teaching-language acceptance](language-adapters-design.md#teaching-language-outlines)
+defines the requirements for each level.
 
 For runtime inspection, ensure the desired binding still has storage. An unused
 name erased by expansion cannot become a local merely by adding a source label.

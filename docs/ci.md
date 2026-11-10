@@ -60,6 +60,10 @@ This step requires network access and fails on installation or identity-check
 errors. Test Explorer dogfooding then runs with another pristine addon.
 The Rhombus installation does not alter the ordinary user package scope.
 
+The core job on Racket 9.1 also installs Scheme+ and SRFI-105 into a private
+addon directory and runs their adapter suite. Those two packages are pinned to
+Git commits; their dependencies come from the package catalog.
+
 ## Results
 
 Every job must pass; there are no allowed-failure matrix entries. Logs are uploaded even

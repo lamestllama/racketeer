@@ -24,7 +24,8 @@
          racket-langserver/doclib/doc
          racket-langserver/doclib/textbuffer/text-port
          (only-in racket-langserver/doclib/language-adapter source-language-adapter
-                  current-language-adapter-validator current-language-adapter-rename)
+                  current-language-adapter-validator current-language-adapter-rename
+                  current-language-adapter-bindings)
          racket-langserver/doclib/doc-trace
          racket-langserver/doclib/check-syntax
          (except-in racket-langserver/doclib/rename-validation rename-module-binding)
@@ -66,6 +67,19 @@
       (define buffer (doc-copy-text-buffer doc))
       (define lexer (build-lexer-state text (Doc-uri doc)))
       (define arrows (make-hasheqv))
+      (define provider-names (make-hash))
+      (define resolve-bindings (current-language-adapter-bindings))
+      (define (recording-bindings adapter)
+        (define provider (resolve-bindings adapter))
+        (and provider
+             (lambda (request)
+               (define result (provider request))
+               ;; Explicit provider names assert scoped occurrences at their
+               ;; supplied ranges, even beside a different core binder.
+               (when (hash? result)
+                 (for ([name (in-list (hash-ref result 'names '()))])
+                   (hash-set! provider-names (hash-remove name 'binding) #t)))
+               result)))
       (define trace
         (new (class build-trace%
                (super-new)
@@ -85,7 +99,8 @@
                               (filter (lambda (name)
                                         ;; A parsed binder's old transformer context
                                         ;; is not a use of that outer binding.
-                                        (not (and (set-member? local-ranges (hash-ref name 'range))
+                                        (not (and (not (hash-ref provider-names (hash-remove name 'binding) #f))
+                                                  (set-member? local-ranges (hash-ref name 'range))
                                                   (not (set-member? module-ranges (hash-ref name 'range)))
                                                   (hash-ref name 'binding #f))))
                                       (hash-ref facts 'names)))
@@ -109,11 +124,12 @@
                (and adapter ((current-language-adapter-validator) adapter)
                     ((current-language-adapter-rename) adapter)))))
       (define result
-        (expand-source (path->source path) ((if native-port? open-input-text open-input-string) text) trace #:expand? expand?
+        (parameterize ([current-language-adapter-bindings recording-bindings])
+          (expand-source (path->source path) ((if native-port? open-input-text open-input-string) text) trace #:expand? expand?
                        #:contribution-only? #t
                        #:on-adapter (lambda (adapter)
                                       (when (and adapter ((current-language-adapter-rename) adapter))
-                                        (lexer-state-apply-adapter! lexer adapter)))))
+                                        (lexer-state-apply-adapter! lexer adapter))))))
       ;; Not a fault in the file, so it is not reported as one below.
       (for ([problem (in-list (list (ExpandResult-pre-exn result) (ExpandResult-post-exn result)))])
         (when (exn:fail:out-of-memory? problem) (raise problem)))
@@ -700,6 +716,24 @@
                 (error 'rename "The native policy supplied an unsupported or stale edit."))
               range))) < #:key car))
 
+(define (scoped-local-ranges source range spelling)
+  (define names (hash-ref (Source-facts source) 'names))
+  (define (confirmed? name) (eq? (hash-ref name 'certainty 'confirmed) 'confirmed))
+  (define selected
+    (filter (lambda (name) (and (confirmed? name) (equal? range (hash-ref name 'range)))) names))
+  (and (pair? selected)
+       (for/list ([name (in-list names)]
+                  #:when (and (confirmed? name)
+                              (equal? spelling
+                                      (let ([r (hash-ref name 'range)])
+                                        (substring (doc-get-text (Source-doc source)) (car r) (cdr r))))
+                              (for/or ([target (in-list selected)])
+                                (and (equal? (hash-ref name 'phase 0) (hash-ref target 'phase 0))
+                                     (equal? (hash-ref name 'space #f) (hash-ref target 'space #f))
+                                     (free-identifier=? (hash-ref name 'identifier) (hash-ref target 'identifier)
+                                                        (hash-ref name 'phase 0))))))
+         (hash-ref name 'range))))
+
 (define (workspace-rename sources path position new-name)
   (unless (hash-has-key? sources path)
     (refuse "Save this document inside the analysed workspace before renaming."))
@@ -837,7 +871,15 @@
                                   #:when (not (set-empty? (set-intersect (source-bindings-at source (Range-start (Location-range location)))
                                                                  (or editable-family (set queried))))))
                         (Location-range location)))]
-             [(equal? file path) (doc-binding-ranges-at doc (if alias (doc-abs-pos->pos doc (car alias)) pos))]
+             [(equal? file path)
+              ;; Native component facts retain lexical owners and exact written
+              ;; ranges even when a declaration callback kept a coarse anchor.
+              ;; The proposal still passes the ordinary binding validation below.
+              (define scoped (and native? (not alias) (scoped-local-ranges source source-range old-name)))
+              (if scoped
+                  (for/list ([r (in-list scoped)])
+                    (Range (doc-abs-pos->pos doc (car r)) (doc-abs-pos->pos doc (cdr r))))
+                  (doc-binding-ranges-at doc (if alias (doc-abs-pos->pos doc (car alias)) pos)))]
              [else '()]))
          (define ranges
            (sort (remove-duplicates

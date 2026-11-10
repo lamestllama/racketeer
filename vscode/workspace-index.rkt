@@ -123,10 +123,12 @@
           (or (not (equal? method "textDocument/references"))
               (field params 'context (lambda (value) (field value 'includeDeclaration boolean?)))))]
     [(equal? method "initialize")
-     (and (hash? params) (hash-has-key? params 'processId)
-          (field params 'processId (lambda (value) (or (exact-integer? value) (eq? value (json-null)))))
+     (and (hash? params)
+          (or (not (hash-has-key? params 'processId))
+              (field params 'processId (lambda (value) (or (exact-integer? value) (eq? value (json-null))))))
           (field params 'capabilities hash?)
-          (field params 'rootUri (lambda (value) (or (string? value) (eq? value (json-null)))))
+          (or (not (hash-has-key? params 'rootUri))
+              (field params 'rootUri (lambda (value) (or (string? value) (eq? value (json-null))))))
           (let ([folders (hash-ref params 'workspaceFolders (json-null))])
             (or (eq? folders (json-null))
                 (and (list? folders) (andmap (lambda (folder) (and (document? folder) (field folder 'name string?))) folders)))))]

@@ -172,15 +172,28 @@
                        (< (- (cdr r) (car r)) (syntax-span id)))
               (hash-set! precise (list (identity name) (syntax-position id) (syntax-span id)) #t)))
           (set! precise-contribution? (positive? (hash-count precise)))
+          ;; A provider's confirmed definition refines a containing generic
+          ;; anchor for that same scoped owner. Preserve disjoint anchors and
+          ;; equal-range owners; neither spelling nor declaration kind decides.
+          (define provider-definitions (make-hash))
+          (for ([name (in-list (drop raw (length (hash-ref generic 'names '()))))]
+                #:when (and (confirmed? name) (eq? (hash-ref name 'role) 'definition)))
+            (hash-update! provider-definitions (identity name)
+                          (lambda (ranges) (cons (hash-ref name 'range) ranges)) '()))
+          (define (refined-anchor? key r)
+            (for/or ([precise (in-list (hash-ref provider-definitions key '()))])
+              (and (not (equal? r precise))
+                   (<= (car r) (car precise) (cdr precise) (cdr r)))))
           (for ([name (in-list raw)])
             (define id (hash-ref name 'identifier))
             (define r (hash-ref name 'range))
             (define key (identity name))
             (when key
-              (unless (and (confirmed? name) (eq? (hash-ref name 'role) 'use)
-                           (syntax-position id) (syntax-span id)
-                           (= (- (cdr r) (car r)) (syntax-span id))
-                           (hash-ref precise (list key (syntax-position id) (syntax-span id)) #f))
+              (unless (or (and (eq? (hash-ref name 'role) 'definition) (refined-anchor? key r))
+                          (and (confirmed? name) (eq? (hash-ref name 'role) 'use)
+                               (syntax-position id) (syntax-span id)
+                               (= (- (cdr r) (car r)) (syntax-span id))
+                               (hash-ref precise (list key (syntax-position id) (syntax-span id)) #f)))
                 (if (and (confirmed? name) (eq? (hash-ref name 'role) 'definition)
                          (not (exact-anchor? r)))
                     (target! key r)
@@ -245,7 +258,8 @@
                    (or (hash-ref replacement-ranges (cons key r) #f)
                        (and (hash-ref callback 'point? #f)
                             (hash-ref replacement-points (cons key (car r)) #f)))))
-            (unless replaced?
+            (unless (or replaced?
+                        (and (eq? (hash-ref callback 'role) 'definition) (refined-anchor? key r)))
               (install! (if (and (eq? (hash-ref callback 'role) 'use) (predicted-use? key r))
                             (hash-set callback 'certainty 'predicted) callback))))
           ;; Index the starts of all possible names. A prefix maximum of ends

@@ -852,8 +852,8 @@
   ;; time limit with no more results, stops waiting. It refuses, and answers from no older
   ;; view of the sources, which could be wrong. A document closing is no such change, even
   ;; one whose file has gone and whose buffer was a source: an editor closes documents long
-  ;; after their tabs, and it has only so many. The request's own work is not waiting, and
-  ;; has a limit of its own.
+  ;; after their tabs, and it has only so many. The initial document analysis and rename
+  ;; work have limits of their own.
   (define last-run #f)
   (define most-results 0)
   (define further-at #f)
@@ -870,8 +870,8 @@
   (define (own-work run seconds request evt)
     (define began (current-inexact-monotonic-milliseconds))
     (define result (compute engine run seconds request evt))
-    ;; An interrupted document query is still waiting for sources to settle.
-    (when (and further-at (or result (not (eq? operation 'references))))
+    ;; Repeating a document query is still waiting for sources to settle.
+    (when (and further-at (not (eq? operation 'references)))
       (set! further-at (+ further-at (- (current-inexact-monotonic-milliseconds) began))))
     result)
   (let retry ()

@@ -18,7 +18,7 @@ binding forms in plain Racket and the author guide, followed by Rhombus debuggin
 language server and workspace index. These are the first release's scope, with
 Rhombus its only added adapter. F11, F12 and R7 are later macro-stepper work and
 are excluded from that release's required foundation and acceptance set.
-SRFI-105 with Scheme+ is the second built-in adapter; teaching languages follow it.
+SRFI-105 with Scheme+ is the second built-in adapter. All five teaching levels have descriptors using shared providers with explicit level data.
 
 ## Evidence and architectural boundaries
 
@@ -618,64 +618,82 @@ visible reductions under Standard hiding.
 
 ## Teaching-language outlines
 
-Provide one descriptor per level with shared providers and explicit level data.
-Match these exact public identities, preserving the reader selection chain:
+Each teaching level has a built-in descriptor using shared providers with
+explicit level data. The levels are enabled in acceptance order:
 
-| Level | Reader identity | Module identity |
-| --- | --- | --- |
-| BSL | `htdp/bsl/lang/reader` | `lang/htdp-beginner` |
-| ISL+ | `htdp/isl+/lang/reader` | `lang/htdp-intermediate-lambda` |
-| ASL | `htdp/asl/lang/reader` | `lang/htdp-advanced` |
-
-Use `source reader`: these readers retain useful ranges and need no location
-repair. Source launches use existing automatic runtime configuration; compiled
-launches remain acceptance work. The shared bootstrap provider must establish
-interaction/test-state isolation before reading and evaluation. Do not use the
-live REPL wrapper directly with `(runtime-interaction identity)`.
-
-Use `(bindings (expanded+ P))` for generated structure families, BSL first-order
-function identities and ISL+/ASL redirected locals. Consume actual scoped
-runtime identifiers and retained `sub-range-binders` and `stepper-orig-name`
-metadata rather than deriving identities from spelling. Keep graph and index
-logic generic. Recover missing local functions in Variables and frame watches:
-ISL+ `shift`/`bump`, and ASL captured `state`, including mutation through live
-cells. Metadata cannot recreate storage that expansion erased.
-
-| Part | BSL | ISL+ | ASL |
+| Level | Reader identity | Module identity | State |
 | --- | --- | --- | --- |
-| Debugger | Preserve restricted expression grammar, booleans/lists/structures and tests; reader/evaluation isolation must retain both registered checks and their results. | Add local functions, higher-order calls, anonymous functions and closures, including redirected locals. | Add assignment, captured state and stateful closures without incidental test resets. |
-| Editor and index | Bridge structure families and first-order functions; retain structure hover, exact field definition anchors and safe local/family rename. | Include nested `local` functions and function kinds, with correct scope filtering. | Include captured mutable locals, reads and assignments in outline, completion and rename validation. |
+| BSL | `htdp/bsl/lang/reader` | `lang/htdp-beginner` | Enabled |
+| ISL+ | `htdp/isl+/lang/reader` | `lang/htdp-intermediate-lambda` | Enabled |
+| ASL | `htdp/asl/lang/reader` | `lang/htdp-advanced` | Enabled |
+| BSL+ | `htdp/bsl+/lang/reader` | `lang/htdp-beginner-abbr` | Enabled |
+| ISL | `htdp/isl/lang/reader` | `lang/htdp-intermediate` | Enabled |
 
-These adapters have no macro-stepper part. Programs in these languages cannot define macros, so hiding the implementation leaves only generated bookkeeping; the macro stepper keeps its existing behaviour with Standard hiding.
+The baseline already supplies expansion, top-level outlines, module structure
+hover and exact module field anchors on the language server, ordinary parameters,
+restricted grammar and teaching tests. Without providers, workspace navigation
+targets the whole structure declaration, including for local fields. Keep those generic services and `source reader`, with existing
+sexp body, source and formatting policy. Structural debugger previews expose an
+extra structure field and lack native constructors; unconfigured selector errors
+have raw contract wording. The teaching bootstrap restores native printing and
+errors and reads with installed reader options without the mutable REPL flag that resets
+programme tests. Isolation starts before reading, including failing watch and
+console expressions.
 
-Native value previews must use the complete configured print context: structures
-use `make-posn`/`make-point`, BSL lists use nested `cons`, and ISL+/ASL lists use
-`list`. Do not expose implementation fields or imply printed closures are
-evaluable. Use the configured error-display service for teaching error wording.
-Retain ordinary Run/Debug test registration, Test/Debug Test execution, located
-failures and test-body breakpoints. Watch and console reading/evaluation must
-leave a two-check suite at two checks, with its failure count unchanged.
+The shared `expanded+` provider consumes scoped component directives, first-order
+transformer targets and returned-binder edges. Explicit provider names assert
+scoped occurrences at their supplied ranges, even alongside another core binder.
+Workspace analysis preserves those assertions while filtering stale generic
+transformer contexts. Generic conflicts and before/after binding validation still
+apply. A family connects generated procedures; it does not make separately
+written components one declaration. Matching text cannot authorise an edit.
+The native policy refuses when the scoped identity and family facts cannot
+distinguish components with the same spelling, such as a structure type and field
+both named `point`. Proven structure and field components retain exact edits at
+every level; ambiguous requests refuse.
 
-Keep existing sexp body/source policy and formatting policy. Shared declarations
-must include structures, nested `local` definitions, signatures and semantic
-kinds, excluding spurious `cond` children and implementation helpers. Completion
-must respect local visibility; generic calls need shared source-signature help.
-Rename needs teaching component/family selection and native name restrictions,
-with the same before/after validation in local-server and workspace routes.
-Reject reserved names and names that capture existing parameters: for example,
-`if` and a parameter name `n`. Valid BSL function renames must also succeed.
+ISL+, ASL and ISL also support structures inside `local`. Their flattened
+expansions lose component directives. The binding provider maps the written
+structure grammar to retained scoped definitions at that declaration, keeping
+outer and local owners distinct. The workspace binding service lets a confirmed
+provider definition refine a containing generic anchor for the same scoped owner.
+Equal-range owners, disjoint anchors and predicted facts retain their existing
+meaning. Go to Definition, highlights and local references use this service;
+exact local-field acceptance follows that route. A query at a shadowing local
+type declaration can still include its outer declaration; the exact-field result
+does not establish exact type-declaration navigation.
 
-Hide macros by resolved defining module, including submodules: implementations
-include `lang/private/teach`, `lang/private/teach-module-begin`,
-`lang/private/beginner-funs` and its `with-wrapper` submodule, and `test-engine`
-modules. Collection `lang` is split across packages; `collection-path "lang"`
-can resolve to compatibility-lib rather than the teaching implementation in
-htdp-lib. Resolve each actual defining path. Generated redirects defined in user
-modules cannot be hidden by a module selector; suppressing them needs separate
-identity-aware policy. Standard hiding already removes most instructional
-expansions, so tune defaults rather than hiding every remaining step. Explicit
-user choices win. These languages reject authored macro definitions; do not
-enable forbidden features through an adapter.
+Local structure-field hover still uses the language server and can cover the
+whole local declaration. This is a known gap until hover moves to the index and
+is excluded from exact-field acceptance. Outlines, completion and signature help
+also remain on the language server. Source signatures cover both
+`(define (f x y) ...)` and `(define f (lambda (x y) ...))` at all five levels,
+including nested `local` definitions at ISL, ISL+ and ASL. Computed function values
+do not acquire inferred signatures. Retain those signatures, nested declarations,
+function kinds, lexical scopes and phase-zero imported exports when the features
+move.
+
+| Part | BSL | ISL+ | ASL | BSL+ | ISL |
+| --- | --- | --- | --- | --- | --- |
+| Debugger | Restricted grammar, parameters and tests; nested `cons` previews. | Local functions, higher-order calls, anonymous functions and closures, including `shift`/`bump`. | Assignment, captured `state` and stateful closures through live cells. | BSL restrictions with native `list` notation and quasiquote. | Local functions and captured state, with anonymous functions still restricted. |
+| Editor and index | Scoped structure and first-order families, exact anchors and proven component renames; ambiguous components refuse. | Nested `local` declarations/signatures/kinds, lexical completion and exact local structure anchors. | Mutable locals, reads and assignments retain scoped identities. | Shared structure and first-order bridges. | Shared redirected-local bridges and lexical completion. |
+
+Original-name metadata identifies actual redirected storage, retaining live
+getters and ASL setters. Metadata cannot recreate erased storage or grant forbidden assignment rights.
+Native previews use the complete print context: structures use
+`make-posn`/`make-point`, lists use nested `cons` in BSL and `list` at other levels.
+Reader options and module procedure-printing flags both matter. Printed closures
+do not promise evaluability. Keep configured error wording, ordinary Run/Debug
+registrations, Test/Debug Test results, located failures and test-body breakpoints.
+Compiled debugger replay uses the same native services; Test modes retain the
+loader's source execution policy.
+
+Declarations exclude spurious `cond` children and implementation helpers.
+Completion respects current lexical scopes and retains unused phase-zero imported
+exports without running dependency bodies. Workspace rename rejects reserved
+names such as `if` and capture by a parameter such as `n`. Untitled buffers must
+request saving before prepare or rename. These adapters have no macro-stepper
+part; Standard hiding stays unchanged.
 
 ## Samples, generated tests and acceptance
 
@@ -754,7 +772,8 @@ off validation to make a later feature usable.
 | S1 | SRFI-105 reader descriptor using generic source, binding and site services. | Scheme+ 20.1 and SRFI-105 17.1 retain exact source locations; absent packages leave other languages unchanged. |
 | S2 | Isolated native interaction provider through the existing bootstrap field. | Infix and neoteric watches and console expressions work with selected locals; empty-profile controls fail those expressions. |
 | S3 | Feature tests and document-service conformance. | In/Over/Out, locals, runtime errors, definitions, references, hover, outlines, tokens and diagnostics retain their observed full/contribution-only behaviour. |
-| T1–T3 | BSL, then ISL+, then ASL adapters using tested shared providers. | Each level passes restrictions; scoped structure/function/redirect bridges; structure hover and exact field anchors; nested outline/scope fidelity; Variables local functions/captured state; native previews using the complete print context and configured errors; and local-server/workspace reserved-name and capture rejection. Before reading any watch/console expression, isolate reader/evaluation state and prove a two-check suite retains both checks and unchanged failures, including on errors, before the next level is enabled. |
+| T1–T3 | BSL, ISL+ and ASL are implemented with shared providers and explicit level data. | Each level passes restrictions; scoped structure/function/redirect bridges; module structure hover and exact field anchors through workspace navigation, including local structures where allowed; nested outline/scope fidelity; Variables local functions/captured state; native previews using the complete print context and configured errors; and workspace reserved-name and capture rejection, with untitled buffers requesting a save. Before reading any watch/console expression, isolate reader/evaluation state and prove a two-check suite retains both checks and unchanged failures, including on errors, before the next level is enabled. |
+| T4–T5 | BSL+ and ISL follow ASL using the same providers and explicit level data. | The same acceptance applies, with native list/quasiquote grammar for BSL+ and local functions without anonymous lambda in ISL. |
 
 ## Decisions
 
