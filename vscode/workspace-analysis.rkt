@@ -768,7 +768,7 @@
 (define (workspace-analysis-update! engine params)
   (define revision (hash-ref params 'revision))
   (define config (read-settings (hash-ref params 'settings (hasheq))))
-  (define roots (map uri->path (hash-ref params 'roots)))
+  (define roots (map uri->path (filter file-uri? (hash-ref params 'roots))))
   ;; Every supported open document contributes to the immutable source view.
   (define documents
     (for/hash ([doc (in-list (hash-ref params 'documents))] #:when (or (file-uri? (hash-ref doc 'uri)) (hash-has-key? doc 'path)))
@@ -885,7 +885,10 @@
     (cond
       [(sync/timeout 0 cancel) (AnalysisFailure 'cancelled "Request cancelled")]
       [(WorkspaceAnalysis-closed? engine) (AnalysisFailure 'closed "Workspace analysis closed")]
-      [(not doc) (AnalysisFailure 'changed "Document changed during analysis")]
+      [(not doc)
+       (if (not (hash-ref params 'identity #f))
+           (AnalysisFailure 'not-open "Document is not open")
+           (AnalysisFailure 'document-changed "Document changed during analysis"))]
       [(and (eq? operation 'references) (still-changing? run))
        (AnalysisFailure 'unsettled
                         (format "Workspace sources kept changing for ~a seconds. Try again when they settle."
@@ -907,17 +910,17 @@
          [(sync/timeout 0 cancel) (AnalysisFailure 'cancelled "Request cancelled")]
          [(or (not (= generation (Run-generation run))) (cancelled? run) (sync/timeout 0 retired))
           (if (eq? operation 'references) (retry)
-              (AnalysisFailure 'changed "Document changed during analysis"))]
+              (AnalysisFailure 'document-changed "Document changed during analysis"))]
          [else
           (match result
             [(cons 'source _) (accepted run (json-null))]
             [(cons 'changed message) (AnalysisFailure 'changed message)]
             [(list 'ok navigation record)
-             (define (fresh?) (and (record-current? record (Run-buffers run)) (= generation (Run-generation run))))
+             (define (fresh?) (record-current? record (Run-buffers run)))
              (cond
                [(or (not (eq? operation 'references)) (not (cadr navigation)))
                 (or (settle run path (lambda () (accepted run (if (eq? operation 'references) (car navigation) navigation) fresh?)))
-                    (AnalysisFailure 'changed "Sources changed during analysis"))]
+                    (AnalysisFailure 'document-changed "Sources changed during analysis"))]
                ;; With scanning off, the language server answers from this document alone.
                [(not (Settings-enabled? (Run-settings run))) (accepted run (json-null))]
                [else

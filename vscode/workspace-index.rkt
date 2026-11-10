@@ -9,7 +9,7 @@
          racket/port
          racket/string
          racket-langserver/common/path-util
-         racket-langserver/lsp/msg-io
+         (only-in racket-langserver/lsp/msg-io display-message/flush)
          racket-langserver/lsp/responses
          "workspace-analysis.rkt")
 
@@ -22,6 +22,42 @@
   (lambda (message)
     (call-with-semaphore writing
       (lambda () (display-message/flush (if (procedure? message) (message) message) out)))))
+
+;; Each body belongs to one frame, including a malformed body. Decode only
+;; after taking its byte count, then require exactly one JSON value.
+(define (read-index-message [in (current-input-port)])
+  (let/ec return
+    (define length #f)
+    (define valid? #t)
+    (let headers ()
+      (define line (read-bytes-line in 'return-linefeed))
+      (cond
+        [(eof-object? line) (return eof)]
+        [(bytes=? line #"") (void)]
+        [else
+         (match (regexp-match #rx#"^([^:]+):[ ]*(.*)$" line)
+           [(list _ key value)
+            (cond
+              [(string-ci=? (bytes->string/latin-1 key) "Content-Length")
+               (if (and (not length) (regexp-match? #rx#"^[0-9]+$" value))
+                   (set! length (string->number (bytes->string/latin-1 value)))
+                   (set! valid? #f))]
+              [(string-ci=? (bytes->string/latin-1 key) "Content-Type")
+               (unless (regexp-match? #px#"(?i:^application/vscode-jsonrpc(?:;[ ]*charset=utf-?8)?$)" value)
+                 (set! valid? #f))])]
+           [_ (set! valid? #f)])
+         (headers)]))
+    ;; Without a length there is no body boundary to recover at.
+    (unless length (error 'read-index-message "Missing Content-Length"))
+    (define bytes (read-bytes length in))
+    (with-handlers ([exn:fail? (lambda (_) 'parse-json-error)])
+      (unless (and valid? (bytes? bytes) (= length (bytes-length bytes)))
+        (error 'read-index-message "Invalid frame"))
+      (define body (open-input-string (bytes->string/utf-8 bytes #f)))
+      (define value (read-json body))
+      (unless (and (not (eof-object? value)) (regexp-match? #px"^[ \t\r\n]*$" (port->string body)))
+        (error 'read-index-message "Expected one JSON value"))
+      value)))
 
 ;; LSP 3.17 error codes.
 (define parse-error -32700)
@@ -69,9 +105,33 @@
 
 (define (workspace-roots params)
   (match* ((hash-ref params 'workspaceFolders #f) (hash-ref params 'rootUri #f))
-    [((? list? folders) _) (map (lambda (folder) (hash-ref folder 'uri)) folders)]
-    [(_ (? string? root)) (list root)]
+    [((? list? folders) _) (filter file-uri? (map (lambda (folder) (hash-ref folder 'uri)) folders))]
+    [(_ (? string? root)) (if (file-uri? root) (list root) '())]
     [(_ _) '()]))
+
+(define (valid-params? method params)
+  (define (field value key predicate)
+    (and (hash? value) (hash-has-key? value key) (predicate (hash-ref value key))))
+  (define (document? value) (field value 'uri string?))
+  (define (position? value)
+    (and (field value 'line exact-nonnegative-integer?)
+         (field value 'character exact-nonnegative-integer?)))
+  (cond
+    [(hash-has-key? operations method)
+     (and (field params 'textDocument document?) (field params 'position position?)
+          (or (not (equal? method "textDocument/rename")) (field params 'newName string?))
+          (or (not (equal? method "textDocument/references"))
+              (field params 'context (lambda (value) (field value 'includeDeclaration boolean?)))))]
+    [(equal? method "initialize")
+     (and (hash? params) (hash-has-key? params 'processId)
+          (field params 'processId (lambda (value) (or (exact-integer? value) (eq? value (json-null)))))
+          (field params 'capabilities hash?)
+          (field params 'rootUri (lambda (value) (or (string? value) (eq? value (json-null)))))
+          (let ([folders (hash-ref params 'workspaceFolders (json-null))])
+            (or (eq? folders (json-null))
+                (and (list? folders) (andmap (lambda (folder) (and (document? folder) (field folder 'name string?))) folders)))))]
+    [(equal? method "workspace/executeCommand") (field params 'command string?)]
+    [else #t]))
 
 ;; This adapter owns framing, request identifiers, cancellation subscriptions,
 ;; the document registry and the connection lifetime. It builds each snapshot the
@@ -155,9 +215,10 @@
   (define lifetimes 0)
   (define virtual-root (build-path (car (explode-path (find-system-path 'temp-dir))) (format "racketeer-memory-~a-~a" (current-inexact-milliseconds) (random 1000000000))))
   (define roots '())
+  (define invalidation 0)
   ;; No pass starts until the first settings are known.
   (define settings #f)
-  ;; The revision of the last snapshot and the document versions it held. The
+  ;; The revision of the last snapshot and its documents, keyed by source path. The
   ;; pair is replaced whole, since results are compared with it on other threads.
   (define submitted (cons 0 (hash)))
   ;; Settings are pulled from the client, so they arrive after later messages, and
@@ -170,11 +231,12 @@
   (define awaited (make-hash))
   (define requests 0)
   (define requests-lock (make-semaphore 1))
-  (define (submit! #:documents-only? [documents-only? #f])
+  (define (submit! #:documents-only? [documents-only? #f] #:normal-change? [normal-change? #f])
+    (unless normal-change? (set! invalidation (add1 invalidation)))
     (when settings
       (set! submitted (cons (add1 (car submitted))
                             (for/hash ([(uri document) (in-hash documents)])
-                              (values uri (hash-ref document 'version)))))
+                              (values (hash-ref document 'path) document))))
       (workspace-analysis-update! engine
         (hasheq 'revision (car submitted) 'documentsOnly documents-only? 'settings settings
                 'roots roots 'documents (hash-values documents)))))
@@ -187,7 +249,8 @@
     (define on-answer (hash-ref awaited (hash-ref message 'id #f) #f))
     (when on-answer
       (hash-remove! awaited (hash-ref message 'id))
-      (on-answer (hash-ref message 'result #f))))
+      (with-handlers ([exn:fail? (lambda (e) (eprintf "Index response failed: ~a\n" (exn-message e)))])
+        (on-answer (hash-ref message 'result #f)))))
   (define (pull-settings!)
     (cond
       [(capability client-capabilities 'workspace 'configuration)
@@ -241,34 +304,40 @@
   ;; Each file's edits name the version analysed: the buffer's, or null for the
   ;; text on disk. The client refuses an edit whose documents have moved on.
   (define (workspace-edit edit versions)
+    (define changes
+      (for/hash ([(key edits) (in-hash (hash-ref edit 'changes))])
+        (define uri (symbol->string key))
+        (define document (hash-ref versions (normalize-source-path (uri->path uri)) #f))
+        (values (if document (hash-ref document 'uri) uri) (cons document edits))))
     (if (capability client-capabilities 'workspace 'workspaceEdit 'documentChanges)
         (hasheq 'documentChanges
-                (for/list ([(uri edits) (in-hash (hash-ref edit 'changes))])
+                (for/list ([(uri entry) (in-hash changes)])
                   (hasheq 'textDocument
-                          (hasheq 'uri (symbol->string uri)
-                                  'version (hash-ref versions (symbol->string uri) (json-null)))
-                          'edits edits)))
-        edit))
-  (define (response id operation result)
-    ;; LSP clients do not show ContentModified, and the user must try a rename again.
+                          (hasheq 'uri uri 'version (if (car entry) (hash-ref (car entry) 'version) (json-null)))
+                          'edits (cdr entry))))
+        (hasheq 'changes (for/hasheq ([(uri entry) (in-hash changes)])
+                          (values (string->symbol uri) (cdr entry))))))
+  (define (response id operation result captured-invalidation)
+    (define navigation? (memq operation '(definition highlights references)))
     (define stale (error-response id request-failed "Workspace changed during rename. Try Rename again."))
-    (match result
-      [(AnalysisResult revision value current?)
-       (define current submitted)
-       (cond
-         ;; Overtaken by a message already read, or by settings not yet applied.
-         [(not (and (= revision (car current)) (sync/timeout 0 settled) (current?)))
-          (if (memq operation '(definition highlights references))
-              (error-response id content-modified "Sources changed during analysis") stale)]
-         [(eq? operation 'rename) (success-response id (workspace-edit value (cdr current)))]
-         [else (success-response id value)])]
-      [(AnalysisFailure 'changed _) #:when (memq operation '(rename prepare-rename)) stale]
-      [(AnalysisFailure reason message)
-       (error-response id (case reason
-                            [(cancelled) request-cancelled]
-                            [(closed) invalid-request]
-                            [(changed) content-modified]
-                            [else request-failed]) message)]))
+    (cond
+      [(and navigation? (or (not (= captured-invalidation invalidation)) (not (sync/timeout 0 settled))))
+       (error-response id content-modified "Workspace configuration or sources changed during analysis")]
+      [else
+       (match result
+         [(AnalysisResult revision value current?)
+          (cond
+            [(not (and (or navigation? (= revision (car submitted))) (sync/timeout 0 settled) (current?)))
+             (if navigation? (error-response id content-modified "Sources changed during analysis") stale)]
+            [(eq? operation 'rename) (success-response id (workspace-edit value (cdr submitted)))]
+            [else (success-response id value)])]
+         [(AnalysisFailure 'document-changed _) #:when navigation? (success-response id (json-null))]
+         [(AnalysisFailure (or 'changed 'document-changed) _) #:when (memq operation '(rename prepare-rename)) stale]
+         [(AnalysisFailure reason message)
+          (error-response id (case reason
+                               [(cancelled) request-cancelled]
+                               [(changed) content-modified]
+                               [else request-failed]) message)])]))
   ;; Reap the workers if that is quick, then go on even if one is wedged: the
   ;; owning supervisor ends anything left in the process tree.
   (define (close-engine!)
@@ -290,8 +359,8 @@
                             'path (if file? (normalize-source-path (uri->path uri)) (build-path virtual-root (format "~a.rkt" lifetimes)))
                             'directory (if file? (path-only (uri->path uri))
                                            (and parent (directory-exists? parent) (path->complete-path parent)))
-                            'version (hash-ref document 'version) 'text (hash-ref document 'text))))
-       (submit! #:documents-only? #t)]
+                            'version (hash-ref document 'version) 'text (string-replace (hash-ref document 'text) "\r\n" "\n"))))
+       (submit! #:documents-only? #t #:normal-change? #t)]
       ["textDocument/didChange"
        (define uri (hash-ref (hash-ref params 'textDocument) 'uri))
        (define document (hash-ref documents uri #f))
@@ -299,16 +368,18 @@
          (hash-set! documents uri
                     (hash-set* document
                                'version (hash-ref (hash-ref params 'textDocument) 'version)
-                               'text (hash-ref (last (hash-ref params 'contentChanges)) 'text)))
-         (submit!))]
+                               'text (if (null? (hash-ref params 'contentChanges))
+                                         (hash-ref document 'text)
+                                         (string-replace (hash-ref (last (hash-ref params 'contentChanges)) 'text) "\r\n" "\n"))))
+         (submit! #:normal-change? #t))]
       ["textDocument/didClose"
        (hash-remove! documents (hash-ref (hash-ref params 'textDocument) 'uri))
-       (submit! #:documents-only? #t)]
+       (submit! #:documents-only? #t #:normal-change? #t)]
       ["workspace/didChangeWatchedFiles"
        (when (for/or ([change (in-list (hash-ref params 'changes))]) (relevant-change? (hash-ref change 'uri)))
          (submit!))]
       ["workspace/didChangeWorkspaceFolders"
-       (define (folders key) (map (lambda (folder) (hash-ref folder 'uri)) (hash-ref (hash-ref params 'event) key)))
+       (define (folders key) (filter file-uri? (map (lambda (folder) (hash-ref folder 'uri)) (hash-ref (hash-ref params 'event) key))))
        (set! roots (append (remove* (folders 'removed) roots) (folders 'added)))
        (watch-folders! (folders 'added) (folders 'removed))
        (submit!)]
@@ -345,6 +416,7 @@
                     'identity (and document (hash-ref document 'identity))
                     'version (and document (hash-ref document 'version))))
        (define applied settled)
+       (define captured-invalidation invalidation)
        (define cancel (make-semaphore))
        (hash-set! pending id cancel)
        (thread
@@ -356,20 +428,26 @@
                (define result
                  (with-handlers ([exn:fail? failed])
                    (sync applied (semaphore-peek-evt cancel))
-                   (workspace-analysis-query engine operation bound (semaphore-peek-evt cancel))))
+                   (set! captured-invalidation invalidation)
+                   (if document
+                       (workspace-analysis-query engine operation bound (semaphore-peek-evt cancel))
+                       (AnalysisFailure 'not-open "Document is not open"))))
                ;; Whether a rename still stands is decided once it is next to be written.
                (reply (lambda ()
-                        (with-handlers ([exn:fail? (lambda (e) (response id operation (failed e)))])
-                          (define writing-revision (car submitted))
+                        (with-handlers ([exn:fail? (lambda (e) (response id operation (failed e) captured-invalidation))])
                           (define current (hash-ref documents uri #f))
                           (define navigation? (memq operation '(definition highlights references)))
                           (define fresh? (and current document
                                               (= (hash-ref current 'identity) (hash-ref document 'identity))
                                               (= (hash-ref current 'version) (hash-ref document 'version))))
                           (define delivered
-                            (if (and navigation? (not fresh?))
-                                (AnalysisFailure 'changed "Sources changed during analysis") result))
-                          (define message (response id operation delivered))
+                            (cond
+                              [(and document navigation? (not fresh?))
+                               (if (and current (= (hash-ref current 'identity) (hash-ref document 'identity)))
+                                   (AnalysisFailure 'document-changed "Document changed during analysis")
+                                   (AnalysisFailure 'not-open "Document is no longer open in this lifetime"))]
+                              [else result]))
+                          (define message (response id operation delivered captured-invalidation))
                           (define (real value)
                             (cond
                               [(hash? value) (for/hash ([(key item) (in-hash value)]) (values key (real item)))]
@@ -384,7 +462,7 @@
                                                (path->string virtual-root) "untitled:")]
                               [else value]))
                           (define value (real message))
-                          (if (and navigation? (or (not (= writing-revision (car submitted)))
+                          (if (and navigation? (or (not (= captured-invalidation invalidation))
                                                    (not (sync/timeout 0 settled))))
                               (error-response id content-modified "Sources changed during analysis") value)))))
              (lambda () (hash-remove! pending id)))))]
@@ -394,32 +472,51 @@
     (dynamic-wind
       void
       (lambda ()
-        (for ([message (in-port read-message)])
-          (define id (and (hash? message) (hash-ref message 'id #f)))
-          (with-handlers ([exn:fail? (lambda (e)
-                                       (if id (reply (error-response id request-failed (exn-message e)))
-                                           (eprintf "Index message failed: ~a\n" (exn-message e))))])
-            (parameterize ([current-output-port (open-output-nowhere)])
-              (define method (if (eq? message 'parse-json-error) message (hash-ref message 'method #f)))
-              (define params (if (hash? message) (hash-ref message 'params (hasheq)) (hasheq)))
-              (match* (method state)
-                [('parse-json-error _) (reply (error-response (json-null) parse-error "Malformed JSON"))]
-                [(#f _) (answered! message)]
-                [("exit" _) (finish (if (eq? state 'stopped) 0 1))]
-                [("initialize" 'starting)
-                 (set! client-capabilities (hash-ref params 'capabilities (hasheq)))
-                 ;; Private messages are negotiated under this member, which a
-                 ;; generic client never sets. Such a client sees a standard server.
-                 (set! report-status? (eq? #t (capability client-capabilities 'experimental 'racketeer 'indexStatus)))
-                 (set! report-progress? (eq? #t (capability client-capabilities 'window 'workDoneProgress)))
-                 (set! roots (workspace-roots params))
-                 (set! state 'serving)
-                 (reply (success-response id (initialize-result client-capabilities)))]
-                [(_ 'starting)
-                 (when id (reply (error-response id server-not-initialized "The index server is not initialized")))]
-                [(_ 'stopped)
-                 (when id (reply (error-response id invalid-request "The index server has shut down")))]
-                [(_ 'serving) (serve-message id method params)]))))
+        (for ([message (in-port read-index-message)])
+          (define object? (hash? message))
+          (define id (and object? (hash-ref message 'id #f)))
+          (define method (and object? (hash-ref message 'method #f)))
+          (define response? (and object? (not (hash-has-key? message 'method))
+                                 (or (hash-has-key? message 'result) (hash-has-key? message 'error))))
+          (define valid-id? (or (exact-integer? id) (string? id)))
+          (define (bad-envelope!)
+            (reply (error-response (if valid-id? id (json-null)) invalid-request "Invalid request")))
+          (cond
+            [(eq? message 'parse-json-error) (reply (error-response (json-null) parse-error "Malformed JSON"))]
+            [response?
+             (when (and (equal? (hash-ref message 'jsonrpc #f) "2.0")
+                        (or valid-id? (eq? id (json-null)))
+                        (not (and (hash-has-key? message 'result) (hash-has-key? message 'error))))
+               (answered! message))]
+            [(not (and object? (equal? (hash-ref message 'jsonrpc #f) "2.0") (string? method)
+                       (or (not (hash-has-key? message 'id)) valid-id?)))
+             (bad-envelope!)]
+            [else
+             (define params (hash-ref message 'params #f))
+             (with-handlers ([exn:fail? (lambda (e)
+                                         (if id (reply (error-response id invalid-params (exn-message e)))
+                                             (eprintf "Index message failed: ~a\n" (exn-message e))))])
+               (parameterize ([current-output-port (open-output-nowhere)])
+                 (cond
+                   [(equal? method "exit") (finish (if (eq? state 'stopped) 0 1))]
+                   [(and (eq? state 'starting) (not (equal? method "initialize")))
+                    (when id (reply (error-response id server-not-initialized "The index server is not initialized")))]
+                   [(eq? state 'stopped)
+                    (when id (reply (error-response id invalid-request "The index server has shut down")))]
+                   [(and (equal? method "initialize") (not (eq? state 'starting)))
+                    (when id (reply (error-response id invalid-request "The index server is already initialized")))]
+                   [(and id (string-prefix? method "$/"))
+                    (reply (error-response id method-not-found "Unknown index method"))]
+                   [(not (valid-params? method params))
+                    (when id (reply (error-response id invalid-params "Invalid index parameters")))]
+                   [(and id (equal? method "initialize"))
+                    (set! client-capabilities (hash-ref params 'capabilities))
+                    (set! report-status? (eq? #t (capability client-capabilities 'experimental 'racketeer 'indexStatus)))
+                    (set! report-progress? (eq? #t (capability client-capabilities 'window 'workDoneProgress)))
+                    (set! roots (workspace-roots params))
+                    (set! state 'serving)
+                    (reply (success-response id (initialize-result client-capabilities)))]
+                   [(eq? state 'serving) (serve-message id method params)])))]))
         ;; The client has gone once its input ends.
         0)
       close-engine!)))

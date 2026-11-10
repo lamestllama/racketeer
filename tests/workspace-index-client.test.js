@@ -7,6 +7,7 @@ const { until } = require('./support/wait');
 const test = require('./support/node-test');
 const fs = require('node:fs');
 const path = require('node:path');
+const os = require('node:os');
 const rpc = require(require.resolve('vscode-jsonrpc/node', { paths: [require('node:path').join(__dirname, '../vscode')] }));
 const { root, definition, uses, uri, addon } = require('./workspace-index-project');
 
@@ -19,13 +20,19 @@ function client(t, processFactory, timeout = 60000, environment = {}) {
   const vm = require('node:vm');
   const { fileURLToPath } = require('node:url');
   const { createLanguageProcess, ownedArgs } = require('../vscode/language-process');
-  fs.mkdirSync(path.join(root, '.test-output'), { recursive: true });
-  const directory = fs.mkdtempSync(path.join(root, '.test-output', 'separate-index-'));
+  const temporary = path.join(os.tmpdir(), '.test-output');
+  fs.mkdirSync(temporary, { recursive: true });
+  const directory = fs.mkdtempSync(path.join(temporary, 'separate-index-'));
   const changed = event(), opened = event(), closed = event(), disk = event();
   const statuses = [];
-  const parse = value => ({ scheme: 'file', fsPath: fileURLToPath(value), toString: () => value });
+  const parse = value => {
+    const parsed = new URL(value);
+    const pathname = decodeURIComponent(parsed.pathname).replace(/^\/[A-Z]:/, drive => drive.toLowerCase());
+    return { scheme: parsed.protocol.slice(0, -1), fsPath: fileURLToPath(value),
+      toString: () => `file://${encodeURI(pathname)}` };
+  };
   const workspace = {
-    workspaceFolders: [{ uri: parse(uri(directory)) }], textDocuments: [],
+    workspaceFolders: [{ uri: parse(uri(directory)), name: 'project' }], textDocuments: [],
     getConfiguration: () => ({ get: () => ({ enabled: true, timeoutSeconds: 120 }) }),
     onDidOpenTextDocument: opened.listen, onDidCloseTextDocument: closed.listen,
     onDidChangeTextDocument: changed.listen, onDidChangeWorkspaceFolders: event().listen,
@@ -38,7 +45,7 @@ function client(t, processFactory, timeout = 60000, environment = {}) {
       Range: class { constructor(a, b, c, d) { this.start = { line: a, character: b }; this.end = { line: c, character: d }; } },
       TextEdit: class { constructor(range, newText) { this.range = range; this.newText = newText; } },
       WorkspaceEdit: class extends Map { set(uri, edits) { return super.set(uri.toString(), edits); } } },
-    'node:path': path, 'vscode-languageclient/node': environment.rpc || rpc,
+    'node:path': path, 'node:process': process, 'vscode-languageclient/node': environment.rpc || rpc,
     './racket-version': require('../vscode/racket-version'),
     './language-process': { ownedArgs, createLanguageProcess: processFactory || ((command, args, options, lifecycle) =>
       createLanguageProcess(command, args, { ...options, env: { ...process.env, PLTADDONDIR: addon } }, lifecycle)) }
@@ -103,7 +110,7 @@ function indexPeer(t, initialize = () => ({}), starting = Promise.resolve(), tim
   connection.onRequest('textDocument/references', () => []);
   connection.listen();
   const c = client(t, () => ({
-    async start() { await starting; return child; }, ready() {}, cancelStart() {},
+    async start() { await starting; if (child.stdout.destroyed) throw new Error('Process stopped'); return child; }, ready() {}, cancelStart() {},
     async dispose() {
       // A process reads what was written to it before its pipes close.
       await new Promise(resolve => setTimeout(resolve, 50));
@@ -135,7 +142,7 @@ for (const method of ['initialize', 'references', 'prepareRename', 'rename']) {
         timer = setTimeout(() => reject(new Error('Request remained pending after transport closure')), 240000);
       })]);
     } finally { clearTimeout(timer); }
-    assert.equal(c.statuses.at(-1).state, 'failed');
+    await until(() => c.statuses.at(-1)?.state === 'failed');
   });
 }
 
@@ -335,7 +342,7 @@ test('the server starts at the first request, not for documents, edits or a refr
   assert.equal(c.snapshots.length, 1, 'It hears the current documents once');
 });
 
-test('a file event outside the source suffixes waits for the next request and arrives once per folder', async t => {
+test('a file event outside the source suffixes waits for the next request and arrives once per URI', async t => {
   const c = indexPeer(t), doc = c.open('definition.rkt', definition), order = [];
   const event = name => c.disk.emit(c.parse(`file://${path.join(c.directory, name)}`));
   await c.index.start();
@@ -346,13 +353,13 @@ test('a file event outside the source suffixes waits for the next request and ar
   await new Promise(resolve => setTimeout(resolve, 100));
   assert.deepEqual(order, [], 'A request that is waiting cannot be held up by them');
   await c.refs(doc);
-  assert.deepEqual(order, [['later.log', 'output.json'], 'request']);
+  assert.deepEqual(order, [['program.log', 'later.log', 'output.json'], 'request']);
   await c.refs(doc);
-  assert.deepEqual(order, [['later.log', 'output.json'], 'request', 'request']);
+  assert.deepEqual(order, [['program.log', 'later.log', 'output.json'], 'request', 'request']);
 });
 
 test('moving in or deleting a folder with a dot in its name marks the index out of date', async t => {
-  const c = client(t), elsewhere = fs.mkdtempSync(path.join(root, '.test-output', 'dotted-'));
+  const c = client(t), elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), '.test-output', 'dotted-'));
   t.after(() => removeQuietly(elsewhere));
   fs.writeFileSync(path.join(c.directory, 'definition.rkt'), definition);
   const doc = c.open('definition.rkt', definition);
@@ -508,3 +515,53 @@ test('final index status reaches the status item', async t => {
   await c.refs(doc);
   assert.deepEqual({ ...c.statuses.at(-1) }, { state: 'ready', indexed: 3, failures: 0 });
 });
+
+for (const windows of [false, true]) for (const reopened of [false, true]) {
+  test(`rename checks parsed ${windows ? 'drive-letter' : 'file'} target URIs${reopened ? ' after close and reopen' : ' at a changed version'}`, async t => {
+    const c = indexPeer(t), doc = c.open('definition.rkt', definition), buffer = c.open('a+(b)@.rkt', uses);
+    if (windows) buffer.uri = c.parse('file:///c%3A/project/a%2B(b)%40.rkt');
+    const canonical = buffer.uri.toString();
+    const alternate = windows ? 'file:///C:/project/a+(b)@.rkt'
+      : canonical.replaceAll('+', '%2b').replaceAll('@', '%40');
+    if (reopened) buffer.uri = { ...buffer.uri, toString: () => alternate };
+    c.connection.onRequest('textDocument/rename', () => {
+      if (reopened) {
+        buffer.isClosed = true; c.closed.emit(buffer);
+        c.workspace.textDocuments.splice(c.workspace.textDocuments.indexOf(buffer), 1);
+        c.open('a+(b)@.rkt', uses).uri = c.parse(canonical);
+      } else { buffer.version++; buffer.isDirty = true; }
+      return { documentChanges: [{ textDocument: { uri: reopened ? canonical : alternate, version: reopened ? 1 : null }, edits: [] }] };
+    });
+    await c.index.start();
+    await assert.rejects(c.index.provideRenameEdits(doc, { line: 2, character: 10 }, 'squared', rpc.CancellationToken.None), refused);
+  });
+}
+
+for (const [name, glob, kind, types] of [
+  ['string glob', '**/*.rkt', 1, [1]],
+  ['folder base', '**/*.ss', 6, [2, 3]],
+  ['URI base and change kind', '**/*.scrbl', 2, [2]],
+  ['default kinds', '**/*.rktd', undefined, [1, 2, 3]]
+]) {
+  test(`watched-file registration: ${name}`, async t => {
+    const c = indexPeer(t), registrations = [], reports = [];
+    c.workspace.createFileSystemWatcher = (pattern, ...ignored) => {
+      const events = [event(), event(), event()];
+      registrations.push({ pattern, ignored, events });
+      return { dispose() {}, onDidCreate: events[0].listen, onDidChange: events[1].listen, onDidDelete: events[2].listen };
+    };
+    await c.index.start();
+    const globPattern = name === 'string glob' ? glob : { pattern: glob,
+      baseUri: name === 'folder base' ? { uri: uri(c.directory), name: 'folder' } : uri(c.directory) };
+    await c.connection.sendRequest('client/registerCapability', { registrations: [{ id: 'forms', method: 'workspace/didChangeWatchedFiles',
+      registerOptions: { watchers: [{ globPattern, ...(kind === undefined ? {} : { kind }) }] } }] });
+    const form = registrations.find(item => item.pattern === glob || item.pattern.pattern === glob);
+    assert.ok(form);
+    if (name === 'string glob') assert.equal(form.pattern, glob);
+    else assert.equal(form.pattern.baseUri.toString(), uri(c.directory));
+    c.connection.onNotification('workspace/didChangeWatchedFiles', ({ changes }) => reports.push(...changes));
+    for (const e of form.events) e.emit(c.parse(uri(path.join(c.directory, `file${path.extname(glob)}`))));
+    await c.connection.sendRequest('workspace/configuration', { items: [] });
+    assert.deepEqual(reports.map(item => item.type), types);
+  });
+}

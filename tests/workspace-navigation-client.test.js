@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const test = require('./support/node-test');
+const { until } = require('./support/wait');
 function event() {
   const callbacks = new Set();
   return { listen: callback => { callbacks.add(callback); return { dispose: () => callbacks.delete(callback) }; },
@@ -14,18 +15,19 @@ function event() {
 function fixture(t) {
   const opened = event(), closed = event(), changed = event(), statuses = [], sent = [], converted = [];
   const token = { isCancellationRequested: false, onCancellationRequested: () => ({ dispose() {} }) };
-  let answer = () => [], conversion = async value => value;
+  let answer = () => [], conversion = async value => value, closedConnection;
+  let initialising = async () => ({});
   const workspace = { textDocuments: [], workspaceFolders: [],
     getConfiguration: () => ({ get: () => ({ enabled: false }) }),
     onDidOpenTextDocument: opened.listen, onDidCloseTextDocument: closed.listen,
     onDidChangeTextDocument: changed.listen, onDidChangeWorkspaceFolders: event().listen,
     onDidChangeConfiguration: event().listen };
-  const connection = { listen() {}, dispose() {}, onNotification() {}, onError() {}, onClose() {}, onRequest() {}, onUnhandledProgress() {},
+  const connection = { listen() {}, dispose() {}, onNotification() {}, onError() {}, onClose(callback) { closedConnection = callback; }, onRequest() {}, onUnhandledProgress() {},
     sendNotification: async (method, params) => { sent.push({ method, params }); },
-    sendRequest: async (method, params) => { sent.push({ method, params }); return method.startsWith('textDocument/') ? answer(method, params) : {}; } };
+    sendRequest: async (method, params) => { sent.push({ method, params }); return method === 'initialize' ? initialising() : method.startsWith('textDocument/') ? answer(method, params) : {}; } };
   const module = { exports: {} };
   const filename = path.join(__dirname, '../vscode/workspace-index.js');
-  const dependencies = { 'node:path': path, vscode: { workspace },
+  const dependencies = { 'node:path': path, 'node:process': process, vscode: { workspace, Uri: { parse: value => ({ toString: () => value }) } },
     'vscode-languageclient/node': { createMessageConnection: () => connection,
       StreamMessageReader: class {}, StreamMessageWriter: class {},
       CancellationTokenSource: class { token = token; cancel() {} dispose() {} } },
@@ -53,6 +55,7 @@ function fixture(t) {
     method === 'references' ? index.provideReferences(document, { line: 1, character: 2 }, { includeDeclaration: true }, token, next)
       : index[method === 'definition' ? 'provideDefinition' : 'provideDocumentHighlights'](document, { line: 1, character: 2 }, token, next);
   return { index, open, call, workspace, statuses, sent, converted, changed,
+    crash: () => closedConnection(), initialise: fn => { initialising = fn; },
     answer: fn => { answer = fn; }, conversion: fn => { conversion = fn; },
     close(document) { document.isClosed = true; workspace.textDocuments.splice(workspace.textDocuments.indexOf(document), 1); closed.emit(document); } };
 }
@@ -122,6 +125,58 @@ for (const method of ['definition', 'documentHighlight', 'references']) {
     assert.equal(asked, 2);
     p.conversion(async value => value);
     p.answer(() => { change(); return stale; });
-    assert.equal((await p.call(method, origin)).length, 0, 'Sources that never settle give nothing, not a stale location');
+    assert.equal(await p.call(method, origin, () => 'accepted source'), 'accepted source',
+      'Sources that never settle fall back without delivering a stale location');
+    p.answer(() => { throw Object.assign(new Error('settings changed'), { code: -32801 }); });
+    assert.equal(await p.call(method, origin, () => 'accepted source'), 'accepted source');
   });
 }
+
+test('initialize identifies the extension host process', async t => {
+  const p = fixture(t);
+  await p.index.start();
+  assert.equal(p.sent.find(message => message.method === 'initialize').params.processId, process.pid);
+});
+
+test('a crashed index restarts at most three times and restores current open documents', async t => {
+  const p = fixture(t), doc = p.open('file:///origin');
+  await p.index.start();
+  for (let crash = 0; crash < 3; crash++) {
+    let release, entered;
+    const waiting = new Promise(resolve => { entered = resolve; });
+    p.initialise(() => { entered(); return new Promise(resolve => { release = resolve; }); });
+    p.crash();
+    await Promise.race([waiting, new Promise((_, reject) => setTimeout(() => reject(new Error('Index did not restart')), 2000))]);
+    doc.version++; doc.getText = () => `source ${doc.version}`;
+    p.changed.emit({ document: doc, contentChanges: [{ text: doc.getText() }] });
+    const closed = p.open('file:///closed'); p.close(closed);
+    release({});
+    await until(() => p.sent.filter(message => message.method === 'textDocument/didOpen' && message.params.textDocument.uri === 'file:///origin').length === crash + 2);
+    assert.equal(p.sent.filter(message => message.method === 'textDocument/didOpen').at(-1).params.textDocument.text, doc.getText());
+    assert.equal((await p.call('definition', doc)).length, 0);
+  }
+  p.crash();
+  assert.equal(p.statuses.at(-1).state, 'failed');
+  await assert.rejects(p.index.start(), /stopped/i);
+  assert.equal(p.sent.filter(message => message.method === 'initialize').length, 4);
+});
+
+test('a connection closing during initialisation restarts and synchronises open documents', async t => {
+  const p = fixture(t), doc = p.open('file:///origin');
+  let entered, reject, restarted;
+  const initialising = new Promise(resolve => { entered = resolve; });
+  const again = new Promise(resolve => { restarted = resolve; });
+  p.initialise(() => { entered(); return new Promise((_, fail) => { reject = fail; }); });
+  const pending = p.index.start();
+  await initialising;
+  p.initialise(() => { restarted(); return {}; });
+  p.crash(); reject(new Error('Connection closed'));
+  await assert.rejects(pending, /Connection closed/);
+  let timer;
+  try {
+    await Promise.race([again, new Promise((_, fail) => { timer = setTimeout(() => fail(new Error('Index did not restart')), 2000); })]);
+  } finally { clearTimeout(timer); }
+  await p.index.start();
+  assert.ok(p.sent.some(message => message.method === 'textDocument/didOpen' && message.params.textDocument.uri === doc.uri.toString()));
+  assert.equal(p.statuses.filter(status => status.state === 'failed').length, 0);
+});

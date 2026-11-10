@@ -174,3 +174,25 @@ test('successive renames use unsaved edits in every changed buffer', async t => 
   assert.equal(fs.readFileSync(p.filename('definition.rkt'), 'utf8'), definition);
   assert.equal(fs.readFileSync(p.filename('uses.rkt'), 'utf8'), uses);
 });
+
+test('rename preserves the client URI and version across equivalent path spellings and reopen', async t => {
+  const p = await project(t);
+  const name = 'a+(b)@.rkt', canonical = uri(p.filename(name));
+  const key = canonical.replaceAll('+', '%2b').replaceAll('(', '%28').replaceAll(')', '%29').replaceAll('@', '%40');
+  p.write(name, definition);
+  p.open(key, definition, 7); await p.update();
+  const first = await p.rename(key, 'squared');
+  assert.deepEqual(first.documentChanges.map(change => change.textDocument), [{ uri: key, version: 7 }]);
+  p.documents.delete(key); await p.update(true);
+  p.open(key, definition, 1); await p.update(true);
+  const reopened = await p.rename(key, 'squared');
+  assert.deepEqual(reopened.documentChanges.map(change => change.textDocument), [{ uri: key, version: 1 }]);
+});
+
+test('empty content changes retain the text and advance the rename version', async t => {
+  const p = await project(t);
+  await p.notify('textDocument/didChange', { textDocument: { uri: p.origin, version: 8 }, contentChanges: [] });
+  const result = await p.rename(p.origin, 'squared');
+  assert.equal(result.documentChanges.find(change => change.textDocument.uri === p.origin).textDocument.version, 8);
+  assert.equal(result.changes[p.origin].length, 2);
+});

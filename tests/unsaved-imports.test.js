@@ -74,7 +74,10 @@ test('unsaved compile-time imports replace values baked into compiled intermedia
 (define-syntax (bake stx) (datum->syntax stx (list 'quote stamp)))
 (define stamp (bake))
 `);
-  const compiled = spawnSync('raco', ['make', p.filename('bridge.rkt')], { encoding: 'utf8', env: { ...process.env, PLTADDONDIR: addon } });
+  const compile = `(require compiler/cm)
+(parameterize ([current-compiled-file-roots '(same)])
+  (managed-compile-zo (string->path ${JSON.stringify(p.filename('bridge.rkt'))})))`;
+  const compiled = spawnSync('racket', ['-e', compile], { encoding: 'utf8', env: { ...process.env, PLTADDONDIR: addon } });
   assert.equal(compiled.status, 0, compiled.stderr);
   const bytecode = p.filename('compiled/bridge_rkt.zo');
   const before = fs.readFileSync(bytecode);

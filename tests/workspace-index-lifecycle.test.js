@@ -70,7 +70,7 @@ test('requests before initialize answer ServerNotInitialized and notifications a
   server.send(references(directory, 2));
   const answer = await server.next();
   assert.equal(answer.id, 2);
-  assert.equal(answer.error.code, -32801, 'The dropped open left no document to answer for');
+  assert.equal(answer.error.code, requestFailed, 'The dropped open left no document to answer for');
 });
 
 test('a second initialize answers InvalidRequest', async t => {
@@ -108,7 +108,7 @@ test('the end of its input still ends the process', async t => {
   assert.equal(await exitCode(server), 0);
 });
 
-test('shutdown answers a request it interrupts with InvalidRequest, not a cancellation', async t => {
+test('shutdown answers a request it interrupts with RequestFailed', async t => {
   const directory = workspace(t), server = rawServer(t);
   const entered = path.join(directory, 'entered');
   fs.writeFileSync(path.join(directory, 'blocked.rkt'), `#lang racket/base
@@ -123,7 +123,7 @@ test('shutdown answers a request it interrupts with InvalidRequest, not a cancel
   await until(() => fs.existsSync(entered), 'Index enters blocked expansion');
   server.send({ id: 2, method: 'shutdown' });
   const answers = [await server.next(), await server.next()];
-  assert.equal(answers.find(answer => answer.id === 1).error.code, invalidRequest);
+  assert.equal(answers.find(answer => answer.id === 1).error.code, requestFailed);
   assert.equal(answers.find(answer => answer.id === 2).result, null);
 });
 
@@ -140,7 +140,7 @@ test('shutdown answers a request still waiting for settings, which a client clos
   answers.push(await Promise.race([second, delay(3000, 'still waiting')]));
   if (answers[1] === 'still waiting') server.send({ id: pull.id, result: [{}] });
   assert.notEqual(answers[1], 'still waiting');
-  assert.equal(answers.find(answer => answer.id === 'refs').error.code, invalidRequest);
+  assert.equal(answers.find(answer => answer.id === 'refs').error.code, requestFailed);
   assert.equal(answers.find(answer => answer.id === 'stop').result, null);
 });
 
@@ -327,7 +327,7 @@ test('a rename waiting for the writer refuses after a change read meanwhile', as
   await delay(2000);
   server.send({ id: 'rename', method: 'textDocument/rename', params: { textDocument: { uri: uri(origin) },
     position: { line: 2, character: 10 }, newName: 'squared' } });
-  await until(() => /rename [^\n]*: reaped/.test(logged), () => logged);
+  await until(() => /rename [^\n]*: finished/.test(logged), () => logged);
   await delay(100);
   // The old answer's ranges would now address other text.
   fs.writeFileSync(consumer, `; a new first line\n${text}`);
@@ -399,4 +399,69 @@ test('a progress token the client rejects is not used', async t => {
   server.send({ id: create.id, error: { code: -32603, message: 'No progress here' } });
   const next = await server.next();
   assert.equal(next.id, 'refs', `Unexpected ${next.method} on a rejected token`);
+});
+
+for (const [name, message, code, id] of [
+  ['array', [], -32600, null], ['number', 5, -32600, null], ['null', null, -32600, null],
+  ['wrong version', { jsonrpc: '1.0', id: 'bad', method: 'workspace/executeCommand', params: { command: 'racketeer.refreshWorkspaceIndex' } }, -32600, 'bad'],
+  ['incomplete object', { jsonrpc: '2.0', id: 'bad' }, -32600, 'bad'],
+  ['numeric method', { jsonrpc: '2.0', id: 'bad', method: 5 }, -32600, 'bad'],
+  ['null request id', { jsonrpc: '2.0', id: null, method: 'workspace/executeCommand', params: { command: 'racketeer.refreshWorkspaceIndex' } }, -32600, null],
+  ['reserved request', { jsonrpc: '2.0', id: 'bad', method: '$/cancelRequest', params: { id: 0 } }, -32601, 'bad']
+]) {
+  test(`invalid envelope: ${name}`, async t => {
+    const server = rawServer(t);
+    await initialize(server);
+    server.writeFrame(JSON.stringify(message));
+    server.send({ id: 'stop', method: 'shutdown' });
+    const answer = await server.next();
+    assert.equal(answer.id, id);
+    assert.equal(answer.error?.code, code);
+  });
+}
+for (const [name, params] of [['missing', undefined], ['empty', {}], ['array', []],
+  ['wrong URI', { textDocument: { uri: 5 }, position: { line: 0, character: 0 } }],
+  ['wrong position', { textDocument: { uri: 'file:///missing.rkt' }, position: { line: -1, character: 0 } }]]) {
+  test(`invalid document parameters: ${name}`, async t => {
+    const server = rawServer(t);
+    await initialize(server);
+    server.send({ id: 'bad', method: 'textDocument/definition', params });
+    assert.equal((await server.next()).error.code, -32602);
+  });
+}
+
+test('a never-opened document reports that it is not open', async t => {
+  const directory = workspace(t), server = rawServer(t);
+  await initialize(server, {}, directory);
+  for (const method of ['textDocument/definition', 'textDocument/rename']) {
+    server.send({ ...references(directory, 'closed'), method, params: { ...references(directory, 0).params, newName: 'squared' } });
+    const answer = await server.next();
+    assert.equal(answer.error.code, requestFailed);
+    assert.match(answer.error.message, /document is not open/i);
+  }
+});
+
+test('an error response whose settings cannot be applied is never answered', async t => {
+  const server = rawServer(t);
+  server.send({ id: 'init', method: 'initialize', params: { processId: null, rootUri: null, capabilities: { workspace: { configuration: true } },
+    workspaceFolders: [{ uri: 'file:///bad%00path', name: 'unusable' }] } });
+  await server.next();
+  server.send({ method: 'initialized', params: {} });
+  const pull = await server.next();
+  server.send({ id: pull.id, error: { code: -32601, message: 'unavailable' } });
+  server.send({ id: 'stop', method: 'shutdown' });
+  assert.equal((await server.next()).id, 'stop');
+});
+
+test('non-file folders do not contribute files to a scan', async t => {
+  const directory = workspace(t), server = rawServer(t);
+  fs.writeFileSync(path.join(directory, 'other.rkt'), '#lang racket/base\n(define other 1)\n');
+  server.send({ id: 'init', method: 'initialize', params: { processId: null, rootUri: null, capabilities: asking,
+    workspaceFolders: [{ uri: uri(directory).replace('file:', 'untitled:'), name: 'virtual' }] } });
+  await server.next();
+  server.send({ method: 'initialized', params: {} });
+  open(server, directory); server.send(references(directory, 'refs'));
+  const status = await server.next();
+  assert.equal(status.method, 'racketeer/indexStatus');
+  assert.equal(status.params.total, 0, 'A non-file root contributes no files');
 });

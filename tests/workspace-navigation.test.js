@@ -10,7 +10,8 @@ const test = require('./support/node-test');
 const { project, uri } = require('./workspace-index-project');
 const range = (line, character, length) => ({ start: { line, character }, end: { line, character: character + length } });
 const query = (p, method, key, line, character) => p.request(`textDocument/${method}`, {
-  textDocument: { uri: key }, position: { line, character }
+  textDocument: { uri: key }, position: { line, character },
+  ...(method === 'references' ? { context: { includeDeclaration: false } } : {})
 });
 const local = '#lang racket/base\n(define (f x) (+ x x))\n(f 1)\n';
 
@@ -163,7 +164,7 @@ test('a blocked request is retired by same-version close and reopen', async t =>
   p.documents.delete(key); await p.update(true);
   p.open(key, local, 1); await p.update(true);
   const retired = await pending;
-  assert.ok([-32800, -32801].includes(retired.error?.code), JSON.stringify(retired));
+  assert.equal(retired.error?.code, -32803, JSON.stringify(retired));
   assert.deepEqual(await query(p, 'definition', key, 1, 17), [{ uri: key, range: range(1, 11, 1) }]);
 });
 
@@ -350,4 +351,31 @@ test('a changed descriptor is ContentModified rather than a source fallback', as
   assert.deepEqual(await query(p, 'definition', key, 3, 14), []);
   p.write(descriptor, profile('#t'));
   assert.deepEqual(await query(p, 'definition', key, 3, 14), [{ uri: key, range: range(3, 11, 1) }]);
+});
+
+for (const notification of ['didOpen', 'didChange']) {
+  test(`${notification} preserves backslash r newline and normalises real CRLF pairs`, async t => {
+    const p = await project(t); p.settings.enabled = false;
+    const source = '#lang racket/base\r\n"\\r\n"\r\n(define value 1)\r\nvalue\r\n';
+    const key = p.open('text.rkt', notification === 'didOpen' ? source : '#lang racket/base\n');
+    await p.update();
+    if (notification === 'didChange') {
+      Object.assign(p.documents.get(key), { text: source, version: 2 }); await p.update();
+    }
+    assert.deepEqual(await query(p, 'definition', key, 4, 2), [{ uri: key, range: range(3, 8, 5) }]);
+  });
+}
+
+test('an ordinary edit overtaking navigation receives an answer without ContentModified', async t => {
+  const p = await project(t); p.settings.enabled = false;
+  const entered = p.filename('entered'), released = p.filename('released');
+  const source = `#lang racket/base\n(require (for-syntax racket/base))\n(begin-for-syntax (call-with-output-file ${JSON.stringify(entered)} #:exists 'truncate void) (let wait () (unless (file-exists? ${JSON.stringify(released)}) (sleep 0.01) (wait))))\n(define (f x) x)\n`;
+  const key = p.open('overtaken.rkt', source); await p.update();
+  const answer = query(p, 'definition', key, 3, 14).then(value => ({ value }), error => ({ error }));
+  await until(() => fs.existsSync(entered), 'document expansion reached its barrier');
+  Object.assign(p.documents.get(key), { text: source + '\n', version: 2 });
+  await p.update(true); p.write('released', '');
+  const result = await answer;
+  assert.equal(result.error, undefined, result.error?.message);
+  assert.ok(Array.isArray(result.value) || result.value === null);
 });

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 'use strict';
 const path = require('node:path');
+const { pid } = require('node:process');
 const vscode = require('vscode');
 const { createMessageConnection, StreamMessageReader, StreamMessageWriter, CancellationTokenSource } = require('vscode-languageclient/node');
 const { createLanguageProcess, ownedArgs } = require('./language-process');
@@ -21,9 +22,10 @@ function createWorkspaceIndex(context, { executable, timeout, output, onStatus, 
   let identity = 0, sourceRevision = 0, heard = Date.now(), folders = [];
   const identities = new WeakMap();
   // The documents the server holds, at the versions it has.
-  const versions = new WeakMap();
+  let versions = new WeakMap();
+  let restarts = 0, stopped;
   const watchers = new Map();
-  // File events waiting for the next request: the latest in each folder.
+  // File events waiting for the next request: the latest for each URI.
   const held = new Map();
   // When each URI last closed, counted by closes, so a rename can tell a document
   // that was closed and reopened at the same version from one that stayed open.
@@ -41,7 +43,7 @@ function createWorkspaceIndex(context, { executable, timeout, output, onStatus, 
     output.appendLine(`Workspace index: ${error.message || error}`);
     onStatus({ state: 'failed', indexed: 0, failures: 1 });
   }
-  const process = createLanguageProcess(executable, ownedArgs(context, [context.asAbsolutePath('workspace-index-server.rkt')]),
+  const serverProcess = createLanguageProcess(executable, ownedArgs(context, [context.asAbsolutePath('workspace-index-server.rkt')]),
     { cwd: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath },
     { owned: true, timeout, name: 'Workspace index', onTimeout: failure });
   const currentFolders = () => (vscode.workspace.workspaceFolders || []).map(folder => ({ uri: folder.uri.toString(), name: folder.name }));
@@ -80,19 +82,20 @@ function createWorkspaceIndex(context, { executable, timeout, output, onStatus, 
       if (sourceSuffixes.includes(path.extname(uri.fsPath).toLowerCase())) {
         synchronize(() => notify('workspace/didChangeWatchedFiles', { changes: [change] }));
       } else synchronize(() => {
-        // The server discards a report of an excluded folder, so it must not displace one
-        // the server needs. It reads the setting as a list of strings or not at all.
+        // The server reads the exclusion setting as a list of strings or not at all.
         const excluded = settings().excludedDirectories;
         if (!(Array.isArray(excluded) && excluded.every(name => typeof name === 'string') &&
               excluded.includes(path.basename(uri.fsPath)))) {
-          held.set(path.dirname(uri.fsPath), change);
+          held.set(uri.toString(), change);
         }
       });
     };
-    const items = registerOptions.watchers.flatMap(({ globPattern }) => {
-      const watcher = vscode.workspace.createFileSystemWatcher(
-        new vscode.RelativePattern(vscode.Uri.parse(globPattern.baseUri), globPattern.pattern));
-      return [watcher, watcher.onDidCreate(report(1)), watcher.onDidChange(report(2)), watcher.onDidDelete(report(3))];
+    const items = registerOptions.watchers.flatMap(({ globPattern, kind = 7 }) => {
+      const pattern = typeof globPattern === 'string' ? globPattern : new vscode.RelativePattern(
+        vscode.Uri.parse(typeof globPattern.baseUri === 'string' ? globPattern.baseUri : globPattern.baseUri.uri), globPattern.pattern);
+      const watcher = vscode.workspace.createFileSystemWatcher(pattern, !(kind & 1), !(kind & 2), !(kind & 4));
+      return [watcher, ...(kind & 1 ? [watcher.onDidCreate(report(1))] : []),
+        ...(kind & 2 ? [watcher.onDidChange(report(2))] : []), ...(kind & 4 ? [watcher.onDidDelete(report(3))] : [])];
     });
     watchers.set(id, { dispose: () => items.forEach(item => item.dispose()) });
   }
@@ -103,21 +106,42 @@ function createWorkspaceIndex(context, { executable, timeout, output, onStatus, 
   // The server starts when first asked for, and its index when a request needs it.
   async function start() {
     if (disposed) return;
+    if (stopped) throw stopped;
     if (starting) return starting;
     starting = (async () => {
       const tooOld = await racketTooOld(executable);
       if (tooOld) throw Object.assign(new Error(tooOld), { refused: true });
-      const child = await process.start();
+      const child = await serverProcess.start();
       if (disposed) return;
       child.stderr.setEncoding('utf8');
       child.stderr.on('data', text => output.append(text));
       connection = createMessageConnection(new StreamMessageReader(child.stdout), new StreamMessageWriter(child.stdin));
       connection.onNotification('racketeer/indexStatus', status => { heard = Date.now(); onStatus(status); });
       connection.onError(([error]) => failure(error));
+      const peer = connection;
       connection.onClose(() => {
+        if (connection !== peer) return;
         synchronized = false;
-        connection.dispose();
-        if (!disposed) failure(new Error('Process stopped. Run Racket: Restart Language Server to restart language tools.'));
+        sourceRevision++;
+        peer.dispose();
+        if (disposed || stalled || serverProcess.cancelled) return;
+        if (restarts++ >= 3) {
+          stopped = new Error('Process stopped. Run Racket: Restart Language Server to restart language tools.');
+          failure(stopped);
+          return;
+        }
+        watchers.forEach(item => item.dispose());
+        watchers.clear(); held.clear(); versions = new WeakMap();
+        const previous = starting, attempt = restarts;
+        starting = (async () => {
+          await previous?.catch(() => {});
+          if (disposed) return;
+          starting = undefined;
+          await start();
+        })();
+        void starting.catch(error => {
+          if (restarts === attempt && !stopped) { stopped = error; failure(error); }
+        });
       });
       connection.onRequest('window/workDoneProgress/create', () => null);
       connection.onUnhandledProgress(({ value }) => {
@@ -131,7 +155,7 @@ function createWorkspaceIndex(context, { executable, timeout, output, onStatus, 
       connection.listen();
       folders = currentFolders();
       await connection.sendRequest('initialize', {
-        processId: null, clientInfo: { name: 'Racketeer' }, rootUri: null, workspaceFolders: folders,
+        processId: pid, clientInfo: { name: 'Racketeer' }, rootUri: null, workspaceFolders: folders,
         capabilities: { general: { positionEncodings: ['utf-16'] },
           window: { workDoneProgress: true },
           textDocument: { rename: { prepareSupport: true } },
@@ -141,7 +165,7 @@ function createWorkspaceIndex(context, { executable, timeout, output, onStatus, 
       });
       if (disposed) return;
       await connection.sendNotification('initialized', {});
-      process.ready();
+      serverProcess.ready();
       synchronized = true;
       // It sees what happened during startup.
       didChangeFolders();
@@ -170,7 +194,7 @@ function createWorkspaceIndex(context, { executable, timeout, output, onStatus, 
     }),
     vscode.workspace.onDidCloseTextDocument(document => {
       identities.delete(document);
-      closes.set(document.uri.toString(), ++closeCount);
+      closes.set(vscode.Uri.parse(document.uri.toString()).toString(), ++closeCount);
       if (isSource(document)) { sourceRevision++; synchronize(() => didClose(document)); }
     }),
     vscode.workspace.onDidChangeWorkspaceFolders(() => synchronize(didChangeFolders)),
@@ -205,7 +229,7 @@ function createWorkspaceIndex(context, { executable, timeout, output, onStatus, 
         synchronized = false;
         resolve(silent);
         connection.dispose();
-        void process.dispose();
+        void serverProcess.dispose();
       }, Math.min(1000, timeout));
       connection.sendRequest(method, params, source.token).then(resolve, reject);
     }).finally(() => { clearInterval(check); linked.dispose(); source.dispose(); }).then(value => { if (value !== silent) heard = Date.now(); return value; });
@@ -240,8 +264,9 @@ function createWorkspaceIndex(context, { executable, timeout, output, onStatus, 
   // settings and folder events read before the answer are the server's to absorb:
   // it starts again, and answers from the new sources or refuses.
   function editable({ textDocument: { uri, version } }, began) {
-    const open = vscode.workspace.textDocuments.find(document => document.uri.toString() === uri && !document.isClosed);
-    return version === null ? !open?.isDirty : open?.version === version && !(closes.get(uri) > began);
+    const parsed = vscode.Uri.parse(uri).toString();
+    const open = vscode.workspace.textDocuments.find(document => vscode.Uri.parse(document.uri.toString()).toString() === parsed && !document.isClosed);
+    return version === null ? !open?.isDirty : open?.version === version && !(closes.get(parsed) > began);
   }
   // The process is ended either way, so a server slow to close its engine
   // holds up restarting language tools only briefly.
@@ -287,11 +312,11 @@ function createWorkspaceIndex(context, { executable, timeout, output, onStatus, 
         throw error;
       }
     }
-    return [];
+    return fresh() ? next(...args) : [];
   }
   return {
     start, refresh,
-    cancelStart: () => process.cancelStart(),
+    cancelStart: () => serverProcess.cancelStart(),
     async prepareRename(document, position, token, next) {
       if (document.uri.scheme !== 'file' || !isSource(document)) return next(document, position, token);
       const result = await renameRequest('textDocument/prepareRename', document, position, token);
@@ -320,7 +345,7 @@ function createWorkspaceIndex(context, { executable, timeout, output, onStatus, 
       watchers.forEach(item => item.dispose());
       if (synchronized) await stopServer();
       connection?.dispose();
-      await process.dispose();
+      await serverProcess.dispose();
       await starting?.catch(() => {});
     }
   };

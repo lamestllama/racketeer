@@ -437,10 +437,12 @@ belongs to the extension. The capability record is its contract.
 | --- | --- |
 | `positionEncoding` | `utf-16` |
 | `textDocumentSync` | `{ openClose: true, change: 1 }`: whole text on each change |
+| `definitionProvider` | `true` |
+| `documentHighlightProvider` | `true` |
 | `referencesProvider` | `true` |
 | `renameProvider` | `{ prepareProvider: true }` for a client with `prepareSupport`, otherwise `true` |
 | `executeCommandProvider` | `racketeer.refreshWorkspaceIndex` forgets what earlier analyses found and marks the index out of date, so the next request analyses every file |
-| `workspace.workspaceFolders` | Supported, with change notifications |
+| `workspace` | `workspaceFolders` is supported, with change notifications |
 | `experimental.racketeer` | The private extensions below |
 
 The lifecycle is standard. Before `initialize` a request answers
@@ -450,7 +452,8 @@ of the input also ends the process, which is the path when a client dies.
 
 The source view comes from standard messages. `textDocument/didOpen` starts a document
 lifetime, and a request belongs to the lifetime current when the request is read, since
-everything sent before it has been read too. A later edit or close retires the request.
+everything sent before it has been read too. Navigation answers ordinary edits normally;
+the client checks whether the answer is still useful. Closing a document retires its lifetime.
 Every change only marks the index out of date, and the next request starts a pass. Opening
 or closing a document over the same sources keeps the index's answers, and the next request
 has the disk verified by a pass. With `workspace.didChangeWatchedFiles.dynamicRegistration`, the server registers `**/*`:
@@ -465,11 +468,12 @@ waits for that one. A client without that capability gets the defaults.
 | Outcome | Answer |
 | --- | --- |
 | Request cancelled by the client | RequestCancelled |
-| References for a retired lifetime | ContentModified |
+| Navigation for a retired lifetime or a document that is not open | RequestFailed |
+| Roots, settings or external sources changed during navigation | ContentModified |
 | Rename or prepareRename for a retired lifetime or an overtaken result | RequestFailed, `Workspace changed during rename. Try Rename again.` |
 | Rename refused, analysis failed or index incomplete | RequestFailed |
 | A request whose run was replaced by a change after it had waited `timeoutSeconds` with no more files analysed | RequestFailed, `Workspace sources kept changing for N seconds. Try again when they settle.` |
-| A request interrupted by `shutdown` | InvalidRequest |
+| A request interrupted by `shutdown` | RequestFailed |
 | Malformed JSON | ParseError with a null id |
 
 A source that keeps changing replaces every pass, so a waiting request is bounded: it

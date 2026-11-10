@@ -130,6 +130,11 @@
              (hasheq 'uri uri 'identity 1 'version 1 'position (hasheq 'line 1 'character 17))))
            (check-true (AnalysisResult? result))
            (check-true ((AnalysisResult-current? result)))
+           (workspace-analysis-update! engine
+             (hasheq 'revision 2 'documentsOnly #t 'roots '() 'documents
+               (list (hasheq 'uri uri 'identity 1 'version 1
+                 'text (string-append text "(require \"leaf.rkt\")\n")))))
+           (check-true ((AnalysisResult-current? result)) "Ordinary document synchronisation keeps captured contents valid")
            (display-to-file "#lang racket/base\n(provide value)\n(define value 2)\n" leaf #:exists 'truncate)
            (check-false ((AnalysisResult-current? result))))
          (lambda () (workspace-analysis-close! engine))))))
