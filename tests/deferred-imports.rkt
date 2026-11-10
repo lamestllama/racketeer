@@ -116,8 +116,12 @@
                      (error 'imports "front end did not index and query its store: ~s" result))
                    ((api 'workspace-analysis-close!) analysis)
                    (write (sort (hash-keys loaded) string<?))))))
+      ;; The child's diagnostics are checked below, and a CI job turns tracing on.
+      (define quiet (environment-variables-copy (current-environment-variables)))
+      (environment-variables-set! quiet #"RACKETEER_INDEX_TRACE" #f)
       (set!-values (child from to errors)
-                   (subprocess #f #f #f (find-executable-path "racket") "-e" (format "~s" launch)))
+                   (parameterize ([current-environment-variables quiet])
+                     (subprocess #f #f #f (find-executable-path "racket") "-e" (format "~s" launch))))
       (when worker?
         (write (list (map path->bytes (current-library-collection-paths))
                      (for/list ([root (in-list (current-compiled-file-roots))])

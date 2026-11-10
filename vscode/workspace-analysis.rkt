@@ -659,11 +659,13 @@
                        ;; populate a replacement run, even if cancellation is late.
                        ;; Keep the store's binding-to-path indices in their wire
                        ;; form, so the engine needs no analysis types or libraries.
-                       (when (for/or ([root (in-list (Run-roots run))]) (directory-contains? root path))
+                       (define contribution-path (car (Result-contribution result)))
+                       (when (for/or ([root (in-list (Run-roots run))])
+                               (directory-contains? root contribution-path))
                          (for ([entries (in-list (cdr (Result-contribution result)))]
                                [index (in-list (Run-workspace run))])
                            (for ([entry (in-list entries)])
-                             (hash-set! (hash-ref! index (car entry) make-hash) path (cdr entry)))))
+                             (hash-set! (hash-ref! index (car entry) make-hash) contribution-path (cdr entry)))))
                        (hash-set! (Run-sources run) path (Result-text result))
                        (set! indexed (add1 indexed))])]
                    [failure
