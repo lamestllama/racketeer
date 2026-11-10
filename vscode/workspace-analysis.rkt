@@ -552,7 +552,11 @@
     (with-handlers ([exn:fail? source-error])
       (with-module-reading-parameterization
         (lambda () (read-syntax (source-syntax-source source) in)))))
-  (define adapter (resolve-workspace-language-adapter path text pre roots))
+  ;; A descriptor that cannot be resolved fails this analysis, as a read error does.
+  (define adapter
+    (with-handlers ([(lambda (e) (and (exn:fail? e) (not (out-of-memory? e))))
+                     (lambda (_) (error 'workspace-analysis "analysis failed: ~a" path))])
+      (resolve-workspace-language-adapter path text pre roots)))
   (define policy (language-policy-with-adapter (source->language-policy text (source-uri source)) adapter))
   (define stx
     (if (and adapter (syntax? pre))
