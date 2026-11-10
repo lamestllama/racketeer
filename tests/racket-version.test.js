@@ -219,7 +219,7 @@ test('the workspace index does not start on a Racket that is too old, and each r
     'vscode-languageclient/node': {},
     './language-process': { ownedArgs: () => [], createLanguageProcess: () => ({ start: async () => { started++; }, cancelStart() {}, ready() {}, dispose: async () => {} }) } });
   const index = createWorkspaceIndex({ asAbsolutePath: file => file },
-    { executable: old, timeout: 1000, output: { append() {}, appendLine() {} }, onStatus: value => statuses.push(value) });
+    { supportsDocument: document => document.languageId === 'racket', executable: old, timeout: 1000, output: { append() {}, appendLine() {} }, onStatus: value => statuses.push(value) });
   t.after(() => index.dispose());
   const document = { uri: parse('/workspace/a.rkt'), languageId: 'racket', version: 1, isClosed: false, getText: () => '' };
   const token = { isCancellationRequested: false };

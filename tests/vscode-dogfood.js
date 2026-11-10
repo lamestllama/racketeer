@@ -85,6 +85,7 @@ exports.run = async function () {
     ['tests/workspace-compact.rkt', 10],
     ['tests/workspace-incremental.rkt', 2],
     ['tests/workspace-memory.rkt', 3],
+    ['tests/workspace-navigation.rkt', 6],
     ['tests/workspace-worker.rkt', 9],
     ['tests/wxme-source.rkt', 9],
     ['tests/wxme-lazy.rkt', 1]

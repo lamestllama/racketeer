@@ -7,6 +7,7 @@
          racket/match
          racket/path
          racket/port
+         racket/string
          racket-langserver/common/path-util
          racket-langserver/lsp/msg-io
          racket-langserver/lsp/responses
@@ -34,7 +35,9 @@
 (define request-cancelled -32800)
 
 (define operations
-  (hash "textDocument/references" 'references
+  (hash "textDocument/definition" 'definition
+        "textDocument/documentHighlight" 'highlights
+        "textDocument/references" 'references
         "textDocument/prepareRename" 'prepare-rename
         "textDocument/rename" 'rename))
 
@@ -53,6 +56,8 @@
   (hasheq 'capabilities
           (hasheq 'positionEncoding "utf-16"
                   'textDocumentSync (hasheq 'openClose #t 'change 1)
+                  'definitionProvider #t
+                  'documentHighlightProvider #t
                   'referencesProvider #t
                   'renameProvider (if (capability client-capabilities 'textDocument 'rename 'prepareSupport)
                                       (hasheq 'prepareProvider #t)
@@ -148,6 +153,7 @@
   (define client-capabilities (hasheq))
   (define documents (make-hash))
   (define lifetimes 0)
+  (define virtual-root (build-path (car (explode-path (find-system-path 'temp-dir))) (format "racketeer-memory-~a-~a" (current-inexact-milliseconds) (random 1000000000))))
   (define roots '())
   ;; No pass starts until the first settings are known.
   (define settings #f)
@@ -247,15 +253,16 @@
     ;; LSP clients do not show ContentModified, and the user must try a rename again.
     (define stale (error-response id request-failed "Workspace changed during rename. Try Rename again."))
     (match result
-      [(AnalysisResult _ value) #:when (eq? operation 'references) (success-response id value)]
-      [(AnalysisResult revision value)
+      [(AnalysisResult revision value current?)
        (define current submitted)
        (cond
          ;; Overtaken by a message already read, or by settings not yet applied.
-         [(not (and (= revision (car current)) (sync/timeout 0 settled))) stale]
+         [(not (and (= revision (car current)) (sync/timeout 0 settled) (current?)))
+          (if (memq operation '(definition highlights references))
+              (error-response id content-modified "Sources changed during analysis") stale)]
          [(eq? operation 'rename) (success-response id (workspace-edit value (cdr current)))]
          [else (success-response id value)])]
-      [(AnalysisFailure 'changed _) #:when (not (eq? operation 'references)) stale]
+      [(AnalysisFailure 'changed _) #:when (memq operation '(rename prepare-rename)) stale]
       [(AnalysisFailure reason message)
        (error-response id (case reason
                             [(cancelled) request-cancelled]
@@ -275,8 +282,15 @@
        (define document (hash-ref params 'textDocument))
        (set! lifetimes (add1 lifetimes))
        (hash-set! documents (hash-ref document 'uri)
-                  (hasheq 'uri (hash-ref document 'uri) 'identity lifetimes
-                          'version (hash-ref document 'version) 'text (hash-ref document 'text)))
+                  (let* ([uri (hash-ref document 'uri)]
+                         [file? (file-uri? uri)]
+                         [parent (and (not file?) (with-handlers ([exn:fail? (lambda (_) #f)])
+                                                   (path-only (uri->path uri))))])
+                    (hasheq 'uri uri 'identity lifetimes
+                            'path (if file? (normalize-source-path (uri->path uri)) (build-path virtual-root (format "~a.rkt" lifetimes)))
+                            'directory (if file? (path-only (uri->path uri))
+                                           (and parent (directory-exists? parent) (path->complete-path parent)))
+                            'version (hash-ref document 'version) 'text (hash-ref document 'text))))
        (submit! #:documents-only? #t)]
       ["textDocument/didChange"
        (define uri (hash-ref (hash-ref params 'textDocument) 'uri))
@@ -346,7 +360,33 @@
                ;; Whether a rename still stands is decided once it is next to be written.
                (reply (lambda ()
                         (with-handlers ([exn:fail? (lambda (e) (response id operation (failed e)))])
-                          (response id operation result)))))
+                          (define writing-revision (car submitted))
+                          (define current (hash-ref documents uri #f))
+                          (define navigation? (memq operation '(definition highlights references)))
+                          (define fresh? (and current document
+                                              (= (hash-ref current 'identity) (hash-ref document 'identity))
+                                              (= (hash-ref current 'version) (hash-ref document 'version))))
+                          (define delivered
+                            (if (and navigation? (not fresh?))
+                                (AnalysisFailure 'changed "Sources changed during analysis") result))
+                          (define message (response id operation delivered))
+                          (define (real value)
+                            (cond
+                              [(hash? value) (for/hash ([(key item) (in-hash value)]) (values key (real item)))]
+                              [(list? value) (map real value)]
+                              [(string? value)
+                               (define translated
+                                 (for/fold ([text value]) ([(uri doc) (in-hash documents)])
+                                   (if (file-uri? uri) text
+                                       (string-replace (string-replace text (path->uri (hash-ref doc 'path)) uri)
+                                                       (path->string (hash-ref doc 'path)) uri))))
+                               (string-replace (string-replace translated (path->uri virtual-root) "untitled:")
+                                               (path->string virtual-root) "untitled:")]
+                              [else value]))
+                          (define value (real message))
+                          (if (and navigation? (or (not (= writing-revision (car submitted)))
+                                                   (not (sync/timeout 0 settled))))
+                              (error-response id content-modified "Sources changed during analysis") value)))))
              (lambda () (hash-remove! pending id)))))]
       ["initialize" (reply (error-response id invalid-request "The index server is already initialized"))]
       [_ (when id (reply (error-response id method-not-found "Unknown index method")))]))

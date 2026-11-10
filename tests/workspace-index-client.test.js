@@ -47,6 +47,13 @@ function client(t, processFactory, timeout = 60000, environment = {}) {
   const filename = path.join(root, 'vscode/workspace-index.js');
   vm.runInNewContext(fs.readFileSync(filename, 'utf8'), { module, require: name => name === './selected-editor' ? require('../vscode/selected-editor') : dependencies[name], setInterval, clearInterval, setTimeout, clearTimeout, ...environment }, { filename });
   const index = module.exports.createWorkspaceIndex({ asAbsolutePath: file => path.join(root, 'vscode', file) }, {
+    supportsDocument: document => ['racket', 'rhombus'].includes(document.languageId),
+    code2ProtocolConverter: {
+      asTextDocumentPositionParams: (document, position) => ({ textDocument: { uri: document.uri.toString() }, position }),
+      asReferenceParams: (document, position, context) => ({ textDocument: { uri: document.uri.toString() }, position, context })
+    },
+    protocol2CodeConverter: { asReferences: values => values.map(value => new dependencies.vscode.Location(parse(value.uri),
+      new dependencies.vscode.Range(value.range.start.line, value.range.start.character, value.range.end.line, value.range.end.character))) },
     executable: 'racket', timeout, output: { append() {}, appendLine() {} }, onStatus: value => statuses.push(value)
   });
   t.after(async () => { await index.dispose(); removeQuietly(directory); });

@@ -5,7 +5,8 @@
 ;; Workspace analysis accepts complete source views and returns domain results.
 ;; Each instance owns its runs and workers for each pass. No editor connection or
 ;; request transport is required to use the engine.
-(require drracket/check-syntax
+(require json
+         drracket/check-syntax
          racket/class
          syntax/modread
          compiler/compilation-path
@@ -18,6 +19,7 @@
          racket/port
          racket/runtime-path
          racket/set
+         racket/string
          racket-langserver/common/path-util
          racket-langserver/common/source
          "runtime/racketdap/tools/source-snapshot.rkt"
@@ -61,7 +63,7 @@
 (struct Result (basis text contribution facts fingerprint reads externals resolutions))
 (define (analysis-basis run)
   (list (Run-roots run) (Settings-max-bytes (Run-settings run))))
-(struct AnalysisResult (revision value) #:transparent)
+(struct AnalysisResult (revision value current?) #:transparent)
 (struct AnalysisFailure (reason message) #:transparent)
 
 (define (make-workspace-analysis #:on-status [notify void])
@@ -92,8 +94,8 @@
   (define configured (string->number (or (getenv "RACKETEER_INDEX_RECYCLE_MEGABYTES") "")))
   (* mebibyte (if (exact-positive-integer? configured) configured default-recycle-megabytes)))
 
-(define (accepted run value)
-  (AnalysisResult (Run-generation run) value))
+(define (accepted run value [current? (lambda () #t)])
+  (AnalysisResult (Run-generation run) value current?))
 
 (define (workspace-analysis-close! engine)
   (define runs
@@ -110,7 +112,8 @@
   ;; Queries belong to their callers, but their worker processes belong here.
   ;; Every run is now cancelled and its pass has ended, so no worker can start.
   ;; Waiting for each slot also reaps any query's worker.
-  (for ([slot (in-list (WorkspaceAnalysis-slots engine))]) (call-with-semaphore slot void)))
+  (for ([slot (in-list (WorkspaceAnalysis-slots engine))])
+    (call-with-semaphore slot (lambda () (discard-worker! (hash-ref slot-workers slot #f))))))
 
 (define (bounded config key fallback low high)
   (define value (hash-ref config key fallback))
@@ -170,9 +173,9 @@
                            (set-Run-failures! run failures)
                            ((WorkspaceAnalysis-notify engine) (status run))))))
 
-;; Only a pass shares workers; a query's own work still owns a disposable process.
+;; Passes share compilation; document queries retain one analysis per worker.
 (define pass-workers (make-parameter #f))
-;; A slot can be borrowed by another pass or a query; retire its idle process first.
+;; A pass can borrow a slot by retiring the previous owner's idle process.
 (define slot-workers (make-weak-hasheq))
 (define (discard-worker! held)
   (when (and held (unbox held))
@@ -181,22 +184,52 @@
 
 (define (compute engine run seconds request [cancel never-evt] #:note-stop? [note-stop? #t])
   (define slots (WorkspaceAnalysis-slots engine))
-  (define taken (apply sync (semaphore-peek-evt (Run-cancel run)) cancel slots))
-  (cond
+  (define warm (and (not (pass-workers))
+                    (for/first ([slot (in-list slots)]
+                                #:when (let ([held (hash-ref slot-workers slot #f)])
+                                         (and held (unbox held)))) slot)))
+  (define taken
+    (or (and warm (sync/timeout 0 warm)) (apply sync/timeout 0 slots)
+        (begin
+          ;; Foreground work borrows an occupied pass slot; the pass retries it.
+          (unless (pass-workers)
+            (for/first ([slot (in-list slots)]
+                        #:when (let ([held (hash-ref slot-workers slot #f)])
+                                 (and held (unbox held) (eq? (Worker-kind (unbox held)) 'pass))))
+              (define worker (unbox (hash-ref slot-workers slot)))
+              (set-Worker-kind! worker 'evicted)
+              ((Worker-stop worker))))
+          (apply sync (semaphore-peek-evt (Run-cancel run)) cancel slots))))
+  (define result
+    (cond
     [(memq taken slots)
      (dynamic-wind void
                    (lambda ()
-                     (define held (and (pass-workers) (hash-ref! (pass-workers) taken (lambda () (box #f)))))
+                     (define held (if (pass-workers)
+                                      (hash-ref! (pass-workers) taken (lambda () (box #f)))
+                                      (or (hash-ref slot-workers taken #f) (box #f))))
+                     (define old (unbox held))
+                     (when old (set-Worker-kind! old (if (pass-workers) 'pass 'query)))
                      (define previous (hash-ref slot-workers taken #f))
                      (unless (eq? previous held) (discard-worker! previous))
                      (hash-set! slot-workers taken held)
                      (define result
                        (and (not (cancelled? run)) (not (sync/timeout 0 cancel))
                             (compute/slot run seconds request cancel held)))
+                     (when (and (not (pass-workers)) (unbox held) (not (eq? old (unbox held))))
+                       (define worker (unbox held))
+                       (thread (lambda ()
+                                 (sync (semaphore-peek-evt (Run-cancel run)) cancel (Worker-process worker))
+                                 (call-with-semaphore taken
+                                   (lambda ()
+                                     (when (eq? worker (unbox held)) (discard-worker! held)))))))
                      (when note-stop? (note-stop! run request result))
                      result)
                    (lambda () (semaphore-post taken)))]
     [else #f]))
+  (if (eq? result 'evicted)
+      (begin (sleep 0) (compute engine run seconds request cancel #:note-stop? note-stop?))
+      result))
 
 ;; Diagnostics for a stalled index. Each line is written before the next wait
 ;; begins, so the last line for a worker names the wait it stuck in. They appear
@@ -222,7 +255,7 @@
 
 (define (request-label request)
   (match request
-    [(list 'analyse path _ ...) (format "analyse ~a" path)]
+    [(list 'analyse path _ _ query _ ...) (format "analyse ~a" (if query (cadr query) path))]
     [(list 'rename _ _ _ _ _ path _ ...) (format "rename ~a" path)]
     [(cons kind _) (symbol->string kind)]))
 
@@ -267,7 +300,7 @@
 ;; What a worker does: everything that reads, expands or runs a user's code.
 (define (answer request observe [cache #f])
   (with-handlers ([out-of-memory? (lambda (_) out-of-memory)]
-                  [(lambda (e) (and (pair? e) (eq? (car e) 'changed))) values]
+                  [(lambda (e) (and (pair? e) (memq (car e) '(changed source)))) values]
                   [(lambda (_) #t)
                    (lambda (e) (cons 'failed (if (exn? e) (exn-message e) (format "~s" e))))])
     (parameterize ([current-output-port (open-output-nowhere)]
@@ -277,14 +310,17 @@
                    [current-analysis-observer observe])
       (match request
         [(list 'discover roots excluded limit files forms)
+         (when cache (hash-remove! cache 'document))
          (append (list 'ok) (discover roots excluded limit)
                  (list (for/hash ([file (in-list files)]) (values file (disk-fingerprint file)))
                        (for/hash ([form (in-list forms)]) (values form (resolved-form form)))))]
         [(list 'analyse path max-bytes buffer query buffers roots before)
-         (observe path)
+         (when (and cache (not query)) (hash-remove! cache 'document))
+         (observe (if query (cadr query) path))
          (match-define (list contribution text count references record) (analyse path max-bytes buffer query buffers roots before cache))
          (list 'ok (contribution->datum contribution) text count references record)]
         [(list 'rename sources roots excluded limit buffers path position name)
+         (when cache (hash-remove! cache 'document))
          (define (check-snapshot!)
            (unless (snapshot-current? sources roots excluded limit buffers)
              (error 'rename "Workspace files changed. Try Rename again.")))
@@ -333,7 +369,7 @@
 (module+ worker
   (define from-server (current-input-port))
   (define to-server (current-output-port))
-  ;; A process belongs to one pass. Its replacement starts with an empty cache.
+  ;; A pass caches compilation; a query retains only its last document.
   (define dependency-code (make-hash))
   (define requests (make-channel))
   ;; The server closes this pipe when it no longer wants the worker, or when it ends.
@@ -363,9 +399,8 @@
   (if said (format "~a: ~a" stated (car said)) stated))
 
 (define decoding-bytes (* 512 1024 1024))
-;; A slot holds its process until the pass ends, an exchange stops it or it
-;; requests replacement after reaching its memory bound.
-(struct Worker (process from to errors owner stop))
+;; A slot retains a pass worker or a query's last document until it is discarded.
+(struct Worker (process from to errors owner stop [kind #:mutable]))
 (define (compute/slot run seconds request cancel [held #f])
   ;; Cancellation must discard the runtime doing the work, including its module
   ;; loading state, and a worker stopped this way cannot hold up anything else: the
@@ -439,8 +474,9 @@
       [(thread-dead? reader) (or reply (no-reply))]
       [else #f]))
   (define worker (and held (unbox held)))
+  (define fresh? (not worker))
   (define retire? #f)
-  (define result
+  (define outcome
     (with-handlers ([exn:fail? (lambda (e)
                                  (cons 'stopped (format "analysis worker could not run: ~a" (exn-message e))))])
       (unless worker
@@ -453,7 +489,9 @@
                         (path->string worker-program)))
           (log-worker label "started" starting)
           (set! worker (Worker process from-worker to-worker errors owner
-                               (lambda () (stop! process) (custodian-shutdown-all owner))))))
+                               (lambda () (stop! process) (custodian-shutdown-all owner))
+                               (if (pass-workers) 'pass 'query)))
+          (when held (set-box! held worker))))
       ;; Readers and writers end after each exchange; the process and its pipes
       ;; stay under their original owner until the slot discards them.
       (define exchange-owner (make-custodian))
@@ -462,10 +500,23 @@
         (lambda ()
           (parameterize ([current-custodian exchange-owner])
             (match (exchange (Worker-process worker) (Worker-from worker) (Worker-to worker)
-                             (Worker-errors worker) (not (and held (unbox held))))
+                             (Worker-errors worker) fresh?)
               [(list 'retire reply) (set! retire? #t) reply]
               [reply reply])))
         (lambda () (custodian-shutdown-all exchange-owner)))))
+  (define result
+    (if (and worker (eq? (Worker-kind worker) 'evicted)
+             (not (and (pair? outcome) (eq? (car outcome) 'ok)))) 'evicted outcome))
+  (match request
+    [(list 'analyse path _ _ (list _ uri _ ...) _ ...)
+     #:when (not (file-uri? uri))
+     (when (and (pair? result) (string? (cdr result)))
+       (define message (string-replace (string-replace (cdr result) (path->uri path) uri)
+                                       (path->string path) uri))
+       (set! result (cons (car result)
+                         (string-replace (string-replace message (path->uri (path-only path)) "untitled:")
+                                         (path->string (path-only path)) "untitled:"))))]
+    [_ (void)])
   (log-worker label "finished" starting)
   (when retire? (log-worker label "recycling after memory bound"))
   (cond
@@ -543,7 +594,7 @@
 ;; Read and select policy before constructing the sole compact collector. The
 ;; sequence follows expand-source; the worker already owns its fresh namespace,
 ;; source snapshot and directory. No display products or expansion logs are kept.
-(define (compact-contribution path text roots)
+(define (compact-contribution path text roots [query #f])
   (define source (path->source path))
   (define in (open-input-text text))
   (define (source-error e)
@@ -563,12 +614,12 @@
         (syntax-property pre 'racketeer:language-profile adapter) pre))
   (define editor (new lsp-editor%))
   (send editor insert text 0)
-  (define collector ((bindings-factory (and adapter (language-adapter-bindings-provider adapter)) #:contribution-only? #t)
+  (define collector ((bindings-factory (and adapter (language-adapter-bindings-provider adapter)) #:contribution-only? (not query))
                      source editor #f))
   (define result
     (parameterize ([current-annotations collector])
       (define-values (add-syntax done)
-        (make-traversal (current-namespace) (path-only path)))
+        (make-traversal (current-namespace) (if query (list-ref query 5) (path-only path))))
       (define expanded
         (with-handlers ([exn:fail? source-error])
           (parameterize ([current-output-port (open-output-nowhere)])
@@ -577,72 +628,152 @@
       (define result (ExpandResult stx expanded '()))
       (send collector walk-stx result)
       result))
-  ;; An explicitly disabled expansion cannot certify a complete binding graph.
-  (unless (and (not (and adapter (eq? (hash-ref (hash-ref adapter 'editor) 'expand? 'policy) #f)))
-               (if (Language-Policy-expand? policy)
-                   (ExpandResult-all-succeed? result)
-                   (and (ExpandResult-pre-syntax result) #t))
-               (language-adapter-current? adapter))
-    (error 'workspace-analysis "analysis failed: ~a" path))
-  (send collector get-contribution))
+  ;; A compact pass needs expansion to certify a complete binding graph.
+  (define current? (language-adapter-current? adapter))
+  (unless (and (or query (not (and adapter (eq? (hash-ref (hash-ref adapter 'editor) 'expand? 'policy) #f))))
+               (or (and query (eof-object? pre))
+                   (if (Language-Policy-expand? policy)
+                       (ExpandResult-all-succeed? result)
+                       (and (ExpandResult-pre-syntax result) #t)))
+               current?)
+    (if query (raise (cons (if current? 'source 'changed)
+                           (if current? "Document could not be analysed" "Language profile changed during analysis")))
+        (error 'workspace-analysis "analysis failed: ~a" path)))
+  (if query (list collector editor) (send collector get-contribution)))
 
-(define (analyse path max-bytes buffer query buffers roots before cache)
+(define (analyse path max-bytes buffer query buffers roots before cache [retry? #t])
+  (define basis (list path buffer buffers roots (and query (list-ref query 4))))
+  (define held (and query cache (hash-ref cache 'document #f)))
+  (when (and held (not (equal? basis (car held))))
+    (hash-remove! cache 'document)
+    (set! held #f))
   (define bytes
     (if buffer (string->bytes/utf-8 buffer)
         (call-with-input-file* path (lambda (in) (read-bytes (add1 max-bytes) in)))))
   (unless (and (bytes? bytes) (<= (bytes-length bytes) max-bytes))
-    (error 'workspace-analysis "file exceeds analysis limit: ~a" path))
+    (error 'workspace-analysis "file exceeds analysis limit"))
   (define text (bytes->string/utf-8 bytes))
-  ;; A request's own analysis answers it and stays no longer, so only a pass records.
+  (define (holds? record)
+    (and (equal? (car record) (sha1-bytes bytes)) (record-current? record buffers)))
+  (define cached? (and held (holds? (last held))))
   (define reads (make-hash))
   (define resolutions (make-hash))
   (define externals (make-log-receiver (current-logger) 'info 'cm-accomplice))
-  ;; Trace construction and queries use a fresh namespace as well as expansion.
-  ;; A previously loaded dependency must not survive a watched change.
-  (parameterize ([current-namespace (make-base-namespace)]
+  (define resolver (current-module-name-resolver))
+  (define directory (if query (list-ref query 5) (path-only path)))
+  (parameterize ([current-namespace (if cached? (current-namespace) (make-base-namespace))]
                  [current-language-adapter-roots roots]
-                 [current-directory (path-only path)]
-                 [current-load-relative-directory (path-only path)]
+                 [current-directory (or directory (current-directory))]
+                 [current-load-relative-directory directory]
                  [current-module-name-resolver
-                  (if query (current-module-name-resolver)
-                      (recording-resolver (current-module-name-resolver) resolutions))])
-  (call-with-source-snapshot buffers
-    #:cache (and (not query) cache)
-    #:source? (lambda (file) (for/or ([root (in-list roots)]) (directory-contains? root file)))
-    #:on-load (if query void (lambda (file) (record-load! reads file buffers)))
-    #:on-reuse (lambda (_file entries)
-                 ;; The code describes its original reads, even after a disk edit.
-                 ;; Never label old code with the new contents of a dependency.
-                 (for ([entry (in-list entries)])
-                   (hash-update! reads (car entry)
-                                 (lambda (old) (if (equal? old (cdr entry)) old 'changing))
-                                 (cdr entry))))
-    (lambda ()
-    (define doc (and query (make-doc (path->uri path) text 0)))
-    (define contribution
-      (if query
-          (begin
-            (unless (doc-expand! doc #:contribution-only? #t)
-              (error 'workspace-analysis "analysis failed: ~a" path))
-            (Doc-contribution doc))
-          (compact-contribution path text roots)))
-    (define facts
-      (+ (hash-count (Doc-Contribution-definitions contribution))
-         (for/sum ([locations (in-hash-values (Doc-Contribution-references contribution))])
-           (length locations))))
-    (unless (or buffer
-                (with-handlers ([exn:fail:filesystem? (lambda (_) #f)])
-                  (equal? bytes (call-with-input-file* path
-                                  (lambda (in) (read-bytes (add1 max-bytes) in))))))
-      (raise (cons 'changed (format "workspace-analysis: file changed during analysis: ~a" path))))
-    (list contribution text facts
-          (and query
-               (let ([result (doc-references doc (car query) (jsexpr->Pos (cadr query)) (caddr query))])
-                 (and result
-                      (reference-query->datum result))))
-          (and (not query)
-               (list (sha1-bytes bytes) (hash->list reads) (external-reads externals before)
-                     (hash->list resolutions))))))))
+                  (recording-resolver
+                   (if (and directory (or (not query) (file-uri? (cadr query)))) resolver
+                       ;; A virtual identity must not supply a save directory.
+                       (case-lambda
+                         [(name namespace) (resolver name namespace)]
+                         [(module relative-to stx load?)
+                          (define base (and relative-to
+                                            (let ([name (resolved-module-path-name relative-to)])
+                                              (if (pair? name) (car name) name))))
+                          (define local?
+                            (or (equal? base path)
+                                (and (not (path? base))
+                                     (or (equal? (current-load-relative-directory) directory)
+                                         (and (syntax? stx) (equal? (syntax-source stx) path))))))
+                          (define relative?
+                            (let relative? ([module module])
+                              (match module
+                                [(? path-string?) (relative-path? module)]
+                                [(list 'file (? path-string? name)) (relative-path? name)]
+                                [(list* 'submod (and parent (not (or "." ".."))) _) (relative? parent)]
+                                [_ #f])))
+                          (when (and local? relative? (not directory))
+                            (raise-syntax-error #f "Relative imports need a save location" stx))
+                          (resolver module
+                                    (if (and local? relative? directory)
+                                        (make-resolved-module-path (build-path directory (file-name-from-path path)))
+                                        relative-to) stx load?)])) resolutions)])
+    (call-with-source-snapshot buffers
+      #:cache (and (not query) cache)
+      #:source? (lambda (file) (or query (not cache)
+                                 (for/or ([root (in-list roots)]) (directory-contains? root file))))
+      #:on-load (lambda (file) (record-load! reads file buffers))
+      #:on-reuse (lambda (_file entries)
+                   (for ([entry (in-list entries)])
+                     (hash-update! reads (car entry)
+                                   (lambda (old) (if (equal? old (cdr entry)) old 'changing))
+                                   (cdr entry))))
+      (lambda ()
+        (define saved
+          (cond
+            [cached? held]
+            [else
+             (when (and query cache) (hash-remove! cache 'document))
+             (set! held #f)
+             (define product (compact-contribution path text roots query))
+             (define contribution (if query (send (car product) get-contribution) product))
+             (list basis contribution product
+                   (list (sha1-bytes bytes) (hash->list reads) (external-reads externals
+                     (if query (for/fold ([seen before]) ([(file fingerprint) (in-hash reads)])
+                                 (hash-set seen file fingerprint)) before))
+                         (hash->list resolutions)))]))
+        (define contribution (cadr saved))
+        (define record (last saved))
+        (cond
+          ;; Registered data is first known after expansion. Observe it before
+          ;; one fresh attempt, just as a subsequent workspace pass does.
+          [(and query retry? (not (eq? saved held))
+                (for/or ([entry (in-list (caddr record))])
+                  (and (eq? (cdr entry) 'changing) (not (hash-has-key? before (car entry))))))
+           (analyse path max-bytes buffer query buffers roots
+                    (for/hash ([entry (in-list (caddr record))])
+                      (values (car entry) (disk-fingerprint (car entry)))) cache #f)]
+          [else
+            (unless (or (not query) (holds? record)) (raise (cons 'changed "Sources changed during analysis")))
+            (when (and query cache) (hash-set! cache 'document saved))
+            (define navigation
+              (and query
+                   (let ()
+                     (match-define (list operation uri position include? _view _directory) query)
+                     (match-define (list service editor) (caddr saved))
+                     (define pos (send editor lsp-position->pos (hash-ref position 'line) (hash-ref position 'character)))
+                     (define (range r)
+                       (define (position offset)
+                         (match-define (list line char) (send editor pos->line/char offset))
+                         (Pos line char))
+                       (Range (position (car r)) (position (cdr r))))
+                     (define keys (send service identities-at pos #:predicted? #t))
+                     (define modules
+                       (filter (lambda (key) (or (file-uri? uri) (not (equal? path (Module-Binding-filepath key)))))
+                               (if (eq? operation 'references)
+                                   (send service reference-module-bindings-at pos)
+                                   (filter Module-Binding? keys))))
+                     (case operation
+                       [(definition)
+                        (remove-duplicates
+                         (append
+                          (for/list ([r (in-list (send service definitions keys))])
+                            (->jsexpr (Location uri (range r))))
+                          (for*/list ([file (in-list (remove-duplicates (map Module-Binding-filepath modules)))]
+                                      #:unless (equal? file path)
+                                      [target (in-value (car (analyse file max-bytes (hash-ref buffers file #f) #f
+                                                                     buffers roots before #f)))]
+                                      [key (in-list modules)] #:when (equal? file (Module-Binding-filepath key))
+                                      [location (in-value (hash-ref (Doc-Contribution-definitions target) key #f))]
+                                      #:when location)
+                            (->jsexpr location))))]
+                       [(highlights)
+                        (for/list ([r (in-list (send service reference-ranges-at pos #t))])
+                          (hasheq 'range (->jsexpr (range r))))]
+                       [else
+                        (list (for/list ([r (in-list (send service reference-ranges-at pos include?))])
+                                (->jsexpr (Location uri (range r))))
+                              (and (pair? modules) (cons 'bindings (map binding->datum modules))))]))))
+            (list contribution text
+                  (+ (hash-count (Doc-Contribution-definitions contribution))
+                     (for/sum ([locations (in-hash-values (Doc-Contribution-references contribution))])
+                       (length locations)))
+                  navigation record)])))))
 
 ;; What a file's analysis read is taken while it reads, so that a file changing
 ;; afterwards shows as changed. A buffer takes the place of its file only where
@@ -766,6 +897,17 @@
     (for ([entry (in-list (Result-resolutions result))]) (set-add! forms (car entry))))
   (values (set->list files) (set->list forms)))
 
+(define (record-current? record buffers)
+  (match-define (list _ reads externals resolutions) record)
+  (and (for/and ([entry (in-list reads)])
+         (equal? (cdr entry) (if (hash-has-key? buffers (car entry))
+                                (buffer-fingerprint (hash-ref buffers (car entry)))
+                                (disk-fingerprint (car entry)))))
+       (for/and ([entry (in-list externals)])
+         (equal? (cdr entry) (disk-fingerprint (car entry))))
+       (for/and ([entry (in-list resolutions)])
+         (equal? (cdr entry) (resolved-form (car entry))))))
+
 (define (result-current? result run path view disk resolved)
   (define (holds? entries table)
     (for/and ([entry (in-list entries)]) (equal? (cdr entry) (hash-ref table (car entry) 'unknown))))
@@ -848,8 +990,12 @@
 
 (define (run-index/pass engine run)
   (define config (Run-settings run))
+  (define buffers
+    (for/fold ([buffers (Run-buffers run)]) ([(uri doc) (in-hash (Run-documents run))]
+                                          #:unless (file-uri? uri))
+      (hash-remove buffers (hash-ref doc 'path))))
   (define indexed 0)
-  (define failures (count not (hash-values (Run-buffers run))))
+  (define failures (count not (hash-values buffers)))
   (define bytes 0)
   (define facts 0)
   (dynamic-wind
@@ -866,14 +1012,14 @@
              (eprintf "Workspace discovery incomplete after finding ~a files under ~a\n"
                       (length paths) (Run-roots run)))
            (define sources
-             (append (for/list ([(path text) (in-hash (Run-buffers run))] #:when text) path)
-                     (filter (lambda (path) (not (hash-has-key? (Run-buffers run) path))) paths)))
+             (append (for/list ([(path text) (in-hash buffers)] #:when text) path)
+                     (filter (lambda (path) (not (hash-has-key? buffers path))) paths)))
            (when (> (length sources) (Settings-max-files config)) (set! failures (add1 failures)))
            (set-Run-total! run (min (length sources) (Settings-max-files config)))
            (report! engine run "indexing" indexed failures)
            ;; Reused and new contributions enter the store in the order of a fresh pass.
            (define view
-             (for/fold ([view disk]) ([(path text) (in-hash (Run-buffers run))])
+             (for/fold ([view disk]) ([(path text) (in-hash buffers)])
                (hash-set view path (buffer-fingerprint text))))
            (define planned (for/list ([path (in-list sources)] [n (in-range (Settings-max-files config))]) path))
            (define found (WorkspaceAnalysis-results engine))
@@ -1005,18 +1151,14 @@
   (define revision (hash-ref params 'revision))
   (define config (read-settings (hash-ref params 'settings (hasheq))))
   (define roots (map uri->path (hash-ref params 'roots)))
-  (define workspace (make-workspace))
-  (for ([root (in-list roots)]) (workspace-add-folder! workspace root))
-  ;; Only saved files belong to the workspace index.
+  ;; Every supported open document contributes to the immutable source view.
   (define documents
-    (for/hash ([doc (in-list (hash-ref params 'documents))] #:when (file-uri? (hash-ref doc 'uri)))
+    (for/hash ([doc (in-list (hash-ref params 'documents))] #:when (or (file-uri? (hash-ref doc 'uri)) (hash-has-key? doc 'path)))
       (values (hash-ref doc 'uri) doc)))
   (define buffers
     (for/fold ([buffers (hash)]) ([(uri doc) (in-hash documents)])
-      (define path (uri->path uri))
-      (if (workspace-contains? workspace path)
-          (hash-set buffers path (and (not (hash-has-key? buffers path)) (hash-ref doc 'text)))
-          buffers)))
+      (define path (hash-ref doc 'path (lambda () (uri->path uri))))
+      (hash-set buffers path (and (not (hash-has-key? buffers path)) (hash-ref doc 'text)))))
   ;; A revision that only opens or closes documents over unchanged sources
   ;; keeps the current run, and a request already past its pass keeps its answer.
   ;; A partial index is retried by a source change or a refresh. Replacing the
@@ -1063,7 +1205,7 @@
     (lambda () (set-WorkspaceAnalysis-results! engine (hash)))))
 
 (define (workspace-analysis-query engine operation params [cancel never-evt])
-  (unless (memq operation '(references prepare-rename rename))
+  (unless (memq operation '(definition highlights references prepare-rename rename))
     (raise-argument-error 'workspace-analysis-query "analysis operation" operation))
   (define uri (hash-ref params 'uri))
   (define (current-document run)
@@ -1120,15 +1262,60 @@
           (when (and current (Run-unverified? current) (equal? "ready" (Run-state current)))
             (renew-run! engine current))
           (WorkspaceAnalysis-current-run engine))))
-    (define path (and run (file-uri? uri) (uri->path uri)))
     (define doc (and run (current-document run)))
+    (define path (and doc (hash-ref doc 'path (lambda () (uri->path uri)))))
     (cond
       [(sync/timeout 0 cancel) (AnalysisFailure 'cancelled "Request cancelled")]
       [(WorkspaceAnalysis-closed? engine) (AnalysisFailure 'closed "Workspace analysis closed")]
       [(not doc) (AnalysisFailure 'changed "Document changed during analysis")]
+      [(and (eq? operation 'references) (still-changing? run))
+       (AnalysisFailure 'unsettled
+                        (format "Workspace sources kept changing for ~a seconds. Try again when they settle."
+                                (Settings-timeout (Run-settings run))))]
+      [(memq operation '(definition highlights references))
+       (define generation (Run-generation run))
+       (define retired (retired-evt run path))
+       (define result
+         (own-work run (Settings-timeout (Run-settings run))
+                   (list 'analyse path (Settings-max-bytes (Run-settings run))
+                         (hash-ref doc 'text)
+                         (list operation uri (hash-ref params 'position) (hash-ref params 'includeDeclaration #f)
+                               (for/hash ([(uri doc) (in-hash (Run-documents run))])
+                                 (values uri (list (hash-ref doc 'identity) (hash-ref doc 'version))))
+                               (hash-ref doc 'directory (lambda () (path-only path))))
+                         (Run-buffers run) (Run-roots run) (hash))
+                   (choice-evt cancel retired)))
+       (cond
+         [(sync/timeout 0 cancel) (AnalysisFailure 'cancelled "Request cancelled")]
+         [(or (not (= generation (Run-generation run))) (cancelled? run) (sync/timeout 0 retired))
+          (if (eq? operation 'references) (retry)
+              (AnalysisFailure 'changed "Document changed during analysis"))]
+         [else
+          (match result
+            [(cons 'source _) (accepted run (json-null))]
+            [(cons 'changed message) (AnalysisFailure 'changed message)]
+            [(list 'ok _ _ _ navigation record)
+             (define (fresh?) (and (record-current? record (Run-buffers run)) (= generation (Run-generation run))))
+             (cond
+               [(or (not (eq? operation 'references)) (not (cadr navigation)))
+                (or (settle run path (lambda () (accepted run (if (eq? operation 'references) (car navigation) navigation) fresh?)))
+                    (AnalysisFailure 'changed "Sources changed during analysis"))]
+               [(not (Settings-enabled? (Run-settings run)))
+                (AnalysisFailure 'unavailable "Enable workspace analysis to find module references across files.")]
+               [else
+                (wait-for-pass engine run
+                  (lambda ()
+                    (sync cancel (semaphore-peek-evt (Run-done run)) (semaphore-peek-evt (Run-cancel run)) retired)))
+                (or (settle run path
+                      (lambda ()
+                        (and (not (cancelled? run))
+                             (accepted run (map ->jsexpr
+                               (reference-locations (Run-workspace run) (datum->reference-query path navigation)
+                                                    (hash-ref params 'includeDeclaration))) fresh?))))
+                    (retry))])]
+            [failure (AnalysisFailure 'failed (analysis-failure failure))])])]
       [(not (Settings-enabled? (Run-settings run)))
-       (if (eq? operation 'references) (accepted run '())
-           (AnalysisFailure 'unavailable "Enable workspace analysis to rename safely across files."))]
+       (AnalysisFailure 'unavailable "Enable workspace analysis to rename safely across files.")]
       [(still-changing? run)
        (AnalysisFailure 'unsettled
                         (format "Workspace sources kept changing for ~a seconds. Try again when they settle."
@@ -1141,13 +1328,13 @@
        (cond
          [(or (cancelled? run) (sync/timeout 0 cancel) (sync/timeout 0 retired)) (retry)]
          ;; Such a file has no errors to resolve. Sources that keep changing end in their refusal.
-         [(and (not (eq? operation 'references)) (hash-ref changed-under run #f))
+         [(hash-ref changed-under run #f)
           (call-with-semaphore (WorkspaceAnalysis-lock engine)
             (lambda ()
               (when (eq? run (WorkspaceAnalysis-current-run engine))
                 (renew-run! engine run #:changed? #t))))
           (retry)]
-         [(not (eq? operation 'references))
+         [else
           (define result
             (if (not (equal? (Run-state run) "ready"))
                 (cons 'failed (incomplete-index run))
@@ -1156,7 +1343,9 @@
                 (own-work run (if (eq? operation 'rename) 90 (Settings-timeout (Run-settings run)))
                          (list 'rename (make-immutable-hash (hash->list (Run-sources run)))
                                (Run-roots run) (Settings-excluded (Run-settings run))
-                               (Settings-max-files (Run-settings run)) (Run-buffers run)
+                               (Settings-max-files (Run-settings run))
+                               (for/hash ([(file text) (in-hash (Run-buffers run))]
+                                          #:when (hash-has-key? (Run-sources run) file)) (values file text))
                                path (hash-ref params 'position) (hash-ref params 'newName #f))
                          (choice-evt cancel retired))))
           (or (and result
@@ -1165,29 +1354,7 @@
                              (match result
                                [(list 'ok edit) (accepted run edit)]
                                [failure (AnalysisFailure 'unavailable (rename-failure failure))]))))
-              (retry))]
-         [else
-          (define include? (hash-ref params 'includeDeclaration))
-          ;; Local and module references use the same fresh analysis. No global
-          ;; LSP trace or stale contribution is mixed into the index's results.
-          (define result
-            (own-work run (Settings-timeout (Run-settings run))
-                     (list 'analyse path (Settings-max-bytes (Run-settings run))
-                           (hash-ref doc 'text) (list uri (hash-ref params 'position) include?)
-                           (Run-buffers run) (Run-roots run) (hash))
-                     (choice-evt cancel retired)))
-          (or (and result
-                   (settle run path
-                           (lambda ()
-                             (match result
-                               [(list 'ok _ _ _ #f _) (accepted run '())]
-                               [(list 'ok _ _ _ (list locations binding) _)
-                                (define live (datum->reference-query path (list locations binding)))
-                                (accepted run
-                                          (for/list ([location (in-list (reference-locations (Run-workspace run) live include?))])
-                                            (->jsexpr location)))]
-                               [failure (AnalysisFailure 'failed (analysis-failure failure))]))))
-              (retry))])])))
+              (retry))]) ])))
 
 (provide make-workspace-analysis
          workspace-analysis-update!

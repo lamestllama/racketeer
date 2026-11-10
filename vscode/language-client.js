@@ -176,6 +176,8 @@ function registerLanguageTools(context) {
         provideDocumentRangeFormattingEdits: racketFormattingOnly,
         provideDocumentRangesFormattingEdits: racketFormattingOnly,
         provideOnTypeFormattingEdits: racketFormattingOnly,
+        provideDefinition: (...args) => nextIndex.provideDefinition(...args),
+        provideDocumentHighlights: (...args) => nextIndex.provideDocumentHighlights(...args),
         provideReferences: (...args) => nextIndex.provideReferences(...args),
         prepareRename: (...args) => nextIndex.prepareRename(...args),
         provideRenameEdits: (...args) => nextIndex.provideRenameEdits(...args),
@@ -209,6 +211,8 @@ function registerLanguageTools(context) {
     client = next;
     const nextIndex = createWorkspaceIndex(context, {
       executable, timeout: startupTimeoutSeconds * 1000, output,
+      supportsDocument: document => vscode.languages.match(next.clientOptions.documentSelector, document) > 0,
+      code2ProtocolConverter: next.code2ProtocolConverter, protocol2CodeConverter: next.protocol2CodeConverter,
       onStatus: result => {
         if (client !== next) return;
         if (result.state === 'refused') {
@@ -220,7 +224,7 @@ function registerLanguageTools(context) {
           `Workspace index: ${result.state}, ${result.indexed} files analysed, ${result.failures} failures.`);
         if (result.state === 'indexing') {
           showStatus(`$(sync~spin) Racket: indexing${result.message ? ` ${result.message}` : ''}`,
-            `Finding workspace references${result.message ? `: ${result.message} files analysed` : ''}. Reference requests wait for this pass.`);
+            `Finding workspace references${result.message ? `: ${result.message} files analysed` : ''}. Module reference requests wait for this pass.`);
         } else if (result.state === 'outdated') {
           showStatus('Racket: ready', 'Workspace references are analysed again at the next request for them.');
         } else if (result.state === 'partial') {
@@ -231,7 +235,7 @@ function registerLanguageTools(context) {
             'Workspace references are unavailable. See Language Server Output and restart language tools.');
         } else {
           showStatus('Racket: ready', result.state === 'disabled'
-            ? 'Background analysis is disabled. References are supplied by the language server.'
+            ? 'Background workspace analysis is disabled. Local navigation remains available.'
             : `Workspace reference analysis finished: ${result.indexed} files analysed.`);
         }
       }

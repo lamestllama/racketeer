@@ -7,9 +7,6 @@ const { createMessageConnection, StreamMessageReader, StreamMessageWriter, Cance
 const { createLanguageProcess, ownedArgs } = require('./language-process');
 const { racketTooOld } = require('./racket-version');
 
-// The index covers saved files. Untitled documents keep the language server's
-// own document-local references and rename.
-const isSource = document => document.uri.scheme === 'file' && ['racket', 'rhombus'].includes(document.languageId);
 const settingsSection = 'racket-langserver.workspaceAnalysis';
 // A file event outside these suffixes waits for the next request, so a program
 // writing logs cannot hold up one that is waiting. A name with no suffix can be a
@@ -18,7 +15,8 @@ const sourceSuffixes = ['.rkt', '.ss', '.scrbl', '.rhm', '.rktl', '.rktd', ''];
 
 // The index has its own document synchronisation and transport. It never sends
 // fake document opens to the language server or consumes the server's live traces.
-function createWorkspaceIndex(context, { executable, timeout, output, onStatus }) {
+function createWorkspaceIndex(context, { executable, timeout, output, onStatus, supportsDocument, code2ProtocolConverter, protocol2CodeConverter }) {
+  const isSource = document => ['file', 'untitled'].includes(document.uri.scheme) && supportsDocument(document);
   let connection, starting, disposed = false, synchronized = false, stalled = false;
   let identity = 0, heard = Date.now(), folders = [];
   const identities = new WeakMap();
@@ -104,7 +102,7 @@ function createWorkspaceIndex(context, { executable, timeout, output, onStatus }
   }
   // The server starts when first asked for, and its index when a request needs it.
   async function start() {
-    if (disposed || !enabled()) return;
+    if (disposed) return;
     if (starting) return starting;
     starting = (async () => {
       const tooOld = await racketTooOld(executable);
@@ -250,16 +248,46 @@ function createWorkspaceIndex(context, { executable, timeout, output, onStatus }
     await Promise.race([stopped, new Promise(resolve => { timer = setTimeout(resolve, 2000); })]).catch(() => {});
     clearTimeout(timer);
   }
+  async function navigation(operation, document, position, options, token, next) {
+    const args = options === undefined ? [document, position, token] : [document, position, options, token];
+    if (!isSource(document)) return next(...args);
+    if (disposed || token.isCancellationRequested) return [];
+    const version = document.version, owned = documentIdentity(document);
+    const fresh = () => !disposed && !token.isCancellationRequested && version === document.version &&
+      identities.get(document) === owned && !document.isClosed && vscode.workspace.textDocuments.includes(document);
+    try {
+      await start();
+      if (!fresh()) return [];
+      // Flush an edit that arrived before its change event.
+      if (versions.get(document) !== document.version) didChange(document);
+      const params = options === undefined
+        ? code2ProtocolConverter.asTextDocumentPositionParams(document, position)
+        : code2ProtocolConverter.asReferenceParams(document, position, options);
+      const result = await ask(`textDocument/${operation}`, params, token);
+      if (!fresh()) return [];
+      if (result === silent) return next(...args);
+      if (result === null) return next(...args);
+      const converted = await (operation === 'documentHighlight' ? protocol2CodeConverter.asDocumentHighlights(result, token)
+        : operation === 'definition' ? protocol2CodeConverter.asDefinitionResult(result, token)
+        : protocol2CodeConverter.asReferences(result, token));
+      return fresh() ? converted : [];
+    } catch (error) {
+      if (disposed || token.isCancellationRequested || [-32800, -32801].includes(error.code)) return [];
+      if (error.code === -32803 || error.refused) onStatus({ state: 'refused', message: error.message });
+      else failure(error);
+      throw error;
+    }
+  }
   return {
     start, refresh,
     cancelStart: () => process.cancelStart(),
     async prepareRename(document, position, token, next) {
-      if (!isSource(document)) return next(document, position, token);
+      if (document.uri.scheme !== 'file' || !isSource(document)) return next(document, position, token);
       const result = await renameRequest('textDocument/prepareRename', document, position, token);
       return result && range(result);
     },
     async provideRenameEdits(document, position, newName, token, next) {
-      if (!isSource(document)) return next(document, position, newName, token);
+      if (document.uri.scheme !== 'file' || !isSource(document)) return next(document, position, newName, token);
       const result = await renameRequest('textDocument/rename', document, position, token, newName);
       if (!result) return;
       const edit = new vscode.WorkspaceEdit();
@@ -268,33 +296,12 @@ function createWorkspaceIndex(context, { executable, timeout, output, onStatus }
       }
       return edit;
     },
-    async provideReferences(document, position, options, token, next) {
-      if (!enabled() || !isSource(document)) return next(document, position, options, token);
-      if (disposed || token.isCancellationRequested) return [];
-      const version = document.version, owned = documentIdentity(document);
-      try {
-        await start();
-        if (disposed || token.isCancellationRequested) return [];
-        const locations = await ask('textDocument/references', {
-          textDocument: { uri: document.uri.toString() },
-          position: { line: position.line, character: position.character },
-          context: { includeDeclaration: options.includeDeclaration }
-        }, token);
-        if (locations === silent) return next(document, position, options, token);
-        if (disposed || token.isCancellationRequested || version !== document.version ||
-            identities.get(document) !== owned || !vscode.workspace.textDocuments.includes(document)) return [];
-        return locations.map(location => new vscode.Location(vscode.Uri.parse(location.uri),
-          new vscode.Range(location.range.start.line, location.range.start.character,
-            location.range.end.line, location.range.end.character)));
-      } catch (error) {
-        if (disposed || token.isCancellationRequested || [-32800, -32801].includes(error.code)) return [];
-        // The server is there and has said why. An editor shows no provider's error, so
-        // this is how its words reach the person who asked.
-        if (error.code === -32803 || error.refused) onStatus({ state: 'refused', message: error.message });
-        else failure(error);
-        throw error;
-      }
-    },
+    provideDefinition: (document, position, token, next) =>
+      navigation('definition', document, position, undefined, token, next),
+    provideDocumentHighlights: (document, position, token, next) =>
+      navigation('documentHighlight', document, position, undefined, token, next),
+    provideReferences: (document, position, options, token, next) =>
+      navigation('references', document, position, options, token, next),
     async dispose() {
       if (disposed) return;
       disposed = true;

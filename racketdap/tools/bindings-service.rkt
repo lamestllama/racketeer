@@ -118,14 +118,27 @@
                 (define phase (hash-ref name 'phase 0))
                 (define space (hash-ref name 'space #f))
                 (define id (hash-ref name 'identifier))
+                (define info (identifier-binding id phase))
                 (define binding (identifier-module-binding id phase file space))
+                ;; Imported indices already name what expansion resolved. Keep
+                ;; that path when a virtual source has a separate import base.
+                (define resolved
+                  (and binding (list? info)
+                       (with-handlers ([exn:fail? (lambda (_) #f)])
+                         (resolved-module-path-name (module-path-index-resolve (car info))))))
+                (set! binding
+                      (match resolved
+                        [(? path? target) (struct-copy Module-Binding binding [filepath (normalize-source-path target)])]
+                        [(list (? path? target) mods ...) (struct-copy Module-Binding binding
+                                                          [filepath (normalize-source-path target)] [submods mods])]
+                        [_ binding]))
                 (or (and binding
                          ;; Contributions keep the declaration collector's phase keys.
                          (if (and space (not contribution-only?))
                              (struct-copy Module-Binding binding
                                [phase+space (cons (Module-Binding-phase+space binding) space)])
                              binding))
-                    (and (or (eq? (identifier-binding id phase) 'lexical) (not (confirmed? name)))
+                    (and (or (eq? info 'lexical) (not (confirmed? name)))
                          (let ([table (hash-ref! tables (cons phase space)
                                                 (lambda () (make-free-id-table #:phase phase)))])
                            (if (or (eq? (hash-ref name 'role) 'definition) (not (confirmed? name)))
@@ -390,6 +403,11 @@
                                       (not (member (hash-ref name 'range)
                                                    (hash-ref targets (hash-ref name 'identity) '())))))
                  (hash-ref name 'range)))))
+    (define/public (reference-module-bindings-at pos)
+      (filter Module-Binding?
+              (remove-duplicates
+               (append-map (lambda (key) (hash-ref families key (list key)))
+                           (send this identities-at pos #:predicted? #t)))))
     (define/public (definition-ranges-at pos)
       (send this definitions (send this identities-at pos #:predicted? #t)))
     (define/public (reference-ranges-at pos [include-declaration? #f])
