@@ -14,7 +14,7 @@ const until = (p, pattern) => wait(() => pattern.test(p.diagnostics()), () => `$
 test('a traced index names each worker and every wait it passes, with a monotonic time', async t => {
   const p = await project(t, traced);
   await p.references(p.origin);
-  const worker = /Workspace analysis worker at (\d+) ms: analyse \S*definition\.rkt: (.*)/g;
+  const worker = /Workspace analysis worker at (\d+) ms: analyse file:\S*definition\.rkt: (.*)/g;
   const events = [...p.diagnostics().matchAll(worker)].slice(-6);
   assert.deepEqual(events.map(event => event[2].replace(/ after \d+ ms$/, '')),
     ['starting', 'started', 'finished', 'kill requested', 'killed', 'reaped'], p.diagnostics());

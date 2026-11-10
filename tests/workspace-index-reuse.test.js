@@ -117,7 +117,7 @@ test('reopening a document cancels its old request even when completed analysis 
   await p.update(); assert.equal(await p.count(), 1);
   const before = p.expansions();
   fs.writeFileSync(blocked, 'block');
-  const rejected = assert.rejects(p.references(p.origin), error => error.code === -32801);
+  const rejected = assert.rejects(p.references(p.origin), error => error.code === -32803);
   await until(() => fs.existsSync(entered), () => p.diagnostics());
   p.open('definition.rkt', source); await p.update(true);
   await rejected;

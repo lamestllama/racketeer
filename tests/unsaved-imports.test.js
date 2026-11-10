@@ -75,7 +75,7 @@ test('unsaved compile-time imports replace values baked into compiled intermedia
 (define stamp (bake))
 `);
   const compile = `(require compiler/cm)
-(parameterize ([current-compiled-file-roots '(same)])
+(parameterize ([current-compiled-file-roots (cons 'same (current-compiled-file-roots))])
   (managed-compile-zo (string->path ${JSON.stringify(p.filename('bridge.rkt'))})))`;
   const compiled = spawnSync('racket', ['-e', compile], { encoding: 'utf8', env: { ...process.env, PLTADDONDIR: addon } });
   assert.equal(compiled.status, 0, compiled.stderr);

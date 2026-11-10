@@ -10,6 +10,9 @@
     (current-library-collection-paths (map bytes->path (car settings)))
     (current-compiled-file-roots
       (map (lambda (root) (if (bytes? root) (bytes->path root) root)) (cadr settings)))
+    ;; Reuse shared bytecode instead of compiling analysis on every worker start.
+    (current-load/use-compiled
+     ((dynamic-require 'compiler/cm 'make-compilation-manager-load/use-compiled-handler)))
     ;; Check Syntax's documentation lookup is unused by the indexer. Declare its
     ;; helper here, before loading analysis, without loading the documentation index.
     (let-values ([(previous) (current-module-declare-name)])

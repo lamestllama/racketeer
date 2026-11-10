@@ -215,6 +215,7 @@
   (define lifetimes 0)
   (define virtual-root (build-path (car (explode-path (find-system-path 'temp-dir))) (format "racketeer-memory-~a-~a" (current-inexact-milliseconds) (random 1000000000))))
   (define roots '())
+  ;; The latest revision submitted outside ordinary document synchronisation.
   (define invalidation 0)
   ;; No pass starts until the first settings are known.
   (define settings #f)
@@ -232,7 +233,7 @@
   (define requests 0)
   (define requests-lock (make-semaphore 1))
   (define (submit! #:documents-only? [documents-only? #f] #:normal-change? [normal-change? #f])
-    (unless normal-change? (set! invalidation (add1 invalidation)))
+    (unless normal-change? (set! invalidation (add1 (car submitted))))
     (when settings
       (set! submitted (cons (add1 (car submitted))
                             (for/hash ([(uri document) (in-hash documents)])
@@ -317,27 +318,24 @@
                           'edits (cdr entry))))
         (hasheq 'changes (for/hasheq ([(uri entry) (in-hash changes)])
                           (values (string->symbol uri) (cdr entry))))))
-  (define (response id operation result captured-invalidation)
+  (define (response id operation result)
     (define navigation? (memq operation '(definition highlights references)))
     (define stale (error-response id request-failed "Workspace changed during rename. Try Rename again."))
-    (cond
-      [(and navigation? (or (not (= captured-invalidation invalidation)) (not (sync/timeout 0 settled))))
-       (error-response id content-modified "Workspace configuration or sources changed during analysis")]
-      [else
-       (match result
-         [(AnalysisResult revision value current?)
-          (cond
-            [(not (and (or navigation? (= revision (car submitted))) (sync/timeout 0 settled) (current?)))
-             (if navigation? (error-response id content-modified "Sources changed during analysis") stale)]
-            [(eq? operation 'rename) (success-response id (workspace-edit value (cdr submitted)))]
-            [else (success-response id value)])]
-         [(AnalysisFailure 'document-changed _) #:when navigation? (success-response id (json-null))]
-         [(AnalysisFailure (or 'changed 'document-changed) _) #:when (memq operation '(rename prepare-rename)) stale]
-         [(AnalysisFailure reason message)
-          (error-response id (case reason
-                               [(cancelled) request-cancelled]
-                               [(changed) content-modified]
-                               [else request-failed]) message)])]))
+    (match result
+      [(AnalysisResult revision value current?)
+       (cond
+         [(not (and (if navigation? (>= revision invalidation) (= revision (car submitted)))
+                    (sync/timeout 0 settled) (current?)))
+          (if navigation? (error-response id content-modified "Sources changed during analysis") stale)]
+         [(eq? operation 'rename) (success-response id (workspace-edit value (cdr submitted)))]
+         [else (success-response id value)])]
+      [(AnalysisFailure 'document-changed _) #:when navigation? (success-response id (json-null))]
+      [(AnalysisFailure (or 'changed 'document-changed) _) #:when (memq operation '(rename prepare-rename)) stale]
+      [(AnalysisFailure reason message)
+       (error-response id (case reason
+                            [(cancelled) request-cancelled]
+                            [(changed) content-modified]
+                            [else request-failed]) message)]))
   ;; Reap the workers if that is quick, then go on even if one is wedged: the
   ;; owning supervisor ends anything left in the process tree.
   (define (close-engine!)
@@ -416,7 +414,6 @@
                     'identity (and document (hash-ref document 'identity))
                     'version (and document (hash-ref document 'version))))
        (define applied settled)
-       (define captured-invalidation invalidation)
        (define cancel (make-semaphore))
        (hash-set! pending id cancel)
        (thread
@@ -428,13 +425,13 @@
                (define result
                  (with-handlers ([exn:fail? failed])
                    (sync applied (semaphore-peek-evt cancel))
-                   (set! captured-invalidation invalidation)
                    (if document
                        (workspace-analysis-query engine operation bound (semaphore-peek-evt cancel))
                        (AnalysisFailure 'not-open "Document is not open"))))
                ;; Whether a rename still stands is decided once it is next to be written.
                (reply (lambda ()
-                        (with-handlers ([exn:fail? (lambda (e) (response id operation (failed e) captured-invalidation))])
+                        (with-handlers ([exn:fail? (lambda (e) (response id operation (failed e)))])
+                          (define writing-invalidation invalidation)
                           (define current (hash-ref documents uri #f))
                           (define navigation? (memq operation '(definition highlights references)))
                           (define fresh? (and current document
@@ -442,12 +439,14 @@
                                               (= (hash-ref current 'version) (hash-ref document 'version))))
                           (define delivered
                             (cond
+                              [(sync/timeout 0 (semaphore-peek-evt cancel))
+                               (AnalysisFailure 'cancelled "Request cancelled")]
                               [(and document navigation? (not fresh?))
                                (if (and current (= (hash-ref current 'identity) (hash-ref document 'identity)))
                                    (AnalysisFailure 'document-changed "Document changed during analysis")
                                    (AnalysisFailure 'not-open "Document is no longer open in this lifetime"))]
                               [else result]))
-                          (define message (response id operation delivered captured-invalidation))
+                          (define message (response id operation delivered))
                           (define (real value)
                             (cond
                               [(hash? value) (for/hash ([(key item) (in-hash value)]) (values key (real item)))]
@@ -462,8 +461,9 @@
                                                (path->string virtual-root) "untitled:")]
                               [else value]))
                           (define value (real message))
-                          (if (and navigation? (or (not (= captured-invalidation invalidation))
-                                                   (not (sync/timeout 0 settled))))
+                          (if (and navigation? (hash-has-key? message 'result)
+                                   (or (not (= writing-invalidation invalidation))
+                                       (not (sync/timeout 0 settled))))
                               (error-response id content-modified "Sources changed during analysis") value)))))
              (lambda () (hash-remove! pending id)))))]
       ["initialize" (reply (error-response id invalid-request "The index server is already initialized"))]

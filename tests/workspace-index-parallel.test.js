@@ -300,7 +300,7 @@ test('shutdown stops every worker', async t => {
   const all = await pids();
   await p.request('shutdown');
   await allStop(p, all, 'after shutdown');
-  assert.equal((await asking).code, -32600);
+  assert.equal((await asking).code, -32803);
 });
 
 test('every worker ends when the server is killed', async t => {

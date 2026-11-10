@@ -311,6 +311,9 @@
                     (for/hash ([entry (in-list (caddr record))])
                       (values (car entry) (disk-fingerprint (car entry)))) cache #f)]
           [else
+            ;; A pass must retry a source that moved while its earlier text was analysed.
+            (unless (or query (equal? (car record) (if buffer (buffer-fingerprint buffer) (disk-fingerprint path))))
+              (raise (cons 'changed "Sources changed during analysis")))
             (unless (or (not query) (holds? record)) (raise (cons 'changed "Sources changed during analysis")))
             (when (and query cache) (hash-set! cache 'document saved))
             (define navigation

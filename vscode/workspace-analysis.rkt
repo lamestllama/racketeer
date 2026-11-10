@@ -869,9 +869,11 @@
            (>= (- now further-at) (* 1000 (Settings-timeout (Run-settings run)))))))
   (define (own-work run seconds request evt)
     (define began (current-inexact-monotonic-milliseconds))
-    (begin0 (compute engine run seconds request evt)
-            (when further-at
-              (set! further-at (+ further-at (- (current-inexact-monotonic-milliseconds) began))))))
+    (define result (compute engine run seconds request evt))
+    ;; An interrupted document query is still waiting for sources to settle.
+    (when (and further-at (or result (not (eq? operation 'references))))
+      (set! further-at (+ further-at (- (current-inexact-monotonic-milliseconds) began))))
+    result)
   (let retry ()
     (define run
       (call-with-semaphore (WorkspaceAnalysis-lock engine)
@@ -920,7 +922,8 @@
              (cond
                [(or (not (eq? operation 'references)) (not (cadr navigation)))
                 (or (settle run path (lambda () (accepted run (if (eq? operation 'references) (car navigation) navigation) fresh?)))
-                    (AnalysisFailure 'document-changed "Sources changed during analysis"))]
+                    (if (eq? operation 'references) (retry)
+                        (AnalysisFailure 'document-changed "Sources changed during analysis")))]
                ;; With scanning off, the language server answers from this document alone.
                [(not (Settings-enabled? (Run-settings run))) (accepted run (json-null))]
                [else
