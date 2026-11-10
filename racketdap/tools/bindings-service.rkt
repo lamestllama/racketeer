@@ -18,6 +18,8 @@
 ;; One expansion owns these identities. Only Module-Binding keys can leave the
 ;; document; scoped local keys are private to this service. Queries use character
 ;; offsets and return half-open ranges, ready for the caller's position converter.
+;; Navigation shows predicted occurrences. identities-at and references report
+;; only what expansion confirmed unless asked, so a rename can rely on them.
 (define bindings-service%
   (class base-service%
     (init-field source doc-text [provider #f])
@@ -158,9 +160,35 @@
                                         'name (syntax-e id)))))))
           ;; The scoped identifier supplies the declaration phase; callbacks may
           ;; instead carry the import shift. Replace only that superseded owner.
-          (define predicted (make-hash))
-          (for ([arrow (in-list arrows)] #:unless (list-ref arrow 4))
-            (hash-set! predicted (list (cadr arrow) (caddr arrow)) #t))
+          (define (phase-of key)
+            (define phase (Module-Binding-phase+space key))
+            (if (pair? phase) (car phase) phase))
+          (define (arrows-by-use actual?)
+            (for/fold ([table (hash)])
+                      ([arrow (in-list arrows)] #:when (eq? (and (list-ref arrow 4) #t) actual?))
+              (hash-update table (list (cadr arrow) (caddr arrow))
+                           (lambda (binders) (cons (car arrow) binders)) '())))
+          (define actual-binders (arrows-by-use #t))
+          (define predicted-binders (arrows-by-use #f))
+          (define own-binders (make-hash))
+          (define owners-at (make-hash))
+          (for ([callback (in-list callbacks)])
+            (define key (hash-ref callback 'identity))
+            (if (eq? (hash-ref callback 'role) 'definition)
+                (hash-update! own-binders key (lambda (ranges) (cons (hash-ref callback 'range) ranges)) '())
+                (hash-update! owners-at (list (hash-ref callback 'range) (phase-of key))
+                              (lambda (keys) (remove-duplicates (cons key keys))) '())))
+          ;; A binder that is the identity's own definition says whose arrow it is, and
+          ;; an actual arrow from it settles the use. An imported binder is shared, so
+          ;; its actual arrow settles only an identity that is alone at the use.
+          (define (predicted-use? key r)
+            (define at (list r (phase-of key)))
+            (define actual (hash-ref actual-binders at '()))
+            (define own (hash-ref own-binders key '()))
+            (for/or ([binder (in-list (hash-ref predicted-binders at '()))])
+              (and (or (null? own) (member binder own))
+                   (or (not (member binder actual))
+                       (and (null? own) (> (length (hash-ref owners-at at '())) 1))))))
           (for ([callback (in-list callbacks)])
             (define key (hash-ref callback 'identity))
             (define r (hash-ref callback 'range))
@@ -184,9 +212,7 @@
                                    (equal? r (cons (sub1 (syntax-position id))
                                                    (+ (sub1 (syntax-position id)) (syntax-span id))))))))))
             (unless replaced?
-              (define phase (Module-Binding-phase+space key))
-              (install! (if (and (eq? (hash-ref callback 'role) 'use)
-                                 (hash-ref predicted (list r (if (pair? phase) (car phase) phase)) #f))
+              (install! (if (and (eq? (hash-ref callback 'role) 'use) (predicted-use? key r))
                             (hash-set callback 'certainty 'predicted) callback))))
           ;; Scoped occurrences disambiguate arrows whose generated binders share
           ;; a written anchor. Retain callback-only local and implicit uses.
@@ -240,9 +266,10 @@
             (filter (lambda (name)
                       (define r (hash-ref name 'range))
                       (= width (- (cdr r) (car r)))) hits))))
-    (define/public (identities-at pos)
+    (define/public (identities-at pos #:predicted? [predicted? #f])
       (remove-duplicates
-       (for/list ([name (in-list (send this names-at pos))] #:when (confirmed? name))
+       (for/list ([name (in-list (send this names-at pos))]
+                  #:when (or predicted? (confirmed? name)))
          (hash-ref name 'identity))))
     (define/private (sort-ranges ranges)
       (sort (remove-duplicates ranges)
@@ -250,21 +277,23 @@
                              (and (= (car a) (car b)) (< (cdr a) (cdr b)))))))
     (define/public (definitions keys)
       (sort-ranges (append-map (lambda (key) (hash-ref targets key '())) keys)))
-    (define/public (references keys [include-declaration? #f])
+    (define/public (references keys [include-declaration? #f] #:predicted? [predicted? #f])
       (sort-ranges
        (append (if include-declaration? (send this definitions keys) '())
                (for/list ([name (in-list names)]
-                          #:when (and (confirmed? name) (not (eq? (hash-ref name 'role) 'definition))
+                          #:when (and (or predicted? (confirmed? name))
+                                      (not (eq? (hash-ref name 'role) 'definition))
                                       (member (hash-ref name 'identity) keys)
                                       (not (member (hash-ref name 'range)
                                                    (hash-ref targets (hash-ref name 'identity) '())))))
                  (hash-ref name 'range)))))
-    (define/public (definition-ranges-at pos) (send this definitions (send this identities-at pos)))
+    (define/public (definition-ranges-at pos)
+      (send this definitions (send this identities-at pos #:predicted? #t)))
     (define/public (reference-ranges-at pos [include-declaration? #f])
       (define keys (remove-duplicates
                     (append-map (lambda (key) (hash-ref families key (list key)))
-                                (send this identities-at pos))))
-      (send this references keys include-declaration?))))
+                                (send this identities-at pos #:predicted? #t))))
+      (send this references keys include-declaration? #:predicted? #t))))
 
 (define ((bindings-factory [provider #f]) source doc-text _lexer-state)
   (new bindings-service% [source source] [doc-text doc-text] [provider provider]))

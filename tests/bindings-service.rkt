@@ -231,8 +231,44 @@
     (send jump-trace syncheck:add-arrow/name-dup jump-file 10 11 jump-file 40 41 #f 0 #t (lambda _ #f))
     (send jump-trace walk-stx empty-result)
     (check-equal? (send jump-service identities-at 40) '())
-    (check-equal? (send jump-service reference-ranges-at 10) '())
+    (check-equal? (send jump-service reference-ranges-at 10) '((40 . 41)))
+    (check-equal? (send jump-service references (send jump-service identities-at 10)) '())
     (check-equal? (map (lambda (name) (hash-ref name 'certainty)) (send jump-service names-at 40)) '(predicted)))
+
+  (test-case "an actual arrow settles a use only for the identity it reaches"
+    (define (identities definitions uses path binders)
+      (for/list ([order '((#f #t) (#t #f))])
+        (define-values (source trace service) (synthetic))
+        (define file (source-file-path source))
+        (for ([definition (in-list definitions)])
+          (send trace syncheck:add-definition-target/phase-level+space
+                file (car definition) (+ 5 (car definition)) (cdr definition) '() 0))
+        (for ([id (in-list uses)])
+          (send trace syncheck:add-jump-to-definition/phase-level+space
+                file 30 35 id (or path file) '() 0))
+        (for ([actual? (in-list order)])
+          (define from (if actual? (car binders) (cdr binders)))
+          (send trace syncheck:add-arrow/name-dup file from (+ 5 from) file 30 35 actual? 0 #t (lambda _ #f)))
+        (send trace walk-stx empty-result)
+        (sort (map Module-Binding-id (send service identities-at 30)) symbol<?)))
+    (define imported (build-path root "imported.rkt"))
+    (check-equal? (identities '((10 . confirmed)) '(confirmed) #f '(10 . 10)) '((confirmed) (confirmed)))
+    (check-equal? (identities '((10 . confirmed) (20 . guess)) '(confirmed guess) #f '(10 . 20))
+                  '((confirmed) (confirmed)))
+    (check-equal? (identities '() '(alpha) imported '(0 . 0)) '((alpha) (alpha)))
+    (check-equal? (identities '() '(alpha beta) imported '(0 . 0)) '(() ())))
+
+  (test-case "navigation finds a template occurrence that a rename cannot rely on"
+    (define text "#lang racket/base\n(define value 7)\n(define quoted #'value)\n(define (answer) (+ value 1))\n")
+    (define-values (_ service _trace) (analyse text))
+    (define declaration (span text "define value" "value"))
+    (define template (span text "#'value" "value"))
+    (define use (span text "+ value" "value"))
+    (check-equal? (send service definition-ranges-at (car template)) (list declaration))
+    (for ([range (list declaration template use)])
+      (check-equal? (send service reference-ranges-at (car range)) (list template use)))
+    (check-equal? (send service identities-at (car template)) '())
+    (check-equal? (send service references (send service identities-at (car use))) (list use)))
 
   (test-case "facts and provider calls are shared by repeated queries in both analysis modes"
     (for ([only? '(#f #t)])
