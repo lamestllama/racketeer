@@ -6,6 +6,7 @@
 
 (define-runtime-path worker "../vscode/workspace-worker.rkt")
 (define-runtime-path analysis "../vscode/workspace-analysis.rkt")
+(define-runtime-path analyser "../vscode/workspace-analysis-worker.rkt")
 (define-runtime-path collects "../vscode/language-server/collects")
 (define-runtime-path snapshot "../vscode/runtime/racketdap/tools/source-snapshot.rkt")
 (define-runtime-path example-path "../examples/multi-file")
@@ -90,7 +91,7 @@
            (string-append (format "#lang racket/base\n(provide leaf-value)\n(define leaf-value ~a)\n" value) counter)
            leaf #:exists 'truncate)
           ;; Each worker is owned by one pass; replacing it must drop all code.
-          (with-worker analysis
+          (with-worker analyser
             (lambda (from to)
               (define recorded #f)
               (for ([file (in-list consumers)])
@@ -140,7 +141,7 @@
          (format "#lang racket/base\n(require (for-syntax racket/base \"middle.rkt\"))\n(begin-for-syntax (call-with-output-file ~s #:exists 'append (lambda (out) (writeln value out))))\n"
                  (path->string seen)) consumer)
         (define original (fingerprint leaf))
-        (with-worker analysis
+        (with-worker analyser
           (lambda (from to)
             (define first (ask from to))
             (display-to-file (leaf-text 2) leaf #:exists 'truncate)
@@ -169,7 +170,7 @@
                          (begin0 (result-current? result run path disk disk (make-immutable-hash resolutions))
                                  (workspace-analysis-close! engine))))))
             (check-false (current? directory consumer (list-ref second 5)))))
-        (with-worker analysis (lambda (from to) (ask from to)))
+        (with-worker analyser (lambda (from to) (ask from to)))
         (check-equal? (file->lines seen) '("1" "1" "2")))
       (lambda () (delete-directory/files directory))))
 
@@ -189,7 +190,7 @@
         (display-to-file
          (format "#lang racket/base\n(require (for-syntax racket/base \"dependency.rkt\"))\n(begin-for-syntax (call-with-output-file ~s #:exists 'append (lambda (out) (writeln value out))))\n"
                  (path->string seen)) consumer)
-        (with-worker analysis
+        (with-worker analyser
           (lambda (from to)
             (for ([value '(1 2)])
               (when (= value 2) (display-to-file "2" data #:exists 'truncate))
@@ -236,7 +237,7 @@
         (display-to-file
          (string-append
           "#lang racket/base\n(module+ worker\n"
-          (format "  (define analysis (string->path ~s))\n" (path->string analysis))
+          (format "  (define analysis (string->path ~s))\n" (path->string analyser))
           "  (dynamic-require analysis #f)\n"
           "  (define serve (parameterize ([current-namespace (module->namespace analysis)])\n"
           "                  (eval 'answer-worker-request)))\n"
@@ -270,13 +271,14 @@
   (test-case "multi-file definitions, references and rename match the normal documentation helper"
     (current-library-collection-paths (cons collects (current-library-collection-paths)))
     (dynamic-require analysis #f)
+    (dynamic-require analyser #f)
     (define normal-answer
-      (parameterize ([current-namespace (module->namespace analysis)]) (eval 'answer)))
+      (parameterize ([current-namespace (module->namespace analyser)]) (eval 'answer)))
     (define files
       (for/list ([name '("main.rkt" "app/orders.rkt" "domain/pricing.rkt" "domain/tax/rates.rkt")])
         (simplify-path (build-path example name))))
     (define sources (for/hash ([file (in-list files)]) (values file (file->string file))))
-    (with-worker analysis
+    (with-worker analyser
       (lambda (from to)
         (define (ask request)
           (write-worker-message request to)
@@ -308,7 +310,7 @@
         (make-directory* (path-only descriptor))
         (display-to-file "#lang racket/base\n(provide value)\n(define value 1)\n" source)
         (display-to-file "((profile (match (language racket/base)) (editor (expand? #f))))" descriptor)
-        (with-worker analysis
+        (with-worker analyser
           (lambda (from to)
             (write-worker-message
              (list 'analyse source 1048576 #f #f (hash descriptor buffer) (list directory) (hash)) to)
@@ -345,7 +347,7 @@
         (display-to-file
          "#lang racket/base\n(require (for-syntax racket/base \"dependency.rkt\"))\n(begin-for-syntax (unless (= value 2) (error 'legacy \"stale buffer\")))\n"
          source)
-        (with-worker analysis
+        (with-worker analyser
           (lambda (from to)
             (write-worker-message
              (list 'analyse source 1048576 #f #f

@@ -9,7 +9,7 @@
 (define-runtime-path macro-expansion "../racketdap/tools/macro-steps/expansion.rkt")
 (define-runtime-path bridge "../vscode/language-adapters.rkt")
 (define-runtime-path environment "../vscode/racket-environment.rkt")
-(define-runtime-path analysis "../vscode/workspace-analysis.rkt")
+(define-runtime-path analysis "../vscode/workspace-analysis-worker.rkt")
 (define (api name) (dynamic-require loader name))
 (define (tag descriptor) (hash-ref (hash-ref descriptor 'editor) 'source-details))
 (define (profile tag) `(profile (editor (source-details ,tag))))

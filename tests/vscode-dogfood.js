@@ -44,7 +44,7 @@ exports.run = async function () {
     ['tests/debug-cache-links.rkt', 3],
     ['tests/debugger-test-mode.rkt', 3],
     ['tests/definition-allocation.rkt', 14],
-    ['tests/deferred-imports.rkt', 3],
+    ['tests/deferred-imports.rkt', 6],
     ['tests/generated-code.rkt', 7],
     ['tests/site-gate.rkt', 7],
     ['tests/headless.rkt', 22],

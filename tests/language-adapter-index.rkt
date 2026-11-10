@@ -8,6 +8,10 @@
 (dynamic-require analysis #f)
 (define (get name)
   (parameterize ([current-namespace (module->namespace analysis)]) (eval name)))
+(define-runtime-path analyser "../vscode/workspace-analysis-worker.rkt")
+(dynamic-require analyser #f)
+(define (get-worker name)
+  (parameterize ([current-namespace (module->namespace analyser)]) (eval name)))
 (define (fingerprints files)
   (for/hash ([file (in-list files)]) (values file ((get 'disk-fingerprint) file))))
 (module+ test
@@ -31,7 +35,7 @@
           (define run ((get 'WorkspaceAnalysis-current-run) engine))
           (define cache (make-hash))
           (define (analyse before)
-            ((get 'analyse) source (* 1024 1024) #f #f (hash) (list root) before cache))
+            ((get-worker 'analyse) source (* 1024 1024) #f #f (hash) (list root) before cache))
           (define first (analyse (hash)))
           (define observed (list-ref first 4))
           (define before (fingerprints (map car (list-ref observed 2))))
@@ -58,7 +62,7 @@
           (when (eq? kind 'descriptor)
             (check-exn #rx"analysis failed"
              (lambda ()
-               ((get 'analyse) source (* 1024 1024) #f #f
+               ((get-worker 'analyse) source (* 1024 1024) #f #f
                 (hash descriptor "((profile (match (language racket/base)) (editor (expand? #f))))")
                 (list root) (hash) (make-hash))))))
         (lambda ()

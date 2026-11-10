@@ -258,29 +258,36 @@ function createWorkspaceIndex(context, { executable, timeout, output, onStatus, 
     const version = document.version, owned = documentIdentity(document);
     const fresh = () => !disposed && !token.isCancellationRequested && version === document.version &&
       identities.get(document) === owned && !document.isClosed && vscode.workspace.textDocuments.includes(document);
-    try {
-      await start();
-      if (!fresh()) return [];
-      // Flush an edit that arrived before its change event.
-      if (versions.get(document) !== document.version) didChange(document);
-      const params = options === undefined
-        ? code2ProtocolConverter.asTextDocumentPositionParams(document, position)
-        : code2ProtocolConverter.asReferenceParams(document, position, options);
-      const revision = sourceRevision;
-      const result = await ask(`textDocument/${operation}`, params, token);
-      if (!fresh() || revision !== sourceRevision) return [];
-      if (result === silent) return next(...args);
-      if (result === null) return next(...args);
-      const converted = await (operation === 'documentHighlight' ? protocol2CodeConverter.asDocumentHighlights(result, token)
-        : operation === 'definition' ? protocol2CodeConverter.asDefinitionResult(result, token)
-        : protocol2CodeConverter.asReferences(result, token));
-      return fresh() && revision === sourceRevision ? converted : [];
-    } catch (error) {
-      if (disposed || token.isCancellationRequested || [-32800, -32801].includes(error.code)) return [];
-      if (error.code === -32803 || error.refused) onStatus({ state: 'refused', message: error.message });
-      else failure(error);
-      throw error;
+    // Another source changing voids an answer but not the question, so ask again.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        await start();
+        if (!fresh()) return [];
+        // Flush an edit that arrived before its change event.
+        if (versions.get(document) !== document.version) didChange(document);
+        const params = options === undefined
+          ? code2ProtocolConverter.asTextDocumentPositionParams(document, position)
+          : code2ProtocolConverter.asReferenceParams(document, position, options);
+        const revision = sourceRevision;
+        const result = await ask(`textDocument/${operation}`, params, token);
+        if (!fresh()) return [];
+        if (revision !== sourceRevision) continue;
+        if (result === silent) return next(...args);
+        if (result === null) return next(...args);
+        const converted = await (operation === 'documentHighlight' ? protocol2CodeConverter.asDocumentHighlights(result, token)
+          : operation === 'definition' ? protocol2CodeConverter.asDefinitionResult(result, token)
+          : protocol2CodeConverter.asReferences(result, token));
+        if (!fresh()) return [];
+        if (revision === sourceRevision) return converted;
+      } catch (error) {
+        if (error.code === -32801 && fresh()) continue;
+        if (disposed || token.isCancellationRequested || [-32800, -32801].includes(error.code)) return [];
+        if (error.code === -32803 || error.refused) onStatus({ state: 'refused', message: error.message });
+        else failure(error);
+        throw error;
+      }
     }
+    return [];
   }
   return {
     start, refresh,

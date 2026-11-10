@@ -29,8 +29,9 @@ const modulePath = /dr\s*racket\/check-syntax/gi, standInPath = /dr\s*racket\/pr
 const spelled = new Map([
   ['racketdap/tools/bindings-service.rkt', modulePath],
   ['vscode/workspace-rename.rkt', modulePath],
-  ['vscode/workspace-analysis.rkt', modulePath],
+  ['vscode/workspace-analysis-worker.rkt', modulePath],
   ['vscode/workspace-worker.rkt', standInPath],
+  ['tests/deferred-imports.rkt', modulePath],
   ['tests/binding-contributions.rkt', modulePath],
   ['tests/bindings-service.rkt', modulePath],
   ['tests/predicted-bindings.rkt', modulePath],

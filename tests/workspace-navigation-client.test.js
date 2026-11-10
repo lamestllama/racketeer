@@ -102,25 +102,26 @@ for (const method of ['definition', 'documentHighlight', 'references']) {
     assert.deepEqual(await p.call(method, document), [{ current: true }]);
     assert.ok(p.sent.some(message => message.method === 'textDocument/didChange' && message.params.textDocument.version === 2));
   });
-  test(`${method} discards answers when another open source changes during delivery`, async t => {
+  test(`${method} asks again when another open source changes during delivery`, async t => {
     const p = fixture(t), origin = p.open('file:///origin'), dependency = p.open('file:///target');
-    const location = [{ uri: 'file:///target', range: { start: { line: 2, character: 8 }, end: { line: 2, character: 11 } } }];
+    const location = line => [{ uri: 'file:///target', range: { start: { line, character: 8 }, end: { line, character: 11 } } }];
+    const stale = location(2), current = location(3);
     const change = () => {
       dependency.version++;
       p.changed.emit({ document: dependency, contentChanges: [{ text: '\ncurrent source' }] });
     };
-    let deliver, entered;
-    const waiting = new Promise(resolve => { entered = resolve; });
-    p.answer(() => { entered(); return new Promise(resolve => { deliver = resolve; }); });
-    const pending = p.call(method, origin);
-    await waiting;
-    change(); deliver(location);
-    assert.equal((await pending).length, 0);
-    assert.equal(p.converted.length, 0);
-    p.answer(() => location);
-    p.conversion(async value => { change(); return value; });
-    assert.equal((await p.call(method, origin)).length, 0);
+    let asked = 0;
+    p.answer(() => { asked++; if (asked === 1) change(); return asked === 1 ? stale : current; });
+    assert.deepEqual(await p.call(method, origin), current);
+    assert.equal(asked, 2);
+    let converting = 0;
+    asked = 0;
+    p.answer(() => { asked++; return asked === 1 ? stale : current; });
+    p.conversion(async value => { if (++converting === 1) change(); return value; });
+    assert.deepEqual(await p.call(method, origin), current);
+    assert.equal(asked, 2);
     p.conversion(async value => value);
-    assert.deepEqual(await p.call(method, origin), location);
+    p.answer(() => { change(); return stale; });
+    assert.equal((await p.call(method, origin)).length, 0, 'Sources that never settle give nothing, not a stale location');
   });
 }

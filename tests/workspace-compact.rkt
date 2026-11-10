@@ -8,7 +8,7 @@
          racket-langserver/doclib/doc-trace
          racket-langserver/doclib/doc-lang)
 
-(define-runtime-path analysis "../vscode/workspace-analysis.rkt")
+(define-runtime-path analysis "../vscode/workspace-analysis-worker.rkt")
 (dynamic-require analysis #f)
 (define analysis-namespace (module->namespace analysis))
 (define (get name)
