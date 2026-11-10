@@ -28,6 +28,13 @@ for (const enabled of [true, false]) test(`document navigation avoids discovery 
   assert.ok(!p.notifications.some(status => ['indexing', 'partial', 'ready'].includes(status.state)));
 });
 
+test('module references with scanning off leave the answer to the language server', async t => {
+  const p = await project(t);
+  p.settings.enabled = false;
+  const key = p.open('module.rkt', '#lang racket/base\n(provide value)\n(define value 1)\nvalue\n'); await p.update();
+  assert.equal(await p.references(key, { line: 3, character: 1 }, true), null);
+});
+
 test('definition follows unsaved imports outside workspace roots', async t => {
   const p = await project(t);
   p.settings.enabled = false;
@@ -180,6 +187,30 @@ test('an unopened imported definition needs no project pass', async t => {
   assert.equal(p.progress.length, 0);
 });
 
+test('an oversized definition target falls back while scanning keeps its size limit', async t => {
+  const p = await project(t); p.settings.enabled = false;
+  p.write('target.rkt', '#lang racket/base\n(provide value)\n(define value 1)\n;' + ' '.repeat(1048576));
+  const key = p.open('consumer.rkt', '#lang racket/base\n(require "target.rkt")\nvalue\n'); await p.update();
+  assert.equal(await query(p, 'definition', key, 2, 2), null);
+  assert.equal(p.progress.length, 0);
+  p.settings.enabled = true; await p.update();
+  await p.references(p.origin);
+  assert.equal(p.notifications.at(-1).state, 'partial');
+  assert.equal(p.notifications.at(-1).failures, 1);
+});
+
+test('raised values during reading and expansion fall back for every navigation operation', async t => {
+  const p = await project(t); p.settings.enabled = false;
+  p.write('reader.rkt', '#lang racket/base\n(provide (rename-out [source-read read-syntax]))\n(define (source-read src in) (raise \'broken))\n');
+  for (const text of ['#reader "reader.rkt"\n',
+    "#lang racket/base\n(require (for-syntax racket/base))\n(begin-for-syntax (raise 'broken))\n(define (f x) x)\n"]) {
+    const key = p.open('broken.rkt', text); await p.update();
+    for (const method of ['definition', 'documentHighlight', 'references']) {
+      assert.equal(await query(p, method, key, 3, 14), null);
+    }
+  }
+});
+
 
 test('an untitled save location supplies only its real import directory', async t => {
   const p = await project(t); p.settings.enabled = false;
@@ -202,6 +233,20 @@ test('untitled buffers stay outside the module-reference pass', async t => {
   assert.equal(p.notifications.at(-1).state, 'ready');
   assert.equal(p.notifications.at(-1).total, 2);
   assert.ok(references.every(location => location.uri.startsWith('file:')));
+});
+
+test('outside open buffers remain navigable without joining the workspace rename pass', async t => {
+  const p = await project(t);
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'navigation-outside-'));
+  t.after(() => fs.rmSync(outside, { recursive: true, force: true }));
+  p.open(uri(path.join(outside, 'broken.rkt')), '#lang racket/base\nmissing\n');
+  const target = p.open(uri(path.join(outside, 'target.rkt')), '#lang racket/base\n(provide value)\n(define value 1)\n');
+  const key = p.open(uri(path.join(outside, 'consumer.rkt')),
+    '#lang racket/base\n(require "target.rkt")\nvalue\n'); await p.update();
+  assert.deepEqual(await query(p, 'definition', key, 2, 2), [{ uri: target, range: range(2, 8, 5) }]);
+  const result = await p.rename(p.origin, 'squared');
+  assert.deepEqual(Object.keys(result.changes).sort(), [p.origin, uri(p.filename('uses.rkt'))].sort());
+  assert.deepEqual(p.notifications.at(-1), { state: 'ready', indexed: 2, total: 2, failures: 0 });
 });
 
 test('document positions use UTF-16 and clamp at the requested line end', async t => {
@@ -230,6 +275,29 @@ test('a document request takes the occupied slot without waiting for a workspace
   assert.ok(result.locations.some(location => location.uri === uri(p.filename('uses.rkt'))));
   assert.equal(p.notifications.at(-1).state, 'ready', p.diagnostics());
   assert.equal(p.notifications.at(-1).failures, 0);
+});
+
+test('finite pass files finish while navigation requests continue arriving', async t => {
+  const p = await project(t, { RACKETEER_INDEX_WORKERS: '1' });
+  p.settings.timeoutSeconds = 5;
+  for (const name of ['a', 'b']) {
+    p.write(`${name}-slow.rkt`, `#lang racket/base\n(require (for-syntax racket/base))\n(begin-for-syntax (call-with-output-file ${JSON.stringify(p.filename(`${name}-entered`))} #:exists 'append (lambda (out) (displayln 'enter out))) (sleep 1.5) (call-with-output-file ${JSON.stringify(p.filename(`${name}-finished`))} #:exists 'truncate void))\n`);
+  }
+  const key = p.open('z-local.rkt', local); await p.update();
+  let finished = false;
+  const pending = p.references(p.origin).then(locations => { finished = true; return locations; });
+  await until(() => fs.existsSync(p.filename('a-entered')), 'finite workspace expansion entered');
+  for (let i = 0; i < 16 && !finished; i++) {
+    assert.deepEqual(await query(p, 'definition', key, 1, 17), [{ uri: key, range: range(1, 11, 1) }]);
+  }
+  assert.ok(finished, 'References finish while navigation continues');
+  assert.ok((await pending).some(location => location.uri === uri(p.filename('uses.rkt'))));
+  for (const name of ['a', 'b']) {
+    assert.ok(fs.existsSync(p.filename(`${name}-finished`)));
+    assert.ok(fs.readFileSync(p.filename(`${name}-entered`), 'utf8').trim().split('\n').length <= 2,
+      'A pass operation is preempted at most once');
+  }
+  assert.deepEqual(p.notifications.at(-1), { state: 'ready', indexed: 5, total: 5, failures: 0 });
 });
 
 test('untitled worker failures report the real URI without exposing the in-memory path', { skip: process.platform === 'win32' }, async t => {

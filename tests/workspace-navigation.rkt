@@ -1,7 +1,7 @@
 #lang racket/base
 ;; Copyright (c) 2026 Eric Parsonage
 ;; SPDX-License-Identifier: Apache-2.0 OR MIT
-(require rackunit racket/class racket/file racket/list racket/match racket/runtime-path
+(require rackunit racket/class racket/file racket/list racket/match racket/runtime-path compiler/compile-file
          "../vscode/workspace-analysis.rkt")
 (define-runtime-path analysis "../vscode/workspace-analysis.rkt")
 (define ns (module->namespace analysis))
@@ -23,9 +23,38 @@
 (define (ok result)
   (check-equal? (car result) 'ok (format "~s" result))
   result)
-(define (held-service cache) (car (caddr (hash-ref cache 'document))))
+(define (held-service cache) (car (cadr (hash-ref cache 'document))))
 
 (module+ test
+  (test-case "a definition target available only as bytecode is a failed source"
+    (with-project
+     (lambda (root)
+       (define target (build-path root "target.rkt"))
+       (display-to-file "#lang racket/base\n(provide value)\n(define value 1)\n" target)
+       (make-directory (build-path root "compiled"))
+       (parameterize ([current-namespace (make-base-namespace)] [read-accept-reader #t])
+         (compile-file target (build-path root "compiled" "target_rkt.zo")))
+       (delete-file target)
+       (define source "#lang racket/base\n(require \"target.rkt\")\nvalue\n")
+       (define position (hasheq 'line 2 'character 2))
+       (define query (list 'definition ((get 'path->uri) (build-path root "program.rkt")) position #f (hash) root))
+       (check-equal? (car (answer (list-set (request root source) 4 query) void)) 'source))))
+
+  (test-case "document reads and expansions preserve resource failures and breaks"
+    (with-project
+     (lambda (root)
+       (for ([raised '("'broken" "#f" "eof" "'(changed . \"broken\")"
+                       "(exn:fail:out-of-memory \"allocation\" (current-continuation-marks))"
+                       "(exn:break \"interrupted\" (current-continuation-marks) (let/ec k k))")]
+             [expected '(source source source source out-of-memory failed)])
+         (define reader (build-path root "reader.rkt"))
+         (display-to-file
+          (format "#lang racket/base\n(provide (rename-out [source-read read-syntax]))\n(define (source-read src in) (raise ~a))\n" raised)
+          reader #:exists 'truncate)
+         (for ([source (list (format "#reader (file ~s)\n" (path->string reader))
+                             (format "#lang racket/base\n(require (for-syntax racket/base))\n(begin-for-syntax (raise ~a))\n" raised))])
+           (check-equal? (car (answer (request root source) void)) expected source))))))
+
   (test-case "unchanged document and cursor queries reuse the held service"
     (with-project
      (lambda (root)
@@ -35,7 +64,7 @@
        (define service (held-service cache))
        (define second (ok (answer (request root source) void cache)))
        (check-eq? (held-service cache) service)
-       (check-equal? (list-ref second 4) (list-ref first 4))
+       (check-equal? (cadr second) (cadr first))
        (check-equal? (file->lines (build-path root "count")) '("expanded"))
        (ok (answer (request root (string-append source "\n")) void cache))
        (check-not-eq? (held-service cache) service)

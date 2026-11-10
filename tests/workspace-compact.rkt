@@ -4,6 +4,7 @@
 
 (require rackunit racket/class racket/file racket/list racket/path racket/runtime-path racket/set
          "../vscode/language-adapters.rkt"
+         racket-langserver/doclib/doc
          racket-langserver/doclib/doc-trace
          racket-langserver/doclib/doc-lang)
 
@@ -31,9 +32,9 @@
 (define (old root text)
   (parameterize ([current-namespace (make-base-namespace)] [current-language-adapter-roots (list root)]
                  [current-directory root] [current-load-relative-directory root])
-    (define doc ((get 'make-doc) ((get 'path->uri) (build-path root "program.rkt")) text))
-    (check-true ((get 'doc-expand!) doc #:contribution-only? #t))
-    ((get 'contribution->datum) ((get 'Doc-contribution) doc))))
+    (define doc (make-doc ((get 'path->uri) (build-path root "program.rkt")) text))
+    (check-true (doc-expand! doc #:contribution-only? #t))
+    ((get 'contribution->datum) (Doc-contribution doc))))
 (define (compile-time body)
   (string-append "#lang racket/base\n(require (for-syntax racket/base))\n(begin-for-syntax " body ")\n"))
 

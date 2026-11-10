@@ -2,7 +2,7 @@
 ;; Copyright (c) 2026 Eric Parsonage
 ;; SPDX-License-Identifier: Apache-2.0 OR MIT
 
-(require rackunit racket/class racket/file racket/list racket/runtime-path
+(require rackunit racket/class racket/file racket/list
          "../vendor/collects/racket-langserver/common/source.rkt"
          "../vendor/collects/racket-langserver/common/interfaces.rkt"
          "../vendor/collects/racket-langserver/doclib/internal-types.rkt"
@@ -11,10 +11,7 @@
          "../vendor/collects/racket-langserver/doclib/doc.rkt"
          "../vendor/collects/racket-langserver/doclib/lexer.rkt"
          "../vendor/collects/racket-langserver/workspace/api.rkt"
-         "../vendor/collects/racket-langserver/lsp/compose/references.rkt"
-         "../vscode/workspace-wire.rkt")
-
-(define-runtime-path analysis "../vscode/workspace-analysis.rkt")
+         "../vendor/collects/racket-langserver/lsp/compose/references.rkt")
 (define root (make-temporary-file "binding-facts~a" 'directory))
 (define source (path->source (build-path root "model.rkt")))
 (define text
@@ -183,22 +180,6 @@
           (hasheq 'names (list (hasheq 'identifier #'unbound 'role 'definition
                                       'range '(0 . 1) 'certainty 'predicted))))))
     (check-false (doc-occurrence-at doc (Pos 0 0))))
-
-  (test-case "worker query records round-trip family, scalar and local lookup keys"
-    (dynamic-require analysis #f)
-    (define round-trip
-      (parameterize ([current-namespace (module->namespace analysis)])
-        (eval '(lambda (record path)
-                 (reference-query->datum (datum->reference-query path record))))))
-    (define path (source-file-path source))
-    (define first-key (list path '() 0 'thing))
-    (define second-key (list path '(inner) '(1 . names) 'helper))
-    (for ([binding (in-list (list #f first-key (list 'bindings first-key second-key)))])
-      (define record (list '() binding))
-      (define out (open-output-bytes))
-      (write-worker-message record out)
-      (define transported (read-worker-message (open-input-bytes (get-output-bytes out))))
-      (check-equal? (round-trip transported path) record)))
 
   (test-case "generic provide collection retains label and numeric binding phases"
     (display-to-file "#lang racket/base\n(provide value)\n(define value 1)\n"

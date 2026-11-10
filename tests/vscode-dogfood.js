@@ -29,7 +29,7 @@ exports.run = async function () {
     // Its second case needs a link, which can take a privilege on Windows.
     ['tests/breakpoint-spelling.rkt', process.platform === 'win32' ? 1 : 2],
     ['tests/binding-contributions.rkt', 2],
-    ['tests/binding-facts.rkt', 9],
+    ['tests/binding-facts.rkt', 8],
     ['tests/binding-facts-services.rkt', 47],
     ['tests/bindings-service.rkt', 16],
     ['tests/rename-binders.rkt', 85],
@@ -85,7 +85,7 @@ exports.run = async function () {
     ['tests/workspace-compact.rkt', 10],
     ['tests/workspace-incremental.rkt', 2],
     ['tests/workspace-memory.rkt', 3],
-    ['tests/workspace-navigation.rkt', 6],
+    ['tests/workspace-navigation.rkt', 8],
     ['tests/workspace-worker.rkt', 9],
     ['tests/wxme-source.rkt', 9],
     ['tests/wxme-lazy.rkt', 1]

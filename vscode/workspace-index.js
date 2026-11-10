@@ -18,7 +18,7 @@ const sourceSuffixes = ['.rkt', '.ss', '.scrbl', '.rhm', '.rktl', '.rktd', ''];
 function createWorkspaceIndex(context, { executable, timeout, output, onStatus, supportsDocument, code2ProtocolConverter, protocol2CodeConverter }) {
   const isSource = document => ['file', 'untitled'].includes(document.uri.scheme) && supportsDocument(document);
   let connection, starting, disposed = false, synchronized = false, stalled = false;
-  let identity = 0, heard = Date.now(), folders = [];
+  let identity = 0, sourceRevision = 0, heard = Date.now(), folders = [];
   const identities = new WeakMap();
   // The documents the server holds, at the versions it has.
   const versions = new WeakMap();
@@ -157,18 +157,21 @@ function createWorkspaceIndex(context, { executable, timeout, output, onStatus, 
     });
   }
   const subscriptions = [
-    vscode.workspace.onDidOpenTextDocument(document => { if (isSource(document)) synchronize(() => didOpen(document)); }),
+    vscode.workspace.onDidOpenTextDocument(document => {
+      if (isSource(document)) { sourceRevision++; synchronize(() => didOpen(document)); }
+    }),
     vscode.workspace.onDidChangeTextDocument(event => {
       // Dirty-state events can leave both content and version unchanged.
       if (isSource(event.document) &&
           (event.contentChanges.length || versions.get(event.document) !== event.document.version)) {
+        sourceRevision++;
         synchronize(() => didChange(event.document));
       }
     }),
     vscode.workspace.onDidCloseTextDocument(document => {
       identities.delete(document);
       closes.set(document.uri.toString(), ++closeCount);
-      if (isSource(document)) synchronize(() => didClose(document));
+      if (isSource(document)) { sourceRevision++; synchronize(() => didClose(document)); }
     }),
     vscode.workspace.onDidChangeWorkspaceFolders(() => synchronize(didChangeFolders)),
     vscode.workspace.onDidChangeConfiguration(event => {
@@ -263,14 +266,15 @@ function createWorkspaceIndex(context, { executable, timeout, output, onStatus, 
       const params = options === undefined
         ? code2ProtocolConverter.asTextDocumentPositionParams(document, position)
         : code2ProtocolConverter.asReferenceParams(document, position, options);
+      const revision = sourceRevision;
       const result = await ask(`textDocument/${operation}`, params, token);
-      if (!fresh()) return [];
+      if (!fresh() || revision !== sourceRevision) return [];
       if (result === silent) return next(...args);
       if (result === null) return next(...args);
       const converted = await (operation === 'documentHighlight' ? protocol2CodeConverter.asDocumentHighlights(result, token)
         : operation === 'definition' ? protocol2CodeConverter.asDefinitionResult(result, token)
         : protocol2CodeConverter.asReferences(result, token));
-      return fresh() ? converted : [];
+      return fresh() && revision === sourceRevision ? converted : [];
     } catch (error) {
       if (disposed || token.isCancellationRequested || [-32800, -32801].includes(error.code)) return [];
       if (error.code === -32803 || error.refused) onStatus({ state: 'refused', message: error.message });
