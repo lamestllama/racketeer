@@ -5,7 +5,10 @@
 ;; Workspace analysis accepts complete source views and returns domain results.
 ;; Each instance owns its runs and workers for each pass. No editor connection or
 ;; request transport is required to use the engine.
-(require compiler/compilation-path
+(require drracket/check-syntax
+         racket/class
+         syntax/modread
+         compiler/compilation-path
          compiler/module-suffix
          racket/file
          racket/future
@@ -21,6 +24,10 @@
          racket-langserver/common/interfaces
          racket-langserver/common/json-util
          racket-langserver/doclib/doc
+         racket-langserver/doclib/editor
+         racket-langserver/doclib/textbuffer/text-port
+         racket-langserver/doclib/doc-lang
+         "runtime/racketdap/tools/bindings-service.rkt"
          racket-langserver/doclib/internal-types
          racket-langserver/workspace/api
          racket-langserver/lsp/compose/references
@@ -533,6 +540,48 @@
                        (call-with-input-file* file
                          (lambda (in) (read-string (add1 (string-length text)) in)))))))))
 
+;; Read and select policy before constructing the sole compact collector. The
+;; sequence follows expand-source; the worker already owns its fresh namespace,
+;; source snapshot and directory. No display products or expansion logs are kept.
+(define (compact-contribution path text roots)
+  (define source (path->source path))
+  (define in (open-input-text text))
+  (define (source-error e)
+    (if (out-of-memory? e) (raise e) e))
+  (define pre
+    (with-handlers ([exn:fail? source-error])
+      (with-module-reading-parameterization
+        (lambda () (read-syntax (source-syntax-source source) in)))))
+  (define adapter (resolve-workspace-language-adapter path text pre roots))
+  (define policy (language-policy-with-adapter (source->language-policy text (source-uri source)) adapter))
+  (define stx
+    (if (and adapter (syntax? pre))
+        (syntax-property pre 'racketeer:language-profile adapter) pre))
+  (define editor (new lsp-editor%))
+  (send editor insert text 0)
+  (define collector ((bindings-factory (and adapter (language-adapter-bindings-provider adapter)) #:contribution-only? #t)
+                     source editor #f))
+  (define result
+    (parameterize ([current-annotations collector])
+      (define-values (add-syntax done)
+        (make-traversal (current-namespace) (path-only path)))
+      (define expanded
+        (with-handlers ([exn:fail? source-error])
+          (parameterize ([current-output-port (open-output-nowhere)])
+            (and (Language-Policy-expand? policy) (syntax? stx) (expand stx)))))
+      (when (syntax? expanded) (add-syntax expanded) (done))
+      (define result (ExpandResult stx expanded '()))
+      (send collector walk-stx result)
+      result))
+  ;; An explicitly disabled expansion cannot certify a complete binding graph.
+  (unless (and (not (and adapter (eq? (hash-ref (hash-ref adapter 'editor) 'expand? 'policy) #f)))
+               (if (Language-Policy-expand? policy)
+                   (ExpandResult-all-succeed? result)
+                   (and (ExpandResult-pre-syntax result) #t))
+               (language-adapter-current? adapter))
+    (error 'workspace-analysis "analysis failed: ~a" path))
+  (send collector get-contribution))
+
 (define (analyse path max-bytes buffer query buffers roots before cache)
   (define bytes
     (if buffer (string->bytes/utf-8 buffer)
@@ -565,9 +614,14 @@
                                  (lambda (old) (if (equal? old (cdr entry)) old 'changing))
                                  (cdr entry))))
     (lambda ()
-    (define doc (make-doc (path->uri path) text 0))
-    (unless (doc-expand! doc #:contribution-only? #t) (error 'workspace-analysis "analysis failed: ~a" path))
-    (define contribution (Doc-contribution doc))
+    (define doc (and query (make-doc (path->uri path) text 0)))
+    (define contribution
+      (if query
+          (begin
+            (unless (doc-expand! doc #:contribution-only? #t)
+              (error 'workspace-analysis "analysis failed: ~a" path))
+            (Doc-contribution doc))
+          (compact-contribution path text roots)))
     (define facts
       (+ (hash-count (Doc-Contribution-definitions contribution))
          (for/sum ([locations (in-hash-values (Doc-Contribution-references contribution))])

@@ -7,18 +7,20 @@
          racket-langserver/doclib/language-adapter
          (prefix-in server: (only-in racket-langserver/common/source-snapshot observe-source-snapshot!))
          "runtime/racketdap/tools/source-snapshot.rkt")
-(provide current-language-adapter-observer current-language-adapter-roots)
+(provide current-language-adapter-observer current-language-adapter-roots
+         resolve-workspace-language-adapter language-adapter-bindings-provider
+         language-adapter-current?)
 
 ;; Install in each process that embeds the bundled analyser, including workers
 ;; and fresh rename namespaces. The resolver runs in the expansion namespace.
 (current-language-adapter-validator language-adapter-current?)
-(current-language-adapter-bindings
- (lambda (adapter)
+(define (language-adapter-bindings-provider adapter)
    (define bindings (hash-ref adapter 'bindings))
    (and (pair? bindings)
         (lambda (request)
           (or (call-language-provider (cadr bindings) request #:source 'adapter #:field 'bindings)
-              (hasheq))))))
+              (hasheq)))))
+(current-language-adapter-bindings language-adapter-bindings-provider)
 (current-language-adapter-declarations
  (lambda (adapter)
    (define reference (hash-ref (hash-ref adapter 'editor) 'declarations))
@@ -44,8 +46,7 @@
    (and (pair? choice)
         (lambda (request)
           (call-language-provider (cadr choice) request #:source 'adapter #:field 'editor.rename)))))
-(current-language-adapter-resolver
- (lambda (source text pre roots)
+(define (resolve-workspace-language-adapter source text pre roots)
    (and (syntax? pre)
         (parameterize ([current-language-adapter-file-observer
                         (lambda (file fingerprint)
@@ -61,4 +62,5 @@
             #:declare-editor? #t
             #:workspace (language-adapter-workspace source
                            (if (null? (current-language-adapter-roots)) roots
-                               (current-language-adapter-roots))))))))
+                               (current-language-adapter-roots)))))))
+(current-language-adapter-resolver resolve-workspace-language-adapter)

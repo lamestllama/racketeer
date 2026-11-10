@@ -82,6 +82,7 @@ exports.run = async function () {
     ['tests/stepping.rkt', 12],
     ['tests/source-loading.rkt', 12],
     ['tests/thread-pause.rkt', 10],
+    ['tests/workspace-compact.rkt', 10],
     ['tests/workspace-incremental.rkt', 2],
     ['tests/workspace-memory.rkt', 3],
     ['tests/workspace-worker.rkt', 9],

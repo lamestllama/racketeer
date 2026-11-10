@@ -3,13 +3,16 @@
 ;; Copyright (c) 2026 Eric Parsonage
 ;; SPDX-License-Identifier: Apache-2.0 OR MIT
 
-(require drracket/check-syntax
-         racket/class racket/list racket/match syntax/id-table
+(require data/interval-map
+         drracket/check-syntax
+         racket/class racket/dict racket/list racket/match syntax/id-table
+         racket-langserver/common/interfaces
          racket-langserver/common/source
          racket-langserver/common/path-util
          racket-langserver/doclib/internal-types
          racket-langserver/doclib/service/interface
          racket-langserver/doclib/binding-facts
+         racket-langserver/doclib/textbuffer/text-port
          racket-langserver/doclib/bindings-provider
          (only-in racket-langserver/doclib/service/declaration current-retain-binding-facts?))
 
@@ -22,7 +25,7 @@
 ;; only what expansion confirmed unless asked, so a rename can rely on them.
 (define bindings-service%
   (class base-service%
-    (init-field source doc-text [provider #f])
+    (init-field source doc-text [provider #f] [contribution-only? #f])
     (super-new)
     (define src (source-syntax-source source))
     (define file (source-file-path source))
@@ -33,10 +36,19 @@
     (define families (make-hash))
     (define accepted-facts #f)
     (define source-bindings '())
+    (define contribution-names '())
+    (define contribution-fallbacks '())
+    (define precise-contribution? #f)
     (define collected? #f)
     (define invalidated? #f)
 
+    (define/override (syncheck:find-source-object stx)
+      (and (equal? src (syntax-source stx)) src))
+
     (define/override (reset)
+      (set! contribution-names '())
+      (set! contribution-fallbacks '())
+      (set! precise-contribution? #f)
       (set! names '())
       (set! callbacks '())
       (set! arrows '())
@@ -88,12 +100,12 @@
         (define pre (ExpandResult-pre-syntax result))
         (define expanded (ExpandResult-post-syntax result))
         (when (syntax? expanded)
-          (define generic (collect-binding-facts source expanded text pre))
+          (define generic (collect-binding-facts source expanded text pre #:contribution-only? contribution-only?))
           ;; Validation completes before any provider result enters the graph.
-          ;; A declining or invalid provider leaves the generic evidence intact.
+          ;; Compact contributions preserve provider errors from the existing route.
           (define facts
             (if provider
-                (with-handlers ([exn:fail:contract? (lambda (_) generic)])
+                (with-handlers ([exn:fail:contract? (lambda (e) (if contribution-only? (raise e) generic))])
                   (augment-binding-facts
                    (lambda (request) (or (provider request) (hasheq)))
                    source text pre expanded generic))
@@ -108,7 +120,8 @@
                 (define id (hash-ref name 'identifier))
                 (define binding (identifier-module-binding id phase file space))
                 (or (and binding
-                         (if space
+                         ;; Contributions keep the declaration collector's phase keys.
+                         (if (and space (not contribution-only?))
                              (struct-copy Module-Binding binding
                                [phase+space (cons (Module-Binding-phase+space binding) space)])
                              binding))
@@ -118,6 +131,9 @@
                            (if (or (eq? (hash-ref name 'role) 'definition) (not (confirmed? name)))
                                (free-id-table-ref! table id (lambda () (gensym 'local)))
                                (free-id-table-ref table id #f))))))))
+          (set! contribution-fallbacks
+                (for/list ([arrow (in-list arrows)] #:when (eq? (list-ref arrow 3) 'module-lang))
+                  (cadr arrow)))
           (define raw (hash-ref facts 'names '()))
           (for ([name (in-list raw)] #:when (eq? (hash-ref name 'role) 'definition))
             (identity name))
@@ -127,7 +143,7 @@
               (lambda ()
                 (with-handlers ([exn:fail:read? (lambda (_) #f)])
                   (parameterize ([read-accept-reader #f] [read-accept-lang #f])
-                    (define token (read-syntax #f (open-input-string (substring text (car r) (cdr r)))))
+                    (define token (read-syntax #f (open-input-text (substring text (car r) (cdr r)))))
                     (and (identifier? token) (= (syntax-position token) 1)
                          (= (syntax-span token) (- (cdr r) (car r)))))))))
           ;; Preserve a provider's smaller written component for the same scoped
@@ -142,6 +158,7 @@
                            (+ (sub1 (syntax-position id)) (syntax-span id)))
                        (< (- (cdr r) (car r)) (syntax-span id)))
               (hash-set! precise (list (identity name) (syntax-position id) (syntax-span id)) #t)))
+          (set! precise-contribution? (positive? (hash-count precise)))
           (for ([name (in-list raw)])
             (define id (hash-ref name 'identifier))
             (define r (hash-ref name 'range))
@@ -189,55 +206,95 @@
               (and (or (null? own) (member binder own))
                    (or (not (member binder actual))
                        (and (null? own) (> (length (hash-ref owners-at at '())) 1))))))
+          (define replacement-ranges (make-hash))
+          (define replacement-points (make-hash))
+          (for ([name (in-list raw)]
+                #:when (and (confirmed? name) (memq (hash-ref name 'role) '(use export))))
+            (define owner (identity name))
+            (define id (hash-ref name 'identifier))
+            (define info (identifier-binding id (hash-ref name 'phase 0)))
+            (when (and (Module-Binding? owner) (list? info))
+              (define shifted (struct-copy Module-Binding owner [phase+space (list-ref info 5)]))
+              (define r (hash-ref name 'range))
+              (for ([key (in-list (list owner shifted))])
+                (hash-set! replacement-ranges (cons key r) #t)
+                (when (and (syntax-position id) (syntax-span id))
+                  (hash-set! replacement-ranges
+                             (cons key (cons (sub1 (syntax-position id))
+                                             (+ (sub1 (syntax-position id)) (syntax-span id)))) #t)))
+              (unless (equal? shifted owner)
+                (hash-set! replacement-points (cons shifted (car r)) #t))))
           (for ([callback (in-list callbacks)])
             (define key (hash-ref callback 'identity))
             (define r (hash-ref callback 'range))
             (define replaced?
               (and (eq? (hash-ref callback 'role) 'use)
-                   (for/or ([name (in-list raw)]
-                            #:when (and (confirmed? name) (memq (hash-ref name 'role) '(use export))))
-                     (define owner (identity name))
-                     (define id (hash-ref name 'identifier))
-                     (define info (identifier-binding id (hash-ref name 'phase 0)))
-                     (and (Module-Binding? owner) (list? info)
-                          (equal? (Module-Binding-filepath key) (Module-Binding-filepath owner))
-                          (equal? (Module-Binding-submods key) (Module-Binding-submods owner))
-                          (eq? (Module-Binding-id key) (Module-Binding-id owner))
-                          (or (equal? key owner)
-                              (equal? (Module-Binding-phase+space key) (list-ref info 5)))
-                          (or (equal? r (hash-ref name 'range))
-                              (and (hash-ref callback 'point? #f) (not (equal? key owner))
-                                   (= (car r) (car (hash-ref name 'range))))
-                              (and (syntax-position id) (syntax-span id)
-                                   (equal? r (cons (sub1 (syntax-position id))
-                                                   (+ (sub1 (syntax-position id)) (syntax-span id))))))))))
+                   (or (hash-ref replacement-ranges (cons key r) #f)
+                       (and (hash-ref callback 'point? #f)
+                            (hash-ref replacement-points (cons key (car r)) #f)))))
             (unless replaced?
               (install! (if (and (eq? (hash-ref callback 'role) 'use) (predicted-use? key r))
                             (hash-set callback 'certainty 'predicted) callback))))
+          ;; Index the starts of all possible names. A prefix maximum of ends
+          ;; answers containment without treating adjacent ranges as one name.
+          ;; Arrow insertions update the same index before the next arrow.
+          (define starts
+            (for/hash ([start (in-list (sort (remove-duplicates
+                                             (append (map (lambda (name) (car (hash-ref name 'range))) names)
+                                                     (append-map (lambda (arrow) (list (caar arrow) (caadr arrow))) arrows))) <))]
+                       [i (in-naturals 1)])
+              (values start i)))
+          (define ends (make-vector (add1 (hash-count starts)) -inf.0))
+          (define confirmed-ranges (make-hash))
+          (define definition-owners (make-hash))
+          (define (index-name! name)
+            (when (confirmed? name)
+              (define r (hash-ref name 'range))
+              (hash-set! confirmed-ranges r #t)
+              (let loop ([i (hash-ref starts (car r))])
+                (when (< i (vector-length ends))
+                  (vector-set! ends i (max (vector-ref ends i) (cdr r)))
+                  (loop (+ i (bitwise-and i (- i))))))
+              (when (eq? (hash-ref name 'role) 'definition)
+                (hash-update! definition-owners (list r (hash-ref name 'phase))
+                              (lambda (owners) (cons (hash-ref name 'identity) owners)) '()))))
+          (define (covering-name? r)
+            (let loop ([i (hash-ref starts (car r))])
+              (and (positive? i)
+                   (or (>= (vector-ref ends i) (cdr r))
+                       (loop (- i (bitwise-and i (- i))))))))
+          (for ([name (in-list (reverse names))]) (index-name! name))
           ;; Scoped occurrences disambiguate arrows whose generated binders share
           ;; a written anchor. Retain callback-only local and implicit uses.
           (for ([arrow (in-list arrows)])
             (match-define (list binder use phase imported? actual?) arrow)
             (unless (or (and imported? (not (eq? imported? 'module-lang)))
-                        (and actual? (for/or ([name (in-list names)])
-                          (and (confirmed? name)
-                               (let ([r (hash-ref name 'range)])
-                                 (if imported? (equal? use r)
-                                     (<= (car r) (car use) (cdr use) (cdr r))))))))
+                        (and actual? (if imported?
+                                         (hash-ref confirmed-ranges use #f)
+                                         (covering-name? use))))
               (define owners
-                (remove-duplicates
-                 (for/list ([name (in-list names)]
-                            #:when (and (confirmed? name) (eq? (hash-ref name 'role) 'definition)
-                                        (equal? binder (hash-ref name 'range))
-                                        (equal? phase (hash-ref name 'phase phase))))
-                   (hash-ref name 'identity))))
+                (remove-duplicates (hash-ref definition-owners (list binder phase) '())))
               (when (null? owners)
                 (set! owners (list (list (if imported? 'implicit 'arrow) binder phase
                                         (and imported? (substring text (car use) (cdr use)))))))
               (for ([owner (in-list owners)])
                 (when (and actual? (not imported?))
-                  (install! (hash-set (record binder owner 'definition) 'phase phase)))
-                (install! (hash-set (record use owner 'use (if actual? 'confirmed 'predicted)) 'phase phase)))))
+                  (define name (hash-set (record binder owner 'definition) 'phase phase))
+                  (install! name)
+                  (index-name! name))
+                (define name (hash-set (record use owner 'use (if actual? 'confirmed 'predicted)) 'phase phase))
+                (install! name)
+                (index-name! name))))
+          (define installed (for/hash ([name (in-list names)])
+                              (values (cons (hash-ref name 'identity) (hash-ref name 'range)) #t)))
+          (set! contribution-names
+                (append
+                 (reverse (filter (lambda (callback)
+                                    (hash-ref installed (cons (hash-ref callback 'identity)
+                                                              (hash-ref callback 'range)) #f)) callbacks))
+                 (reverse (filter (lambda (name) (and (not (hash-has-key? name 'name))
+                                                     (not (Module-Binding? (hash-ref name 'identity))))) names))
+                 (reverse (filter (lambda (name) (and (hash-has-key? name 'name) (confirmed? name))) names))))
           (set! names (remove-duplicates names))
           (for ([family (in-list (hash-ref facts 'families '()))])
             (define members (remove-duplicates (map identity (hash-ref family 'members))))
@@ -252,6 +309,52 @@
                                                'authored? (hash-ref binder 'authored? #t)))))))
         (set! callbacks '())
         (set! arrows '())))
+
+    ;; Workspace contributions include callback predictions, as the declaration
+    ;; collector does, while rename continues to request confirmed occurrences.
+    (define/public (get-contribution)
+      (define (location r)
+        (define (position offset)
+          (match-define (list line char) (send doc-text pos->line/char offset))
+          (Pos line char))
+        (Location (source-uri source) (Range (position (car r)) (position (cdr r)))))
+      ;; The declaration collector partitions overlapping generic uses, with
+      ;; scoped uses replacing coarse callbacks. Providers with exact components
+      ;; retain their original ranges instead. Reuse the same interval operations.
+      (define uses (make-interval-map))
+      (define fallbacks (for/hash ([r (in-list contribution-fallbacks)]) (values r #t)))
+      (for ([name (in-list contribution-names)]
+            #:unless (or (member (hash-ref name 'range) (hash-ref targets (hash-ref name 'identity) '()))
+                         (and (hash-has-key? name 'name)
+                              (hash-ref fallbacks (hash-ref name 'range) #f)
+                              (Module-Binding? (hash-ref name 'identity))
+                              (not (hash-has-key? targets (hash-ref name 'identity)))
+                              (not (member (hash-ref name 'identity)
+                                           (map car (interval-map-ref uses (car (hash-ref name 'range)) '())))))))
+        (define r (hash-ref name 'range))
+        (define-values (start end previous) (interval-map-ref/bounds uses (car r) '()))
+        (define entry (cons (hash-ref name 'identity) r))
+        (if precise-contribution?
+            (interval-map-update*! uses (car r) (cdr r) (lambda (entries) (cons entry entries)) '())
+            (interval-map-set! uses (car r) (cdr r)
+                               (remove-duplicates
+                                (cons entry (if (and (equal? start (car r)) (equal? end (cdr r))) previous '()))))))
+      (unless precise-contribution?
+        (for ([r (in-list contribution-fallbacks)])
+          (define-values (start end _keys) (interval-map-ref/bounds uses (car r) '()))
+          (unless (and (equal? start (car r)) (equal? end (cdr r)))
+            (interval-map-set! uses (car r) (cdr r) '()))))
+      (define references
+        (for*/fold ([refs (hash)]) ([(r entries) (in-dict uses)] [entry (in-list entries)]
+                                   #:when (Module-Binding? (car entry)))
+          (hash-update refs (car entry)
+                       (lambda (locations)
+                         (cons (location (if precise-contribution? (cdr entry) r)) locations)) '())))
+      (Doc-Contribution file
+                        (for/hash ([(key locations) (in-hash references)])
+                          (values key (remove-duplicates locations)))
+                        (for/hash ([(key ranges) (in-hash targets)] #:when (Module-Binding? key))
+                          (values key (location (car ranges))))))
 
     (define/public (get-binding-facts) accepted-facts)
     (define/public (get-source-bindings) source-bindings)
@@ -295,5 +398,6 @@
                                 (send this identities-at pos #:predicted? #t))))
       (send this references keys include-declaration? #:predicted? #t))))
 
-(define ((bindings-factory [provider #f]) source doc-text _lexer-state)
-  (new bindings-service% [source source] [doc-text doc-text] [provider provider]))
+(define ((bindings-factory [provider #f] #:contribution-only? [contribution-only? #f]) source doc-text _lexer-state)
+  (new bindings-service% [source source] [doc-text doc-text] [provider provider]
+       [contribution-only? contribution-only?]))
